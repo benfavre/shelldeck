@@ -117,99 +117,6 @@ impl SupportView {
         self.ticket_thread_rows.len()
     }
 
-    pub(super) fn render_jean_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut strip = div()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .px(px(10.0))
-            .py(px(8.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_sidebar())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("support.jean.title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("support.jean.active", count = self.jean_active).to_string()),
-                    ),
-            );
-
-        if self.jean_pending.is_empty() {
-            strip = strip.child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("support.jean.no_pending").to_string()),
-            );
-        } else {
-            for (thread, prompt) in self.jean_pending.iter().take(4) {
-                let t_ok = thread.clone();
-                let t_no = thread.clone();
-                let preview: String = prompt.chars().take(40).collect();
-                strip = strip.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(px(11.0))
-                                .text_color(ShellDeckColors::text_primary())
-                                .child(preview),
-                        )
-                        .child(
-                            div()
-                                .id(ElementId::from(SharedString::from(format!(
-                                    "sj-ok-{thread}"
-                                ))))
-                                .px(px(5.0))
-                                .rounded(px(4.0))
-                                .bg(ShellDeckColors::success())
-                                .text_size(px(11.0))
-                                .text_color(white())
-                                .cursor_pointer()
-                                .child("✓")
-                                .on_click(cx.listener(move |_t, _: &ClickEvent, _, cx| {
-                                    cx.emit(SupportViewEvent::JeanConfirm(t_ok.clone()))
-                                })),
-                        )
-                        .child(
-                            div()
-                                .id(ElementId::from(SharedString::from(format!(
-                                    "sj-no-{thread}"
-                                ))))
-                                .px(px(5.0))
-                                .rounded(px(4.0))
-                                .text_size(px(11.0))
-                                .text_color(ShellDeckColors::error())
-                                .cursor_pointer()
-                                .child("✕")
-                                .on_click(cx.listener(move |_t, _: &ClickEvent, _, cx| {
-                                    cx.emit(SupportViewEvent::JeanReject(t_no.clone()))
-                                })),
-                        ),
-                );
-            }
-        }
-        strip
-    }
-
     /// Compact adabraka `Button` for the support filter strip / modal (Sm is 36px tall by default).
     pub(super) fn compact_filter_button(
         id: impl Into<ElementId>,
@@ -1306,7 +1213,7 @@ impl SupportView {
         }
     }
 
-    pub(super) fn jean_text_for_ticket(t: &SupportTicket) -> String {
+    pub(super) fn monique_text_for_ticket(t: &SupportTicket) -> String {
         let truncated: String = t.last_preview.chars().take(500).collect();
         format!(
             "[Ticket support {} — {}] {} — {}",
@@ -1449,22 +1356,22 @@ impl SupportView {
             }
         }
 
-        if self.jean_available {
-            let jean_text = if matches!(kind, SupportMenuKind::ConversationHeader) {
-                self.jean_ticket_text()
+        if self.monique_available {
+            let monique_text = if matches!(kind, SupportMenuKind::ConversationHeader) {
+                self.monique_ticket_text()
             } else {
-                Some(Self::jean_text_for_ticket(ticket))
+                Some(Self::monique_text_for_ticket(ticket))
             };
-            if let Some(text) = jean_text {
+            if let Some(text) = monique_text {
                 items.push(
-                    PopoverMenuItem::new("menu-jean", t!("support.menu.jean").to_string())
+                    PopoverMenuItem::new("menu-monique", t!("support.menu.monique").to_string())
                         .icon("send")
                         .on_click({
                             let entity = entity.clone();
                             move |_, cx| {
                                 entity.update(cx, |this, cx| {
                                     this.close_popover_menu(cx);
-                                    cx.emit(SupportViewEvent::SendToJean(text.clone()));
+                                    cx.emit(SupportViewEvent::SendToMonique(text.clone()));
                                 });
                             }
                         }),

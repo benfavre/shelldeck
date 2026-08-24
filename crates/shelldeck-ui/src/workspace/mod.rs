@@ -34,12 +34,12 @@ use shelldeck_core::config::bext_cloud;
 use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
 use shelldeck_core::config::deep_link::DeepLink;
 use shelldeck_core::config::issues::{self, Issue, IssueInstance};
-use shelldeck_core::config::jean_fleet::{
-    self, FleetSnapshot, JeanInstance, JeanJob, JeanRuntimeConfig, RegisterInstance,
-};
-use shelldeck_core::config::jeanclaude::{self, JeanConfig, JeanState};
 use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
 use shelldeck_core::config::manage_support;
+use shelldeck_core::config::monique::{
+    self as monique_client, MoniqueConfig, MoniqueProcesses, MoniqueStatus,
+};
+use shelldeck_core::config::platform::PlatformSnapshot;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
@@ -50,6 +50,7 @@ use std::ops::{DerefMut, Range};
 use std::rc::Rc;
 use uuid::Uuid;
 
+use crate::agent_console_view::{AgentConsoleEvent, AgentConsoleView};
 use crate::ai_action_dialog::render_ai_action_dialog;
 use crate::ai_assistant::{AiAssistantEvent, AiAssistantView};
 use crate::ai_companion::{assistant_action_acknowledgement, AiCompanionEvent};
@@ -70,8 +71,8 @@ use crate::issue_attachments::{
     capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
     render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox, LightboxItem,
 };
-use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};
+use crate::monique_view::{MoniqueView, MoniqueViewEvent};
 use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::onboarding_view::{OnboardingEvent, OnboardingView};
 use crate::port_forward_form::PortForwardForm;
@@ -109,6 +110,7 @@ pub type AiDockOpenHandler = Box<dyn Fn(&mut App)>;
 // 2,000 lines. See `.agents/workspace-architecture.md`.
 mod account;
 mod activity;
+mod agents;
 mod ai;
 mod ai_routing;
 mod bext;
@@ -118,10 +120,10 @@ mod discovery;
 mod events;
 mod fleet;
 mod forwards;
-mod jean;
 mod mentions;
 mod menu;
 mod modes;
+mod monique;
 mod navigation;
 mod overlays;
 mod palette;
@@ -312,41 +314,19 @@ fn post_login_splash_opacity(dismissing: bool, delta: f32) -> f32 {
     }
 }
 
-/// Everything the runtime tick needs, gathered on the UI thread then moved into
-/// the background executor (all owned + `Send`).
-struct RuntimeTickCtx {
-    base: String,
-    token: String,
-    instance_id: String,
-    workdir: String,
-    model: String,
-    autonomy: String,
-    version: String,
-    runtime_config: JeanRuntimeConfig,
-}
-
-/// One decision of the runtime loop, produced on the UI thread.
-enum RuntimeStep {
-    /// (base, token, register payload)
-    Register(String, String, RegisterInstance),
-    /// (base, token, instance id, version) — heartbeat only (a job is busy).
-    HeartbeatOnly(String, String, String, String),
-    /// Heartbeat + claim (+ auto-execute).
-    Tick(RuntimeTickCtx),
-}
-
 /// The active content view
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
     Dashboard,
     Terminal,
+    Agents,
     Scripts,
     PortForwards,
     ServerSync,
     Sites,
     Recent,
     FileEditor,
-    JeanConsole,
+    MoniqueConsole,
     Fleet,
     BextCloud,
     Settings,
@@ -374,16 +354,15 @@ actions!(
         OpenFileEditorView,
         CloudSyncNow,
         SwitchSite,
-        OpenJeanConsole,
-        JeanTogglePause,
+        OpenMoniqueConsole,
         OpenFleet,
-        ToggleJeanRuntime,
         NewRequest,
         OpenSupportRequests,
         OpenBextCloud,
         ConnectBextCloud,
         OpenAiAssistant,
         OpenClippy,
+        OpenAgents,
     ]
 );
 
@@ -435,6 +414,7 @@ pub struct Workspace {
     sidebar: Entity<SidebarView>,
     dashboard: Entity<DashboardView>,
     terminal: Entity<TerminalView>,
+    agent_console: Entity<AgentConsoleView>,
     scripts: Entity<ScriptEditorView>,
     port_forwards: Entity<PortForwardView>,
     server_sync: Entity<ServerSyncView>,
@@ -499,9 +479,12 @@ pub struct Workspace {
     active_tunnels: HashMap<Uuid, ActiveTunnel>,
     /// Active script executions keyed by script ID.
     active_scripts: HashMap<Uuid, ActiveScript>,
+    /// Explicit local/SSH coding-agent runs, keyed by run ID.
+    active_agent_runs: HashMap<Uuid, agents::ActiveAgentRun>,
     // Keep subscriptions alive
     _sidebar_sub: Subscription,
     _terminal_sub: Subscription,
+    _agent_console_sub: Subscription,
     _palette_sub: Subscription,
     _companion_palette_sub: Subscription,
     _settings_sub: Subscription,
@@ -573,34 +556,29 @@ pub struct Workspace {
     _support_sub: Subscription,
     /// Background poll while Support mode is visible.
     _support_poll_task: Option<gpui::Task<()>>,
-    /// The JeanClaude console (Dev mode).
-    jean_view: Entity<JeanView>,
-    _jean_sub: Subscription,
-    /// Shared `/api/state` cache (feeds jean_view + the Support strip + User card).
-    jean_state: Option<JeanState>,
-    /// Background poll while a Jean surface is visible.
-    _jean_poll_task: Option<gpui::Task<()>>,
-    /// User-mode "Demander à JeanClaude" composer buffer + focus.
-    jean_ask_input: String,
-    jean_ask_focus: FocusHandle,
-    /// The Jean fleet view (Dev mode).
+    /// Canonical Monique / Automonique console.
+    monique_view: Entity<MoniqueView>,
+    _monique_sub: Subscription,
+    monique_status: Option<MoniqueStatus>,
+    monique_processes: Option<MoniqueProcesses>,
+    _monique_poll_task: Option<gpui::Task<()>>,
+    _monique_auth_poll_task: Option<gpui::Task<()>>,
+    /// User-mode "Ask Monique" composer buffer + focus.
+    monique_ask_input: String,
+    monique_ask_focus: FocusHandle,
+    /// The Monique fleet view (Dev mode).
     fleet_view: Entity<FleetView>,
     _fleet_sub: Subscription,
-    /// Cached fleet snapshot (feeds fleet_view).
-    fleet_snapshot: Option<FleetSnapshot>,
-    /// Exact Fleet job requested by a deep link, retained across async refresh.
-    pending_fleet_job_focus: Option<String>,
+    /// Cached shared-platform snapshot (feeds the native cockpit and mentions).
+    fleet_snapshot: Option<PlatformSnapshot>,
+    /// Exact session requested by a deep link, retained across async refresh.
+    pending_fleet_session_focus: Option<String>,
     /// Poll while the Fleet view is visible.
     _fleet_view_poll: Option<gpui::Task<()>>,
-    /// This machine's registered runtime instance (when the runtime is enabled).
-    runtime_instance: Option<JeanInstance>,
-    /// Jobs claimed by a `confirm`-autonomy instance, awaiting an explicit
-    /// "Exécuter" in the UI. Also gates the loop (concurrency 1).
-    runtime_awaiting: Vec<JeanJob>,
-    /// True while a job is executing or awaiting confirmation (no new claim).
-    runtime_busy: bool,
-    /// The register/heartbeat/claim/execute loop (only while enabled + signed in).
-    _runtime_loop: Option<gpui::Task<()>>,
+    /// Prevent overlapping cursor reads from applying out of order.
+    fleet_refresh_in_flight: bool,
+    /// Fences platform responses across sign-out and subsequent sign-in.
+    fleet_request_epoch: u64,
     /// Mentionable people from Inklura Manage, for the assistant's `@` picker.
     /// Empty until the directory endpoint ships (`manage_directory`); people
     /// are the one mention kind that needs server-side role information.
@@ -745,7 +723,7 @@ pub struct TrayCounters {
     pub active_ssh: usize,
     pub open_tunnels: usize,
     pub unread_tickets: usize,
-    pub jean_pending: usize,
+    pub monique_pending: usize,
     pub ai_tasks_running: usize,
     pub pinned_connections: Vec<TrayPinnedConnection>,
 }
@@ -757,7 +735,7 @@ pub struct TrayPinnedConnection {
 }
 
 /// Notifications the workspace asks the OS to display when a
-/// user-relevant delta happens (new ticket arrived, Jean job needs a
+/// user-relevant delta happens (new ticket arrived, Monique job needs a
 /// human, SSH session dropped, Fleet job finished). `main.rs` wires
 /// this to `notify-rust`; other UIs (headless tests, mock harness) can
 /// stub the notifier with a no-op or a spy.
@@ -765,8 +743,8 @@ pub struct TrayPinnedConnection {
 pub enum TrayNotification {
     /// N new unread support tickets appeared since the last publish.
     NewTickets { count: usize },
-    /// N new Jean fleet jobs are awaiting user confirmation.
-    JeanPending { count: usize },
+    /// N new Monique fleet jobs are awaiting user confirmation.
+    MoniquePending { count: usize },
     /// One active SSH transport disappeared without a normal shell exit or an
     /// explicit tab close.
     SshDisconnected { name: String },
@@ -789,12 +767,12 @@ impl TrayNotification {
                     t!("notification.support.many", count = *count).to_string()
                 },
             ),
-            Self::JeanPending { count } => (
-                t!("notification.jean.summary").to_string(),
+            Self::MoniquePending { count } => (
+                t!("notification.monique.summary").to_string(),
                 if *count == 1 {
-                    t!("notification.jean.one").to_string()
+                    t!("notification.monique.one").to_string()
                 } else {
-                    t!("notification.jean.many", count = *count).to_string()
+                    t!("notification.monique.many", count = *count).to_string()
                 },
             ),
             Self::SshDisconnected { name } => (
@@ -912,6 +890,23 @@ impl Workspace {
         });
 
         let terminal = cx.new(TerminalView::new);
+        let agent_console = cx.new(|cx| {
+            let mut view = AgentConsoleView::new(cx);
+            view.set_connections(
+                connections
+                    .iter()
+                    .map(
+                        |connection| crate::agent_console_view::AgentConnectionOption {
+                            id: connection.id,
+                            label: connection.display_name().to_string(),
+                            host: connection.hostname.clone(),
+                        },
+                    )
+                    .collect(),
+                cx,
+            );
+            view
+        });
         let scripts = cx.new(ScriptEditorView::new);
         let port_forwards = cx.new(|_| PortForwardView::new());
         let server_sync = cx.new(|cx| {
@@ -993,7 +988,7 @@ impl Workspace {
                 .menu_min_width(gpui::px(240.0))
         });
         let support = cx.new(SupportView::new);
-        let jean_view = cx.new(JeanView::new);
+        let monique_view = cx.new(MoniqueView::new);
         let fleet_view = cx.new(FleetView::new);
         let bext_view = cx.new(BextCloudView::new);
         ai_assistant.update(cx, |view, cx| view.set_tasks(ai_tasks.clone(), cx));
@@ -1106,6 +1101,12 @@ impl Workspace {
         let terminal_sub = cx.subscribe(&terminal, |this, _terminal, event: &TerminalEvent, cx| {
             this.handle_terminal_event(event, cx);
         });
+        let agent_console_sub = cx.subscribe(
+            &agent_console,
+            |this, _view, event: &AgentConsoleEvent, cx| {
+                this.handle_agent_console_event(event.clone(), cx);
+            },
+        );
 
         // Subscribe to command palette events
         let palette_sub = cx.subscribe(
@@ -1205,9 +1206,12 @@ impl Workspace {
             this.handle_support_event(event.clone(), cx);
         });
 
-        let jean_sub = cx.subscribe(&jean_view, |this, _view, event: &JeanViewEvent, cx| {
-            this.handle_jean_event(event.clone(), cx);
-        });
+        let monique_sub = cx.subscribe(
+            &monique_view,
+            |this, _view, event: &MoniqueViewEvent, cx| {
+                this.handle_monique_event(event.clone(), cx);
+            },
+        );
 
         let fleet_sub = cx.subscribe(&fleet_view, |this, _view, event: &FleetViewEvent, cx| {
             this.handle_fleet_event(event.clone(), cx);
@@ -1243,6 +1247,7 @@ impl Workspace {
             sidebar,
             dashboard,
             terminal,
+            agent_console,
             scripts,
             port_forwards,
             server_sync,
@@ -1289,8 +1294,10 @@ impl Workspace {
             focus_handle: cx.focus_handle(),
             active_tunnels: HashMap::new(),
             active_scripts: HashMap::new(),
+            active_agent_runs: HashMap::new(),
             _sidebar_sub: sidebar_sub,
             _terminal_sub: terminal_sub,
+            _agent_console_sub: agent_console_sub,
             _palette_sub: palette_sub,
             _companion_palette_sub: companion_palette_sub,
             _settings_sub: settings_sub,
@@ -1331,21 +1338,21 @@ impl Workspace {
             support,
             _support_sub: support_sub,
             _support_poll_task: None,
-            jean_view,
-            _jean_sub: jean_sub,
-            jean_state: None,
-            _jean_poll_task: None,
-            jean_ask_input: String::new(),
-            jean_ask_focus: cx.focus_handle(),
+            monique_view,
+            _monique_sub: monique_sub,
+            monique_status: None,
+            monique_processes: None,
+            _monique_poll_task: None,
+            _monique_auth_poll_task: None,
+            monique_ask_input: String::new(),
+            monique_ask_focus: cx.focus_handle(),
             fleet_view,
             _fleet_sub: fleet_sub,
             fleet_snapshot: None,
-            pending_fleet_job_focus: None,
+            pending_fleet_session_focus: None,
             _fleet_view_poll: None,
-            runtime_instance: None,
-            runtime_awaiting: Vec::new(),
-            runtime_busy: false,
-            _runtime_loop: None,
+            fleet_refresh_in_flight: false,
+            fleet_request_epoch: 0,
             mention_people: Vec::new(),
             issues_list: Vec::new(),
             issues_staff: false,

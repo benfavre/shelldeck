@@ -115,9 +115,9 @@ impl Workspace {
                     ws.site_directory = Some(payload);
                     ws.rebuild_issue_site_select(cx);
                     ws.refresh_command_palette(cx);
-                    // Server may have just delivered the Jean config (super-admin).
-                    ws.update_jean_availability(cx);
-                    ws.sync_jean_poll(cx);
+                    // Server may have just delivered the Monique config (super-admin).
+                    ws.update_monique_availability(cx);
+                    ws.sync_monique_poll(cx);
                     cx.notify();
                 }
                 Err(e) => tracing::warn!("Failed to load manage sites: {}", e),

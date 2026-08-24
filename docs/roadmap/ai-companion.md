@@ -68,7 +68,7 @@ Les policies persistées couvrent actuellement :
 - triage Support ;
 - exécution Terminal ;
 - exécution Script ;
-- envoi Jean ;
+- envoi Monique ;
 - dispatch Fleet.
 
 Le niveau automatique n'autorise jamais une collecte générale, une élévation
@@ -101,7 +101,7 @@ de privilèges ou un contournement des rôles.
 | Demandes | brouillon structuré, réponse, résumé, triage, conversion Support, dispatch |
 | Scripts | génération, explication, revue, correction avec diff, exécution confirmée |
 | Terminal | commande préparée, explication, demande depuis contexte, diagnostic séquentiel |
-| Jean/Fleet | prompt, envoi et dispatch contrôlés |
+| Monique/Fleet | prompt, envoi et dispatch contrôlés |
 | Connexions/tunnels | nommage contextuel sans persistance automatique |
 | Activité | analyse explicite de l'événement sélectionné |
 

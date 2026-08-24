@@ -81,11 +81,11 @@ pub fn tray_counter_tickets(n: usize) -> String {
     }
 }
 
-pub fn tray_counter_jean(n: usize) -> String {
+pub fn tray_counter_monique(n: usize) -> String {
     match n {
-        0 => t!("tray.counter.jean.zero").to_string(),
-        1 => t!("tray.counter.jean.one").to_string(),
-        n => t!("tray.counter.jean.many", count = n).to_string(),
+        0 => t!("tray.counter.monique.zero").to_string(),
+        1 => t!("tray.counter.monique.one").to_string(),
+        n => t!("tray.counter.monique.many", count = n).to_string(),
     }
 }
 

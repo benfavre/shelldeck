@@ -117,7 +117,7 @@ impl Render for Workspace {
         }
 
         // The menu row reads a dozen pieces of state (mode, sign-in, sidebar,
-        // Jean/Fleet availability, AI); rebuilding it here keeps it honest
+        // Monique/Fleet availability, AI); rebuilding it here keeps it honest
         // without a subscription per input.
         self.rebuild_menu_bar(_cx);
         // Same reasoning: the contextual panel reads several live entities
@@ -183,6 +183,7 @@ impl Render for Workspace {
                     match self.active_view {
                         ActiveView::Dashboard => content = content.child(self.dashboard.clone()),
                         ActiveView::Terminal => content = content.child(self.terminal.clone()),
+                        ActiveView::Agents => content = content.child(self.agent_console.clone()),
                         ActiveView::Scripts => content = content.child(self.scripts.clone()),
                         ActiveView::PortForwards => {
                             content = content.child(self.port_forwards.clone())
@@ -191,7 +192,9 @@ impl Render for Workspace {
                         ActiveView::Sites => content = content.child(self.sites.clone()),
                         ActiveView::Recent => content = content.child(self.recent.clone()),
                         ActiveView::FileEditor => content = content.child(self.file_editor.clone()),
-                        ActiveView::JeanConsole => content = content.child(self.jean_view.clone()),
+                        ActiveView::MoniqueConsole => {
+                            content = content.child(self.monique_view.clone())
+                        }
                         ActiveView::Fleet => content = content.child(self.fleet_view.clone()),
                         ActiveView::BextCloud => content = content.child(self.bext_view.clone()),
                         ActiveView::Settings => content = content.child(self.settings.clone()),
@@ -220,6 +223,7 @@ impl Render for Workspace {
         let h16 = handle.clone();
         let h17 = handle.clone();
         let h18 = handle.clone();
+        let h19 = handle.clone();
 
         let mut root = div()
             .relative()
@@ -357,6 +361,13 @@ impl Render for Workspace {
                 if let Some(ws) = h16.upgrade() {
                     ws.update(cx, |ws, cx| {
                         ws.activate_dev_section(SidebarSection::Recent, cx);
+                    });
+                }
+            })
+            .on_action(move |_: &OpenAgents, _window, cx| {
+                if let Some(ws) = h19.upgrade() {
+                    ws.update(cx, |ws, cx| {
+                        ws.activate_dev_section(SidebarSection::Agents, cx)
                     });
                 }
             })

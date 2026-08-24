@@ -21,7 +21,7 @@ pub fn render_ai_action_dialog(
         AiActionKind::TerminalCommand => (t!("ai.action.kind.terminal").to_string(), "terminal"),
         AiActionKind::ScriptExecution => (t!("ai.action.kind.script").to_string(), "play"),
         AiActionKind::SupportSend => (t!("ai.action.kind.support").to_string(), "send"),
-        AiActionKind::JeanDispatch => (t!("ai.action.kind.jean").to_string(), "bot"),
+        AiActionKind::MoniqueDispatch => (t!("ai.action.kind.monique").to_string(), "bot"),
         AiActionKind::FleetDispatch => (t!("ai.action.kind.fleet").to_string(), "server"),
         AiActionKind::ClippyReplaceSelection => (
             t!("ai.action.kind.clippy_replace").to_string(),
@@ -46,7 +46,7 @@ pub fn render_ai_action_dialog(
         AiActionPayload::TerminalCommand { command } => command.clone(),
         AiActionPayload::ScriptExecution { body } => body.clone(),
         AiActionPayload::SupportSend { body } => body.clone(),
-        AiActionPayload::JeanDispatch { prompt } => prompt.clone(),
+        AiActionPayload::MoniqueDispatch { prompt } => prompt.clone(),
         AiActionPayload::FleetDispatch {
             issue_id,
             instance_id,
@@ -62,14 +62,14 @@ pub fn render_ai_action_dialog(
     };
     let confirm_label = match plan.kind {
         AiActionKind::SupportSend => t!("ai.action.confirm_send").to_string(),
-        AiActionKind::JeanDispatch | AiActionKind::FleetDispatch => {
+        AiActionKind::MoniqueDispatch | AiActionKind::FleetDispatch => {
             t!("ai.action.confirm_dispatch").to_string()
         }
         _ => t!("ai.action.confirm_execute").to_string(),
     };
     let confirm_icon = match plan.kind {
         AiActionKind::SupportSend => "send",
-        AiActionKind::JeanDispatch | AiActionKind::FleetDispatch => "route",
+        AiActionKind::MoniqueDispatch | AiActionKind::FleetDispatch => "route",
         _ => "play",
     };
     let confirm_variant = if plan.risk == AiActionRisk::High {

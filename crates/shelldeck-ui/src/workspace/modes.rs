@@ -271,11 +271,10 @@ impl Workspace {
         if self.effective_mode() == AppMode::Support && self.can_access_mode(AppMode::Support) {
             self.refresh_support(cx);
         }
-        self.update_jean_availability(cx);
-        self.sync_jean_poll(cx);
+        self.update_monique_availability(cx);
+        self.sync_monique_poll(cx);
         self.update_fleet_availability(cx);
         self.sync_fleet_view_poll(cx);
-        self.sync_runtime_loop(cx);
         self.sync_issues_poll(cx);
         // Les entrées de la palette sont filtrées par mode à la construction :
         // sans cette reconstruction, passer de Dev à Support laissait « Nouveau

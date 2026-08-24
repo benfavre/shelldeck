@@ -1786,7 +1786,7 @@ impl Workspace {
             );
         }
 
-        // Page body: account header, "Mes sites" section, optional Jean card,
+        // Page body: account header, "Mes sites" section, optional Monique card,
         // "Mes demandes" section. Everything stacks at natural height; the
         // whole page scrolls if the content overflows.
         let tab = self.user_home_tab;
@@ -1862,8 +1862,8 @@ impl Workspace {
                         row
                     })
                     .child(list)
-                    .children(if self.has_jean() {
-                        Some(self.render_jean_ask_card(cx))
+                    .children(if self.has_monique() {
+                        Some(self.render_monique_ask_card(cx))
                     } else {
                         None
                     });

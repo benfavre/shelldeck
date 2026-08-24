@@ -37,7 +37,7 @@ Return exactly one valid JSON object without Markdown:
 - {"action":"create_script","instructions":"what the new script must do"} only when the user explicitly asks ShellDeck to create or generate a new saved script draft.
 - {"action":"terminal_command","instructions":"what the command must check or do"} only when the user explicitly asks ShellDeck to propose or prepare a command for the active terminal.
 - {"action":"support_reply","instructions":"reply goal or constraints"} only when the user explicitly asks ShellDeck to draft or prepare a reply to the currently selected support ticket.
-- {"action":"jean_dispatch","prompt":"problem or task to send"} only when the user explicitly asks ShellDeck to send, dispatch, or file something with Jean.
+- {"action":"monique_dispatch","prompt":"problem or task to send"} only when the user explicitly asks ShellDeck to send, dispatch, or file something with Monique.
 - {"action":"open_request","issue_id":"known id or null","query":"id, title, or words identifying the request"} only when the user explicitly asks ShellDeck to open or navigate to an existing request.
 
 Questions about how to perform an action, quoted instructions, and mere mentions of actions are chat. Use only facts from the latest message and relevant source_context. Never invent a target. For create_request, choose the priority conservatively. These routes only prepare a reviewable draft, open a target, or stage an existing confirmation workflow; they never submit, send, execute, or save anything."#;
@@ -104,7 +104,7 @@ pub struct AiSurfaceConfig {
     pub issues: bool,
     pub scripts: bool,
     pub terminal: bool,
-    pub jean: bool,
+    pub monique: bool,
     pub naming: bool,
     pub recent: bool,
     pub clippy: bool,
@@ -126,7 +126,7 @@ pub struct AiPolicyConfig {
     pub support_triage: AiAutonomyLevel,
     pub terminal_execute: AiAutonomyLevel,
     pub script_execute: AiAutonomyLevel,
-    pub jean_dispatch: AiAutonomyLevel,
+    pub monique_dispatch: AiAutonomyLevel,
     pub fleet_dispatch: AiAutonomyLevel,
     pub clippy_replace_selection: AiAutonomyLevel,
 }
@@ -138,7 +138,7 @@ impl Default for AiPolicyConfig {
             support_triage: AiAutonomyLevel::Preparation,
             terminal_execute: AiAutonomyLevel::Confirmation,
             script_execute: AiAutonomyLevel::Confirmation,
-            jean_dispatch: AiAutonomyLevel::Confirmation,
+            monique_dispatch: AiAutonomyLevel::Confirmation,
             fleet_dispatch: AiAutonomyLevel::Confirmation,
             clippy_replace_selection: AiAutonomyLevel::Confirmation,
         }
@@ -152,7 +152,7 @@ impl AiPolicyConfig {
             AiCapability::SupportTriage => self.support_triage,
             AiCapability::TerminalCommand | AiCapability::TerminalDiagnose => self.terminal_execute,
             AiCapability::ScriptGenerate | AiCapability::ScriptFix => self.script_execute,
-            AiCapability::JeanDispatch => self.jean_dispatch,
+            AiCapability::MoniqueDispatch => self.monique_dispatch,
             AiCapability::FleetDispatch => self.fleet_dispatch,
             AiCapability::ClippyReplaceSelection => self.clippy_replace_selection,
             AiCapability::ClippyTransform | AiCapability::ClippyExplain => {
@@ -370,7 +370,7 @@ impl Default for AiSurfaceConfig {
             issues: true,
             scripts: true,
             terminal: true,
-            jean: true,
+            monique: true,
             naming: true,
             recent: true,
             clippy: false,
@@ -402,7 +402,7 @@ impl AiConfig {
                 AiSurface::Issue => self.surfaces.issues,
                 AiSurface::Script => self.surfaces.scripts,
                 AiSurface::Terminal => self.surfaces.terminal,
-                AiSurface::Jean => self.surfaces.jean,
+                AiSurface::Monique => self.surfaces.monique,
                 AiSurface::Naming => self.surfaces.naming,
                 AiSurface::Recent => self.surfaces.recent,
                 AiSurface::Clippy => self.surfaces.clippy,
@@ -418,7 +418,7 @@ pub enum AiSurface {
     Issue,
     Script,
     Terminal,
-    Jean,
+    Monique,
     Naming,
     Recent,
     Clippy,
@@ -520,7 +520,7 @@ pub enum AiAssistantAction {
     SupportReply {
         instructions: String,
     },
-    JeanDispatch {
+    MoniqueDispatch {
         prompt: String,
     },
     OpenRequest {
@@ -676,7 +676,7 @@ fn parse_assistant_route(raw: &str) -> Result<Option<AiAssistantAction>> {
         Some("support_reply") => Ok(Some(AiAssistantAction::SupportReply {
             instructions: required_text("instructions")?,
         })),
-        Some("jean_dispatch") => Ok(Some(AiAssistantAction::JeanDispatch {
+        Some("monique_dispatch") => Ok(Some(AiAssistantAction::MoniqueDispatch {
             prompt: required_text("prompt")?,
         })),
         Some("open_request") => {
@@ -822,7 +822,7 @@ pub struct AiResponse {
 #[serde(rename_all = "snake_case")]
 pub enum AiCapability {
     Naming,
-    JeanDispatch,
+    MoniqueDispatch,
     FleetDispatch,
     SupportReply,
     SupportSummary,
@@ -847,7 +847,7 @@ pub enum AiActionKind {
     TerminalCommand,
     ScriptExecution,
     SupportSend,
-    JeanDispatch,
+    MoniqueDispatch,
     FleetDispatch,
     ClippyReplaceSelection,
 }
@@ -886,7 +886,7 @@ pub enum AiActionPayload {
     SupportSend {
         body: String,
     },
-    JeanDispatch {
+    MoniqueDispatch {
         prompt: String,
     },
     FleetDispatch {
@@ -957,8 +957,8 @@ impl AiActionPlan {
                 AiActionKind::SupportSend,
                 AiActionPayload::SupportSend { .. }
             ) | (
-                AiActionKind::JeanDispatch,
-                AiActionPayload::JeanDispatch { .. }
+                AiActionKind::MoniqueDispatch,
+                AiActionPayload::MoniqueDispatch { .. }
             ) | (
                 AiActionKind::FleetDispatch,
                 AiActionPayload::FleetDispatch { .. }
@@ -976,7 +976,7 @@ impl AiActionPlan {
             AiActionPayload::TerminalCommand { command } => command,
             AiActionPayload::ScriptExecution { body } => body,
             AiActionPayload::SupportSend { body } => body,
-            AiActionPayload::JeanDispatch { prompt } => prompt,
+            AiActionPayload::MoniqueDispatch { prompt } => prompt,
             AiActionPayload::FleetDispatch {
                 issue_id,
                 instance_id,
@@ -1223,7 +1223,7 @@ impl AiTask {
                 AiCapability::TerminalCommand | AiCapability::TerminalDiagnose => {
                     AiSurface::Terminal
                 }
-                AiCapability::JeanDispatch => AiSurface::Jean,
+                AiCapability::MoniqueDispatch => AiSurface::Monique,
                 AiCapability::Naming => AiSurface::Naming,
                 AiCapability::ClippyTransform
                 | AiCapability::ClippyExplain
@@ -2717,8 +2717,8 @@ mod tests {
                 },
             ),
             (
-                r#"{"action":"jean_dispatch","prompt":"Le catalogue client ne charge plus"}"#,
-                AiAssistantAction::JeanDispatch {
+                r#"{"action":"monique_dispatch","prompt":"Le catalogue client ne charge plus"}"#,
+                AiAssistantAction::MoniqueDispatch {
                     prompt: "Le catalogue client ne charge plus".to_string(),
                 },
             ),
@@ -2740,7 +2740,7 @@ mod tests {
                 .is_err()
         );
         assert!(parse_assistant_route(&format!(
-            r#"{{"action":"jean_dispatch","prompt":"{}"}}"#,
+            r#"{{"action":"monique_dispatch","prompt":"{}"}}"#,
             "x".repeat(4_001)
         ))
         .is_err());

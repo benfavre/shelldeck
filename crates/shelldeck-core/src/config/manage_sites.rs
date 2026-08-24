@@ -81,10 +81,9 @@ pub struct SitesPayload {
     pub sites: Vec<ManagedSiteInfo>,
     #[serde(default)]
     pub areas: Vec<ManageArea>,
-    /// JeanClaude dashboard config — delivered ONLY for super-admin tokens
-    /// (`null`/absent otherwise). See `config::jeanclaude`.
+    /// Monique dashboard config, delivered only to super-admin devices.
     #[serde(default)]
-    pub jeanclaude: Option<crate::config::jeanclaude::JeanConfig>,
+    pub monique: Option<crate::config::monique::MoniqueConfig>,
 }
 
 fn http_client() -> Result<reqwest::blocking::Client> {
@@ -191,7 +190,12 @@ mod tests {
           "areas": [
             { "key": "cms", "label": "Contenu (CMS)", "path": "/manage/cms" },
             { "key": "helpdesk", "label": "Support", "path": "/manage/helpdesk" }
-          ]
+          ],
+          "monique": {
+            "url": "https://monique.1clic.pro",
+            "user": "ops",
+            "pass": "secret"
+          }
         }"#;
         let p: SitesPayload = serde_json::from_str(json).expect("parse sites");
         assert!(p.ok);
@@ -202,6 +206,9 @@ mod tests {
         assert_eq!(p.areas.len(), 2);
         assert_eq!(p.areas[0].key, "cms");
         assert_eq!(p.areas[0].path, "/manage/cms");
+        let monique = p.monique.expect("Monique config");
+        assert_eq!(monique.url, "https://monique.1clic.pro");
+        assert!(monique.is_set());
     }
 
     #[test]

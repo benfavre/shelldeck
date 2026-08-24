@@ -188,13 +188,13 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
 - `Path::exists` avant open : aucun.
 - Poller early-returns : les 4 pollers stoppent correctement quand la
   vue n'est pas visible.
-- Caches unbounded : `issues_list`, `runtime_awaiting`, `activity`
+- Caches unbounded at the time: `issues_list`, the retired runtime queue, `activity`
   refresh en full-list replacement, pas de growth.
 - Toggle `.muted = ShellDeckColors::selected_bg()` dans `theme.rs` :
   fix correct, bien commenté.
 - Migration i18n de `variable_prompt.rs`, `workspace/{scripts,forwards,
   ssh,discovery}.rs`, `terminal_view.rs`, `status_bar.rs`,
-  `bext_cloud_view.rs`, `jean_view.rs` : mécanique et correcte.
+  `bext_cloud_view.rs`, `monique_view.rs` : mécanique et correcte.
 - Dashboard : `stat cards` correctement migrés à adabraka `Card`.
 - `EditorConfig` (`app_config.rs`) : struct légitime + round-trip test.
 - Markdown highlighter (`highlighter.rs`) : wiring légitime.

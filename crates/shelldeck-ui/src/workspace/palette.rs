@@ -124,6 +124,12 @@ impl Workspace {
                     Box::new(OpenServerSync),
                 ),
                 PaletteAction::new(
+                    t!("palette.open_agents").to_string(),
+                    None,
+                    "bot",
+                    Box::new(OpenAgents),
+                ),
+                PaletteAction::new(
                     t!("palette.open_sites").to_string(),
                     None,
                     "globe",
@@ -142,28 +148,16 @@ impl Workspace {
                     Box::new(OpenFileEditorView),
                 ),
                 PaletteAction::new(
-                    t!("palette.jean_open").to_string(),
+                    t!("palette.monique_open").to_string(),
                     None,
                     "cpu",
-                    Box::new(OpenJeanConsole),
-                ),
-                PaletteAction::new(
-                    t!("palette.jean_pause").to_string(),
-                    None,
-                    "clock",
-                    Box::new(JeanTogglePause),
+                    Box::new(OpenMoniqueConsole),
                 ),
                 PaletteAction::new(
                     t!("palette.fleet_open").to_string(),
                     None,
                     "box",
                     Box::new(OpenFleet),
-                ),
-                PaletteAction::new(
-                    t!("palette.fleet_runtime").to_string(),
-                    None,
-                    "cpu",
-                    Box::new(ToggleJeanRuntime),
                 ),
                 PaletteAction::new(
                     t!("palette.bext_open").to_string(),
@@ -352,6 +346,8 @@ impl Workspace {
             self.show_script_form(cx);
         } else if action.as_any().is::<OpenServerSync>() {
             self.activate_dev_section(SidebarSection::ServerSync, cx);
+        } else if action.as_any().is::<OpenAgents>() {
+            self.activate_dev_section(SidebarSection::Agents, cx);
         } else if action.as_any().is::<OpenSites>() {
             self.activate_dev_section(SidebarSection::Sites, cx);
         } else if action.as_any().is::<OpenRecent>() {
@@ -366,14 +362,10 @@ impl Workspace {
             self.open_manage_area(area.path.clone(), cx);
         } else if let Some(mode) = action.as_any().downcast_ref::<SetAppMode>() {
             self.set_mode(mode.mode, cx);
-        } else if action.as_any().is::<OpenJeanConsole>() {
-            self.open_jean_console(cx);
-        } else if action.as_any().is::<JeanTogglePause>() {
-            self.jean_toggle_pause(cx);
+        } else if action.as_any().is::<OpenMoniqueConsole>() {
+            self.open_monique_console(cx);
         } else if action.as_any().is::<OpenFleet>() {
             self.open_fleet(cx);
-        } else if action.as_any().is::<ToggleJeanRuntime>() {
-            self.toggle_jean_runtime(cx);
         } else if action.as_any().is::<NewRequest>() {
             self.open_new_request(cx);
         } else if action.as_any().is::<OpenSupportRequests>() {
@@ -395,10 +387,10 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppMode, ApplyTerminalTheme, CloudSyncNow, NewRequest, NewScript, NewTerminal,
-        OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView, OpenFleet, OpenJeanConsole,
-        OpenLogin, OpenRecent, OpenServerSync, OpenSettings, OpenSites, OpenSupportRequests,
-        OpenTemplateBrowser, PaletteAction, Quit, SetAppMode, SwitchSite, ToggleJeanRuntime,
+        AppMode, ApplyTerminalTheme, CloudSyncNow, NewRequest, NewScript, NewTerminal, OpenAgents,
+        OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView, OpenFleet, OpenLogin,
+        OpenMoniqueConsole, OpenRecent, OpenServerSync, OpenSettings, OpenSites,
+        OpenSupportRequests, OpenTemplateBrowser, PaletteAction, Quit, SetAppMode, SwitchSite,
         ToggleMenuBar, Workspace,
     };
     use gpui::Action;
@@ -446,6 +438,7 @@ mod tests {
         assert!(!contains_action::<NewTerminal>(actions), "{context}");
         assert!(!contains_action::<OpenFileEditorView>(actions), "{context}");
         assert!(!contains_action::<OpenServerSync>(actions), "{context}");
+        assert!(!contains_action::<OpenAgents>(actions), "{context}");
         assert!(!contains_action::<OpenSites>(actions), "{context}");
         assert!(!contains_action::<OpenRecent>(actions), "{context}");
         assert!(!contains_action::<NewScript>(actions), "{context}");
@@ -453,10 +446,9 @@ mod tests {
             !contains_action::<OpenTemplateBrowser>(actions),
             "{context}"
         );
-        assert!(!contains_action::<OpenJeanConsole>(actions), "{context}");
+        assert!(!contains_action::<OpenMoniqueConsole>(actions), "{context}");
         assert!(!contains_action::<OpenFleet>(actions), "{context}");
         assert!(!contains_action::<OpenBextCloud>(actions), "{context}");
-        assert!(!contains_action::<ToggleJeanRuntime>(actions), "{context}");
     }
 
     // SDTEST-1377 — a regular account is offered nothing beyond User.
@@ -498,7 +490,7 @@ mod tests {
     // SDTEST-1377 — Dev commands follow the *surface*, not the privilege.
     //
     // This is the half that is easy to get wrong: a super-admin standing in
-    // User mode must not be offered terminals and Jean. Gating those on
+    // User mode must not be offered terminals and Monique. Gating those on
     // `allowed_modes.contains(Dev)` alone would leak the whole Dev block into
     // the customer-facing surface.
     #[test]
@@ -507,7 +499,8 @@ mod tests {
 
         let in_dev = Workspace::base_palette_actions(allowed, AppMode::Dev, true, true);
         assert!(contains_action::<NewTerminal>(&in_dev));
-        assert!(contains_action::<OpenJeanConsole>(&in_dev));
+        assert!(contains_action::<OpenAgents>(&in_dev));
+        assert!(contains_action::<OpenMoniqueConsole>(&in_dev));
         assert!(contains_action::<OpenBextCloud>(&in_dev));
         assert!(contains_action::<ApplyTerminalTheme>(&in_dev));
 

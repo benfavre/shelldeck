@@ -92,7 +92,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `arrow-up` | navigation | scroll / sort up |
 | `at-sign` | chrome | AI composer: target a connection / script / ticket |
 | `git-branch` | support | Issue thread: GitHub-link notes |
-| `bot` | AI | Jean dispatch action |
+| `bot` | AI | Monique dispatch action |
 | `calendar` | time | date pickers, due dates |
 | `check` | action | confirm, done |
 | `check-check` | action | read receipts, double-check |
@@ -140,7 +140,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `plus` | chrome | add, zoom in |
 | `refresh-cw` | action | **Support refresh**, reload lists |
 | `reply` | support | reply composer mode |
-| `route` | AI | dispatch an action to Jean or the fleet |
+| `route` | AI | dispatch an action to Monique or the fleet |
 | `rotate-ccw` | action | resume an AI task |
 | `scan` | support | interactive screen-area capture |
 | `search` | chrome | search inputs |

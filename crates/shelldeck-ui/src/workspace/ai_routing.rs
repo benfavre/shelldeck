@@ -45,7 +45,7 @@ pub(super) struct AiActionContext {
     pub signed_in: bool,
     pub dev_allowed: bool,
     pub support_allowed: bool,
-    pub jean_configured: bool,
+    pub monique_configured: bool,
     pub clippy_allowed: bool,
 }
 
@@ -65,7 +65,7 @@ pub(super) fn ai_action_permitted(ctx: &AiActionContext, payload: &AiActionPaylo
         | AiActionPayload::ScriptExecution { .. }
         | AiActionPayload::FleetDispatch { .. } => ctx.dev_allowed,
         AiActionPayload::SupportSend { .. } => ctx.support_allowed,
-        AiActionPayload::JeanDispatch { .. } => ctx.jean_configured,
+        AiActionPayload::MoniqueDispatch { .. } => ctx.monique_configured,
         AiActionPayload::ClippyReplaceSelection { .. } => ctx.clippy_allowed,
     }
 }
@@ -174,7 +174,7 @@ impl Workspace {
             signed_in: self.signed_in(),
             dev_allowed: self.can_access_mode(AppMode::Dev),
             support_allowed: self.can_access_mode(AppMode::Support),
-            jean_configured: self.effective_jean_config().is_some(),
+            monique_configured: self.has_monique(),
             clippy_allowed: self.app_config.ai.allows(AiSurface::Clippy),
         }
     }
@@ -203,7 +203,7 @@ mod tests {
             signed_in: true,
             dev_allowed: true,
             support_allowed: true,
-            jean_configured: true,
+            monique_configured: true,
             clippy_allowed: true,
         }
     }
@@ -213,7 +213,7 @@ mod tests {
             signed_in: true,
             dev_allowed: false,
             support_allowed: false,
-            jean_configured: false,
+            monique_configured: false,
             clippy_allowed: true,
         }
     }
@@ -229,7 +229,7 @@ mod tests {
             terminal(),
             AiActionPayload::ScriptExecution { body: "ls".into() },
             AiActionPayload::SupportSend { body: "hi".into() },
-            AiActionPayload::JeanDispatch {
+            AiActionPayload::MoniqueDispatch {
                 prompt: "check".into(),
             },
             AiActionPayload::FleetDispatch {
@@ -350,10 +350,10 @@ mod tests {
         assert!(ai_action_permitted(&ctx, &terminal()));
 
         let mut ctx = super_admin();
-        ctx.jean_configured = false;
+        ctx.monique_configured = false;
         assert!(!ai_action_permitted(
             &ctx,
-            &AiActionPayload::JeanDispatch {
+            &AiActionPayload::MoniqueDispatch {
                 prompt: "check".into(),
             },
         ));

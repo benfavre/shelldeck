@@ -34,7 +34,7 @@ the same change must extract or extend a domain module instead.
 - Navigation/session restoration → `workspace/navigation.rs`
 - Settings and UI event coordination → `workspace/events.rs`
 - Tray integration → `workspace/tray.rs`
-- Support, Jean, Fleet, Bext, Sites → their same-named modules
+- Support, Monique, Fleet, Bext, Sites → their same-named modules
 
 For a genuinely new subsystem, create one focused
 `crates/shelldeck-ui/src/workspace/<domain>.rs` module and put its

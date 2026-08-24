@@ -114,7 +114,7 @@ VS Code layout, implemented in `crates/shelldeck-ui/src/sidebar.rs`:
 
 **The rail lists activities, not destinations.** `SidebarSection::rail_activities()`
 is the authoritative list. A section earns a rail slot when selecting it puts
-something *in the panel*; JeanClaude, Fleet and bext Cloud are places you go,
+something *in the panel*; Monique, Fleet and bext Cloud are places you go,
 reached from the Aller menu and the palette, and Settings is pinned separately
 at the bottom. Adding a rail icon for a section with nothing behind it is the
 mistake this list exists to prevent.
@@ -145,7 +145,7 @@ full width — and `total_width()` must account for that, which is why
   when it collapsed a 12-row nav list inside the panel. Once the rail became
   the navigation, "hiding" it swapped in that old list instead — two different
   navigation UIs behind one toggle, which had already drifted: the fallback
-  still listed JeanClaude, Fleet, bext Cloud and Settings after the rail
+  still listed Monique, Fleet, bext Cloud and Settings after the rail
   dropped them. It also bought only 48px, where collapsing the panel frees 5×
   more. `general.sidebar_nav_collapsed` survives as a parsed-and-ignored field
   so older `shelldeck.toml` files still load.

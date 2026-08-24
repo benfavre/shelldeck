@@ -2,22 +2,22 @@ use super::*;
 use crate::monolith::{animated_monolith, MonolithMotion};
 
 impl Workspace {
-    /// User-mode "Demander à JeanClaude" card: a composer that files a request
-    /// through Jean's Slack intake, plus a read-only recent-activity list.
-    pub(super) fn render_jean_ask_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let input_display = if self.jean_ask_input.is_empty() {
+    /// User-mode Monique card: a composer that stages a reviewed conversation
+    /// turn, plus a read-only recent-process list.
+    pub(super) fn render_monique_ask_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let input_display = if self.monique_ask_input.is_empty() {
             div()
                 .text_color(ShellDeckColors::text_muted())
-                .child(t!("user.jean.ask_placeholder").to_string())
+                .child(t!("user.monique.ask_placeholder").to_string())
         } else {
             div()
                 .text_color(ShellDeckColors::text_primary())
-                .child(self.jean_ask_input.clone())
+                .child(self.monique_ask_input.clone())
         };
 
         let mut activity = div().flex().flex_col().gap(px(2.0)).mt(px(6.0));
-        if let Some(state) = &self.jean_state {
-            for t in state.tickets.iter().take(10) {
+        if let Some(processes) = &self.monique_processes {
+            for process in processes.jobs.iter().take(10) {
                 activity = activity.child(
                     div()
                         .flex()
@@ -32,7 +32,7 @@ impl Workspace {
                                 .bg(ShellDeckColors::badge_bg())
                                 .text_size(px(10.0))
                                 .text_color(ShellDeckColors::text_muted())
-                                .child(t.status.clone()),
+                                .child(process.status.clone()),
                         )
                         .child(
                             div()
@@ -41,7 +41,11 @@ impl Workspace {
                                 .whitespace_nowrap()
                                 .text_size(px(11.0))
                                 .text_color(ShellDeckColors::text_muted())
-                                .child(t.prompt.clone()),
+                                .child(if process.id.is_empty() {
+                                    process.source.clone()
+                                } else {
+                                    process.id.clone()
+                                }),
                         ),
                 );
             }
@@ -68,18 +72,16 @@ impl Workspace {
                             .text_size(px(15.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
-                            .child(t!("user.jean.ask_title").to_string()),
+                            .child(t!("user.monique.ask_title").to_string()),
                     ),
             )
             .child(
                 div()
-                    .id("jean-ask-input")
-                    .track_focus(&self.jean_ask_focus)
-                    .on_key_down(
-                        cx.listener(|this, e: &KeyDownEvent, _w, cx| {
-                            this.handle_jean_ask_key(e, cx)
-                        }),
-                    )
+                    .id("monique-ask-input")
+                    .track_focus(&self.monique_ask_focus)
+                    .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| {
+                        this.handle_monique_ask_key(e, cx)
+                    }))
                     .w_full()
                     .min_h(px(56.0))
                     .px(px(10.0))
@@ -101,11 +103,11 @@ impl Workspace {
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child(t!("user.jean.confirm_hint").to_string()),
+                            .child(t!("user.monique.confirm_hint").to_string()),
                     )
                     .child(
                         div()
-                            .id("jean-ask-send")
+                            .id("monique-ask-send")
                             .flex()
                             .items_center()
                             .gap(px(6.0))
@@ -124,9 +126,9 @@ impl Workspace {
                                     .text_color(white()),
                             )
                             .child(t!("user.requests.send").to_string())
-                            .on_click(
-                                cx.listener(|this, _: &ClickEvent, _, cx| this.submit_jean_ask(cx)),
-                            ),
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.submit_monique_ask(cx)
+                            })),
                     ),
             )
             .child(
@@ -135,7 +137,7 @@ impl Workspace {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
                     .mt(px(4.0))
-                    .child(t!("user.jean.recent_activity").to_string()),
+                    .child(t!("user.monique.recent_activity").to_string()),
             )
             .child(activity)
     }

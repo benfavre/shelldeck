@@ -1065,9 +1065,9 @@ impl AiAssistantView {
                     AiQuickActionMode::Prefill,
                 ),
             ],
-            AiSurface::Jean => &[(
-                "ai.quick.jean",
-                "ai.prompt.jean",
+            AiSurface::Monique => &[(
+                "ai.quick.monique",
+                "ai.prompt.monique",
                 "send",
                 AiQuickActionMode::Submit,
             )],
@@ -1853,7 +1853,7 @@ impl AiAssistantView {
     fn capability_label(capability: AiCapability) -> String {
         let key = match capability {
             AiCapability::Naming => "ai.tasks.capability.naming",
-            AiCapability::JeanDispatch => "ai.tasks.capability.jean_dispatch",
+            AiCapability::MoniqueDispatch => "ai.tasks.capability.monique_dispatch",
             AiCapability::FleetDispatch => "ai.tasks.capability.fleet_dispatch",
             AiCapability::SupportReply => "ai.tasks.capability.support_reply",
             AiCapability::SupportSummary => "ai.tasks.capability.support_summary",
@@ -1926,7 +1926,7 @@ impl AiAssistantView {
             | AiSurface::Issue
             | AiSurface::Script
             | AiSurface::Terminal
-            | AiSurface::Jean => true,
+            | AiSurface::Monique => true,
             AiSurface::Naming => task.target_kind.as_deref() == Some("naming_terminal"),
             AiSurface::Recent | AiSurface::Global | AiSurface::Clippy => false,
         };
@@ -3573,7 +3573,7 @@ mod tests {
 
         for surface in [
             AiSurface::Support,
-            AiSurface::Jean,
+            AiSurface::Monique,
             AiSurface::Naming,
             AiSurface::Recent,
             AiSurface::Global,

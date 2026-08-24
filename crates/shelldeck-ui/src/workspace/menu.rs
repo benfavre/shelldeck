@@ -6,7 +6,7 @@ impl Workspace {
     /// Rebuild the menu row from current state and hand it to the adabraka
     /// `MenuBar`. Called every render: the spec is a cheap pure function and
     /// the alternative — invalidating on each of the a dozen inputs it reads
-    /// (mode, sign-in, sidebar, Jean/Fleet availability, AI config) — is a
+    /// (mode, sign-in, sidebar, Monique/Fleet availability, AI config) — is a
     /// standing source of stale-menu bugs.
     pub(super) fn rebuild_menu_bar(&mut self, cx: &mut Context<Self>) {
         use crate::menu_bar::{menu_bar_spec, MenuBarContext, MenuEntry};
@@ -21,8 +21,8 @@ impl Workspace {
                 .is_some_and(|a| a.is_superadmin),
             sidebar_visible: self.sidebar_visible,
             menu_bar_visible: self.app_config.general.menu_bar_visible,
-            has_jean: self.has_jean(),
-            has_fleet: self.app_config.jean_runtime.enabled || self.fleet_snapshot.is_some(),
+            has_monique: self.has_monique(),
+            has_fleet: self.platform_connection().is_some() || self.fleet_snapshot.is_some(),
             ai_configured: self.ai_available_for_current_surface(cx),
         };
 
@@ -170,7 +170,7 @@ impl Workspace {
             Cmd::GoSites => self.execute_palette_action(&OpenSites, cx),
             Cmd::GoRecent => self.execute_palette_action(&OpenRecent, cx),
             Cmd::GoFileEditor => self.execute_palette_action(&OpenFileEditorView, cx),
-            Cmd::GoJean => self.execute_palette_action(&OpenJeanConsole, cx),
+            Cmd::GoMonique => self.execute_palette_action(&OpenMoniqueConsole, cx),
             Cmd::GoFleet => self.execute_palette_action(&OpenFleet, cx),
             Cmd::GoBextCloud => self.execute_palette_action(&OpenBextCloud, cx),
             Cmd::GoSupportRequests => self.execute_palette_action(&OpenSupportRequests, cx),

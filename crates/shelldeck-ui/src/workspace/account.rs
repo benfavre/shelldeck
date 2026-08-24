@@ -327,6 +327,9 @@ impl Workspace {
         account: AccountInfo,
         cx: &mut Context<Self>,
     ) {
+        if let Err(error) = shelldeck_core::config::keychain::store_manage_token(&token) {
+            tracing::error!("Failed to store AI Operations token in OS keychain: {error}");
+        }
         self.app_config.cloud_sync.enabled = true;
         self.app_config.cloud_sync.token = token;
         self.app_config.account = Some(account.clone());
@@ -438,6 +441,9 @@ impl Workspace {
         // a later launch/account could restore terminals from the old session.
         self.save_workspace_state(cx);
         self.app_config.account = None;
+        if let Err(error) = shelldeck_core::config::keychain::delete_manage_token() {
+            tracing::warn!("Failed to delete AI Operations token from OS keychain: {error}");
+        }
         self.app_config.cloud_sync.token = String::new();
         self.app_config.cloud_sync.enabled = false;
         self.app_config.cloud_sync.active_site_id = None;
@@ -456,11 +462,14 @@ impl Workspace {
         self.last_whoami = None;
         self.user_home_tab = UserHomeTab::Home;
         self.site_directory = None;
-        self.jean_state = None;
+        self.monique_status = None;
+        self.monique_processes = None;
+        self.fleet_request_epoch = self.fleet_request_epoch.wrapping_add(1);
         self.fleet_snapshot = None;
-        self.runtime_instance = None;
-        self.runtime_awaiting.clear();
-        self.runtime_busy = false;
+        self.fleet_view.update(cx, |view, cx| {
+            view.reset();
+            cx.notify();
+        });
         self.issues_list.clear();
         self.issues_instances.clear();
         self.issues_staff = false;
@@ -492,15 +501,15 @@ impl Workspace {
         }
         self._support_poll_task = None;
         self._issues_poll = None;
-        self._jean_poll_task = None;
+        self._monique_poll_task = None;
         self._fleet_view_poll = None;
-        self._runtime_loop = None;
+        self.fleet_refresh_in_flight = false;
         self._bext_poll = None;
         self.support.update(cx, |support, cx| {
             support.set_list(Vec::new(), Default::default(), Default::default());
             support.set_agents(Vec::new());
             support.set_issues(Vec::new(), false, Vec::new());
-            support.set_jean_brief(false, Vec::new(), 0);
+            support.set_monique_available(false);
             support.clear_selection();
             cx.notify();
         });

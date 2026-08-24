@@ -2,7 +2,7 @@
 //!
 //! Cross-platform tray icon + menu + OS notifications. The tray keeps
 //! ShellDeck present even when the main window is hidden or minimized,
-//! surfaces live counters (SSH sessions, tunnels, unread tickets, Jean
+//! surfaces live counters (SSH sessions, tunnels, unread tickets, Monique
 //! confirmations), and pushes OS notifications on state deltas the user
 //! opted into.
 //!
@@ -98,8 +98,8 @@ pub struct TrayState {
     pub open_tunnels: usize,
     /// Support tickets with `unread=true`.
     pub unread_tickets: usize,
-    /// Jean fleet jobs waiting for user confirmation before running.
-    pub jean_pending: usize,
+    /// Monique fleet jobs waiting for user confirmation before running.
+    pub monique_pending: usize,
     /// AI tasks currently generating or executing.
     pub ai_tasks_running: usize,
     /// Persisted quick-access connections, in sidebar order.
@@ -263,7 +263,7 @@ const PINNED_ID_PREFIX: &str = "shelldeck.tray.pinned.";
 const COUNTER_SSH_ID: &str = "shelldeck.tray.counter.ssh";
 const COUNTER_TUNNELS_ID: &str = "shelldeck.tray.counter.tunnels";
 const COUNTER_TICKETS_ID: &str = "shelldeck.tray.counter.tickets";
-const COUNTER_JEAN_ID: &str = "shelldeck.tray.counter.jean";
+const COUNTER_MONIQUE_ID: &str = "shelldeck.tray.counter.monique";
 
 /// The counter `MenuItem`s live here, produced by [`build_menu`]
 /// alongside their parent menu. Kept together so the tray-thread's
@@ -272,7 +272,7 @@ struct CounterItems {
     ssh: MenuItem,
     tunnels: MenuItem,
     tickets: MenuItem,
-    jean: MenuItem,
+    monique: MenuItem,
     ai_tasks: MenuItem,
 }
 
@@ -326,7 +326,7 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
         ssh: MenuItem::with_id(COUNTER_SSH_ID, counter_label_ssh(0), false, None),
         tunnels: MenuItem::with_id(COUNTER_TUNNELS_ID, counter_label_tunnels(0), false, None),
         tickets: MenuItem::with_id(COUNTER_TICKETS_ID, counter_label_tickets(0), false, None),
-        jean: MenuItem::with_id(COUNTER_JEAN_ID, counter_label_jean(0), false, None),
+        monique: MenuItem::with_id(COUNTER_MONIQUE_ID, counter_label_monique(0), false, None),
         ai_tasks: MenuItem::with_id(AI_TASKS_ID, counter_label_ai_tasks(0), false, None),
     };
 
@@ -350,7 +350,8 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
         .context("append tunnels counter")?;
     menu.append(&counters.tickets)
         .context("append tickets counter")?;
-    menu.append(&counters.jean).context("append Jean counter")?;
+    menu.append(&counters.monique)
+        .context("append Monique counter")?;
     menu.append(&counters.ai_tasks)
         .context("append AI tasks counter")?;
     menu.append(&PredefinedMenuItem::separator())
@@ -418,10 +419,10 @@ fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
             .tickets
             .set_text(counter_label_tickets(next.unread_tickets));
     }
-    if language_changed || prev.jean_pending != next.jean_pending {
+    if language_changed || prev.monique_pending != next.monique_pending {
         counters
-            .jean
-            .set_text(counter_label_jean(next.jean_pending));
+            .monique
+            .set_text(counter_label_monique(next.monique_pending));
     }
     if language_changed || prev.ai_tasks_running != next.ai_tasks_running {
         counters
@@ -486,8 +487,8 @@ fn counter_label_tickets(n: usize) -> String {
     shelldeck_ui::ai_dock::tray_counter_tickets(n)
 }
 
-fn counter_label_jean(n: usize) -> String {
-    shelldeck_ui::ai_dock::tray_counter_jean(n)
+fn counter_label_monique(n: usize) -> String {
+    shelldeck_ui::ai_dock::tray_counter_monique(n)
 }
 
 fn counter_label_ai_tasks(n: usize) -> String {

@@ -1,3 +1,4 @@
+pub mod agent_console_view;
 mod ai_action_dialog;
 pub mod ai_assistant;
 pub mod ai_companion;
@@ -19,10 +20,10 @@ pub mod glyph_cache;
 pub mod i18n;
 pub mod icons;
 pub mod issue_attachments;
-pub mod jean_view;
 pub mod login_form;
 pub(crate) mod markdown;
 pub mod menu_bar;
+pub mod monique_view;
 pub(crate) mod monolith;
 pub mod onboarding_view;
 pub mod overlay;

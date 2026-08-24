@@ -63,7 +63,7 @@ pub enum MenuCommand {
     GoSites,
     GoRecent,
     GoFileEditor,
-    GoJean,
+    GoMonique,
     GoFleet,
     GoBextCloud,
     GoSupportRequests,
@@ -152,7 +152,7 @@ pub struct MenuBarContext {
     pub dev_capable: bool,
     pub sidebar_visible: bool,
     pub menu_bar_visible: bool,
-    pub has_jean: bool,
+    pub has_monique: bool,
     pub has_fleet: bool,
     pub ai_configured: bool,
 }
@@ -504,12 +504,12 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
         // so a super-admin sitting in User mode still sees them — but a
         // regular account never does, per `.agents/roles.md`.
         if ctx.dev_capable && dev {
-            if ctx.has_jean {
+            if ctx.has_monique {
                 go.push(
                     MenuEntry::command(
-                        "go-jean",
-                        t!("menu.go.jean").to_string(),
-                        MenuCommand::GoJean,
+                        "go-monique",
+                        t!("menu.go.monique").to_string(),
+                        MenuCommand::GoMonique,
                     )
                     .icon("bot"),
                 );
@@ -656,7 +656,7 @@ mod tests {
             dev_capable: mode == AppMode::Dev,
             sidebar_visible: true,
             menu_bar_visible: true,
-            has_jean: false,
+            has_monique: false,
             has_fleet: false,
             ai_configured: false,
         }
@@ -738,24 +738,24 @@ mod tests {
     }
 
     // SDTEST-1202 — the staff consoles are gated on *availability*, not just
-    // on Dev mode: a super-admin with no Jean config must not get a dead
-    // "JeanClaude" entry ("never display a mode the caller can't reach").
+    // on Dev mode: a super-admin with no Monique config must not get a dead
+    // console entry ("never display a mode the caller can't reach").
     #[test]
     fn staff_consoles_follow_availability_flags() {
         let mut c = ctx(AppMode::Dev, true);
         c.dev_capable = true;
-        c.has_jean = false;
+        c.has_monique = false;
         c.has_fleet = false;
         let cmds = commands(&menu_bar_spec(c));
-        assert!(!cmds.contains(&MenuCommand::GoJean));
+        assert!(!cmds.contains(&MenuCommand::GoMonique));
         assert!(!cmds.contains(&MenuCommand::GoFleet));
         // bext Cloud has no availability flag — it is Dev-capable-gated only.
         assert!(cmds.contains(&MenuCommand::GoBextCloud));
 
-        c.has_jean = true;
+        c.has_monique = true;
         c.has_fleet = true;
         let cmds = commands(&menu_bar_spec(c));
-        assert!(cmds.contains(&MenuCommand::GoJean));
+        assert!(cmds.contains(&MenuCommand::GoMonique));
         assert!(cmds.contains(&MenuCommand::GoFleet));
     }
 
@@ -796,7 +796,7 @@ mod tests {
         ] {
             let mut c = ctx(mode, signed_in);
             c.dev_capable = true;
-            c.has_jean = true;
+            c.has_monique = true;
             c.has_fleet = true;
             c.ai_configured = true;
 

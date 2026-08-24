@@ -18,7 +18,7 @@ pub enum ActivityKind {
     Script,
     Support,
     Issue,
-    Jean,
+    Monique,
     Fleet,
     Site,
     Bext,
@@ -39,7 +39,7 @@ pub enum ActivityAction {
     OpenTicket,
     OpenIssue,
     OpenSite,
-    OpenJean,
+    OpenMonique,
     OpenFleet,
     OpenBext,
 }

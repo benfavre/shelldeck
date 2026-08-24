@@ -153,7 +153,7 @@ impl Workspace {
                 self.user_home_tab = UserHomeTab::Sites;
                 cx.notify();
             }
-            ActivityAction::OpenJean => self.open_jean_console(cx),
+            ActivityAction::OpenMonique => self.open_monique_console(cx),
             ActivityAction::OpenFleet => self.open_fleet(cx),
             ActivityAction::OpenBext => self.open_bext_cloud(cx),
         }
@@ -194,6 +194,7 @@ impl Workspace {
                     this.sidebar.update(cx, |sidebar, _| {
                         sidebar.set_connections(this.connections.clone());
                     });
+                    this.refresh_agent_connections(cx);
                     let conn_name = conn.display_name().to_string();
                     this.add_activity_entry(
                         ActivityEntry::new(

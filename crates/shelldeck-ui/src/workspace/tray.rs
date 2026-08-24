@@ -81,7 +81,7 @@ impl Workspace {
     }
 
     /// Compute current tray counters + push into the publisher AND
-    /// fire OS notifications for positive deltas (new tickets, Jean
+    /// fire OS notifications for positive deltas (new tickets, Monique
     /// pending). SSH transport loss is emitted by the individual session
     /// lifecycle because a counter cannot distinguish expected exits. The
     /// first publish just seeds `last_tray_counters` without notifying — otherwise a
@@ -111,8 +111,8 @@ impl Workspace {
         } else {
             0
         };
-        let jean_pending = if signed_in {
-            self.runtime_awaiting.len()
+        let monique_pending = if signed_in {
+            self.monique_view.read(cx).pending_action_count()
         } else {
             0
         };
@@ -146,7 +146,7 @@ impl Workspace {
             active_ssh,
             open_tunnels,
             unread_tickets,
-            jean_pending,
+            monique_pending,
             ai_tasks_running,
             pinned_connections,
         };
@@ -161,9 +161,9 @@ impl Workspace {
                     count: counters.unread_tickets - prev.unread_tickets,
                 });
             }
-            if cfg.notify_jean_pending && counters.jean_pending > prev.jean_pending {
-                self.emit_tray_notification(TrayNotification::JeanPending {
-                    count: counters.jean_pending - prev.jean_pending,
+            if cfg.notify_monique_pending && counters.monique_pending > prev.monique_pending {
+                self.emit_tray_notification(TrayNotification::MoniquePending {
+                    count: counters.monique_pending - prev.monique_pending,
                 });
             }
         }

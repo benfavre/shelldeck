@@ -1,25 +1,24 @@
-//! Jean fleet supervision view.
+//! Native cockpit for the shared Automonique platform contract.
 //!
-//! The view keeps operational work prominent: local runtime controls and
-//! instances live in the left rail, while approvals and recent jobs use the
-//! larger right pane. The workspace remains responsible for all I/O.
+//! This view is deliberately presentation-only. The workspace performs typed
+//! client calls and returns attachments or leases; no provider or job runtime
+//! exists in ShellDeck.
 
-use adabraka_ui::components::alert::Alert;
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::components::toggle::{Toggle, ToggleSize};
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
-use adabraka_ui::overlays::sheet::{Sheet, SheetSize};
-use adabraka_ui::prelude::Markdown;
+use adabraka_ui::prelude::Alert;
 use gpui::prelude::*;
 use gpui::*;
-use std::ops::Range;
 
-use shelldeck_core::config::jean_fleet::{FleetSnapshot, JeanInstance, JeanJob};
+use shelldeck_core::config::platform::{
+    ActionResult, Attachment, ControlClaimResult, ControlLease, PaneStreamState, PlatformAction,
+    PlatformActionPreview, PlatformCockpitState, PlatformRefresh, PlatformSnapshot, PlatformText,
+    ResourceCoordinate, ResourceKind, ResourceRecord, SessionRecord,
+};
 
-use crate::i18n::rel_time;
 use crate::icons::lucide_icon;
-use crate::markdown::{markdown_link_popover, MarkdownLinkAction, MarkdownLinkHandler};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -27,186 +26,226 @@ use crate::theme::ShellDeckColors;
 #[derive(Debug, Clone)]
 pub enum FleetViewEvent {
     Refresh,
-    ToggleRuntime,
-    ApproveJob(String),
-    RejectJob(String),
+    Attach(ResourceCoordinate),
+    Detach(ResourceCoordinate),
+    ClaimControl(ResourceCoordinate),
+    ReleaseControl(ResourceCoordinate, ControlLease),
+    Execute(PlatformActionPreview),
 }
 
 impl EventEmitter<FleetViewEvent> for FleetView {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JobFilter {
-    All,
-    Awaiting,
-    Running,
-    Done,
-    Failed,
-}
-
-impl JobFilter {
-    const ALL: [Self; 5] = [
-        Self::All,
-        Self::Awaiting,
-        Self::Running,
-        Self::Done,
-        Self::Failed,
-    ];
-
-    fn label(self) -> String {
-        match self {
-            Self::All => t!("fleet.filter.all").to_string(),
-            Self::Awaiting => t!("fleet.filter.awaiting").to_string(),
-            Self::Running => t!("fleet.filter.running").to_string(),
-            Self::Done => t!("fleet.filter.done").to_string(),
-            Self::Failed => t!("fleet.filter.failed").to_string(),
-        }
-    }
-
-    fn matches(self, job: &JeanJob) -> bool {
-        match self {
-            Self::All => true,
-            Self::Awaiting => matches!(job.status.as_str(), "pending" | "claimed"),
-            Self::Running => job.status == "running",
-            Self::Done => job.status == "done",
-            Self::Failed => matches!(job.status.as_str(), "failed" | "cancelled"),
-        }
-    }
-}
-
 pub struct FleetView {
-    snapshot: FleetSnapshot,
-    /// This machine's registered instance id (to mark "cette machine").
-    my_id: Option<String>,
-    runtime_enabled: bool,
-    my_status: String,
-    awaiting: Vec<JeanJob>,
+    snapshot: Option<PlatformSnapshot>,
+    cockpit: PlatformCockpitState,
+    search_state: Entity<InputState>,
+    search_query: String,
+    selected_session: Option<String>,
+    pending_action: Option<PlatformActionPreview>,
+    refusal: Option<(String, String)>,
     loading: bool,
+    operation_busy: bool,
     error: Option<String>,
-    job_filter: JobFilter,
-    show_runtime_warning: bool,
-    job_detail_sheet: Option<Entity<Sheet>>,
-    markdown_link_action: Option<MarkdownLinkAction>,
-    markdown_font_size: Pixels,
 }
 
 impl FleetView {
-    pub fn new(_cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            snapshot: FleetSnapshot::default(),
-            my_id: None,
-            runtime_enabled: false,
-            my_status: t!("fleet.runtime.disabled").to_string(),
-            awaiting: Vec::new(),
+            snapshot: None,
+            cockpit: PlatformCockpitState::default(),
+            search_state: cx.new(InputState::new),
+            search_query: String::new(),
+            selected_session: None,
+            pending_action: None,
+            refusal: None,
             loading: false,
+            operation_busy: false,
             error: None,
-            job_filter: JobFilter::All,
-            show_runtime_warning: false,
-            job_detail_sheet: None,
-            markdown_link_action: None,
-            markdown_font_size: gpui::px(12.0),
         }
     }
 
-    pub fn set_snapshot(&mut self, snapshot: FleetSnapshot) {
-        self.snapshot = snapshot;
+    pub fn set_snapshot(&mut self, snapshot: PlatformSnapshot) {
+        self.snapshot = Some(snapshot);
+        self.cockpit.mark_online();
         self.loading = false;
         self.error = None;
     }
 
-    pub fn set_runtime(&mut self, enabled: bool, my_id: Option<String>, status: impl Into<String>) {
-        self.runtime_enabled = enabled;
-        self.my_id = my_id;
-        self.my_status = status.into();
-    }
-
-    pub fn set_awaiting(&mut self, awaiting: Vec<JeanJob>) {
-        self.awaiting = awaiting;
+    pub fn apply_refresh(&mut self, refresh: PlatformRefresh) {
+        for attachment in refresh.attachments {
+            self.cockpit.apply_attachment_refresh(attachment);
+        }
+        self.set_snapshot(refresh.snapshot);
     }
 
     pub fn set_loading(&mut self, loading: bool) {
         self.loading = loading;
     }
 
-    pub fn set_error(&mut self, msg: impl Into<String>) {
-        self.error = Some(msg.into());
+    pub fn set_error(&mut self, message: impl Into<String>) {
+        self.error = Some(message.into());
+        self.refusal = None;
+        self.cockpit.mark_offline();
         self.loading = false;
     }
 
-    /// Focus an exact job from a deep link, opening the same detail sheet as a
-    /// row click. Awaiting jobs are checked first because they may not yet be
-    /// present in the latest fleet snapshot.
-    pub fn open_job_by_id(&mut self, job_id: &str, cx: &mut Context<Self>) -> bool {
-        let job = self
-            .awaiting
-            .iter()
-            .find(|job| job.id == job_id)
-            .or_else(|| self.snapshot.jobs.iter().find(|job| job.id == job_id))
-            .cloned();
-        let Some(job) = job else {
+    pub fn set_operation_error(&mut self, message: impl Into<String>) {
+        self.error = Some(message.into());
+        self.refusal = None;
+        self.operation_busy = false;
+        self.loading = false;
+    }
+
+    pub fn begin_operation(&mut self) -> bool {
+        if self.operation_busy || self.loading {
             return false;
-        };
-        self.job_filter = JobFilter::All;
-        self.open_job_detail(job, cx);
+        }
+        self.operation_busy = true;
         true
     }
 
-    fn compact_filter_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
-        Button::new(id, label)
-            .size(ButtonSize::Sm)
-            .h(gpui::px(26.0))
-            .px(gpui::px(8.0))
+    pub fn can_refresh(&self) -> bool {
+        !self.operation_busy
     }
 
-    fn section_header(icon: &'static str, label: String, count: usize) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(px(8.0))
-            .px(px(14.0))
-            .py(px(10.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .min_w(px(0.0))
-                    .child(lucide_icon(icon, 15.0, ShellDeckColors::text_muted()))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(label),
-                    ),
-            )
-            .child(Badge::new(count.to_string()).variant(BadgeVariant::Secondary))
+    pub fn set_attached(&mut self, attachment: Attachment) {
+        if let Some(snapshot) = self.snapshot.as_mut() {
+            snapshot.view.track_attachment(&attachment);
+        }
+        self.selected_session = Some(attachment.session.id.as_str().to_owned());
+        self.cockpit.attach(attachment);
+        self.operation_busy = false;
+        self.refusal = None;
+        self.error = None;
     }
 
-    fn prompt_preview(prompt: &str) -> Div {
-        let preview = prompt
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .take(2)
-            .collect::<Vec<_>>()
-            .join(" ");
+    pub fn set_detached(&mut self, session: &ResourceCoordinate) {
+        if let Some(attachment) = self.cockpit.detach(session) {
+            if let Some(snapshot) = self.snapshot.as_mut() {
+                snapshot.view.forget_attachment(&attachment);
+            }
+        }
+        self.operation_busy = false;
+        self.refusal = None;
+        self.error = None;
+    }
 
-        div()
-            .min_w(px(0.0))
-            .overflow_hidden()
-            .line_clamp(2)
-            .text_size(px(12.0))
-            .text_color(ShellDeckColors::text_primary())
-            .child(preview)
+    pub fn set_control_lease(&mut self, lease: ControlLease) {
+        self.cockpit.set_lease(lease);
+        self.operation_busy = false;
+        self.refusal = None;
+        self.error = None;
+    }
+
+    pub fn set_control_claim_result(&mut self, result: ControlClaimResult) {
+        match result {
+            ControlClaimResult::Claimed(lease) => self.set_control_lease(lease),
+            ControlClaimResult::Refused {
+                outcome,
+                explanation,
+            } => {
+                self.refusal = Some((outcome.as_str().to_owned(), explanation.as_str().to_owned()));
+                self.error = None;
+                self.operation_busy = false;
+            }
+        }
+    }
+
+    pub fn set_control_released(&mut self, session: &ResourceCoordinate) {
+        self.cockpit.release_lease(session);
+        self.operation_busy = false;
+        self.refusal = None;
+        self.error = None;
+    }
+
+    pub fn set_action_result(&mut self, result: ActionResult) {
+        self.pending_action = None;
+        match result {
+            ActionResult::Receipt(receipt) => {
+                if let Some(snapshot) = self.snapshot.as_mut() {
+                    snapshot.view.apply_receipt(receipt);
+                    snapshot.resources = snapshot.view.resources().cloned().collect();
+                }
+                self.refusal = None;
+                self.error = None;
+            }
+            ActionResult::Refused {
+                outcome,
+                explanation,
+            } => {
+                self.refusal = Some((outcome.as_str().to_owned(), explanation.as_str().to_owned()));
+                self.error = None;
+            }
+        }
+        self.operation_busy = false;
+        self.loading = false;
+    }
+
+    pub fn attachments(&self) -> Vec<Attachment> {
+        self.cockpit.attachments().cloned().collect()
+    }
+
+    pub fn attachment(&self, session: &ResourceCoordinate) -> Option<Attachment> {
+        self.cockpit
+            .pane(session)
+            .map(|pane| pane.attachment.clone())
+    }
+
+    pub fn reset(&mut self) {
+        self.snapshot = None;
+        self.cockpit = PlatformCockpitState::default();
+        self.search_query.clear();
+        self.selected_session = None;
+        self.pending_action = None;
+        self.refusal = None;
+        self.loading = false;
+        self.operation_busy = false;
+        self.error = None;
+    }
+
+    pub fn open_session_by_id(&mut self, session_id: &str) -> bool {
+        let exists = self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot
+                .sessions
+                .iter()
+                .any(|session| session.session.resource.id.as_str() == session_id)
+        });
+        if exists {
+            self.selected_session = Some(session_id.to_owned());
+            if let Some(session) = self.snapshot.as_ref().and_then(|snapshot| {
+                snapshot
+                    .sessions
+                    .iter()
+                    .find(|session| session.session.resource.id.as_str() == session_id)
+            }) {
+                self.cockpit.select(&session.session.resource);
+            }
+        }
+        exists
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let stats = &self.snapshot.stats;
         let entity = cx.entity();
-
+        let (resources, sessions, models, receipts, methods) =
+            self.snapshot.as_ref().map_or((0, 0, 0, 0, 0), |snapshot| {
+                (
+                    snapshot.resources.len(),
+                    snapshot.sessions.len(),
+                    snapshot
+                        .resources
+                        .iter()
+                        .filter(|resource| resource.resource.kind == ResourceKind::Model)
+                        .count(),
+                    snapshot.view.receipts().len().max(
+                        snapshot
+                            .resources
+                            .iter()
+                            .filter(|resource| resource.resource.kind == ResourceKind::Receipt)
+                            .count(),
+                    ),
+                    snapshot.capabilities.methods.len(),
+                )
+            });
         div()
             .flex()
             .items_center()
@@ -220,867 +259,897 @@ impl FleetView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.0))
-                    .min_w(px(0.0))
+                    .gap(px(10.0))
                     .child(
                         div()
-                            .truncate()
                             .text_size(px(17.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(ShellDeckColors::text_primary())
                             .child(t!("fleet.title").to_string()),
                     )
-                    .child(
-                        div().flex().items_center().gap(px(6.0)).children([
-                            Badge::new(t!("fleet.metric.online", count = stats.online).to_string())
-                                .variant(BadgeVariant::Outline),
-                            Badge::new(
-                                t!("fleet.metric.awaiting", count = stats.pending).to_string(),
-                            )
-                            .variant(if stats.pending > 0 {
-                                BadgeVariant::Warning
-                            } else {
-                                BadgeVariant::Outline
-                            }),
-                            Badge::new(
-                                t!("fleet.metric.running", count = stats.running).to_string(),
-                            )
+                    .children([
+                        Badge::new(if self.cockpit.is_online() {
+                            t!("fleet.connection.online").to_string()
+                        } else {
+                            t!("fleet.connection.offline").to_string()
+                        })
+                        .variant(if self.cockpit.is_online() {
+                            BadgeVariant::Default
+                        } else {
+                            BadgeVariant::Destructive
+                        }),
+                        Badge::new(t!("fleet.metric.resources", count = resources).to_string())
                             .variant(BadgeVariant::Outline),
-                        ]),
-                    ),
+                        Badge::new(t!("fleet.metric.sessions", count = sessions).to_string())
+                            .variant(BadgeVariant::Outline),
+                        Badge::new(t!("fleet.metric.models", count = models).to_string())
+                            .variant(BadgeVariant::Secondary),
+                        Badge::new(t!("fleet.metric.receipts", count = receipts).to_string())
+                            .variant(BadgeVariant::Secondary),
+                        Badge::new(t!("fleet.metric.methods", count = methods).to_string())
+                            .variant(BadgeVariant::Outline),
+                    ]),
             )
             .child(
-                Button::new("fleet-refresh", t!("fleet.refresh").to_string())
+                Button::new("platform-refresh", t!("fleet.refresh").to_string())
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Sm)
                     .h(px(32.0))
                     .icon(IconSource::from("refresh-cw"))
                     .loading(self.loading)
-                    .tooltip(t!("fleet.refresh").to_string())
+                    .disabled(self.loading || self.operation_busy)
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |_this, cx| cx.emit(FleetViewEvent::Refresh));
                     }),
             )
     }
 
-    fn render_runtime_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let enabled = self.runtime_enabled;
-        let toggle_label = if enabled {
-            t!("fleet.runtime.disable").to_string()
-        } else {
-            t!("fleet.runtime.enable").to_string()
+    fn render_action_preview(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(preview) = self.pending_action.as_ref() else {
+            return div();
         };
-        let toggle_entity = cx.entity();
-        let warning_entity = cx.entity();
-
-        let mut panel = div()
+        let entity = cx.entity();
+        let confirm_entity = entity.clone();
+        let preview_for_event = preview.clone();
+        div()
             .flex()
-            .flex_col()
-            .gap(px(12.0))
-            .p(px(14.0))
+            .items_center()
+            .justify_between()
+            .gap(px(8.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::warning())
+            .bg(ShellDeckColors::warning().opacity(0.12))
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(
+                        t!(
+                            "fleet.action.preview",
+                            action = preview.action.as_str(),
+                            target = preview.target.id.as_str(),
+                            revision = preview
+                                .expected_revision
+                                .map_or_else(|| "?".to_string(), |value| value.to_string()),
+                            parameter =
+                                preview.parameter.as_ref().map_or("—", PlatformText::as_str)
+                        )
+                        .to_string(),
+                    ),
+            )
+            .child(
+                Button::new(
+                    "confirm-platform-action",
+                    t!("fleet.action.confirm").to_string(),
+                )
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Default)
+                .disabled(self.operation_busy)
+                .on_click(move |_, _, cx| {
+                    confirm_entity.update(cx, |_this, cx| {
+                        cx.emit(FleetViewEvent::Execute(preview_for_event.clone()));
+                    });
+                }),
+            )
+            .child(
+                Button::new(
+                    "cancel-platform-action",
+                    t!("fleet.action.cancel").to_string(),
+                )
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Ghost)
+                .disabled(self.operation_busy)
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.pending_action = None;
+                        cx.notify();
+                    });
+                }),
+            )
+    }
+
+    fn section_header(label: impl Into<SharedString>, count: usize) -> impl IntoElement {
+        let label: SharedString = label.into();
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px(px(14.0))
+            .py(px(9.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(
                 div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .min_w(px(0.0))
-                            .child(lucide_icon("cpu", 17.0, ShellDeckColors::primary()))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .min_w(px(0.0))
-                                    .gap(px(2.0))
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(13.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(ShellDeckColors::text_primary())
-                                            .child(t!("fleet.runtime.local_title").to_string()),
-                                    )
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(11.0))
-                                            .text_color(ShellDeckColors::text_muted())
-                                            .child(self.my_status.clone()),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        Button::new("fleet-runtime-info", "")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Icon)
-                            .w(px(28.0))
-                            .h(px(28.0))
-                            .icon(IconSource::from("info"))
-                            .tooltip(t!("fleet.runtime.safety_details").to_string())
-                            .on_click(move |_, _, cx| {
-                                warning_entity.update(cx, |this, cx| {
-                                    this.show_runtime_warning = !this.show_runtime_warning;
-                                    cx.notify();
-                                });
-                            }),
-                    ),
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(label),
             )
-            .child(
-                Toggle::new("fleet-runtime-toggle")
-                    .checked(enabled)
-                    .label(toggle_label)
-                    .size(ToggleSize::Sm)
-                    .on_click(move |_, _, cx| {
-                        toggle_entity
-                            .update(cx, |_this, cx| cx.emit(FleetViewEvent::ToggleRuntime));
-                    }),
-            );
-
-        if self.show_runtime_warning {
-            panel = panel.child(
-                Alert::warning()
-                    .title(t!("fleet.runtime.safety_title").to_string())
-                    .description(t!("fleet.runtime.warning").to_string())
-                    .p(px(12.0))
-                    .gap(px(8.0)),
-            );
-        }
-
-        panel
+            .child(Badge::new(count.to_string()).variant(BadgeVariant::Secondary))
     }
 
-    fn instance_status(status: &str) -> (&'static str, Hsla) {
-        match status {
-            "online" => ("fleet.status.online", ShellDeckColors::success()),
-            "busy" => ("fleet.status.busy", ShellDeckColors::warning()),
-            "offline" => ("fleet.status.offline", ShellDeckColors::error()),
-            _ => ("fleet.status.unknown", ShellDeckColors::text_muted()),
-        }
-    }
-
-    fn render_instance(&self, inst: &JeanInstance) -> impl IntoElement {
-        let is_me = self.my_id.as_deref() == Some(inst.id.as_str());
-        let (status_key, status_color) = Self::instance_status(&inst.status);
-        let scope = if let Some(label) = &inst.site_label {
-            format!("{} · {}", inst.tenant_name, label)
-        } else {
-            inst.tenant_name.clone()
+    fn render_resource(
+        &self,
+        resource: &ResourceRecord,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let freshness = resource.freshness.state.as_str();
+        let freshness_color = match freshness {
+            "fresh" => ShellDeckColors::success(),
+            "stale" => ShellDeckColors::warning(),
+            _ => ShellDeckColors::text_muted(),
         };
-        let heartbeat = if inst.last_seen_at > 0.0 {
-            rel_time(inst.last_seen_at)
-        } else {
-            t!("fleet.instance.never_seen").to_string()
-        };
-        let runtime_icon = if inst.is_shelldeck() {
-            "terminal"
-        } else {
-            "server"
-        };
-
-        div()
+        let mut row = div()
             .flex()
             .items_start()
-            .gap(px(10.0))
-            .w_full()
+            .gap(px(9.0))
             .px(px(12.0))
             .py(px(9.0))
             .border_b_1()
             .border_color(ShellDeckColors::border().opacity(0.65))
-            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-            .child(div().mt(px(2.0)).flex_shrink_0().child(lucide_icon(
-                runtime_icon,
-                16.0,
-                status_color,
-            )))
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .gap(px(5.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .min_w(px(0.0))
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .text_size(px(13.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(inst.name.clone()),
-                            )
-                            .children(if is_me {
-                                Some(
-                                    Badge::new(t!("fleet.instance.this_machine").to_string())
-                                        .variant(BadgeVariant::Default)
-                                        .text_size(px(10.0))
-                                        .px(px(7.0)),
-                                )
-                            } else {
-                                None
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .flex_wrap()
-                            .gap(px(5.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(5.0))
-                                    .text_size(px(11.0))
-                                    .text_color(status_color)
-                                    .child(div().size(px(6.0)).rounded_full().bg(status_color))
-                                    .child(t!(status_key).to_string()),
-                            )
-                            .child(
-                                Badge::new(inst.runtime.clone())
-                                    .variant(BadgeVariant::Outline)
-                                    .text_size(px(10.0))
-                                    .px(px(7.0)),
-                            )
-                            .children((!inst.model.trim().is_empty()).then(|| {
-                                Badge::new(inst.model.clone())
-                                    .variant(BadgeVariant::Outline)
-                                    .text_size(px(10.0))
-                                    .px(px(7.0))
-                            }))
-                            .child(
-                                Badge::new(inst.autonomy.clone())
-                                    .variant(BadgeVariant::Secondary)
-                                    .text_size(px(10.0))
-                                    .px(px(7.0)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(format!("{} · {}", scope, heartbeat)),
-                    ),
-            )
-    }
-
-    fn render_instances(&self) -> impl IntoElement {
-        let mut instances: Vec<&JeanInstance> = self.snapshot.instances.iter().collect();
-        instances.sort_by_key(|instance| {
-            let is_me = self.my_id.as_deref() == Some(instance.id.as_str());
-            let status_rank = match instance.status.as_str() {
-                "busy" => 0,
-                "online" => 1,
-                "offline" => 3,
-                _ => 2,
-            };
-            (!is_me, status_rank)
-        });
-
-        let mut list = div()
-            .id("fleet-instances-scroll")
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col();
-        if instances.is_empty() {
-            list = list.child(
-                div()
-                    .px(px(14.0))
-                    .py(px(18.0))
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("fleet.instances.empty").to_string()),
-            );
-        } else {
-            for instance in instances {
-                list = list.child(self.render_instance(instance));
-            }
-        }
-        list
-    }
-
-    fn render_left_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .w(px(330.0))
-            .min_w(px(280.0))
-            .max_w(px(360.0))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .min_h(px(0.0))
-            .border_r_1()
-            .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_sidebar())
-            .child(self.render_runtime_panel(cx))
-            .child(Self::section_header(
-                "server",
-                t!("fleet.instances.section").to_string(),
-                self.snapshot.instances.len(),
-            ))
-            .child(self.render_instances())
-    }
-
-    fn render_awaiting(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        if self.awaiting.is_empty() {
-            return None;
-        }
-
-        let mut list = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .px(px(14.0))
-            .pb(px(12.0));
-        for job in &self.awaiting {
-            let approve_id = job.id.clone();
-            let reject_id = job.id.clone();
-            let approve_entity = cx.entity();
-            let reject_entity = cx.entity();
-            list = list.child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(px(10.0))
-                    .w_full()
-                    .min_w(px(0.0))
-                    .p(px(10.0))
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(ShellDeckColors::warning().opacity(0.55))
-                    .bg(ShellDeckColors::warning().opacity(0.08))
-                    .child(div().flex_shrink_0().mt(px(2.0)).child(lucide_icon(
-                        "circle-alert",
-                        16.0,
-                        ShellDeckColors::warning(),
-                    )))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .child(Self::prompt_preview(&job.prompt))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(10.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(
-                                        t!(
-                                            "fleet.awaiting.source",
-                                            source = job.source.as_str(),
-                                            requested_by = job.requested_by.as_str()
-                                        )
-                                        .to_string(),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                Button::new(
-                                    ElementId::from(SharedString::from(format!(
-                                        "fleet-exec-{approve_id}"
-                                    ))),
-                                    t!("fleet.awaiting.execute").to_string(),
-                                )
-                                .size(ButtonSize::Sm)
-                                .h(px(30.0))
-                                .icon(IconSource::from("check"))
-                                .on_click(move |_, _, cx| {
-                                    approve_entity.update(cx, |_this, cx| {
-                                        cx.emit(FleetViewEvent::ApproveJob(approve_id.clone()))
-                                    });
-                                }),
-                            )
-                            .child(
-                                Button::new(
-                                    ElementId::from(SharedString::from(format!(
-                                        "fleet-reject-{reject_id}"
-                                    ))),
-                                    t!("fleet.awaiting.reject").to_string(),
-                                )
-                                .variant(ButtonVariant::Outline)
-                                .size(ButtonSize::Sm)
-                                .h(px(30.0))
-                                .icon(IconSource::from("x"))
-                                .on_click(move |_, _, cx| {
-                                    reject_entity.update(cx, |_this, cx| {
-                                        cx.emit(FleetViewEvent::RejectJob(reject_id.clone()))
-                                    });
-                                }),
-                            ),
-                    ),
-            );
-        }
-
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .border_b_1()
-                .border_color(ShellDeckColors::border())
-                .child(Self::section_header(
-                    "shield-check",
-                    t!("fleet.awaiting.title").to_string(),
-                    self.awaiting.len(),
-                ))
-                .child(list),
-        )
-    }
-
-    fn job_status(job: &JeanJob) -> (&'static str, BadgeVariant, Hsla) {
-        match job.status.as_str() {
-            "pending" => (
-                "fleet.job.pending",
-                BadgeVariant::Warning,
-                ShellDeckColors::warning(),
-            ),
-            "claimed" => (
-                "fleet.job.claimed",
-                BadgeVariant::Warning,
-                ShellDeckColors::warning(),
-            ),
-            "running" => (
-                "fleet.job.running",
-                BadgeVariant::Default,
-                ShellDeckColors::primary(),
-            ),
-            "done" => (
-                "fleet.job.done",
-                BadgeVariant::Outline,
-                ShellDeckColors::success(),
-            ),
-            "failed" => (
-                "fleet.job.failed",
-                BadgeVariant::Destructive,
-                ShellDeckColors::error(),
-            ),
-            "cancelled" => (
-                "fleet.job.cancelled",
-                BadgeVariant::Secondary,
-                ShellDeckColors::text_muted(),
-            ),
-            _ => (
-                "fleet.status.unknown",
-                BadgeVariant::Secondary,
-                ShellDeckColors::text_muted(),
-            ),
-        }
-    }
-
-    fn open_job_detail(&mut self, job: JeanJob, cx: &mut Context<Self>) {
-        let title = t!("fleet.job.detail.title").to_string();
-        let description = format!("{} · {}", job.source, rel_time(job.updated_at));
-        let detail_job = job.clone();
-        let fleet = cx.entity().downgrade();
-        let link_fleet = fleet.clone();
-        let markdown_font_size = self.markdown_font_size;
-        self.job_detail_sheet = Some(cx.new(move |sheet_cx| {
-            let link_handler: MarkdownLinkHandler = std::rc::Rc::new(move |url, window, cx| {
-                let Some(action) = MarkdownLinkAction::new(url, window.mouse_position()) else {
-                    return;
-                };
-                if let Some(fleet) = link_fleet.upgrade() {
-                    fleet.update(cx, |this, cx| {
-                        this.markdown_link_action = Some(action);
-                        cx.notify();
-                    });
-                }
-            });
-            Sheet::new(sheet_cx)
-                .size(SheetSize::Lg)
-                .title(title)
-                .description(description)
-                .dynamic_content(move || {
-                    Self::render_job_detail_content(
-                        &detail_job,
-                        link_handler.clone(),
-                        markdown_font_size,
-                    )
-                })
-                .on_close(move |_window, cx| {
-                    if let Some(fleet) = fleet.upgrade() {
-                        fleet.update(cx, |this, cx| {
-                            this.job_detail_sheet = None;
-                            cx.notify();
-                        });
-                    }
-                })
-        }));
-        cx.notify();
-    }
-
-    fn detail_field(label: String, value: String) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .min_w(px(0.0))
-            .gap(px(3.0))
-            .child(
-                div()
-                    .text_size(px(10.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(label),
-            )
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(value),
-            )
-    }
-
-    fn markdown_block(
-        text: String,
-        link_handler: MarkdownLinkHandler,
-        base_font_size: Pixels,
-    ) -> impl IntoElement {
-        Markdown::new(text)
-            .base_font_size(base_font_size)
-            .compact()
-            .on_link_click(move |url, window, cx| link_handler(url, window, cx))
-            .w_full()
-            .min_w(px(0.0))
-            .whitespace_normal()
-    }
-
-    fn render_job_detail_content(
-        job: &JeanJob,
-        link_handler: MarkdownLinkHandler,
-        markdown_font_size: Pixels,
-    ) -> impl IntoElement {
-        let (status_key, status_variant, _) = Self::job_status(job);
-        let no_result = t!("fleet.job.detail.no_result").to_string();
-        let result = job
-            .result
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .unwrap_or(&no_result)
-            .to_string();
-
-        div()
-            .id("fleet-job-detail-scroll")
-            .size_full()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(px(18.0))
-            .p(px(20.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(Badge::new(t!(status_key).to_string()).variant(status_variant))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(rel_time(job.updated_at)),
-                    ),
-            )
-            .child(
-                div()
-                    .grid()
-                    .grid_cols(2)
-                    .gap(px(14.0))
-                    .child(Self::detail_field(
-                        t!("fleet.job.detail.source").to_string(),
-                        job.source.clone(),
-                    ))
-                    .child(Self::detail_field(
-                        t!("fleet.job.detail.requested_by").to_string(),
-                        job.requested_by.clone(),
-                    ))
-                    .child(Self::detail_field(
-                        t!("fleet.job.detail.instance").to_string(),
-                        job.instance_id.clone(),
-                    ))
-                    .child(Self::detail_field(
-                        t!("fleet.job.detail.identifier").to_string(),
-                        job.id.clone(),
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("fleet.job.detail.prompt").to_string()),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .p(px(12.0))
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(ShellDeckColors::border())
-                            .bg(ShellDeckColors::bg_surface())
-                            .child(Self::markdown_block(
-                                job.prompt.clone(),
-                                link_handler.clone(),
-                                markdown_font_size,
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("fleet.job.detail.result").to_string()),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .p(px(12.0))
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(ShellDeckColors::border())
-                            .bg(ShellDeckColors::bg_surface())
-                            .child(Self::markdown_block(
-                                result,
-                                link_handler,
-                                markdown_font_size,
-                            )),
-                    ),
-            )
-    }
-
-    fn render_job(&self, job: &JeanJob, cx: &mut Context<Self>) -> impl IntoElement {
-        let (status_key, status_variant, status_color) = Self::job_status(job);
-        let job_for_detail = job.clone();
-        let metadata = if job.requested_by.is_empty() {
-            job.source.clone()
-        } else {
-            format!("{} · {}", job.source, job.requested_by)
-        };
-
-        div()
-            .id(ElementId::from(SharedString::from(format!(
-                "fleet-job-{}",
-                job.id
-            ))))
-            .w_full()
-            .min_w(px(0.0))
-            .flex()
-            .items_start()
-            .gap(px(10.0))
-            .px(px(14.0))
-            .py(px(10.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border().opacity(0.65))
-            .cursor_pointer()
-            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.open_job_detail(job_for_detail.clone(), cx);
-            }))
             .child(
                 div()
                     .mt(px(4.0))
                     .size(px(7.0))
                     .rounded_full()
-                    .flex_shrink_0()
-                    .bg(status_color),
+                    .bg(freshness_color),
             )
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.0))
-                    .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .gap(px(6.0))
-                    .child(Self::prompt_preview(&job.prompt).font_weight(FontWeight::MEDIUM))
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(resource.summary.as_str().to_owned()),
+                    )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(7.0))
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(div().flex_shrink_0().child(
-                                Badge::new(t!(status_key).to_string()).variant(status_variant),
-                            ))
-                            .child(div().flex_1().min_w(px(0.0)).truncate().child(metadata)),
+                            .gap(px(6.0))
+                            .child(
+                                Badge::new(resource.resource.kind.as_str().to_owned())
+                                    .variant(BadgeVariant::Outline),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(10.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(format!(
+                                        "{} · {} · rev {}",
+                                        resource.resource.authority.as_str(),
+                                        resource.resource.id.as_str(),
+                                        resource.freshness.revision.get()
+                                    )),
+                            ),
                     ),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(rel_time(job.updated_at)),
+            );
+        if resource.resource.kind == ResourceKind::Approval
+            && resource.freshness.state.as_str() == "fresh"
+            && resource.summary.as_str().starts_with("state=pending")
+        {
+            let entity = cx.entity();
+            let approve_entity = entity.clone();
+            let approve_target = resource.resource.clone();
+            let deny_target = resource.resource.clone();
+            let revision = resource.freshness.revision;
+            row = row
+                .child(
+                    Button::new(
+                        ElementId::from(SharedString::from(format!(
+                            "approve-{}",
+                            resource.resource.id.as_str()
+                        ))),
+                        t!("fleet.approval.grant").to_string(),
                     )
-                    .child(lucide_icon("ellipsis", 15.0, ShellDeckColors::text_muted())),
-            )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Default)
+                    .disabled(self.operation_busy || self.pending_action.is_some())
+                    .on_click(move |_, _, cx| {
+                        approve_entity.update(cx, |this, cx| {
+                            this.pending_action = Some(PlatformActionPreview {
+                                action: PlatformAction::DecideApproval,
+                                target: approve_target.clone(),
+                                expected_revision: Some(revision),
+                                parameter: PlatformText::new("grant").ok(),
+                            });
+                            cx.notify();
+                        });
+                    }),
+                )
+                .child(
+                    Button::new(
+                        ElementId::from(SharedString::from(format!(
+                            "deny-{}",
+                            resource.resource.id.as_str()
+                        ))),
+                        t!("fleet.approval.deny").to_string(),
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Outline)
+                    .disabled(self.operation_busy || self.pending_action.is_some())
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.pending_action = Some(PlatformActionPreview {
+                                action: PlatformAction::DecideApproval,
+                                target: deny_target.clone(),
+                                expected_revision: Some(revision),
+                                parameter: PlatformText::new("deny").ok(),
+                            });
+                            cx.notify();
+                        });
+                    }),
+                );
+        }
+        row
     }
 
-    fn render_job_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut filters = div()
+    fn render_resources(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let resources = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.resources.as_slice())
+            .unwrap_or_default();
+        let mut list = div()
+            .id("platform-resources")
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
             .flex()
-            .items_center()
-            .flex_wrap()
-            .gap(px(6.0))
+            .flex_col();
+        if resources.is_empty() {
+            list = list.child(
+                div()
+                    .p(px(16.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("fleet.resources.empty").to_string()),
+            );
+        } else {
+            for resource in resources {
+                list = list.child(self.render_resource(resource, cx));
+            }
+        }
+        if let Some(snapshot) = self.snapshot.as_ref() {
+            let receipts = snapshot.view.receipts().collect::<Vec<_>>();
+            if !receipts.is_empty() {
+                list = list.child(Self::section_header(
+                    t!("fleet.receipts.section").to_string(),
+                    receipts.len(),
+                ));
+                for receipt in receipts {
+                    list = list.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .border_b_1()
+                            .border_color(ShellDeckColors::border().opacity(0.65))
+                            .child(Badge::new(receipt.outcome.as_str().to_owned()).variant(
+                                match receipt.outcome {
+                                    shelldeck_core::config::platform::ReceiptOutcome::Completed => {
+                                        BadgeVariant::Default
+                                    }
+                                    shelldeck_core::config::platform::ReceiptOutcome::Accepted => {
+                                        BadgeVariant::Warning
+                                    }
+                                    _ => BadgeVariant::Destructive,
+                                },
+                            ))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_size(px(10.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(format!(
+                                        "{} · {} · {}",
+                                        receipt.action.as_str(),
+                                        receipt.target.id.as_str(),
+                                        receipt.id.as_str()
+                                    )),
+                            ),
+                    );
+                }
+            }
+        }
+        list
+    }
+
+    fn render_session(&self, session: &SessionRecord, cx: &mut Context<Self>) -> impl IntoElement {
+        let coordinate = &session.session.resource;
+        let key = resource_key(coordinate);
+        let pane = self.cockpit.pane(coordinate);
+        let attached = pane.is_some();
+        let lease = pane.and_then(|pane| pane.lease.as_ref());
+        let selected = self.selected_session.as_deref() == Some(coordinate.id.as_str());
+        let entity = cx.entity();
+        let select_id = coordinate.id.as_str().to_owned();
+        let session_coordinate = coordinate.clone();
+        let observe_coordinate = coordinate.clone();
+        let observe_entity = entity.clone();
+        let control_coordinate = coordinate.clone();
+        let control_entity = entity.clone();
+        let mut row = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "platform-session-{}",
+                coordinate.id.as_str()
+            ))))
+            .w_full()
+            .flex()
+            .items_start()
+            .gap(px(10.0))
             .px(px(14.0))
-            .py(px(8.0))
+            .py(px(11.0))
             .border_b_1()
-            .border_color(ShellDeckColors::border());
-        for filter in JobFilter::ALL {
-            let entity = cx.entity();
-            filters = filters.child(
-                Self::compact_filter_button(
-                    ElementId::from(SharedString::from(format!("fleet-filter-{filter:?}"))),
-                    filter.label(),
+            .border_color(ShellDeckColors::border().opacity(0.65))
+            .when(selected, |row| {
+                row.bg(ShellDeckColors::primary().opacity(0.08))
+            })
+            .cursor_pointer()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| {
+                    this.selected_session = Some(select_id.clone());
+                    this.cockpit.select(&session_coordinate);
+                    cx.notify();
+                });
+            })
+            .child(lucide_icon(
+                "messages-square",
+                16.0,
+                if attached {
+                    ShellDeckColors::success()
+                } else {
+                    ShellDeckColors::text_muted()
+                },
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(session.session.summary.as_str().to_owned()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                Badge::new(if attached {
+                                    t!("fleet.session.attached").to_string()
+                                } else {
+                                    t!("fleet.session.observed").to_string()
+                                })
+                                .variant(if attached {
+                                    BadgeVariant::Default
+                                } else {
+                                    BadgeVariant::Outline
+                                }),
+                            )
+                            .children(lease.map(|lease| {
+                                Badge::new(
+                                    t!(
+                                        "fleet.session.control",
+                                        expiry = lease.expires_at.as_millis()
+                                    )
+                                    .to_string(),
+                                )
+                                .variant(BadgeVariant::Warning)
+                            }))
+                            .children(pane.and_then(|pane| {
+                                (pane.unread > 0).then(|| {
+                                    Badge::new(
+                                        t!("fleet.session.unread", count = pane.unread).to_string(),
+                                    )
+                                    .variant(BadgeVariant::Default)
+                                })
+                            }))
+                            .children(pane.and_then(|pane| {
+                                pane.control_lost.then(|| {
+                                    Badge::new(t!("fleet.session.control_lost").to_string())
+                                        .variant(BadgeVariant::Destructive)
+                                })
+                            }))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(10.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(coordinate.id.as_str().to_owned()),
+                            ),
+                    ),
+            );
+
+        if session.attachable {
+            row = row.child(
+                Button::new(
+                    ElementId::from(SharedString::from(format!("observe-{key}"))),
+                    if attached {
+                        t!("fleet.session.detach").to_string()
+                    } else {
+                        t!("fleet.session.attach").to_string()
+                    },
                 )
                 .variant(ButtonVariant::Outline)
-                .selected(self.job_filter == filter)
+                .size(ButtonSize::Sm)
+                .disabled(self.operation_busy)
                 .on_click(move |_, _, cx| {
-                    entity.update(cx, |this, cx| {
-                        this.job_filter = filter;
-                        cx.notify();
+                    observe_entity.update(cx, |_this, cx| {
+                        if attached {
+                            cx.emit(FleetViewEvent::Detach(observe_coordinate.clone()));
+                        } else {
+                            cx.emit(FleetViewEvent::Attach(observe_coordinate.clone()));
+                        }
                     });
                 }),
             );
         }
-        filters
-    }
-
-    fn render_jobs(&self, cx: &mut Context<Self>) -> AnyElement {
-        let filtered_count = self
-            .snapshot
-            .jobs
-            .iter()
-            .filter(|job| self.job_filter.matches(job))
-            .count();
-        if filtered_count == 0 {
-            div()
-                .id("fleet-jobs-empty")
-                .flex_1()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(8.0))
-                .p(px(24.0))
-                .child(lucide_icon("clock", 24.0, ShellDeckColors::text_muted()))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("fleet.jobs.empty_filter").to_string()),
+        if session.controllable && attached {
+            let lease_for_event = lease.cloned();
+            row = row.child(
+                Button::new(
+                    ElementId::from(SharedString::from(format!("control-{key}"))),
+                    if lease.is_some() {
+                        t!("fleet.session.release").to_string()
+                    } else {
+                        t!("fleet.session.claim").to_string()
+                    },
                 )
-                .into_any_element()
-        } else {
-            uniform_list(
-                "fleet-jobs-list",
-                filtered_count,
-                cx.processor(|this, range: Range<usize>, _window, cx| {
-                    let filtered_indices = this
-                        .snapshot
-                        .jobs
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, job)| this.job_filter.matches(job))
-                        .map(|(index, _)| index)
-                        .collect::<Vec<_>>();
-                    range
-                        .filter_map(|index| filtered_indices.get(index).copied())
-                        .filter_map(|index| this.snapshot.jobs.get(index))
-                        .map(|job| this.render_job(job, cx).into_any_element())
-                        .collect::<Vec<_>>()
+                .variant(if lease.is_some() {
+                    ButtonVariant::Outline
+                } else {
+                    ButtonVariant::Default
+                })
+                .size(ButtonSize::Sm)
+                .disabled(self.operation_busy)
+                .on_click(move |_, _, cx| {
+                    control_entity.update(cx, |_this, cx| {
+                        if let Some(lease) = lease_for_event.clone() {
+                            cx.emit(FleetViewEvent::ReleaseControl(
+                                control_coordinate.clone(),
+                                lease,
+                            ));
+                        } else {
+                            cx.emit(FleetViewEvent::ClaimControl(control_coordinate.clone()));
+                        }
+                    });
                 }),
-            )
-            .flex_1()
-            .min_h(px(0.0))
-            .w_full()
-            .into_any_element()
-        }
-    }
-
-    fn render_jobs_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut pane = div()
-            .flex_1()
-            .min_w(px(0.0))
-            .min_h(px(0.0))
-            .flex()
-            .flex_col()
-            .child(self.render_job_filters(cx));
-
-        if let Some(awaiting) = self.render_awaiting(cx) {
-            pane = pane.child(awaiting);
-        }
-        if let Some(error) = &self.error {
-            pane = pane.child(
-                div().px(px(14.0)).pt(px(10.0)).child(
-                    Alert::error()
-                        .title(t!("fleet.error.title").to_string())
-                        .description(error.clone()),
-                ),
             );
         }
+        row
+    }
 
-        pane.child(Self::section_header(
-            "activity",
-            t!("fleet.jobs.section").to_string(),
-            self.snapshot.jobs.len(),
-        ))
-        .child(self.render_jobs(cx))
+    fn render_sessions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let query = self.search_query.trim().to_ascii_lowercase();
+        let sessions = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .sessions
+                    .iter()
+                    .filter(|session| {
+                        query.is_empty()
+                            || session
+                                .session
+                                .resource
+                                .id
+                                .as_str()
+                                .to_ascii_lowercase()
+                                .contains(&query)
+                            || session
+                                .session
+                                .summary
+                                .as_str()
+                                .to_ascii_lowercase()
+                                .contains(&query)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut list = div()
+            .id("platform-sessions")
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col();
+        if sessions.is_empty() {
+            list = list.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.0))
+                    .p(px(24.0))
+                    .child(lucide_icon(
+                        "messages-square",
+                        24.0,
+                        ShellDeckColors::text_muted(),
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("fleet.sessions.empty").to_string()),
+                    ),
+            );
+        } else {
+            for session in sessions {
+                list = list.child(self.render_session(session, cx));
+            }
+        }
+        list
+    }
+
+    fn render_session_search(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        Input::new(&self.search_state)
+            .size(InputSize::Sm)
+            .placeholder(t!("fleet.sessions.search").to_string())
+            .clearable(true)
+            .prefix(
+                svg()
+                    .path("icons/lucide/search.svg")
+                    .size(px(12.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+            .on_change({
+                let entity = cx.entity();
+                move |value, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.search_query = value.to_string();
+                        cx.notify();
+                    });
+                }
+            })
+    }
+
+    fn render_pane_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let mut tabs = div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .id("platform-pane-tabs")
+            .overflow_x_scroll();
+        if self.cockpit.panes().len() == 0 {
+            return tabs.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("fleet.panes.empty").to_string()),
+            );
+        }
+        for pane in self.cockpit.panes() {
+            let coordinate = pane.attachment.session.clone();
+            let label = coordinate.id.as_str().to_owned();
+            let selected = self
+                .cockpit
+                .selected()
+                .is_some_and(|selected| selected.attachment.session == coordinate);
+            let tab_entity = entity.clone();
+            let mut tab = Button::new(
+                ElementId::from(SharedString::from(format!("pane-{label}"))),
+                if pane.unread > 0 {
+                    format!("{label} ({})", pane.unread)
+                } else {
+                    label
+                },
+            )
+            .size(ButtonSize::Sm)
+            .variant(if selected {
+                ButtonVariant::Default
+            } else {
+                ButtonVariant::Outline
+            });
+            tab = tab.on_click(move |_, _, cx| {
+                tab_entity.update(cx, |this, cx| {
+                    this.selected_session = Some(coordinate.id.as_str().to_owned());
+                    this.cockpit.select(&coordinate);
+                    cx.notify();
+                });
+            });
+            tabs = tabs.child(tab);
+        }
+        tabs
+    }
+
+    fn render_selected_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(pane) = self.cockpit.selected() else {
+            return div().p(px(12.0));
+        };
+        let session = &pane.attachment.session;
+        let stream_label = match pane.stream {
+            PaneStreamState::Live => t!("fleet.pane.live").to_string(),
+            PaneStreamState::Resynchronized => t!("fleet.pane.resynchronized").to_string(),
+            PaneStreamState::Offline => t!("fleet.pane.offline").to_string(),
+            PaneStreamState::Error => t!("fleet.pane.error").to_string(),
+        };
+        let stream_variant = match pane.stream {
+            PaneStreamState::Live => BadgeVariant::Default,
+            PaneStreamState::Resynchronized => BadgeVariant::Warning,
+            PaneStreamState::Offline | PaneStreamState::Error => BadgeVariant::Destructive,
+        };
+        let session_record = self.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .sessions
+                .iter()
+                .find(|record| record.session.resource == *session)
+        });
+        let run = session_record.and_then(|record| record.run.as_ref());
+        let entity = cx.entity();
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .px(px(12.0))
+            .py(px(10.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(Badge::new(stream_label).variant(stream_variant))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(format!(
+                                "{} · cursor {}",
+                                session.id.as_str(),
+                                pane.attachment.cursor.sequence.get()
+                            )),
+                    ),
+            );
+        if let Some(lease) = pane.lease.as_ref() {
+            content = content.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::warning())
+                    .child(
+                        t!(
+                            "fleet.pane.controller_self",
+                            expiry = lease.expires_at.as_millis()
+                        )
+                        .to_string(),
+                    ),
+            );
+        } else if pane.control_lost {
+            content = content.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::error())
+                    .child(t!("fleet.pane.controller_lost").to_string()),
+            );
+        }
+        if let Some(run) = run {
+            let revision = self
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.view.resource(run))
+                .map(|resource| resource.freshness.revision);
+            if self.pending_action.is_none() && pane.lease.is_some() {
+                let target = run.clone();
+                content = content.child(
+                    Button::new("preview-stop-run", t!("fleet.action.stop_run").to_string())
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Outline)
+                        .disabled(self.operation_busy)
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.pending_action = Some(PlatformActionPreview {
+                                    action: PlatformAction::StopRun,
+                                    target: target.clone(),
+                                    expected_revision: revision,
+                                    parameter: None,
+                                });
+                                cx.notify();
+                            });
+                        }),
+                );
+            }
+        }
+        if let Some(snapshot) = self.snapshot.as_ref() {
+            let receipts = snapshot
+                .view
+                .receipts()
+                .filter(|receipt| {
+                    receipt.target == *session || run.is_some_and(|run| receipt.target == *run)
+                })
+                .collect::<Vec<_>>();
+            if !receipts.is_empty() {
+                content = content.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.0))
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_primary())
+                                .child(t!("fleet.receipts.section").to_string()),
+                        )
+                        .children(receipts.into_iter().map(|receipt| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(
+                                    Badge::new(receipt.outcome.as_str().to_owned()).variant(
+                                        match receipt.outcome {
+                                            shelldeck_core::config::platform::ReceiptOutcome::Completed => {
+                                                BadgeVariant::Default
+                                            }
+                                            shelldeck_core::config::platform::ReceiptOutcome::Accepted => {
+                                                BadgeVariant::Warning
+                                            }
+                                            _ => BadgeVariant::Destructive,
+                                        },
+                                    ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(10.0))
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(format!(
+                                            "{} · {} · rev {}",
+                                            receipt.action.as_str(),
+                                            receipt.id.as_str(),
+                                            receipt.revision.get()
+                                        )),
+                                )
+                        })),
+                );
+            }
+        }
+        content
     }
 }
 
+fn resource_key(resource: &ResourceCoordinate) -> String {
+    format!(
+        "{}:{}:{}",
+        resource.authority.as_str(),
+        resource.kind.as_str(),
+        resource.id.as_str()
+    )
+}
+
 impl Render for FleetView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.markdown_font_size = px(12.0).to_pixels(window.rem_size());
-        let mut root = div()
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let resource_count = self
+            .snapshot
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.resources.len());
+        let session_count = self
+            .snapshot
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.sessions.len());
+        let mut content = div()
+            .flex_1()
+            .min_h(px(0.0))
+            .min_w(px(0.0))
+            .flex()
+            .child(
+                div()
+                    .w(px(380.0))
+                    .min_w(px(300.0))
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .border_r_1()
+                    .border_color(ShellDeckColors::border())
+                    .bg(ShellDeckColors::bg_sidebar())
+                    .child(Self::section_header(
+                        t!("fleet.resources.section").to_string(),
+                        resource_count,
+                    ))
+                    .child(self.render_resources(cx)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(Self::section_header(
+                        t!("fleet.sessions.section").to_string(),
+                        session_count,
+                    ))
+                    .child(
+                        div()
+                            .px(px(10.0))
+                            .py(px(8.0))
+                            .border_b_1()
+                            .border_color(ShellDeckColors::border())
+                            .child(self.render_session_search(cx)),
+                    )
+                    .child(self.render_pane_tabs(cx))
+                    .child(self.render_selected_pane(cx))
+                    .child(self.render_sessions(cx)),
+            );
+        if let Some(error) = &self.error {
+            content = content.child(
+                div()
+                    .absolute()
+                    .left(px(16.0))
+                    .right(px(16.0))
+                    .bottom(px(16.0))
+                    .child(
+                        Alert::error()
+                            .title(t!("fleet.error.title").to_string())
+                            .description(error.clone()),
+                    ),
+            );
+        }
+        if let Some((outcome, explanation)) = &self.refusal {
+            content = content.child(
+                div()
+                    .absolute()
+                    .left(px(16.0))
+                    .right(px(16.0))
+                    .bottom(px(16.0))
+                    .child(
+                        Alert::error()
+                            .title(t!("fleet.action.refused", outcome = outcome).to_string())
+                            .description(explanation.clone()),
+                    ),
+            );
+        }
+        div()
+            .relative()
             .size_full()
             .min_w(px(0.0))
             .min_h(px(0.0))
@@ -1088,28 +1157,7 @@ impl Render for FleetView {
             .flex_col()
             .bg(ShellDeckColors::bg_primary())
             .child(self.render_header(cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .min_h(px(0.0))
-                    .flex()
-                    .child(self.render_left_rail(cx))
-                    .child(self.render_jobs_pane(cx)),
-            );
-
-        if let Some(sheet) = &self.job_detail_sheet {
-            root = root.child(sheet.clone());
-        }
-        if let Some(action) = self.markdown_link_action.clone() {
-            let parent = cx.entity();
-            root = root.child(markdown_link_popover(action, move |cx| {
-                parent.update(cx, |this, cx| {
-                    this.markdown_link_action = None;
-                    cx.notify();
-                });
-            }));
-        }
-        root
+            .child(self.render_action_preview(cx))
+            .child(content)
     }
 }

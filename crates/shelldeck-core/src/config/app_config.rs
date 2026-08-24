@@ -34,15 +34,10 @@ pub struct AppConfig {
     /// table out of the file entirely when logged out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<AccountInfo>,
-    /// Local `[jeanclaude]` override (url/user/pass). When set, takes precedence
-    /// over the server-delivered config (e.g. to point at an SSH tunnel on
-    /// 127.0.0.1). Absent → use the server-delivered config.
+    /// Local `[monique]` dashboard override. When absent, signed-in
+    /// super-admins use the configuration delivered by Inklura Manage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub jeanclaude: Option<crate::config::jeanclaude::JeanConfig>,
-    /// `[jean_runtime]` — whether this machine hosts a Jean fleet runtime.
-    /// `#[serde(default)]` keeps older configs parsing; `enabled` defaults false.
-    #[serde(default)]
-    pub jean_runtime: crate::config::jean_fleet::JeanRuntimeConfig,
+    pub monique: Option<crate::config::monique::MoniqueConfig>,
     /// `[bext_cloud]` — connection to the cloud.bext.dev control plane. Empty
     /// token = not connected; `#[serde(default)]` keeps older configs parsing.
     #[serde(default)]
@@ -254,9 +249,9 @@ pub struct TrayConfig {
     pub close_to_tray: bool,
     /// Show an OS notification when new unread support tickets arrive.
     pub notify_new_tickets: bool,
-    /// Show an OS notification when Jean fleet jobs need user
+    /// Show an OS notification when Monique fleet jobs need user
     /// confirmation.
-    pub notify_jean_pending: bool,
+    pub notify_monique_pending: bool,
     /// Show an OS notification when previously-active SSH sessions
     /// drop.
     pub notify_ssh_disconnect: bool,
@@ -276,7 +271,7 @@ impl Default for TrayConfig {
             // is to catch state changes while the window is hidden.
             // Users can mute any category from Settings → Général.
             notify_new_tickets: true,
-            notify_jean_pending: true,
+            notify_monique_pending: true,
             notify_ssh_disconnect: true,
             notify_fleet_done: true,
             notify_ai_tasks: true,
@@ -663,10 +658,12 @@ global_palette_shortcut_enabled = true
         config.cloud_sync.sync_on_startup = false;
 
         config.save_to(&path).expect("save_to");
+        let serialized = std::fs::read_to_string(&path).expect("saved config");
+        assert!(!serialized.contains("sd_secret"));
         let loaded = AppConfig::load_from(&path).expect("load_from");
 
         assert!(loaded.cloud_sync.enabled);
-        assert_eq!(loaded.cloud_sync.token, "sd_secret");
+        assert!(loaded.cloud_sync.token.is_empty());
         assert_eq!(loaded.cloud_sync.base_url, "https://example.test");
         assert!(!loaded.cloud_sync.sync_on_startup);
 
@@ -711,97 +708,26 @@ global_palette_shortcut_enabled = true
     }
 
     #[test]
-    fn jeanclaude_override_round_trips_and_omits_when_unset() {
-        use crate::config::jeanclaude::JeanConfig;
-        let path = temp_path("config.toml");
+    // SDTEST-1666
+    fn monique_override_round_trips_and_omits_when_unset() {
+        use crate::config::monique::MoniqueConfig;
 
-        // Unset: no [jeanclaude] table emitted, reloads None.
-        AppConfig::default().save_to(&path).expect("save");
-        let serialized = std::fs::read_to_string(&path).unwrap();
-        assert!(!serialized.contains("[jeanclaude]"));
-        assert!(AppConfig::load_from(&path).unwrap().jeanclaude.is_none());
-
-        // Set: round-trips the local override.
-        let cfg = AppConfig {
-            jeanclaude: Some(JeanConfig {
-                url: "http://127.0.0.1:3100".into(),
-                user: "jean".into(),
-                pass: "x".into(),
-            }),
-            ..Default::default()
-        };
-        cfg.save_to(&path).expect("save");
-        let loaded = AppConfig::load_from(&path)
-            .unwrap()
-            .jeanclaude
-            .expect("present");
-        assert_eq!(loaded.url, "http://127.0.0.1:3100");
-        assert_eq!(loaded.user, "jean");
-
-        std::fs::remove_dir_all(path.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn jean_runtime_round_trips_and_defaults_off() {
-        let path = temp_path("config.toml");
-
-        // Default: enabled=false, no instance id.
-        AppConfig::default().save_to(&path).expect("save");
-        let loaded = AppConfig::load_from(&path).expect("load");
-        assert!(!loaded.jean_runtime.enabled);
-        assert!(loaded.jean_runtime.instance_id.is_none());
-        assert_eq!(
-            loaded.jean_runtime.executor.rollout,
-            crate::config::jean_fleet::JeanRuntimeExecutorRollout::Jcode
-        );
-        assert_eq!(loaded.jean_runtime.executor.timeout_seconds, 30 * 60);
-        assert!(loaded.jean_runtime.executor.fallback_to_claude);
-        assert_eq!(
-            loaded.jean_runtime.executor.transport,
-            crate::config::jean_fleet::JcodeTransportPreference::Process
-        );
-
-        // Round-trip a registered runtime.
+        let path = temp_path("shelldeck.toml");
         let mut cfg = AppConfig::default();
-        cfg.jean_runtime.enabled = true;
-        cfg.jean_runtime.instance_id = Some("4365eee9".to_string());
-        cfg.jean_runtime.workdir = Some("/home/x/infra".to_string());
-        cfg.jean_runtime.executor.provider = Some("openai-api".to_string());
-        cfg.jean_runtime.executor.model = Some("gpt-5.5".to_string());
-        cfg.jean_runtime.executor.tool_profile = Some("minimal".to_string());
-        cfg.jean_runtime.executor.binary = Some("/usr/local/bin/jcode".to_string());
-        cfg.jean_runtime.executor.transport =
-            crate::config::jean_fleet::JcodeTransportPreference::Acp;
-        cfg.jean_runtime.executor.timeout_seconds = 42;
-        cfg.save_to(&path).expect("save");
-        let loaded = AppConfig::load_from(&path).expect("load");
-        assert!(loaded.jean_runtime.enabled);
-        assert_eq!(loaded.jean_runtime.instance_id.as_deref(), Some("4365eee9"));
-        assert_eq!(
-            loaded.jean_runtime.workdir.as_deref(),
-            Some("/home/x/infra")
-        );
-        assert_eq!(
-            loaded.jean_runtime.executor.provider.as_deref(),
-            Some("openai-api")
-        );
-        assert_eq!(
-            loaded.jean_runtime.executor.model.as_deref(),
-            Some("gpt-5.5")
-        );
-        assert_eq!(
-            loaded.jean_runtime.executor.tool_profile.as_deref(),
-            Some("minimal")
-        );
-        assert_eq!(
-            loaded.jean_runtime.executor.binary.as_deref(),
-            Some("/usr/local/bin/jcode")
-        );
-        assert_eq!(
-            loaded.jean_runtime.executor.transport,
-            crate::config::jean_fleet::JcodeTransportPreference::Acp
-        );
-        assert_eq!(loaded.jean_runtime.executor.timeout_seconds, 42);
+        cfg.save_to(&path).unwrap();
+        let serialized = std::fs::read_to_string(&path).unwrap();
+        assert!(!serialized.contains("[monique]"));
+
+        cfg.monique = Some(MoniqueConfig {
+            url: "https://monique.example".into(),
+            user: "ops".into(),
+            pass: "secret".into(),
+        });
+        cfg.save_to(&path).unwrap();
+        let loaded = AppConfig::load_from(&path).unwrap().monique.unwrap();
+        assert_eq!(loaded.url, "https://monique.example");
+        assert_eq!(loaded.user, "ops");
+        assert_eq!(loaded.pass, "secret");
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
@@ -996,9 +922,8 @@ ui_font_size = 14.0
 
         // Session state that must be OFF on first run
         assert!(cfg.account.is_none());
-        assert!(cfg.jeanclaude.is_none());
+        assert!(cfg.monique.is_none());
         assert!(!cfg.cloud_sync.enabled);
-        assert!(!cfg.jean_runtime.enabled);
         assert!(!cfg.bext_cloud.is_connected());
         assert!(!cfg.companion.start_hidden);
     }

@@ -18,7 +18,7 @@ const KIND_FILTERS: &[ActivityKind] = &[
     ActivityKind::Support,
     ActivityKind::Issue,
     ActivityKind::Site,
-    ActivityKind::Jean,
+    ActivityKind::Monique,
     ActivityKind::Fleet,
     ActivityKind::Bext,
     ActivityKind::Error,
@@ -89,7 +89,7 @@ impl RecentView {
             ActivityKind::Script => t!("recent.kind.script").to_string(),
             ActivityKind::Support => t!("recent.kind.support").to_string(),
             ActivityKind::Issue => t!("recent.kind.issue").to_string(),
-            ActivityKind::Jean => t!("recent.kind.jean").to_string(),
+            ActivityKind::Monique => t!("recent.kind.monique").to_string(),
             ActivityKind::Fleet => t!("recent.kind.fleet").to_string(),
             ActivityKind::Site => t!("recent.kind.site").to_string(),
             ActivityKind::Bext => t!("recent.kind.bext").to_string(),
@@ -105,7 +105,7 @@ impl RecentView {
             ActivityKind::Script => "scroll-text",
             ActivityKind::Support => "mail",
             ActivityKind::Issue => "inbox",
-            ActivityKind::Jean => "cpu",
+            ActivityKind::Monique => "cpu",
             ActivityKind::Fleet => "box",
             ActivityKind::Site => "globe",
             ActivityKind::Bext => "cloud",
@@ -119,7 +119,7 @@ impl RecentView {
             ActivityKind::Forward | ActivityKind::Site | ActivityKind::Bext => {
                 ShellDeckColors::primary()
             }
-            ActivityKind::Script | ActivityKind::Jean | ActivityKind::Fleet => {
+            ActivityKind::Script | ActivityKind::Monique | ActivityKind::Fleet => {
                 ShellDeckColors::warning()
             }
             ActivityKind::Support | ActivityKind::Issue => ShellDeckColors::primary_hover(),

@@ -283,8 +283,8 @@ pub(crate) fn assistant_action_acknowledgement(action: &AiAssistantAction) -> St
         AiAssistantAction::SupportReply { .. } => {
             t!("ai.assistant.support_reply_ready").to_string()
         }
-        AiAssistantAction::JeanDispatch { .. } => {
-            t!("ai.assistant.jean_dispatch_ready").to_string()
+        AiAssistantAction::MoniqueDispatch { .. } => {
+            t!("ai.assistant.monique_dispatch_ready").to_string()
         }
         AiAssistantAction::OpenRequest { .. } => t!("ai.assistant.request_opening").to_string(),
     }
