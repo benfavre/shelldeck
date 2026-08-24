@@ -280,6 +280,7 @@ Existing: **0 tests**.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-260 | `platform.rs::endpoint_is_canonical_and_https_only` | SDUC-200 | Green | HTTPS origin is normalized to the canonical platform path; embedded credentials and cleartext remotes are refused. |
+| SDTEST-1692 | `platform.rs::sdtest_1692_explicit_manage_endpoint_preserves_its_namespaced_route` | SDUC-200 | Green | An explicit HTTPS endpoint preserves Manage's namespaced Automonique route and rejects query-bearing route selectors. |
 | SDTEST-261 | `platform.rs::client_identity_is_stable_bounded_and_typed` | SDUC-201 | Green | Desktop identity is validated by the shared opaque ID type. |
 | SDTEST-264 | shared SDK `https_transport_carries_the_canonical_frame_and_redacts_the_bearer` | SDUC-200, SDUC-208 | Green | Canonical body, bearer header, response correlation and secret-safe diagnostics are covered at the shared boundary. |
 | SDTEST-272 | workspace source audit | SDUC-206, SDUC-476 | Green | No runtime configuration, direct provider executor, job claim loop, or handwritten platform response model remains. |
