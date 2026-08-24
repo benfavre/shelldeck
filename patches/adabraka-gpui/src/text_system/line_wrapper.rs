@@ -181,7 +181,9 @@ impl LineWrapper {
         matches!(c, '\u{0400}'..='\u{04FF}') ||
         // Some other known special characters that should be treated as word characters,
         // e.g. `a-b`, `var_name`, `I'm`, '@mention`, `#hashtag`, `100%`, `3.1415`, `2^3`, `a~b`, etc.
-        matches!(c, '-' | '_' | '.' | '\'' | '$' | '%' | '@' | '#' | '^' | '~' | ',' | '!' | ';' | '*') ||
+        // ShellDeck patch: SDPATCH-115 — a French typographic apostrophe joins
+        // both sides of an elision just like the ASCII apostrophe already did.
+        matches!(c, '-' | '_' | '.' | '\'' | '’' | '$' | '%' | '@' | '#' | '^' | '~' | ',' | '!' | ';' | '*') ||
         // Characters that used in URL, e.g. `https://github.com/zed-industries/zed?a=1&b=2` for better wrapping a long URL.
         matches!(c,  '/' | ':' | '?' | '&' | '=') ||
         // `⋯` character is special used in Zed, to keep this at the end of the line.
@@ -649,6 +651,13 @@ mod tests {
         assert_word("#hashtag");
         assert_word("$variable");
         assert_word("more⋯");
+
+        // ShellDeck patch: SDPATCH-115 — keep frequent French elisions on the
+        // same wrapping token instead of starting a line with U+2019.
+        assert_word("l’échange");
+        assert_word("d’ici");
+        assert_word("qu’importe");
+        assert_word("n’importe");
 
         // Space
         assert_not_word("foo bar");

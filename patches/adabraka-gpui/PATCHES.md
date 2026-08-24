@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **114**
+Total markers in code: **129**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -461,6 +461,23 @@ only, out of the src/-scoped marker convention.)
   border, distortion or preprocessed bitmap required.
 - **Upstream status**: not filed yet; suitable for a focused GPUI image-rendering
   bug report and PR.
+
+### SDPATCH-115 — Typographic apostrophes stay inside French words
+
+- **Files / symbols**:
+  - `src/text_system/line_wrapper.rs` — `LineWrapper::is_word_char`,
+    `tests::test_is_word_char`
+- **Markers** (2 markers):
+  - `src/text_system/line_wrapper.rs` — `// ShellDeck patch: SDPATCH-115 — a French typographic apostrophe joins`
+  - `src/text_system/line_wrapper.rs` — `// ShellDeck patch: SDPATCH-115 — keep frequent French elisions on the`
+- **Why**: The wrapper treated ASCII `'` as part of a word but classified the
+  French typographic apostrophe `U+2019` as punctuation. It therefore selected
+  the apostrophe itself as a wrap boundary and rendered lines beginning with
+  `’échange` or `’importe`. Treating both apostrophe forms alike keeps common
+  elisions (`l’`, `d’`, `qu’`, `n’`) indivisible without changing CJK or general
+  punctuation wrapping.
+- **Upstream status**: not filed yet; suitable for a focused text-wrapping bug
+  report and PR.
 
 ## Preserved files (do not overwrite on sync)
 
