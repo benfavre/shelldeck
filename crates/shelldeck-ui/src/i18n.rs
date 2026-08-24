@@ -129,7 +129,7 @@ mod tests {
         );
     }
 
-    /// SDTEST-1671 — reste dans le scénario bilingue unique : la locale est
+    /// SDTEST-1704 — reste dans le scénario bilingue unique : la locale est
     /// globale au processus et ne doit jamais être modifiée par deux tests en
     /// parallèle.
     fn assert_operational_vocabulary_is_localized(

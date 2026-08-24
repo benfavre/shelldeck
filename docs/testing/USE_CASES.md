@@ -1426,7 +1426,7 @@ in the source key. The interpolation contract survives locale
 switches; a key without `%{…}` placeholders ignores extra vars
 without erroring.
 
-### SDUC-470 — Operational vocabulary stays localized and consistent
+### SDUC-482 — Operational vocabulary stays localized and consistent
 
 Server-owned ticket statuses, request statuses, and priorities never appear as
 raw protocol tokens when a newer value reaches an older ShellDeck client; an
@@ -1942,9 +1942,9 @@ announced count. The home also exposes up to four actionable tickets ordered by
 SLA risk, urgency, missing owner, then recency, plus the four most recently
 updated visible requests; selecting either kind opens its real detail.
 Operational lists remain separate tabs. The first-run tour that follows a
-sign-in is role-aware in its own right — see SDUC-469.
+sign-in is role-aware in its own right — see SDUC-481.
 
-### SDUC-469 — The first-run tour is built for the mode the account lands in
+### SDUC-481 — The first-run tour is built for the mode the account lands in
 
 The post-login tour is three sequences, not one. The run is chosen from the
 mode the account actually lands in (`Workspace::effective_mode`): User gets
@@ -2418,7 +2418,11 @@ authority. Automonique is the built-in launch profile (`automonique acp`).
 
 - **2026-08-24** — Added SDUC-480 and SDTEST-1693/1694 for the stable ACP v1
   client host and fail-closed permission boundary.
-- **2026-08-24** — Added SDUC-470 and SDTEST-1671 for the NAV-06/D-05 UX
+- **2026-08-24** — Renumbered the integrated onboarding and UX repair entries
+  after parallel work allocated the same IDs: they now use SDUC-481/482 and
+  SDTEST-1695..1704. The existing terminal, motion, Manage, and ACP entries
+  retain SDUC-477..480 and SDTEST-1687..1694 as sticky IDs.
+- **2026-08-24** — Added SDUC-482 and SDTEST-1704 for the NAV-06/D-05 UX
   repair: unknown operational values no longer leak protocol English, live
   status counters are explicit and inflected, and Server Sync / Recent
   Activity keep one name across navigation surfaces.
@@ -2514,7 +2518,7 @@ authority. Automonique is the built-in launch profile (`automonique acp`).
   Requests share one bounded proportional master column and switch to explicit
   master/detail navigation on narrow windows. Empty details remain contained
   and side-effect-free rather than auto-selecting an arbitrary record.
-- **2026-08-21** — Added SDUC-469 and SDTEST-1662..1665, and amended SDUC-440,
+- **2026-08-21** — Added SDUC-481 and SDTEST-1695..1698, and amended SDUC-440,
   for the role-aware first-run tour. The single four-step sequence became three
   runs chosen from the effective mode, the shortcuts slide became a strip on the
   last slide, and the mode slide is appended only for an account that can
