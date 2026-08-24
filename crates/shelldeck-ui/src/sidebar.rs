@@ -1360,7 +1360,7 @@ mod tests {
                 "{excluded:?} is a destination, not a rail activity"
             );
         }
-        // SDTEST-1669 — un panneau ne se justifie que s'il montre ce que sa
+        // SDTEST-1694 — un panneau ne se justifie que s'il montre ce que sa
         // propre vue ne montre pas. Cinq activités affichaient la liste que la
         // vue rendait déjà juste à côté ; la liste ci-dessous est donc close et
         // toute addition doit être argumentée dans `has_panel`.

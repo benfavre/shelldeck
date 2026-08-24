@@ -3331,7 +3331,7 @@ mod tests {
         }
     }
 
-    /// SDTEST-1668 — aucun échec d'enregistrement ne doit atteindre l'écran
+    /// SDTEST-1693 — aucun échec d'enregistrement ne doit atteindre l'écran
     /// sous forme de `Debug` Rust.
     ///
     /// L'onglet Général affichait littéralement
@@ -3339,7 +3339,7 @@ mod tests {
     /// milieu, dès qu'une autre application détenait déjà la combinaison — le
     /// cas courant, pas une anomalie.
     #[test]
-    fn sdtest_1668_shortcut_failures_are_classified_never_dumped() {
+    fn sdtest_1693_shortcut_failures_are_classified_never_dumped() {
         use super::ShortcutFailure;
 
         assert_eq!(

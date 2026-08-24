@@ -1423,7 +1423,7 @@ in the source key. The interpolation contract survives locale
 switches; a key without `%{…}` placeholders ignores extra vars
 without erroring.
 
-### SDUC-470 — Operational vocabulary stays localized and consistent
+### SDUC-478 — Operational vocabulary stays localized and consistent
 
 Server-owned ticket statuses, request statuses, and priorities never appear as
 raw protocol tokens when a newer value reaches an older ShellDeck client; an
@@ -1939,9 +1939,9 @@ announced count. The home also exposes up to four actionable tickets ordered by
 SLA risk, urgency, missing owner, then recency, plus the four most recently
 updated visible requests; selecting either kind opens its real detail.
 Operational lists remain separate tabs. The first-run tour that follows a
-sign-in is role-aware in its own right — see SDUC-469.
+sign-in is role-aware in its own right — see SDUC-477.
 
-### SDUC-469 — The first-run tour is built for the mode the account lands in
+### SDUC-477 — The first-run tour is built for the mode the account lands in
 
 The post-login tour is three sequences, not one. The run is chosen from the
 mode the account actually lands in (`Workspace::effective_mode`): User gets
@@ -2368,7 +2368,14 @@ once the network returns.
 
 ## Change log
 
-- **2026-08-24** — Added SDUC-470 and SDTEST-1671 for the NAV-06/D-05 UX
+- **2026-08-24** — Renumbered the `dev` side of an ID collision after merging
+  `main` (0.9.0) back into `dev`. Both branches had independently allocated
+  SDUC-469/470 and the whole SDTEST-1662..1671 block while they were diverged,
+  so `dev`'s entries moved to SDUC-477/478 and SDTEST-1687..1696; `main` keeps
+  the originals. IDs stay sticky from here — the collision came from four days
+  of parallel allocation, not from a reuse. Still duplicated *inside* `main` and
+  left untouched here: SDUC-468 and SDTEST-1200..1203/1377/1655/1656.
+- **2026-08-24** — Added SDUC-478 and SDTEST-1696 for the NAV-06/D-05 UX
   repair: unknown operational values no longer leak protocol English, live
   status counters are explicit and inflected, and Server Sync / Recent
   Activity keep one name across navigation surfaces.
@@ -2460,7 +2467,7 @@ once the network returns.
   Requests share one bounded proportional master column and switch to explicit
   master/detail navigation on narrow windows. Empty details remain contained
   and side-effect-free rather than auto-selecting an arbitrary record.
-- **2026-08-21** — Added SDUC-469 and SDTEST-1662..1665, and amended SDUC-440,
+- **2026-08-21** — Added SDUC-477 and SDTEST-1687..1690, and amended SDUC-440,
   for the role-aware first-run tour. The single four-step sequence became three
   runs chosen from the effective mode, the shortcuts slide became a strip on the
   last slide, and the mode slide is appended only for an account that can
