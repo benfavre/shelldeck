@@ -681,7 +681,7 @@ mod tests {
     use super::{OnboardingStep, OnboardingView};
     use shelldeck_core::config::cloud_account::AppMode;
 
-    /// Every slide the tour can show. SDTEST-1690 keeps this honest against
+    /// Every slide the tour can show. SDTEST-1697 keeps this honest against
     /// the enum.
     const ALL_STEPS: [OnboardingStep; 15] = [
         OnboardingStep::UserWelcome,
@@ -714,7 +714,7 @@ mod tests {
             .collect()
     }
 
-    /// SDTEST-1687 — SDUC-477.
+    /// SDTEST-1694 — SDUC-477.
     ///
     /// The whole decision in one table: the run follows the mode the account
     /// *lands in*, while the closing modes slide follows what the account can
@@ -722,7 +722,7 @@ mod tests {
     /// User mode gets the User run and the Dev-accented modes slide — which is
     /// the pairing a per-mode-only test would miss.
     #[test]
-    fn sdtest_1687_the_run_follows_the_mode_and_the_modes_slide_follows_capability() {
+    fn sdtest_1694_the_run_follows_the_mode_and_the_modes_slide_follows_capability() {
         let cases: [(AppMode, &[AppMode], &[&str]); 5] = [
             // A customer has one mode, so nothing tells them modes exist.
             (
@@ -817,7 +817,7 @@ mod tests {
         }
     }
 
-    /// SDTEST-1688 — SDUC-477.
+    /// SDTEST-1695 — SDUC-477.
     ///
     /// Every slide must resolve the copy it asks for. `rust_i18n` renders a
     /// missing key as the key itself, so a typo in `key()`/`bullets()` or a
@@ -829,7 +829,7 @@ mod tests {
     /// Resolving under the ambient locale proves the key exists; SDTEST-1302
     /// already proves `fr.toml` and `en.toml` declare the same keys.
     #[test]
-    fn sdtest_1688_every_slide_resolves_its_copy() {
+    fn sdtest_1695_every_slide_resolves_its_copy() {
         for step in ALL_STEPS {
             let prefix = step.key();
             let mut keys = vec![
@@ -867,14 +867,14 @@ mod tests {
         }
     }
 
-    /// SDTEST-1689 — SDUC-477.
+    /// SDTEST-1696 — SDUC-477.
     ///
     /// A slide's artwork renders only if `main.rs` both embeds it
     /// (`include_bytes!`) and lists it (`Assets::list`). Neither is checked by
     /// the compiler: an unregistered path makes the image load fail silently,
     /// leaving an empty hero zone that nothing else would catch.
     #[test]
-    fn sdtest_1689_every_slide_asset_is_embedded_and_listed() {
+    fn sdtest_1696_every_slide_asset_is_embedded_and_listed() {
         let main_rs = include_str!("../../shelldeck/src/main.rs");
         for step in ALL_STEPS {
             let asset = step.media_asset().expect("every slide ships artwork");
@@ -889,13 +889,13 @@ mod tests {
         }
     }
 
-    /// SDTEST-1690 — SDUC-477.
+    /// SDTEST-1697 — SDUC-477.
     ///
     /// `ALL_STEPS` drives the two tests above, so it must not drift from the
     /// enum: the union of every reachable run has to account for all fifteen
     /// slides, and no slide may be unreachable.
     #[test]
-    fn sdtest_1690_runs_cover_every_slide() {
+    fn sdtest_1697_runs_cover_every_slide() {
         let mut seen: Vec<OnboardingStep> = Vec::new();
         for allowed in [REGULAR, SUPPORT, SUPERADMIN] {
             for mode in [AppMode::User, AppMode::Support, AppMode::Dev] {

@@ -878,10 +878,10 @@ Successful runs retain the provider's opaque conversation ID in memory, so a
 follow-up resumes only when provider, target, permissions, workdir, and model
 still match exactly. Changing any of them starts a fresh provider session, and
 the operator can always choose “Nouvelle session” explicitly. Session IDs are
-never shared across local and SSH targets or persisted by ShellDeck.
-The control bar uses explicit scale-aware rows, and the prompt composer keeps
-one centered frame with one visible execution action from narrow windows to
-wide desktop layouts.
+never shared across local and SSH targets or persisted by ShellDeck. The
+control bar uses explicit scale-aware rows, and the prompt composer keeps one
+centered frame with one visible execution action from narrow windows to wide
+desktop layouts.
 
 ---
 
@@ -892,7 +892,10 @@ wide desktop layouts.
 ### SDUC-200 — Canonical remote contract
 
 The desktop uses `automonique-platform-client` and the shared protocol types;
-the exact canonical frame travels over authenticated HTTPS.
+the exact canonical frame travels over authenticated HTTPS. When AI Operations
+is the authentication and federation boundary, an explicit HTTPS endpoint
+preserves Manage's namespaced route instead of assuming the direct Automonique
+`/api/platform` path.
 
 ### SDUC-201 — Native session cockpit
 
@@ -2374,24 +2377,28 @@ once the network returns.
 
 ## Change log
 
-- **2026-08-24** — Renumbered the `dev` side of an ID collision after merging
-  `main` (0.9.0) back into `dev`. Both branches had independently allocated
-  SDUC-469/470 and the whole SDTEST-1662..1671 block while they were diverged,
-  so `dev`'s entries moved to SDUC-477/478 and SDTEST-1687..1696; `main` keeps
-  the originals. IDs stay sticky from here — the collision came from four days
-  of parallel allocation, not from a reuse. Still duplicated *inside* `main` and
-  left untouched here: SDUC-468 and SDTEST-1200..1203/1377/1655/1656.
-- **2026-08-24** — Added SDUC-478 and SDTEST-1696 for the NAV-06/D-05 UX
-  repair: unknown operational values no longer leak protocol English, live
-  status counters are explicit and inflected, and Server Sync / Recent
-  Activity keep one name across navigation surfaces.
 - **2026-08-24** — Amended SDUC-475 with the agent console's responsive chrome
   contract: explicit scale-aware control rows and one centered prompt frame
-  with one visible execution action.
+  with one visible execution action (SDTEST-1704).
 - **2026-08-24** — Amended SDUC-432 after both full-window attachment surfaces
   were found repainting all four floating-window corners: the lightbox and
   capture annotator now own the common radius and deliberately drop it when
   maximized.
+- **2026-08-24** — Enforced SDUC-201's ambiguous-mutation contract with a
+  retained idempotency key, immediate receipt reconciliation, and an exact-key
+  retry path (SDTEST-1693).
+- **2026-08-24** — Amended SDUC-200 and added SDTEST-1692 for explicit,
+  namespaced Manage federation endpoints.
+- **2026-08-24** — Reconciled the `dev` test IDs while porting its work onto
+  canonical `main`. The branch had already moved its colliding use cases to
+  SDUC-477/478; because `main` subsequently allocated SDTEST-1692/1693, the
+  ported ten-test block now occupies SDTEST-1694..1703. IDs stay sticky from
+  here. Still duplicated *inside* earlier `main` history and left untouched:
+  SDUC-468 and SDTEST-1200..1203/1377/1655/1656.
+- **2026-08-24** — Added SDUC-478 and SDTEST-1703 for the NAV-06/D-05 UX
+  repair: unknown operational values no longer leak protocol English, live
+  status counters are explicit and inflected, and Server Sync / Recent
+  Activity keep one name across navigation surfaces.
 - **2026-08-23** — Amended SDUC-201 and SDUC-476 for cursor-based steady-state
   refresh, exact attachment cursors, searchable multi-pane observation,
   reconnect-safe lease loss, approval/run previews, typed ownership refusals,
@@ -2403,6 +2410,11 @@ once the network returns.
   console (Claude Code, Codex, DeepSeek via Jcode), including explicit target,
   access confirmation, resumable same-context turns, streaming output, and
   cancellation.
+
+- **2026-08-24** — Added SDUC-470 and SDTEST-1671 for the NAV-06/D-05 UX
+  repair: unknown operational values no longer leak protocol English, live
+  status counters are explicit and inflected, and Server Sync / Recent
+  Activity keep one name across navigation surfaces.
 - **2026-08-20** — Amended SDUC-468: the mention wash became a padded, rounded
   chip (SDPATCH-041 on the gpui fork, where a run background was a bare
   full-line-height rect), and quoted turns — recent threads and the history
@@ -2479,7 +2491,7 @@ once the network returns.
   Requests share one bounded proportional master column and switch to explicit
   master/detail navigation on narrow windows. Empty details remain contained
   and side-effect-free rather than auto-selecting an arbitrary record.
-- **2026-08-21** — Added SDUC-477 and SDTEST-1687..1690, and amended SDUC-440,
+- **2026-08-21** — Added SDUC-477 and SDTEST-1694..1697, and amended SDUC-440,
   for the role-aware first-run tour. The single four-step sequence became three
   runs chosen from the effective mode, the shortcuts slide became a strip on the
   last slide, and the mode slide is appended only for an account that can

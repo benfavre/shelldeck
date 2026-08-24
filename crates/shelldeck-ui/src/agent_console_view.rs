@@ -1050,9 +1050,9 @@ mod tests {
         }
     }
 
-    // SDTEST-1697 — SDUC-475
+    // SDTEST-1704 — SDUC-475
     #[test]
-    fn sdtest_1697_agent_controls_use_scale_aware_explicit_rows() {
+    fn sdtest_1704_agent_controls_use_scale_aware_explicit_rows() {
         assert_eq!(
             agent_controls_layout(gpui::px(959.0), gpui::px(16.0)),
             AgentControlsLayout::Compact

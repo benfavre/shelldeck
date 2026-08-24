@@ -280,6 +280,7 @@ Existing: **0 tests**.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-260 | `platform.rs::endpoint_is_canonical_and_https_only` | SDUC-200 | Green | HTTPS origin is normalized to the canonical platform path; embedded credentials and cleartext remotes are refused. |
+| SDTEST-1692 | `platform.rs::sdtest_1692_explicit_manage_endpoint_preserves_its_namespaced_route` | SDUC-200 | Green | An explicit HTTPS endpoint preserves Manage's namespaced Automonique route and rejects query-bearing route selectors. |
 | SDTEST-261 | `platform.rs::client_identity_is_stable_bounded_and_typed` | SDUC-201 | Green | Desktop identity is validated by the shared opaque ID type. |
 | SDTEST-264 | shared SDK `https_transport_carries_the_canonical_frame_and_redacts_the_bearer` | SDUC-200, SDUC-208 | Green | Canonical body, bearer header, response correlation and secret-safe diagnostics are covered at the shared boundary. |
 | SDTEST-272 | workspace source audit | SDUC-206, SDUC-476 | Green | No runtime configuration, direct provider executor, job claim loop, or handwritten platform response model remains. |
@@ -288,6 +289,7 @@ Existing: **0 tests**.
 | SDTEST-1684 | shared SDK `session_refresh_and_mutation_keep_typed_refusals` | SDUC-200, SDUC-201 | Green | Cursor expiry and mutation conflicts remain typed outcomes instead of private client retry/error rules; Automonique CI runs the standalone SDK suite. |
 | SDTEST-1685 | `platform.rs::refresh_uses_cursors_per_surface_and_reconciles_pending_receipts` | SDUC-200, SDUC-201, SDUC-476 | Green | A canonical fake server proves steady-state refresh sends resource, directory and pane subscriptions—no snapshot—and reconciles an accepted receipt by ID. |
 | SDTEST-1686 | Automonique `platform_live.rs::platform_capabilities_snapshot_and_controller_are_live_and_durable` | SDUC-201, SDUC-476 | Green | The shared live socket fixture projects a pending approval, executes a revision-bound grant, returns a completed receipt, marks the resolved resource stale, and links a session to its controllable run. |
+| SDTEST-1693 | `platform.rs::sdtest_1693_ambiguous_execute_reconciles_with_the_retained_idempotency_key` | SDUC-201 | Green | When an execute response is lost after submission, ShellDeck queries the durable receipt with the exact key prepared before the mutation instead of issuing a new mutation identity. |
 
 ---
 

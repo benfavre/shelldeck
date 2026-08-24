@@ -61,6 +61,25 @@ pub struct PlatformActionPreview {
     pub target: ResourceCoordinate,
     pub expected_revision: Option<automonique_protocol::primitives::Revision>,
     pub parameter: Option<PlatformText>,
+    idempotency_key: IdempotencyKey,
+}
+
+impl PlatformActionPreview {
+    #[must_use]
+    pub fn new(
+        action: PlatformAction,
+        target: ResourceCoordinate,
+        expected_revision: Option<automonique_protocol::primitives::Revision>,
+        parameter: Option<PlatformText>,
+    ) -> Self {
+        Self {
+            action,
+            target,
+            expected_revision,
+            parameter,
+            idempotency_key: unique_key(action.as_str()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -247,6 +266,15 @@ impl fmt::Debug for PlatformConnection {
 impl PlatformConnection {
     pub fn new(dashboard_url: &str, token: &str) -> Result<Self> {
         let endpoint = platform_endpoint(dashboard_url)?;
+        Self::new_at_endpoint(&endpoint, token)
+    }
+
+    /// Connect to a gateway whose canonical Platform route is namespaced.
+    ///
+    /// Manage uses `/api/manage/automonique/platform` because Bext itself owns
+    /// `/api/platform` for its deployment control API.
+    pub fn new_at_endpoint(endpoint_url: &str, token: &str) -> Result<Self> {
+        let endpoint = explicit_platform_endpoint(endpoint_url)?;
         BearerToken::new(token.to_owned()).map_err(platform_error)?;
         Ok(Self {
             endpoint,
@@ -455,12 +483,19 @@ impl PlatformConnection {
     }
 
     pub fn execute(&self, preview: PlatformActionPreview) -> Result<ActionResult> {
+        let PlatformActionPreview {
+            action,
+            target,
+            expected_revision,
+            parameter,
+            idempotency_key,
+        } = preview;
         let request = ExecuteRequest::new(
-            preview.action,
-            preview.target,
-            unique_key(preview.action.as_str()),
-            preview.expected_revision,
-            preview.parameter,
+            action,
+            target,
+            idempotency_key,
+            expected_revision,
+            parameter,
         )
         .map_err(|_| ShellDeckError::Connection("platform action is invalid".to_string()))?;
         self.client()?
@@ -468,9 +503,40 @@ impl PlatformConnection {
             .map_err(platform_error)
     }
 
+    /// Execute one prepared mutation and reconcile an ambiguous outcome with
+    /// the exact same idempotency key before returning uncertainty to the UI.
+    pub fn execute_reconciled(&self, preview: PlatformActionPreview) -> Result<ActionResult> {
+        let idempotency_key = preview.idempotency_key.clone();
+        match self.execute(preview) {
+            Ok(
+                result @ ActionResult::Refused {
+                    outcome: ReceiptOutcome::Unknown,
+                    ..
+                },
+            ) => match self.get_receipt_by_idempotency_key(idempotency_key) {
+                Ok(receipt) => Ok(ActionResult::Receipt(receipt)),
+                Err(_) => Ok(result),
+            },
+            Ok(result) => Ok(result),
+            Err(execute_error) => match self.get_receipt_by_idempotency_key(idempotency_key) {
+                Ok(receipt) => Ok(ActionResult::Receipt(receipt)),
+                Err(_) => Err(execute_error),
+            },
+        }
+    }
+
     pub fn get_receipt(&self, receipt: ReceiptId) -> Result<ActionReceipt> {
         self.client()?
             .get_receipt(GetReceiptRequest::by_id(receipt))
+            .map_err(platform_error)
+    }
+
+    pub fn get_receipt_by_idempotency_key(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<ActionReceipt> {
+        self.client()?
+            .get_receipt(GetReceiptRequest::by_idempotency_key(idempotency_key))
             .map_err(platform_error)
     }
 
@@ -556,6 +622,30 @@ pub fn platform_endpoint(dashboard_url: &str) -> Result<String> {
     Ok(format!("{origin}/api/platform"))
 }
 
+fn explicit_platform_endpoint(endpoint_url: &str) -> Result<String> {
+    let url = Url::parse(endpoint_url.trim())
+        .map_err(|_| ShellDeckError::Connection("platform endpoint URL is invalid".to_string()))?;
+    if url.scheme() != "https"
+        && !(cfg!(test)
+            && url.scheme() == "http"
+            && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1")))
+    {
+        return Err(ShellDeckError::Connection(
+            "platform endpoint must use HTTPS".to_string(),
+        ));
+    }
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ShellDeckError::Connection(
+            "platform endpoint contains unsupported components".to_string(),
+        ));
+    }
+    Ok(url.to_string())
+}
+
 pub fn stable_client_id(seed: &str) -> Result<ClientId> {
     let normalized = seed
         .chars()
@@ -617,6 +707,25 @@ mod tests {
         );
         assert!(platform_endpoint("http://monique.example.test/").is_err());
         assert!(platform_endpoint("https://user@monique.example.test/").is_err());
+    }
+
+    // SDTEST-1692
+    #[test]
+    fn sdtest_1692_explicit_manage_endpoint_preserves_its_namespaced_route() {
+        let connection = PlatformConnection::new_at_endpoint(
+            "https://manage.example.test/api/manage/automonique/platform",
+            "fixture-sensitive-token",
+        )
+        .unwrap();
+        assert_eq!(
+            connection.endpoint(),
+            "https://manage.example.test/api/manage/automonique/platform"
+        );
+        assert!(PlatformConnection::new_at_endpoint(
+            "https://manage.example.test/api/manage/automonique/platform?node=private",
+            "fixture-sensitive-token",
+        )
+        .is_err());
     }
 
     #[test]
@@ -791,6 +900,64 @@ mod tests {
             refresh.snapshot.view.receipt(&pending.id).unwrap().outcome,
             ReceiptOutcome::Completed
         );
+        server.join().unwrap();
+    }
+
+    // SDTEST-1693
+    #[test]
+    fn sdtest_1693_ambiguous_execute_reconciles_with_the_retained_idempotency_key() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut execute_stream, _) = listener.accept().unwrap();
+            let (_headers, execute_body) = read_http_request(&mut execute_stream);
+            let execute_message =
+                PlatformRequestMessage::from_canonical_bytes(&execute_body).unwrap();
+            let PlatformRequest::Execute(execute) = execute_message.request() else {
+                panic!("expected execute request");
+            };
+            let retained_key = execute.idempotency_key.clone();
+            write!(
+                execute_stream,
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+
+            let (mut receipt_stream, _) = listener.accept().unwrap();
+            let (_headers, receipt_body) = read_http_request(&mut receipt_stream);
+            let receipt_message =
+                PlatformRequestMessage::from_canonical_bytes(&receipt_body).unwrap();
+            let PlatformRequest::GetReceipt(request) = receipt_message.request() else {
+                panic!("expected receipt reconciliation request");
+            };
+            assert_eq!(request.id, None);
+            assert_eq!(request.idempotency_key.as_ref(), Some(&retained_key));
+            write_http_response(
+                &mut receipt_stream,
+                receipt_message.request_id().clone(),
+                PlatformResponse::Receipt(receipt(ReceiptOutcome::Completed, 3)),
+            );
+        });
+
+        let connection =
+            PlatformConnection::new(&format!("http://{address}/dashboard"), "fixture-token")
+                .unwrap();
+        let preview = PlatformActionPreview::new(
+            PlatformAction::StopRun,
+            ResourceCoordinate::new(
+                ResourceAuthority::Automonique,
+                ResourceKind::Run,
+                ResourceId::new("run-1").unwrap(),
+            ),
+            Some(Revision::new(2).unwrap()),
+            None,
+        );
+        let result = connection.execute_reconciled(preview).unwrap();
+        assert!(matches!(
+            result,
+            ActionResult::Receipt(receipt)
+                if receipt.outcome == ReceiptOutcome::Completed
+        ));
         server.join().unwrap();
     }
 

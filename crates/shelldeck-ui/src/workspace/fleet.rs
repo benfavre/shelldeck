@@ -33,8 +33,18 @@ impl Workspace {
         if !self.signed_in() {
             return None;
         }
-        let dashboard = self.effective_monique_config()?;
-        PlatformConnection::new(&dashboard.url, &self.app_config.cloud_sync.token).ok()
+        let manage_origin = self
+            .site_directory
+            .as_ref()
+            .map(|directory| directory.manage_origin.trim())
+            .filter(|origin| !origin.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.account_base_url());
+        let endpoint = format!(
+            "{}/api/manage/automonique/platform",
+            manage_origin.trim_end_matches('/')
+        );
+        PlatformConnection::new_at_endpoint(&endpoint, &self.app_config.cloud_sync.token).ok()
     }
 
     pub(super) fn fleet_visible(&self) -> bool {
@@ -206,7 +216,7 @@ impl Workspace {
                             .release_control(session.clone(), client, lease.id)
                             .map(|()| PlatformActionResult::ControlReleased(session)),
                         FleetViewEvent::Execute(preview) => connection
-                            .execute(preview)
+                            .execute_reconciled(preview)
                             .map(PlatformActionResult::Executed),
                     }
                 })

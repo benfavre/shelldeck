@@ -827,7 +827,7 @@ mod tests {
         MODE_TRANSITION_OUT_MS, MODE_TRANSITION_TOTAL_MS,
     };
 
-    /// SDTEST-1695 — la courbe suit la durée réelle de la transition.
+    /// SDTEST-1702 — la courbe suit la durée réelle de la transition.
     ///
     /// Le palier était constant à 2,54 s, soit trois secondes pleines à chaque
     /// aller-retour Support ↔ Dev alors que rien ne charge : les entités Dev
