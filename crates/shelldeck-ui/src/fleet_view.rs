@@ -159,9 +159,9 @@ impl FleetView {
     }
 
     pub fn set_action_result(&mut self, result: ActionResult) {
-        self.pending_action = None;
         match result {
             ActionResult::Receipt(receipt) => {
+                self.pending_action = None;
                 if let Some(snapshot) = self.snapshot.as_mut() {
                     snapshot.view.apply_receipt(receipt);
                     snapshot.resources = snapshot.view.resources().cloned().collect();
@@ -173,6 +173,9 @@ impl FleetView {
                 outcome,
                 explanation,
             } => {
+                if outcome != shelldeck_core::config::platform::ReceiptOutcome::Unknown {
+                    self.pending_action = None;
+                }
                 self.refusal = Some((outcome.as_str().to_owned(), explanation.as_str().to_owned()));
                 self.error = None;
             }
@@ -477,12 +480,12 @@ impl FleetView {
                     .disabled(self.operation_busy || self.pending_action.is_some())
                     .on_click(move |_, _, cx| {
                         approve_entity.update(cx, |this, cx| {
-                            this.pending_action = Some(PlatformActionPreview {
-                                action: PlatformAction::DecideApproval,
-                                target: approve_target.clone(),
-                                expected_revision: Some(revision),
-                                parameter: PlatformText::new("grant").ok(),
-                            });
+                            this.pending_action = Some(PlatformActionPreview::new(
+                                PlatformAction::DecideApproval,
+                                approve_target.clone(),
+                                Some(revision),
+                                PlatformText::new("grant").ok(),
+                            ));
                             cx.notify();
                         });
                     }),
@@ -500,12 +503,12 @@ impl FleetView {
                     .disabled(self.operation_busy || self.pending_action.is_some())
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| {
-                            this.pending_action = Some(PlatformActionPreview {
-                                action: PlatformAction::DecideApproval,
-                                target: deny_target.clone(),
-                                expected_revision: Some(revision),
-                                parameter: PlatformText::new("deny").ok(),
-                            });
+                            this.pending_action = Some(PlatformActionPreview::new(
+                                PlatformAction::DecideApproval,
+                                deny_target.clone(),
+                                Some(revision),
+                                PlatformText::new("deny").ok(),
+                            ));
                             cx.notify();
                         });
                     }),
@@ -987,12 +990,12 @@ impl FleetView {
                         .disabled(self.operation_busy)
                         .on_click(move |_, _, cx| {
                             entity.update(cx, |this, cx| {
-                                this.pending_action = Some(PlatformActionPreview {
-                                    action: PlatformAction::StopRun,
-                                    target: target.clone(),
-                                    expected_revision: revision,
-                                    parameter: None,
-                                });
+                                this.pending_action = Some(PlatformActionPreview::new(
+                                    PlatformAction::StopRun,
+                                    target.clone(),
+                                    revision,
+                                    None,
+                                ));
                                 cx.notify();
                             });
                         }),

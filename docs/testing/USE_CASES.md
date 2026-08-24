@@ -2335,6 +2335,9 @@ once the network returns.
 
 ## Change log
 
+- **2026-08-24** — Enforced SDUC-201's ambiguous-mutation contract with a
+  retained idempotency key, immediate receipt reconciliation, and an exact-key
+  retry path (SDTEST-1693).
 - **2026-08-24** — Amended SDUC-200 and added SDTEST-1692 for explicit,
   namespaced Manage federation endpoints.
 - **2026-08-23** — Amended SDUC-201 and SDUC-476 for cursor-based steady-state
