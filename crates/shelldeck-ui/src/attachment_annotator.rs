@@ -4,6 +4,7 @@
 
 use crate::icons::lucide_icon;
 use crate::issue_attachments::AttachmentDraft;
+use crate::overlay::window_backdrop;
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -580,11 +581,7 @@ impl Render for AttachmentAnnotator {
         let close_entity = cx.entity();
         let apply_entity = close_entity.clone();
 
-        div()
-            .id("attachment-annotator")
-            .absolute()
-            .inset_0()
-            .occlude()
+        window_backdrop("attachment-annotator", window.is_maximized())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .flex()
