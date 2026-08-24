@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **122**
+Total markers in code: **147**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -562,6 +562,7 @@ carries no marker of its own — see its entry).
   - `src/components/textarea.rs:154` — `// ShellDeck patch: SDPATCH-028 — Textarea shares InputVariant,`
   - `src/components/textarea.rs:180` — `// ShellDeck patch: SDPATCH-028 — see above.`
   - `src/components/composer.rs:1` — `// ShellDeck patch: SDPATCH-028 — shared message composer.`
+  - `src/components/composer.rs` — `/// ShellDeck patch: SDPATCH-028 — callers that supply a richer commit`
   - `src/prelude.rs:45` — `// ShellDeck patch: SDPATCH-028 — shared message composer.`
 - **Why**: Five ShellDeck surfaces ask the user to write a message and send it,
   and each had assembled that idea differently — the field was an `Input` in one
@@ -961,6 +962,10 @@ carries no marker of its own — see its entry).
 - **2026-08-17** — extended SDPATCH-030: compact H1–H6 typography now scales
   from the conversation body size while document Markdown retains the fixed
   32/28/24/20/18/16 px ramp. 1 new marker; current code marker count is 126.
+- **2026-08-24** — extended SDPATCH-028 with `Composer::without_commit` for
+  surfaces that provide a richer commit button in the option row while keeping
+  the shared frame and Enter wiring. The post-merge inventory header was stale
+  at 122 markers while the tree already contained 146; current count is 147.
 
 ## Retired patches
 

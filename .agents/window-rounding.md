@@ -167,6 +167,10 @@ do not simulate clipping by adding spacing around the media.
   exterior panel shadow.
 - Connection form:
   `crates/shelldeck-ui/src/connection_form.rs::render` follows the same pattern.
+- Assistant composer:
+  `crates/shelldeck-ui/src/ai_assistant/mod.rs` rounds the bottom corner the
+  composer reaches in each host — `rounded_bl` in the Dock, `rounded_br` in the
+  Sheet — and skips it entirely while the window is maximized.
 - AI assistant sheets:
   `patches/adabraka-ui/src/overlays/sheet.rs::Sheet::render` rounds every opaque
   Assistant surface that owns a corner and omits the variant's exterior shadow.

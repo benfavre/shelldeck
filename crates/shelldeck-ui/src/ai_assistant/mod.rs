@@ -2869,11 +2869,21 @@ impl Render for AiAssistantView {
             // around the frame and reads as if it ran under the composer.
             .bg(ShellDeckColors::bg_primary());
         // The Dock composer directly owns its exposed bottom-left corner.
-        // In a Sheet, the panel/body already own and clip the bottom-right
-        // curve. Giving the full-width composer a second `rounded_br` cuts a
-        // larger inner arc and reveals the dim backdrop as a grey triangle.
+        // Both hosts: the composer is the opaque layer that reaches the bottom
+        // outer corner, so it owns that corner and must carry the radius
+        // itself. The Sheet's rounded panel and body do *not* clip it — two
+        // ancestors with `overflow_hidden` and the same radius were not enough,
+        // measured at the pixel: the arc was covered by a flat fill and only
+        // the window's own 1px border survived. A parent clip is not reliable
+        // for an opaque descendant in GPUI, which is the rule the rest of
+        // `.agents/window-rounding.md` is built on.
+        //
+        // Maximized windows are square, so no radius there — a rounded notch on
+        // a square window is the same defect in the other direction.
         if self.host == AiHost::Dock {
             composer = composer.rounded_bl(use_theme().tokens.radius_xl);
+        } else if !window.is_maximized() {
+            composer = composer.rounded_br(use_theme().tokens.radius_xl);
         }
         if let Some(error) = &self.error {
             composer = composer.child(

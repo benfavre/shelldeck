@@ -3089,7 +3089,9 @@ fn build_ai_backend_select(
     ];
     let options = entries
         .iter()
-        .map(|(backend, label)| {
+        .map(|entry| {
+            let backend = entry.0;
+            let label = &entry.1;
             let icon = match backend {
                 AiBackend::Disabled => IconSource::Named("x".into()),
                 AiBackend::ClaudeCli => IconSource::from("icons/simple/claudecode.svg"),
@@ -3100,12 +3102,12 @@ fn build_ai_backend_select(
                 AiBackend::AutomoniqueAcp => IconSource::Named("bot".into()),
                 AiBackend::Anthropic => IconSource::from("icons/simple/anthropic.svg"),
             };
-            SelectOption::new(*backend, label.clone()).with_icon(icon)
+            SelectOption::new(backend, label.clone()).with_icon(icon)
         })
         .collect();
     let selected = entries
         .iter()
-        .position(|(backend, _)| *backend == config.ai.backend);
+        .position(|entry| entry.0 == config.ai.backend);
     let parent = cx.entity();
     cx.new(move |select_cx| {
         Select::new(select_cx)

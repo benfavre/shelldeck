@@ -216,7 +216,7 @@ impl Workspace {
                             .release_control(session.clone(), client, lease.id)
                             .map(|()| PlatformActionResult::ControlReleased(session)),
                         FleetViewEvent::Execute(preview) => connection
-                            .execute(preview)
+                            .execute_reconciled(preview)
                             .map(PlatformActionResult::Executed),
                     }
                 })
