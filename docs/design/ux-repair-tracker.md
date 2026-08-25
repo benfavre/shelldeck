@@ -40,7 +40,7 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-020 | User / Nouvelle demande | « Créer » restait en bleu plein avec un titre vide alors que `create_issue_now` retournait en silence : le clic ne produisait rien et rien ne l'expliquait. | P0 | À valider | Bouton grisé à vide, plein dès que le titre est saisi. |
 | UX-021 | Connexion | Un refus d'identifiants affichait « Votre session a expiré », message d'un jeton périmé et non d'un mot de passe erroné, et il était répété à l'identique dans une bulle en bas à droite. | P0 | À valider | Échec de connexion : message unique, sous les champs, qui parle d'identifiants. |
 | UX-022 | User / Mes demandes | Les lignes n'affichaient ni date de mise à jour ni nombre de commentaires, là où la même demande côté Support porte les deux. Un client ne pouvait pas voir que le support avait répondu. | P1 | À valider | Ligne client et ligne Support côte à côte sur la même demande. |
-| UX-023 | User / Détail demande | Le fil est ancré en haut, contre celui des tickets qui est ancré en bas : plusieurs centaines de pixels de vide séparent le dernier message du compositeur. | P1 | Ouvert | Fil court : le dernier message doit toucher le compositeur. |
+| UX-023 | User / Détail demande | Le fil est ancré en haut, contre celui des tickets qui est ancré en bas : plusieurs centaines de pixels de vide séparent le dernier message du compositeur. | P1 | À valider | Fil court : le dernier message touche le compositeur. Fil long : l'ouverture montre le dernier message et seul le fil défile. |
 | UX-024 | Support / États vides | Le volet de détail annonçait « Aucun ticket ouvert » au-dessus d'une liste qui en contenait quatre — le sens réel étant « rien de sélectionné » — et son corps de texte tutoyait, seul de toute l'application. | P1 | À valider | Les deux files, sans sélection. |
 | UX-025 | Paramètres / Raccourci global | Le `Debug` Rust d'une erreur X11 s'affichait tel quel, tronqué en plein milieu, dès qu'une autre application détenait déjà la combinaison — le cas courant. | P1 | À valider | Raccourci déjà pris : message en français, pastille contenue. |
 | UX-026 | Dev / Barre latérale | Cinq activités sur huit ouvraient un panneau qui répétait la liste que leur propre vue affichait juste à côté — Scripts en donnait le cas d'école, six lignes identiques côte à côte, 570 px de navigation avant le premier pixel de contenu. | P1 | À valider | Scripts, Redirections, Éditeur, Terminaux, Activité et Sites doivent occuper toute la largeur ; seules Connexions gardent leur panneau. |
@@ -282,3 +282,12 @@ ligne existante.
   deux locales dans le scénario séquentiel imposé par `rust_i18n`. Recette X11
   sur le profil isolé : les trois zéros portent leur activité exacte ; les deux
   entrées du menu Aller ont ensuite ouvert une vue au titre strictement identique.
+- **2026-08-25 — UX-023 → À valider.** Le corps défilant de la feuille est
+  désormais un conteneur flex suivi par un `ScrollHandle`. Son enfant direct
+  grandit sans rétrécir : un fil court place donc son dernier message contre le
+  compositeur fixe, tandis qu'un fil long conserve sa hauteur intrinsèque et
+  s'ouvre sur le bas. Après l'envoi d'un commentaire, le nouveau message est
+  également ramené dans le viewport sans déplacer le compositeur. Recette X11
+  sur le profil isolé : une vraie demande courte a gardé son dernier message
+  contre le pied ; la fixture longue s'est ouverte sur son dernier message,
+  puis a défilé jusqu'au premier sans faire bouger le compositeur.

@@ -798,6 +798,7 @@ impl Workspace {
             self.issue_selected = Some(id.clone());
             if let Some(iss) = self.issues_list.iter().find(|i| i.id == id).cloned() {
                 self.issue_detail = Some(iss);
+                crate::follow_scroll::pin_to_latest(&self.user_issue_thread_scroll);
             }
             self.push_issues_to_support(cx);
             cx.notify();
@@ -813,6 +814,7 @@ impl Workspace {
             self.issue_attachment_url_open = false;
             self.issue_comment_attachments_open = false;
         }
+        let pin_user_thread = self.issue_selected.as_deref() != Some(id.as_str());
         self.issue_selected = Some(id.clone());
         self.add_activity_entry(
             ActivityEntry::new(
@@ -831,6 +833,9 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(iss) => {
                     ws.issue_detail = Some(iss);
+                    if pin_user_thread {
+                        crate::follow_scroll::pin_to_latest(&ws.user_issue_thread_scroll);
+                    }
                     ws.push_issues_to_support(cx);
                     cx.notify();
                 }
@@ -1033,6 +1038,7 @@ impl Workspace {
                     Ok(iss) => {
                         ws.upsert_issue_in_list(iss.clone());
                         ws.issue_detail = Some(iss);
+                        crate::follow_scroll::pin_to_latest(&ws.user_issue_thread_scroll);
                         if let Some((id, title)) = ws
                             .issue_detail
                             .as_ref()

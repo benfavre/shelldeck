@@ -296,6 +296,7 @@ impl Workspace {
         is_maximized: bool,
         inner: C,
         footer: Option<AnyElement>,
+        body_scroll: Option<&ScrollHandle>,
         on_close: impl Fn(&mut Self, &mut Context<Self>) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -304,6 +305,19 @@ impl Workspace {
         const ANIM_MS: u64 = SHEET_ANIM_MS;
 
         let close_bg = on_close.clone();
+        let mut body = div()
+            .id("user-sheet-body")
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .p(px(16.0));
+        if let Some(scroll) = body_scroll {
+            body = body.track_scroll(scroll);
+        }
+        body = body.child(inner);
+
         // Le rayon de la fenêtre est porté par la couche qui peint réellement
         // le fond, jamais par un ancêtre : voir `crate::overlay`.
         window_backdrop(id, is_maximized)
@@ -402,15 +416,7 @@ impl Workspace {
                             }),
                     )
                     // Body — scrollable if the content overflows the sheet.
-                    .child(
-                        div()
-                            .id("user-sheet-body")
-                            .flex_grow()
-                            .min_h(px(0.0))
-                            .overflow_y_scroll()
-                            .p(px(16.0))
-                            .child(inner),
-                    )
+                    .child(body)
                     // Detail sheets keep their message composer outside the
                     // scroll body so replying never requires scrolling to the
                     // end of a long thread. Form sheets simply pass `None`.
@@ -1476,6 +1482,7 @@ impl Workspace {
             is_maximized,
             inner,
             None,
+            None,
             |this, cx| this.close_new_request_sheet(cx),
             cx,
         )
@@ -1501,6 +1508,7 @@ impl Workspace {
             is_maximized,
             inner,
             Some(footer),
+            Some(&self.user_issue_thread_scroll),
             |this, cx| this.close_user_issue_detail(cx),
             cx,
         )
@@ -1688,20 +1696,17 @@ impl Workspace {
         }
 
         // Detail content flows directly inside the sheet chrome — no inner box
-        // (bg / border / rounded) so the sheet reads as a single surface. Only
-        // this thread scrolls; the reply composer is rendered by the fixed
-        // sheet footer below.
-        //
-        // Le fil reste ancré en haut, contrairement à celui des tickets côté
-        // Support : là-bas c'est une `uniform_list` virtualisée qui se place
-        // en fin de liste, ici un simple bloc défilant. Un intercalaire
-        // extensible ne suffit pas — le conteneur n'a pas de hauteur de
-        // référence dans un parent `overflow_y_scroll`. Passer par un
-        // `ScrollHandle` positionné à l'ouverture est le vrai correctif ;
-        // il reste à écrire (UX-023).
+        // (bg / border / rounded) so the sheet reads as a single surface. This
+        // direct flex child grows to the viewport when the thread is short and
+        // aligns its latest message against the fixed composer. With a long
+        // thread it keeps its intrinsic height and lets the tracked parent own
+        // the only scroll range (UX-023).
         div()
             .flex()
             .flex_col()
+            .flex_grow()
+            .flex_shrink_0()
+            .justify_end()
             .gap(px(8.0))
             .mt(px(10.0))
             .child(heading)
