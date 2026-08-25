@@ -273,7 +273,7 @@ impl Render for LoginForm {
             .on_enter(submit_on_enter.clone());
         let password_input = Input::new(&self.password_state)
             .size(InputSize::Sm)
-            .placeholder("••••••••")
+            .placeholder(t!("login.password_placeholder").to_string())
             .password(true)
             .disabled(self.busy)
             .on_enter(submit_on_enter);
