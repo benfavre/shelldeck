@@ -710,8 +710,11 @@ authentication: a logged-out workspace renders the welcome screen.
 
 ### SDUC-152 — Mode enforcement per role
 
-Logged-out users are intercepted by the welcome screen. Authenticated
-regular users and customer admins are forced to User mode.
+Logged-out users are intercepted by the welcome screen. That installed-product
+surface presents one ShellDeck promise and the sign-in/create-account paths;
+broader Inklura marketing, unsupported trial claims, and unsourced business
+statistics remain on the public website rather than competing with login.
+Authenticated regular users and customer admins are forced to User mode.
 `inklura_support` accounts may switch between User and Support;
 super-admins may additionally enter Dev. The titlebar, command palette,
 keyboard actions, activity links, and deep links must expose and execute
@@ -2377,6 +2380,10 @@ once the network returns.
 
 ## Change log
 
+- **2026-08-25** — Amended SDUC-152 after the pre-login screen mixed ShellDeck
+  authentication with a second Inklura marketing landing: the installed app
+  now keeps one product promise and removes the unrelated trial/statistics
+  block.
 - **2026-08-24** — Amended SDUC-475 with the agent console's responsive chrome
   contract: explicit scale-aware control rows and one centered prompt frame
   with one visible execution action (SDTEST-1704).

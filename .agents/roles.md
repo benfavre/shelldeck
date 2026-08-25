@@ -124,6 +124,9 @@ ShellDeck requires an account to launch. Historically the app ran a
     (brand mark + "Se connecter à Inklura Manage" primary CTA + "Créer
     un compte sur Manage" secondary CTA → opens sign-up in the system
     browser).
+  * The installed app keeps one ShellDeck product promise on that surface.
+    Broader Inklura marketing, trial claims, and business statistics belong on
+    the public website and must not compete with the authentication path.
   * `AppMode::resolve_effective(signed_in = false, …)` returns `User`
     as a defensive fallback. Dev is super-admin-only and must never
     render for anyone else — not even as a fallback.
