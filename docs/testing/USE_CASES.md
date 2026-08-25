@@ -1355,8 +1355,11 @@ Switching between Dev / User / Support hides the Dev surface without
 destroying terminal sessions (SDUC-023 must not be interrupted).
 Settings is a closable personal surface available in every authenticated
 mode. User/Support expose General, AI, Appearance and About; Dev-capable
-accounts additionally expose Terminal and Editor. Opening Settings pauses
-surface-only polling and closing it returns to the intact current mode.
+accounts additionally expose Terminal and Editor. The shared General tab also
+applies that capability boundary to its SSH-session controls: reconnecting
+terminal sessions on startup and automatically attaching tmux are absent for a
+User/Support-only account. Opening Settings pauses surface-only polling and
+closing it returns to the intact current mode.
 
 ### SDUC-311 — Toasts respect level
 
@@ -1970,12 +1973,17 @@ English locale.
 ### SDUC-440 — User and Support modes have a real home
 
 User mode opens on an Accueil tab summarizing available sites and open
-requests, with direct actions for Sites, Requests, and a new request. Its three
-most recent requests open directly from the dashboard, while a compact status
-card exposes the Manage session, active site, synchronized directory, and a
-manual sync action. A dashboard-specific network illustration with a contrast
-gradient gives the page a clear identity without reducing the readability of
-those operational cards. Support mode opens on its own Accueil tab with open,
+requests. Sites and Requests remain the adjacent primary tabs instead of being
+duplicated inside the page; the single quick action opens the distinct new
+request composer. Its three most recent requests open directly from the
+dashboard, while a compact status card exposes the Manage session, active site,
+synchronized directory, and a manual sync action. A dashboard-specific network
+illustration with a contrast gradient gives the page a clear identity without
+reducing the readability of those operational cards. In Mes sites, choosing a
+site is explicitly labelled as selection rather than activation. Every row also
+offers separate public-site and Manage-page destinations; a host without a
+scheme becomes HTTPS, while non-HTTP(S) or credential-bearing URLs stay inert.
+Support mode opens on its own Accueil tab with open,
 SLA-risk, unassigned, and hosted request counters. Every counter is a route,
 not decoration: it opens the matching Tickets/Requests queue after clearing
 stale search and advanced constraints so the visible rows agree with the
@@ -2467,8 +2475,36 @@ both stay visibly complete throughout the fade-out; changing the splash's
 animation phase must never restart either indicator at 0% before the signed-in
 home appears.
 
+### SDUC-484 — Account information is customer-facing and internally consistent
+
+User → Mes informations presents account, access, session and organisation data
+in customer-facing language. The portal origin belongs only in the account card,
+not beside the e-mail in the persistent header. Optional whoami values such as
+device label, sign-in date and last activity render only when non-empty; an absent
+value never creates a dash-only row.
+
+The normalized CM role bag is the sole display source whenever it is present.
+Known roles receive localized labels and custom slugs receive a readable label.
+For an older token that omitted the bag entirely, exactly one access label may be
+derived from its explicit server-issued capability flags. That fallback is never
+merged into a non-empty bag. Both the header badge and the information card consume
+this same presentation, so a malformed or transitional payload cannot display two
+different access levels.
+
 ## Change log
 
+- **2026-08-25** — Amended SDUC-310 and added SDTEST-1718: the two Dev-session
+  controls embedded in the shared General tab now follow the same capability
+  boundary as the Terminal and Editor tabs.
+- **2026-08-25** — Added SDUC-484 and SDTEST-1717 after Mes informations mixed
+  raw CM slugs, absent-value dashes and a second flag-derived role source. Role
+  presentation is now shared, humanized and bag-first; empty optional rows vanish.
+- **2026-08-25** — Amended SDUC-440 and added SDTEST-1716: User site rows now
+  distinguish choosing the active filter from opening the public site or its
+  Manage page; the public URL boundary accepts only credential-free HTTP(S).
+- **2026-08-25** — Amended SDUC-440 and the pending SDTEST-1414 recipe after
+  removing the duplicate Sites/Requests actions from the User home; the sole
+  quick action now opens the distinct New Request composer.
 - **2026-08-25** — Amended SDUC-228 and added SDTEST-1715: a successful
   `mine=1` response is authoritative even when Manage formats `requested_by`
   differently; the local identity predicate now serves only as the privacy

@@ -61,6 +61,10 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-041 | Agents / Arrêt | Pendant une exécution, l'action ronde d'envoi était remplacée par un bouton rectangulaire rouge « Arrêter », visuellement étranger au pied du Composer. | P2 | À valider | Lancer un agent : l'arrêt occupe le même cercle de 28 px que l'envoi, avec carré blanc et libellé au survol. |
 | UX-042 | Agents / Tableaux Markdown | Après restauration du scroll, les tableaux révélaient une largeur intrinsèque non contrainte : le wrapper de 860 px masquait net le bord droit au lieu de donner aux cellules une largeur de retour à la ligne. | P1 | À valider | Afficher un tableau à deux colonnes avec des sujets longs : chaque cellule revient à la ligne dans la colonne, sans texte coupé ni débordement horizontal. |
 | UX-043 | User / Mes demandes | Le serveur recevait déjà `mine=1`, mais l'UI rejetait encore chaque ligne dont `requested_by` ne correspondait pas exactement au nom ou à l'e-mail du compte : un identifiant ou un libellé composite suffisait à vider l'écran. | P1 | Validé | Contrôlé sur la démo avec deux lignes `mine=1` dont `requested_by` vaut `Équipe de démonstration <support@exemple.test>` : le compteur et la liste affichent bien 2. |
+| UX-044 | User / Accueil | Le bloc « Accès rapides » répétait les onglets Sites et Demandes placés juste au-dessus, ajoutant une seconde navigation pour les mêmes destinations. | P2 | Validé | Contrôlé sur la démo : « Accès rapide » ne contient plus que « Nouvelle demande », qui ouvre bien la feuille de création. |
+| UX-045 | User / Mes sites | « Activer » faisait croire à une mise en ligne alors que l'action ne choisissait que le site courant, et aucune ouverture du site public ou de sa fiche Manage n'était proposée. | P2 | Validé | Recette X11 à deux sites : les trois actions restent distinctes et « Choisir ce site » promeut la bonne carte active avec ses deux liens libellés. |
+| UX-046 | User / Mes informations | La page exposait le jargon « Rôles CM », les slugs serveur, deux champs vides et l'URL du portail collée à l'e-mail ; le badge d'en-tête pouvait contredire le sac de rôles. | P2 | Validé | Recette X11 : « Vos accès » affiche les deux libellés humains, les dates absentes ont disparu et l'en-tête ne garde que l'e-mail. |
+| UX-047 | User / Paramètres Général | Les réglages de reconnexion des terminaux et d'attachement tmux restaient visibles sans accès Dev, bien que les onglets Terminal et Éditeur soient déjà filtrés. | P2 | Validé | Recette X11 croisée : le compte client ne voit aucun des quatre éléments Dev ; le super-admin conserve les deux onglets et les deux réglages. |
 
 ## Règle de mise à jour
 
@@ -351,3 +355,29 @@ ligne existante.
   démo renvoie maintenant deux auteurs composites qui ne correspondent pas par
   égalité stricte ; recette X11 réussie sur l'Accueil (`2 demandes en cours`)
   puis sur « Mes demandes » (les deux lignes visibles avec leurs métadonnées).
+- **2026-08-25 — UX-044 → Validé.** Les actions « Voir mes sites » et « Voir
+  mes demandes » ont quitté la carte d'accueil : leurs onglets primaires sont
+  déjà visibles immédiatement au-dessus. La carte passe au singulier et ne
+  conserve que « Nouvelle demande ». Recette X11 sur la démo : une seule
+  action rendue, puis ouverture effective de la feuille de création.
+- **2026-08-25 — UX-045 → Validé.** « Activer » devient « Choisir ce site »
+  et ne peut plus se confondre avec une mise en ligne. Chaque site expose aussi
+  une destination publique HTTP(S) et sa fiche `/manage/sites`, avec des actions
+  séparées. SDTEST-1716 verrouille la normalisation et la frontière de sécurité
+  de l'URL publique. Recette X11 avec deux sites : les lignes compactes restent
+  lisibles et la sélection d'Atelier le promeut en carte active sans perdre les
+  deux destinations.
+- **2026-08-25 — UX-046 → Validé.** Les rôles passent par une présentation
+  unique, sac CM prioritaire et repli ancien jeton seulement si ce sac est vide.
+  Les noms connus sont traduits, les rôles personnalisés humanisés, et les
+  valeurs optionnelles vides ne créent plus de ligne. L'origine Manage quitte
+  l'en-tête et reste disponible dans « Votre compte ». SDTEST-1717 verrouille
+  la sélection de source et l'omission des valeurs vides. Recette X11 : les
+  badges « Super-administrateur » et « Support Inklura » sont cohérents, les
+  dates absentes ne réservent aucune ligne et l'en-tête ne garde que l'e-mail.
+- **2026-08-25 — UX-047 → Validé.** Les lignes « Reconnecter les sessions à
+  l'ouverture » et « Attacher tmux automatiquement » consomment désormais
+  `dev_tabs_enabled`, le même résultat de capacité que les onglets Terminal et
+  Éditeur. SDTEST-1718 verrouille les deux états du prédicat partagé. Recette
+  X11 sur les deux niveaux : les quatre éléments disparaissent ensemble pour
+  le client et restent disponibles ensemble pour le super-admin.

@@ -206,6 +206,10 @@ def body_for(path):
                 "sites": [{"site_id": "site-boutique",
                            "label": "Boutique de démonstration",
                            "host": "boutique.exemple.test",
+                           "tenant_id": "demo", "tenant_name": "Démonstration"},
+                          {"site_id": "site-atelier",
+                           "label": "Atelier de démonstration",
+                           "host": "atelier.exemple.test",
                            "tenant_id": "demo", "tenant_name": "Démonstration"}],
                 "areas": []}
 

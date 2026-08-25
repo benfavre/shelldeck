@@ -47,6 +47,19 @@ const MONOSPACE_FONTS: &[&str] = &[
 /// the other's picks.
 const UI_FONT_FAMILIES: &[&str] = &["Inter", "SF Pro Text", "Segoe UI", "Ubuntu", "Roboto"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GeneralSettingsVisibility {
+    reconnect_sessions: bool,
+    auto_attach_tmux: bool,
+}
+
+fn general_settings_visibility(dev_capable: bool) -> GeneralSettingsVisibility {
+    GeneralSettingsVisibility {
+        reconnect_sessions: dev_capable,
+        auto_attach_tmux: dev_capable,
+    }
+}
+
 /// True when `family` is one of the monospace faces we ship for the terminal
 /// and the editor.
 ///
@@ -904,7 +917,8 @@ impl SettingsView {
 
     fn render_general_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
-        div()
+        let visibility = general_settings_visibility(self.dev_tabs_enabled);
+        let mut settings = div()
             .flex()
             .flex_col()
             .gap(px(4.0))
@@ -914,8 +928,9 @@ impl SettingsView {
                 div()
                     .w(px(180.0))
                     .child(self.general_language_select.clone()),
-            ))
-            .child(Self::render_setting_row(
+            ));
+        if visibility.reconnect_sessions {
+            settings = settings.child(Self::render_setting_row(
                 t!("settings.general.auto_connect.label").as_ref(),
                 t!("settings.general.auto_connect.description").as_ref(),
                 Self::bind_toggle(
@@ -926,7 +941,9 @@ impl SettingsView {
                         this.config.general.auto_connect_on_startup = value;
                     },
                 ),
-            ))
+            ));
+        }
+        settings = settings
             .child(Self::render_setting_row(
                 t!("settings.general.notifications.label").as_ref(),
                 t!("settings.general.notifications.description").as_ref(),
@@ -950,8 +967,9 @@ impl SettingsView {
                         this.config.general.confirm_before_close = value;
                     },
                 ),
-            ))
-            .child(Self::render_setting_row(
+            ));
+        if visibility.auto_attach_tmux {
+            settings = settings.child(Self::render_setting_row(
                 t!("settings.general.tmux.label").as_ref(),
                 t!("settings.general.tmux.description").as_ref(),
                 Self::bind_toggle(
@@ -962,7 +980,9 @@ impl SettingsView {
                         this.config.general.auto_attach_tmux = value;
                     },
                 ),
-            ))
+            ));
+        }
+        settings
             .child(Self::render_setting_row(
                 t!("settings.general.auto_update.label").as_ref(),
                 t!("settings.general.auto_update.description").as_ref(),
@@ -3264,9 +3284,9 @@ fn ai_clippy_replace_policy_row(
 mod tests {
     use super::{
         apply_character_choice, classify_shortcut_error, compositor_companion_limited,
-        display_shortcut, is_monospace_family, shortcut_error_is_portal_missing,
-        validate_shortcut_capture, ClippyAppearanceConfig, ShortcutCaptureValidation,
-        MONOSPACE_FONTS, UI_FONT_FAMILIES,
+        display_shortcut, general_settings_visibility, is_monospace_family,
+        shortcut_error_is_portal_missing, validate_shortcut_capture, ClippyAppearanceConfig,
+        GeneralSettingsVisibility, ShortcutCaptureValidation, MONOSPACE_FONTS, UI_FONT_FAMILIES,
     };
     use gpui::Keystroke;
 
@@ -3421,5 +3441,26 @@ mod tests {
         assert!(compositor_companion_limited("wayland"));
         assert!(!compositor_companion_limited("X11"));
         assert!(!compositor_companion_limited("unknown"));
+    }
+
+    // SDTEST-1718 — the General tab is shared by every authenticated mode,
+    // but its SSH-session controls belong to the same Dev capability boundary
+    // as the Terminal and Editor tabs.
+    #[test]
+    fn user_general_settings_hide_every_dev_session_control() {
+        assert_eq!(
+            general_settings_visibility(false),
+            GeneralSettingsVisibility {
+                reconnect_sessions: false,
+                auto_attach_tmux: false,
+            }
+        );
+        assert_eq!(
+            general_settings_visibility(true),
+            GeneralSettingsVisibility {
+                reconnect_sessions: true,
+                auto_attach_tmux: true,
+            }
+        );
     }
 }
