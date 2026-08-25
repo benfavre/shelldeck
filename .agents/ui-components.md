@@ -52,6 +52,11 @@ dialogs, section headers, sheet chrome, row hover actions — any element
 that appears in ≥2 surfaces must share the exact same widgets.** When in
 doubt, grep for the sibling.
 
+Message composers are multiline ShellDeck input fields, not a separate card
+family. The shared adabraka `Composer` must consume the same theme radius,
+border, shadow, hover and focus tokens as `Input`; surfaces may populate its
+slots, but must not override that chrome locally.
+
 **Why:** adabraka-ui already ships ~85 components with consistent theming,
 keyboard handling, focus management, and hover/active states wired up. A
 fresh `div` for a chip / menu / dialog quietly loses those behaviors and

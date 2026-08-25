@@ -884,7 +884,17 @@ the operator can always choose “Nouvelle session” explicitly. Session IDs ar
 never shared across local and SSH targets or persisted by ShellDeck. The
 control bar uses explicit scale-aware rows, and the prompt composer keeps one
 centered frame with one visible execution action from narrow windows to wide
-desktop layouts.
+desktop layouts. Provider control records never masquerade as repeated user
+status: Claude reports Ready only for its `system/init` event and consecutive
+activity labels collapse. Technical activity stays out of the transcript and
+opens from a round header button in a popover limited to the twelve newest
+labels. The transcript uses conversation-density Markdown so roles, quoted
+prompts, and response paragraphs keep an 8 px rhythm
+instead of document-sized gaps. Its renderer is clipped to the centered
+conversation measure, so Markdown separators and other full-width blocks
+cannot escape toward the window edge on wide layouts. The prompt stays on the
+shared Composer, whose frame uses the same themed radius, input border, shadow,
+hover border and focus ring as every ShellDeck entry field.
 
 ---
 
@@ -2380,6 +2390,15 @@ once the network returns.
 
 ## Change log
 
+- **2026-08-25** — Amended SDUC-475 after Claude control records flooded the
+  console with repeated Ready rows and the transcript inherited document
+  spacing: initialization is subtype-specific, activity is deduplicated and
+  moved behind a bounded header popover, and the thread opts into compact,
+  column-clipped Markdown (SDTEST-1675, SDTEST-1706).
+- **2026-08-25** — Amended SDUC-475 after the Agents prompt still read as a
+  large rounded card rather than a ShellDeck field: the shared Composer now
+  inherits the exact Input chrome tokens across Agents, Support, Requests and
+  the assistant.
 - **2026-08-25** — Amended SDUC-152 after the pre-login screen mixed ShellDeck
   authentication with a second Inklura marketing landing: the installed app
   now keeps one product promise and removes the unrelated trial/statistics

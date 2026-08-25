@@ -8,8 +8,9 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::components::select::{Select, SelectOption};
+use adabraka_ui::overlays::popover::PopoverContent;
 use adabraka_ui::prelude::{
-    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Composer, Markdown,
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Composer, Markdown, Popover,
 };
 use gpui::prelude::*;
 use gpui::*;
@@ -26,7 +27,24 @@ use crate::theme::ShellDeckColors;
 
 const MAX_TRANSCRIPT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ACTIVITY_ITEMS: usize = 250;
+const MAX_POPOVER_ACTIVITY_ITEMS: usize = 12;
 const MAX_ACTIVITY_BYTES: usize = 4 * 1024;
+
+fn push_activity(activity: &mut Vec<String>, item: String) {
+    if activity.last() == Some(&item) {
+        return;
+    }
+    activity.push(item);
+    let overflow = activity.len().saturating_sub(MAX_ACTIVITY_ITEMS);
+    if overflow > 0 {
+        activity.drain(..overflow);
+    }
+}
+
+fn popover_activity(activity: &[String]) -> &[String] {
+    let start = activity.len().saturating_sub(MAX_POPOVER_ACTIVITY_ITEMS);
+    &activity[start..]
+}
 
 #[derive(Debug, Clone)]
 pub enum AgentConsoleEvent {
@@ -325,18 +343,14 @@ impl AgentConsoleView {
                     .as_ref()
                     .map(|run| run.provider.display_name())
                     .unwrap_or_else(|| self.provider.display_name());
-                self.activity
-                    .push(t!("agents.status.ready", provider = provider).to_string());
+                push_activity(
+                    &mut self.activity,
+                    t!("agents.status.ready", provider = provider).to_string(),
+                );
             }
             AgentStreamEvent::Activity(activity) => {
                 let activity = bounded_utf8(activity, MAX_ACTIVITY_BYTES);
-                if self.activity.last() != Some(&activity) {
-                    self.activity.push(activity);
-                    let overflow = self.activity.len().saturating_sub(MAX_ACTIVITY_ITEMS);
-                    if overflow > 0 {
-                        self.activity.drain(..overflow);
-                    }
-                }
+                push_activity(&mut self.activity, activity);
             }
             AgentStreamEvent::Error(error) => {
                 self.error = Some(bounded_utf8(error, MAX_ACTIVITY_BYTES))
@@ -360,11 +374,14 @@ impl AgentConsoleView {
         if let Some(error) = error {
             self.error = Some(bounded_utf8(error, MAX_ACTIVITY_BYTES));
         }
-        self.activity.push(match exit_code {
-            Some(0) => t!("agents.status.completed").to_string(),
-            Some(code) => t!("agents.status.exit", code = code).to_string(),
-            None => t!("agents.status.stopped").to_string(),
-        });
+        push_activity(
+            &mut self.activity,
+            match exit_code {
+                Some(0) => t!("agents.status.completed").to_string(),
+                Some(code) => t!("agents.status.exit", code = code).to_string(),
+                None => t!("agents.status.stopped").to_string(),
+            },
+        );
         if exit_code == Some(0) && self.session_token.is_none() {
             if let Some(run) = &run {
                 if run.provider == AgentProvider::Claude && run.resume_session.is_none() {
@@ -581,6 +598,101 @@ impl AgentConsoleView {
             })
             .into_any_element()
     }
+
+    fn render_activity_popover(&self) -> AnyElement {
+        let entries = popover_activity(&self.activity).to_vec();
+        let entry_count = self.activity.len();
+        let title = t!("agents.activity.title").to_string();
+        let trigger = div()
+            .id("agent-activity-trigger")
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(28.0))
+            .flex_shrink_0()
+            .rounded_full()
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .cursor_pointer()
+            .text_color(ShellDeckColors::text_muted())
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            .child(lucide_icon("activity", 13.0, ShellDeckColors::text_muted()));
+
+        Popover::new("agent-activity-popover")
+            .anchor(Corner::TopRight)
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let entries = entries.clone();
+                let title = title.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, _cx| {
+                        div()
+                            .w(px(280.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(7.0))
+                                    .child(lucide_icon(
+                                        "activity",
+                                        13.0,
+                                        ShellDeckColors::text_muted(),
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(px(12.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(title.clone()),
+                                    )
+                                    .child(
+                                        Badge::new(entry_count.to_string())
+                                            .variant(BadgeVariant::Secondary),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("agent-activity-list")
+                                    .flex()
+                                    .flex_col()
+                                    .max_h(px(280.0))
+                                    .overflow_y_scroll()
+                                    .children(entries.iter().enumerate().map(
+                                        |(index, activity)| {
+                                            div()
+                                                .id(("agent-activity-row", index))
+                                                .flex()
+                                                .items_start()
+                                                .gap(px(8.0))
+                                                .py(px(5.0))
+                                                .text_size(px(11.0))
+                                                .text_color(ShellDeckColors::text_muted())
+                                                .child(
+                                                    div()
+                                                        .mt(px(5.0))
+                                                        .size(px(4.0))
+                                                        .flex_shrink_0()
+                                                        .rounded_full()
+                                                        .bg(ShellDeckColors::text_muted()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .min_w(px(0.0))
+                                                        .whitespace_normal()
+                                                        .child(activity.clone()),
+                                                )
+                                        },
+                                    )),
+                            )
+                            .into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
 }
 
 impl Render for AgentConsoleView {
@@ -724,38 +836,20 @@ impl Render for AgentConsoleView {
                         .child(Badge::new(run.workdir.clone()).variant(BadgeVariant::Secondary)),
                 );
             }
-            for (index, activity) in self.activity.iter().enumerate() {
-                output = output.child(
-                    div()
-                        .id(("agent-activity", index))
-                        .flex()
-                        .items_center()
-                        .gap(px(7.0))
-                        .py(px(4.0))
-                        .overflow_hidden()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(lucide_icon("activity", 12.0, ShellDeckColors::text_muted()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .line_clamp(1)
-                                .child(activity.clone()),
-                        ),
-                );
-            }
             if !self.transcript.is_empty() {
                 output = output.child(
                     div()
                         .w_full()
                         .max_w(px(860.0))
                         .mx_auto()
-                        .py(px(12.0))
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .py(px(8.0))
                         .text_color(ShellDeckColors::text_primary())
                         .child(
                             Markdown::new(self.transcript.clone())
                                 .base_font_size(px(13.0).to_pixels(window.rem_size()))
+                                .compact()
                                 .min_w_0()
                                 .whitespace_normal(),
                         ),
@@ -870,7 +964,11 @@ impl Render for AgentConsoleView {
                     .variant(BadgeVariant::Secondary),
             );
         }
-        header = header.child(div().flex_1()).child(
+        header = header.child(div().flex_1());
+        if !self.activity.is_empty() {
+            header = header.child(self.render_activity_popover());
+        }
+        header = header.child(
             Button::new(
                 "agent-console-new-session",
                 t!("agents.session.new").to_string(),
@@ -992,8 +1090,8 @@ fn retain_recent_utf8(value: &mut String, max_bytes: usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_controls_layout, matching_resume_token, run_disposition, AgentControlsLayout,
-        AgentRunDisposition, AgentSessionContext,
+        agent_controls_layout, matching_resume_token, popover_activity, push_activity,
+        run_disposition, AgentControlsLayout, AgentRunDisposition, AgentSessionContext,
     };
     use shelldeck_core::agent_runtime::{
         AgentAccessMode, AgentProvider, AgentRunRequest, AgentTarget,
@@ -1072,6 +1170,37 @@ mod tests {
         assert_eq!(
             agent_controls_layout(gpui::px(1_920.0), gpui::px(32.0)),
             AgentControlsLayout::Wide
+        );
+    }
+
+    // SDTEST-1706 — SDUC-475
+    #[test]
+    fn sdtest_1706_agent_activity_deduplicates_and_keeps_a_bounded_popover_tail() {
+        let mut activity = Vec::new();
+        for _ in 0..8 {
+            push_activity(&mut activity, "Claude Code est prêt".to_string());
+        }
+        assert_eq!(activity, ["Claude Code est prêt"]);
+
+        for index in 1..=14 {
+            push_activity(&mut activity, format!("étape {index}"));
+        }
+        assert_eq!(
+            popover_activity(&activity),
+            [
+                "étape 3",
+                "étape 4",
+                "étape 5",
+                "étape 6",
+                "étape 7",
+                "étape 8",
+                "étape 9",
+                "étape 10",
+                "étape 11",
+                "étape 12",
+                "étape 13",
+                "étape 14",
+            ]
         );
     }
 }

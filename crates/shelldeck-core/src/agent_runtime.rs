@@ -444,7 +444,9 @@ fn parse_claude_event(value: &Value) -> Vec<AgentStreamEvent> {
                     .and_then(text_from_value)
                     .map(AgentStreamEvent::Error),
             ),
-        Some("system") => events.push(AgentStreamEvent::Ready),
+        Some("system") if value.get("subtype").and_then(Value::as_str) == Some("init") => {
+            events.push(AgentStreamEvent::Ready)
+        }
         _ => {}
     }
     events
@@ -684,6 +686,23 @@ mod tests {
     // SDTEST-1675 — SDUC-475
     #[test]
     fn sdtest_1675_provider_streams_normalize_visible_text_and_errors() {
+        assert_eq!(
+            parse_stream_line(
+                AgentProvider::Claude,
+                r#"{"type":"system","subtype":"init","session_id":"claude-42"}"#,
+            ),
+            vec![
+                AgentStreamEvent::Session("claude-42".to_string()),
+                AgentStreamEvent::Ready,
+            ]
+        );
+        assert_eq!(
+            parse_stream_line(
+                AgentProvider::Claude,
+                r#"{"type":"system","subtype":"hook_started"}"#,
+            ),
+            Vec::<AgentStreamEvent>::new()
+        );
         assert_eq!(
             parse_stream_line(
                 AgentProvider::Claude,
