@@ -1029,7 +1029,10 @@ the same owner filter defensively. A broader Support cache or an older server
 must never surface another requester's title in the User dashboard. In the
 right-side detail sheet, the chronological thread is the only scrollable
 region; the reply composer is a non-shrinking footer outside that region and
-must remain visible at every reading position.
+must remain visible at every reading position. Opening a detail starts on the
+latest message: a short thread grows downward until its last message meets the
+composer, while a longer thread scrolls to its bottom without moving the
+footer.
 
 ### SDUC-229 — Support "Requests" section
 

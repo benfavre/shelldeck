@@ -594,6 +594,9 @@ pub struct Workspace {
     issues_instances: Vec<IssueInstance>,
     issue_detail: Option<Issue>,
     issue_selected: Option<String>,
+    /// Scroll owner for the User request detail. A newly-opened thread is
+    /// pinned to its latest message while the composer remains a fixed sibling.
+    user_issue_thread_scroll: ScrollHandle,
     /// Request id pending a confirmed soft-delete from the User-mode detail
     /// sheet (drives a confirm modal — owner-or-staff may delete).
     confirm_issue_delete: Option<String>,
@@ -1360,6 +1363,7 @@ impl Workspace {
             issues_instances: Vec::new(),
             issue_detail: None,
             issue_selected: None,
+            user_issue_thread_scroll: ScrollHandle::new(),
             confirm_issue_delete: None,
             confirm_attachment_delete: None,
             issue_attachment_lightbox: None,
