@@ -149,6 +149,7 @@ impl Workspace {
     ) -> impl IntoElement {
         use std::time::Duration;
 
+        let dismissing = splash.dismissing;
         let mascot = animated_monolith(
             "post-login-mascot",
             188.0,
@@ -175,7 +176,9 @@ impl Workspace {
                     .with_animation(
                         "post-login-progress-bar",
                         Animation::new(Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS)),
-                        |el, delta| el.w(px(220.0 * post_login_simulated_progress(delta))),
+                        move |el, delta| {
+                            el.w(px(220.0 * post_login_display_progress(dismissing, delta)))
+                        },
                     ),
             );
 
@@ -188,8 +191,9 @@ impl Workspace {
             .with_animation(
                 "post-login-progress-percentage",
                 Animation::new(Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS)),
-                |el, delta| {
-                    let percentage = (post_login_simulated_progress(delta) * 100.0).round() as u8;
+                move |el, delta| {
+                    let percentage =
+                        (post_login_display_progress(dismissing, delta) * 100.0).round() as u8;
                     el.child(format!("{percentage}%"))
                 },
             );

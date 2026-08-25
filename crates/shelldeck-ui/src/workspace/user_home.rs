@@ -444,12 +444,13 @@ impl Workspace {
             .as_ref()
             .map(|payload| payload.sites.len())
             .unwrap_or(0);
-        // Keep the User dashboard personal even if an older Manage build or a
-        // stale staff-scoped cache hands us a broader list.
+        // A successful `mine=1` response is authoritative even if Manage uses
+        // another `requested_by` representation. Until then, keep the User
+        // dashboard defensive against a stale staff-scoped cache.
         let my_requests = self
             .issues_list
             .iter()
-            .filter(|issue| self.is_my_issue(issue))
+            .filter(|issue| self.is_user_visible_issue(issue))
             .cloned()
             .collect::<Vec<_>>();
         let open_requests = my_requests
@@ -1232,6 +1233,7 @@ impl Workspace {
             .child(
                 div()
                     .max_w(px(460.0))
+                    .text_center()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
                     .child(t!("welcome.tagline").to_string()),

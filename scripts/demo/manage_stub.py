@@ -186,6 +186,18 @@ def body_for(path):
         # `mine=1` est envoyé par le mode Utilisateur : le respecter évite de
         # laisser croire que le client voit les demandes des autres.
         listed = [i for i in ISSUES if owned_by_account(i)] if "mine=1" in path else ISSUES
+        if "mine=1" in path:
+            # U-05 regression fixture: Manage may prove ownership with its
+            # internal actor id while presenting a composite author label.
+            # ShellDeck must trust the owner-scoped response instead of
+            # filtering the same rows again by exact display-name equality.
+            listed = [
+                dict(
+                    issue,
+                    requested_by=f'{AGENT["name"]} <{AGENT["email"]}>',
+                )
+                for issue in listed
+            ]
         return {"ok": True, "issues": listed, "total": len(listed),
                 "staff": True, "instances": []}
 

@@ -713,7 +713,9 @@ authentication: a logged-out workspace renders the welcome screen.
 Logged-out users are intercepted by the welcome screen. That installed-product
 surface presents one ShellDeck promise and the sign-in/create-account paths;
 broader Inklura marketing, unsupported trial claims, and unsourced business
-statistics remain on the public website rather than competing with login.
+statistics remain on the public website rather than competing with login. The
+promise remains centered under the title across its wrapped lines, on the same
+axis as both authentication actions.
 Authenticated regular users and customer admins are forced to User mode.
 `inklura_support` accounts may switch between User and Support;
 super-admins may additionally enter Dev. The titlebar, command palette,
@@ -891,13 +893,25 @@ windows to wide desktop layouts. Provider control records never masquerade as re
 status: Claude reports Ready only for its `system/init` event and consecutive
 activity labels collapse. Technical activity stays out of the transcript and
 opens from a round header button in a popover limited to the twelve newest
-labels. The transcript uses conversation-density Markdown so roles, quoted
-prompts, and response paragraphs keep an 8 px rhythm
-instead of document-sized gaps. Its renderer is clipped to the centered
-conversation measure, so Markdown separators and other full-width blocks
-cannot escape toward the window edge on wide layouts. The prompt stays on the
-shared Composer, whose frame uses the same themed radius, input border, shadow,
-hover border and focus ring as every ShellDeck entry field.
+labels. Once a prompt has left, a shared animated thinking mark and explicit
+preparation label occupy the response column until the first visible output or
+error, so provider latency never looks like a frozen console. Provider API
+errors remain errors rather than being duplicated as synthetic Agent replies.
+The transcript uses conversation-density Markdown so roles, quoted prompts,
+and response paragraphs keep an 8 px rhythm instead of document-sized gaps;
+turns use that spacing rather than rendering a Markdown horizontal rule. Its
+renderer is clipped to the centered conversation measure, so other full-width
+blocks cannot escape toward the window edge on wide layouts. Every direct
+child of the single thread scroller retains its intrinsic height: long output
+scrolls independently while the Composer stays fixed, and automatic following
+stops once the reader moves away from the end. The prompt stays on the shared
+Composer, whose frame uses the same themed radius, input border, shadow, hover
+border and focus ring as every ShellDeck entry field. While a run is active,
+its destructive Stop action occupies the same round 28 px control footprint as
+the normal Send action, with an explicit tooltip rather than a competing text
+button. The Markdown renderer receives that conversation measure as a definite
+width, so structured output such as tables wraps inside it instead of being
+laid out intrinsically and clipped at the right edge.
 
 ---
 
@@ -1024,9 +1038,11 @@ Workspace polls issues every 15s while User or Support is visible.
 and create composer. The composer exposes a searchable site picker backed by
 the signed-in account's Manage directory, defaults to the active site when
 available, and offers an explicit no-specific-site choice. User-mode polling
-requests `mine=1`, and both the overview counter and recent-request card apply
-the same owner filter defensively. A broader Support cache or an older server
-must never surface another requester's title in the User dashboard. In the
+requests `mine=1`. A successful owner-scoped response is authoritative even if
+`requested_by` is formatted differently from the account name or email. While
+a broader Support cache is still present during a mode transition, the
+overview and request list retain the local identity check defensively; another
+requester's title must never flash in the User dashboard. In the
 right-side detail sheet, the chronological thread is the only scrollable
 region; the reply composer is a non-shrinking footer outside that region and
 must remain visible at every reading position. Opening a detail starts on the
@@ -1965,7 +1981,10 @@ not decoration: it opens the matching Tickets/Requests queue after clearing
 stale search and advanced constraints so the visible rows agree with the
 announced count. The home also exposes up to four actionable tickets ordered by
 SLA risk, urgency, missing owner, then recency, plus the four most recently
-updated visible requests; selecting either kind opens its real detail.
+updated visible requests; selecting either kind opens its real detail. The
+action banner says « Commencer le triage » while the list it introduces is
+named by its contents, « Urgences et non attribués », so two adjacent blocks
+never present different roles under the same heading.
 Operational lists remain separate tabs. The first-run tour that follows a
 sign-in is role-aware in its own right — see SDUC-481.
 
@@ -2439,14 +2458,42 @@ cancelled. ShellDeck advertises no filesystem or terminal service, so ACP
 cannot bypass its typed confirmation paths or Automonique's execution
 authority. Automonique is the built-in launch profile (`automonique acp`).
 
+### SDUC-483 — Successful sign-in progress completes exactly once
+
+After a successful Manage sign-in, the full-window preparation splash remains
+visible for at least its minimum duration while profiles synchronize. Its bar
+and percentage advance monotonically to 100%. Once synchronization completes,
+both stay visibly complete throughout the fade-out; changing the splash's
+animation phase must never restart either indicator at 0% before the signed-in
+home appears.
+
 ## Change log
 
+- **2026-08-25** — Amended SDUC-228 and added SDTEST-1715: a successful
+  `mine=1` response is authoritative even when Manage formats `requested_by`
+  differently; the local identity predicate now serves only as the privacy
+  fallback for a stale broader cache during a mode transition.
+- **2026-08-25** — Added SDUC-483 and SDTEST-1709 after the post-login splash
+  was seen reaching 100%, then restarting at 0% during its fade-out.
+- **2026-08-25** — Amended SDUC-152 after the welcome promise wrapped into a
+  visually left-aligned second line inside an otherwise centered task.
 - **2026-08-25** — Amended SDUC-475 after the session setup still looked like
   four unrelated administrative fields: Agent, target and permissions now
   share one divided execution-context frame, the directory is its editable
   final row, and the free-form model override moved into the shared Composer
   footer. The Select interaction remains shared through SDPATCH-041
   (SDTEST-1705).
+- **2026-08-25** — Amended SDUC-475 after provider latency left a blank Agent
+  reply and Claude synthetic API errors appeared twice: the conversation now
+  carries a bounded preparation indicator, and those synthetic records stay
+  error-only (SDTEST-1675, SDTEST-1711).
+- **2026-08-25** — Amended SDUC-475 after a second live turn exposed a Markdown
+  rule, a non-scrollable shrinking transcript, and a rectangular Stop action:
+  turns now use spacing, thread children retain height, and Stop matches the
+  round Composer control (SDTEST-1712; GPUI recipe SDTEST-1713).
+- **2026-08-25** — Amended SDUC-475 after the restored scroll exposed the
+  Markdown child's intrinsic width: it now fills the definite conversation
+  measure so table cells wrap instead of being clipped (SDTEST-1714).
 - **2026-08-25** — Amended SDUC-475 after Claude control records flooded the
   console with repeated Ready rows and the transcript inherited document
   spacing: initialization is subtype-specific, activity is deduplicated and
@@ -2588,6 +2635,9 @@ authority. Automonique is the built-in launch profile (`automonique acp`).
   SDTEST-1614/1615 for the operational Support home. Counters now route to clean
   exact queues, while priority tickets and recent requests fill the dashboard
   with directly actionable work.
+- **2026-08-25** — Amended SDUC-440 for the Support-home information hierarchy:
+  the action banner retains « Commencer le triage », while the adjacent ticket
+  preview is titled by its actual contents, « Urgences et non attribués ».
 - **2026-08-17** — Amended SDUC-228 and added pending SDTEST-1613 after
   reconciling the stale UX audit with the fix already shipped in `65c5c89`.
   The User request thread scrolls independently while its reply composer stays

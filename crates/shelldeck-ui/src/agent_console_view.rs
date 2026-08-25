@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use crate::follow_scroll::{follow_latest_if_at_end, pin_to_latest};
 use crate::icons::lucide_icon;
+use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -45,6 +46,14 @@ fn push_activity(activity: &mut Vec<String>, item: String) {
 fn popover_activity(activity: &[String]) -> &[String] {
     let start = activity.len().saturating_sub(MAX_POPOVER_ACTIVITY_ITEMS);
     &activity[start..]
+}
+
+fn show_agent_preparing(running: bool, received_output: bool, has_error: bool) -> bool {
+    running && !received_output && !has_error
+}
+
+fn conversation_turn_separator() -> &'static str {
+    "\n\n"
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +141,7 @@ pub struct AgentConsoleView {
     session_context: Option<AgentSessionContext>,
     session_token: Option<String>,
     run_received_delta: bool,
+    run_received_output: bool,
     pending_confirm: Option<AgentRunRequest>,
     transcript: String,
     activity: Vec<String>,
@@ -226,6 +236,7 @@ impl AgentConsoleView {
             session_context: None,
             session_token: None,
             run_received_delta: false,
+            run_received_output: false,
             pending_confirm: None,
             transcript: String::new(),
             activity: Vec::new(),
@@ -297,7 +308,7 @@ impl AgentConsoleView {
             self.session_token = None;
         }
         if !self.transcript.is_empty() {
-            self.transcript.push_str("\n\n---\n\n");
+            self.transcript.push_str(conversation_turn_separator());
         }
         self.transcript.push_str(&format!(
             "**{}**\n\n{}\n\n**{}**\n\n",
@@ -309,6 +320,7 @@ impl AgentConsoleView {
         self.session_context = Some(AgentSessionContext::from(&request));
         self.running = Some(request);
         self.run_received_delta = false;
+        self.run_received_output = false;
         self.error = None;
         cx.notify();
     }
@@ -329,6 +341,9 @@ impl AgentConsoleView {
                 if streamed_jcode {
                     return;
                 }
+                if !text.is_empty() {
+                    self.run_received_output = true;
+                }
                 if !self.transcript.is_empty() && !self.transcript.ends_with('\n') {
                     self.transcript.push('\n');
                 }
@@ -337,6 +352,9 @@ impl AgentConsoleView {
             }
             AgentStreamEvent::TextDelta(delta) => {
                 self.run_received_delta = true;
+                if !delta.is_empty() {
+                    self.run_received_output = true;
+                }
                 self.transcript.push_str(&delta);
                 retain_recent_utf8(&mut self.transcript, MAX_TRANSCRIPT_BYTES);
             }
@@ -359,6 +377,7 @@ impl AgentConsoleView {
                 push_activity(&mut self.activity, activity);
             }
             AgentStreamEvent::Error(error) => {
+                self.run_received_output = true;
                 self.error = Some(bounded_utf8(error, MAX_ACTIVITY_BYTES))
             }
         }
@@ -488,6 +507,7 @@ impl AgentConsoleView {
         self.session_token = None;
         self.transcript.clear();
         self.activity.clear();
+        self.run_received_output = false;
         self.error = None;
         cx.notify();
     }
@@ -977,6 +997,7 @@ impl Render for AgentConsoleView {
                 output = output.child(
                     div()
                         .flex()
+                        .flex_shrink_0()
                         .flex_wrap()
                         .items_center()
                         .gap(px(6.0))
@@ -992,6 +1013,7 @@ impl Render for AgentConsoleView {
                 output = output.child(
                     div()
                         .w_full()
+                        .flex_shrink_0()
                         .max_w(px(860.0))
                         .mx_auto()
                         .min_w(px(0.0))
@@ -1002,9 +1024,36 @@ impl Render for AgentConsoleView {
                             Markdown::new(self.transcript.clone())
                                 .base_font_size(px(13.0).to_pixels(window.rem_size()))
                                 .compact()
+                                .w_full()
                                 .min_w_0()
                                 .whitespace_normal(),
                         ),
+                );
+            }
+            if show_agent_preparing(is_running, self.run_received_output, self.error.is_some()) {
+                output = output.child(
+                    div()
+                        .w_full()
+                        .flex_shrink_0()
+                        .max_w(px(860.0))
+                        .mx_auto()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .py(px(4.0))
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(animated_monolith(
+                            "agent-console-thinking",
+                            32.0,
+                            MonolithMotion::Thinking,
+                            cx,
+                        ))
+                        .child(animated_loading_text(
+                            "agent-console-thinking-text",
+                            t!("agents.status.preparing").to_string(),
+                            cx,
+                        )),
                 );
             }
         }
@@ -1012,6 +1061,7 @@ impl Render for AgentConsoleView {
             output = output.child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .items_start()
                     .gap(px(8.0))
                     .mt(px(10.0))
@@ -1046,11 +1096,17 @@ impl Render for AgentConsoleView {
             .option(self.render_model_popover(cx));
         if let Some(run) = running {
             let run_id = run.id;
+            let stop_label = t!("agents.stop").to_string();
             composer = composer.without_commit().option(
-                Button::new("agent-console-stop", t!("agents.stop").to_string())
+                Button::new("agent-console-stop", "")
                     .variant(ButtonVariant::Destructive)
-                    .size(ButtonSize::Sm)
+                    .size(ButtonSize::Icon)
                     .icon(IconSource::from("square"))
+                    .tooltip(stop_label)
+                    .w(px(28.0))
+                    .h(px(28.0))
+                    .px(px(0.0))
+                    .rounded_full()
                     .on_click(cx.listener(move |_this, _, _, cx| {
                         cx.emit(AgentConsoleEvent::Stop(run_id));
                     })),
@@ -1188,8 +1244,9 @@ fn retain_recent_utf8(value: &mut String, max_bytes: usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_controls_layout, matching_resume_token, popover_activity, push_activity,
-        run_disposition, AgentControlsLayout, AgentRunDisposition, AgentSessionContext,
+        agent_controls_layout, conversation_turn_separator, matching_resume_token,
+        popover_activity, push_activity, run_disposition, show_agent_preparing,
+        AgentControlsLayout, AgentRunDisposition, AgentSessionContext,
     };
     use shelldeck_core::agent_runtime::{
         AgentAccessMode, AgentProvider, AgentRunRequest, AgentTarget,
@@ -1300,5 +1357,22 @@ mod tests {
                 "étape 14",
             ]
         );
+    }
+
+    // SDTEST-1711 — SDUC-475
+    #[test]
+    fn sdtest_1711_agent_preparing_is_visible_only_before_the_first_output() {
+        assert!(show_agent_preparing(true, false, false));
+        assert!(!show_agent_preparing(false, false, false));
+        assert!(!show_agent_preparing(true, true, false));
+        assert!(!show_agent_preparing(true, false, true));
+    }
+
+    // SDTEST-1712 — SDUC-475
+    #[test]
+    fn sdtest_1712_agent_turns_use_spacing_without_a_markdown_rule() {
+        let separator = conversation_turn_separator();
+        assert_eq!(separator, "\n\n");
+        assert!(!separator.contains('-'));
     }
 }

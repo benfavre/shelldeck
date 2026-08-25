@@ -471,6 +471,7 @@ impl Workspace {
             cx.notify();
         });
         self.issues_list.clear();
+        self.issues_list_owner_scoped = false;
         self.issues_instances.clear();
         self.issues_staff = false;
         self.reset_issue_selection(cx);

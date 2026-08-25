@@ -551,7 +551,8 @@ impl SupportView {
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(ShellDeckColors::text_primary())
                                                 .child(
-                                                    t!("support.home.priority_title").to_string(),
+                                                    t!("support.home.priority_column_title")
+                                                        .to_string(),
                                                 ),
                                         ),
                                 )

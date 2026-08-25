@@ -844,6 +844,12 @@ fn render_table(
             px(12.0)
         })
         .w_full()
+        // ShellDeck patch: SDPATCH-027 — the table itself is a flex child of
+        // Markdown. Its automatic minimum width otherwise keeps the sum of
+        // the cells' intrinsic widths and lets the whole table escape the
+        // transcript even though it is declared `w_full`.
+        .min_w(px(0.0))
+        .max_w_full()
         .rounded(theme.tokens.radius_sm)
         .border_1()
         .border_color(theme.tokens.border)
@@ -854,6 +860,8 @@ fn render_table(
         let mut row = div()
             .flex()
             .flex_row()
+            .w_full()
+            .min_w(px(0.0))
             .bg(theme.tokens.muted.opacity(0.3))
             .border_b_1()
             .border_color(theme.tokens.border);
@@ -872,7 +880,13 @@ fn render_table(
                 .py(px(8.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_size(base_size)
-                .child(el);
+                .child(
+                    div()
+                        .w_full()
+                        .min_w(px(0.0))
+                        .whitespace_normal()
+                        .child(el),
+                );
 
             if ci < alignments.len() {
                 cell = match &alignments[ci] {
@@ -893,6 +907,8 @@ fn render_table(
         let mut row = div()
             .flex()
             .flex_row()
+            .w_full()
+            .min_w(px(0.0))
             .when(ri < rows.len() - 1, |this| {
                 this.border_b_1().border_color(theme.tokens.border)
             })
@@ -911,7 +927,13 @@ fn render_table(
                 .px(px(12.0))
                 .py(px(6.0))
                 .text_size(base_size)
-                .child(el);
+                .child(
+                    div()
+                        .w_full()
+                        .min_w(px(0.0))
+                        .whitespace_normal()
+                        .child(el),
+                );
 
             if ci < alignments.len() {
                 cell = match &alignments[ci] {
