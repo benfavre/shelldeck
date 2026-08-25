@@ -882,9 +882,12 @@ follow-up resumes only when provider, target, permissions, workdir, and model
 still match exactly. Changing any of them starts a fresh provider session, and
 the operator can always choose “Nouvelle session” explicitly. Session IDs are
 never shared across local and SSH targets or persisted by ShellDeck. The
-control bar uses explicit scale-aware rows, and the prompt composer keeps one
-centered frame with one visible execution action from narrow windows to wide
-desktop layouts. Provider control records never masquerade as repeated user
+three execution choices render as divided cells inside one context frame, with
+the editable working directory on its final row. Their rows remain explicit
+and scale-aware instead of wrapping intrinsically. The free-form model override
+lives in a compact composer popover because it applies to the next message, and
+the prompt keeps one centered frame with one round execution action from narrow
+windows to wide desktop layouts. Provider control records never masquerade as repeated user
 status: Claude reports Ready only for its `system/init` event and consecutive
 activity labels collapse. Technical activity stays out of the transcript and
 opens from a round header button in a popover limited to the twelve newest
@@ -2390,6 +2393,12 @@ once the network returns.
 
 ## Change log
 
+- **2026-08-25** — Amended SDUC-475 after the session setup still looked like
+  four unrelated administrative fields: Agent, target and permissions now
+  share one divided execution-context frame, the directory is its editable
+  final row, and the free-form model override moved into the shared Composer
+  footer. The Select interaction remains shared through SDPATCH-041
+  (SDTEST-1704).
 - **2026-08-25** — Amended SDUC-475 after Claude control records flooded the
   console with repeated Ready rows and the transcript inherited document
   spacing: initialization is subtype-specific, activity is deduplicated and
