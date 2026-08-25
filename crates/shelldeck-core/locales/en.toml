@@ -5,18 +5,6 @@ welcome.title = "Welcome to ShellDeck"
 welcome.tagline = "GPU-accelerated Terminal & SSH companion, integrated with your Inklura Manage ecosystem. Sign in to get started."
 welcome.sign_in = "Sign in to Inklura Manage"
 welcome.create_account = "Create an account on Manage"
-# Inklura marketing block — content lifted from inklura.fr.
-welcome.inklura.title = "Your whole business, in a single super-app"
-welcome.inklura.subtitle = "Replace 6 to 16 costly tools with one elegant, intelligent interface."
-welcome.inklura.stat.savings.value = "70%"
-welcome.inklura.stat.savings.label = "saved on your software stack"
-welcome.inklura.stat.time.value = "12 h"
-welcome.inklura.stat.time.label = "saved every week"
-welcome.inklura.stat.uptime.value = "99.9%"
-welcome.inklura.stat.uptime.label = "uptime"
-welcome.inklura.stat.clients.value = "180+"
-welcome.inklura.stat.clients.label = "customers"
-welcome.inklura.trust = "30 days free · No credit card · 5-minute setup"
 
 # Login
 login.title = "Sign in to Inklura Manage"
