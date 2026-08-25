@@ -5,7 +5,7 @@
 
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
 use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::components::input::{Input, InputSize};
+use adabraka_ui::components::input::{Input, InputSize, InputVariant};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::components::select::{Select, SelectOption};
 use adabraka_ui::overlays::popover::PopoverContent;
@@ -164,6 +164,7 @@ impl AgentConsoleView {
                             .with_icon("icons/lucide/bot.svg"),
                     ])
                     .selected_index(Some(0))
+                    .context_label(t!("agents.provider").to_string())
                     .on_change(move |provider, _window, cx| {
                         parent.update(cx, |this, cx| {
                             this.provider = *provider;
@@ -194,6 +195,7 @@ impl AgentConsoleView {
                         .with_icon("icons/lucide/shield.svg"),
                     ])
                     .selected_index(Some(0))
+                    .context_label(t!("agents.access.label").to_string())
                     .on_change(move |access, _window, cx| {
                         parent.update(cx, |this, cx| {
                             this.access = *access;
@@ -257,6 +259,7 @@ impl AgentConsoleView {
                 .selected_index(selected_index)
                 .searchable(true)
                 .search_placeholder(t!("agents.target.search").to_string())
+                .context_label(t!("agents.target.label").to_string())
                 .on_change(move |connection_id, _window, cx| {
                     parent.update(cx, |this, cx| {
                         this.selected_connection = *connection_id;
@@ -693,6 +696,90 @@ impl AgentConsoleView {
             })
             .into_any_element()
     }
+
+    fn render_model_popover(&self, cx: &mut Context<Self>) -> AnyElement {
+        let configured = self.model_state.read(cx).content().trim().to_string();
+        let display = if configured.is_empty() {
+            t!("agents.model.auto").to_string()
+        } else {
+            configured
+        };
+        let trigger = div()
+            .id("agent-model-trigger")
+            .h(px(26.0))
+            .max_w(px(180.0))
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .px(px(6.0))
+            .rounded(px(7.0))
+            .cursor_pointer()
+            .text_size(px(10.5))
+            .text_color(ShellDeckColors::text_muted())
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(display),
+            )
+            .child(lucide_icon(
+                "chevron-down",
+                11.0,
+                ShellDeckColors::text_muted(),
+            ));
+        let model_state = self.model_state.clone();
+        let parent = cx.entity();
+        let title = t!("agents.model.label").to_string();
+        let hint = t!("agents.model.hint").to_string();
+        let placeholder = t!("agents.model.auto").to_string();
+
+        Popover::new("agent-model-popover")
+            .anchor(Corner::BottomRight)
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let model_state = model_state.clone();
+                let parent = parent.clone();
+                let title = title.clone();
+                let hint = hint.clone();
+                let placeholder = placeholder.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, _cx| {
+                        let notify_parent = parent.clone();
+                        div()
+                            .w(px(260.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(7.0))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title.clone()),
+                            )
+                            .child(
+                                Input::new(&model_state)
+                                    .size(InputSize::Sm)
+                                    .placeholder(placeholder.clone())
+                                    .on_change(move |_value, cx| {
+                                        notify_parent.update(cx, |_this, cx| cx.notify());
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .line_height(relative(1.35))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(hint.clone()),
+                            )
+                            .into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
 }
 
 impl Render for AgentConsoleView {
@@ -706,69 +793,132 @@ impl Render for AgentConsoleView {
             }
         };
 
+        let controls_layout =
+            agent_controls_layout(window.viewport_size().width, window.rem_size());
+        let provider = context_select_cell(self.provider_select.clone());
+        let target = context_select_cell(self.target_select.clone());
+        let access = context_select_cell(self.access_select.clone());
+        let select_rows = match controls_layout {
+            AgentControlsLayout::Wide => div()
+                .flex()
+                .w_full()
+                .child(
+                    provider
+                        .border_r_1()
+                        .border_color(ShellDeckColors::border()),
+                )
+                .child(target.border_r_1().border_color(ShellDeckColors::border()))
+                .child(access),
+            AgentControlsLayout::Compact => div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .child(
+                    div()
+                        .flex()
+                        .w_full()
+                        .child(
+                            provider
+                                .border_r_1()
+                                .border_color(ShellDeckColors::border()),
+                        )
+                        .child(target),
+                )
+                .child(access.border_t_1().border_color(ShellDeckColors::border())),
+            AgentControlsLayout::Narrow => div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .child(provider)
+                .child(target.border_t_1().border_color(ShellDeckColors::border()))
+                .child(access.border_t_1().border_color(ShellDeckColors::border())),
+        };
+        let workdir_focused = self
+            .workdir_state
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let workdir = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .min_w(px(0.0))
+            .h(px(42.0))
+            .px(px(11.0))
+            .border_t_1()
+            .border_color(ShellDeckColors::border())
+            .child(lucide_icon("folder", 14.0, ShellDeckColors::text_muted()))
+            .when(controls_layout != AgentControlsLayout::Narrow, |row| {
+                row.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(9.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("agents.workdir_short").to_string()),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h(px(32.0))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(if workdir_focused {
+                        ShellDeckColors::primary()
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .rounded(px(7.0))
+                    .when(workdir_focused, |field| {
+                        field.bg(ShellDeckColors::selected_bg())
+                    })
+                    .child(
+                        Input::new(&self.workdir_state)
+                            .variant(InputVariant::Bare)
+                            .size(InputSize::Sm)
+                            .placeholder("/srv/project"),
+                    ),
+            );
         let controls = div()
             .flex()
             .flex_col()
-            .gap(px(10.0))
+            .gap(px(7.0))
             .px(px(18.0))
             .py(px(12.0))
             .border_b_1()
-            .border_color(ShellDeckColors::border());
-        let provider = field(
-            t!("agents.provider").to_string(),
-            self.provider_select.clone(),
-        )
-        .into_any_element();
-        let target = field(
-            t!("agents.target.label").to_string(),
-            self.target_select.clone(),
-        )
-        .into_any_element();
-        let access = field(
-            t!("agents.access.label").to_string(),
-            self.access_select.clone(),
-        )
-        .into_any_element();
-        let model = div()
-            .flex()
-            .flex_col()
-            .w(px(180.0))
-            .gap(px(5.0))
-            .child(field_label(t!("agents.model.label").to_string()))
+            .border_color(ShellDeckColors::border())
             .child(
-                Input::new(&self.model_state)
-                    .size(InputSize::Sm)
-                    .placeholder(t!("agents.model.auto").to_string()),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(t!("agents.context.title").to_string()),
+                    )
+                    .when(controls_layout != AgentControlsLayout::Narrow, |row| {
+                        row.child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(t!("agents.context.hint").to_string()),
+                        )
+                    }),
             )
-            .into_any_element();
-        let workdir = div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .w_full()
-            .min_w(px(0.0))
-            .gap(px(5.0))
-            .child(field_label(t!("agents.workdir").to_string()))
             .child(
-                Input::new(&self.workdir_state)
-                    .size(InputSize::Sm)
-                    .placeholder("/srv/project"),
-            )
-            .into_any_element();
-        let controls_layout =
-            agent_controls_layout(window.viewport_size().width, window.rem_size());
-        let controls = match controls_layout {
-            AgentControlsLayout::Wide => controls
-                .child(control_row().children([provider, target, access, model]))
-                .child(control_row().child(workdir)),
-            AgentControlsLayout::Compact => controls
-                .child(control_row().children([provider, target, access]))
-                .child(control_row().children([model, workdir])),
-            AgentControlsLayout::Narrow => controls
-                .child(control_row().children([provider, target]))
-                .child(control_row().children([access, model]))
-                .child(control_row().child(workdir)),
-        };
+                div()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .rounded(px(10.0))
+                    .child(select_rows)
+                    .child(workdir),
+            );
 
         let mut output = div()
             .id("agent-console-output")
@@ -890,40 +1040,11 @@ impl Render for AgentConsoleView {
             .min_rows(2)
             .max_rows(8)
             .disabled(is_running)
-            .without_commit()
             .on_commit(submit)
-            .option(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .text_size(px(10.5))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(lucide_icon(
-                        if running
-                            .as_ref()
-                            .is_some_and(|run| matches!(&run.target, AgentTarget::Ssh { .. }))
-                            || (running.is_none() && self.selected_connection.is_some())
-                        {
-                            "server"
-                        } else {
-                            "cpu"
-                        },
-                        12.0,
-                        ShellDeckColors::text_muted(),
-                    ))
-                    .child(if let Some(run) = running.as_ref() {
-                        target_label(&run.target)
-                    } else {
-                        self.selected_connection
-                            .and_then(|id| self.connections.iter().find(|c| c.id == id))
-                            .map(|connection| connection.label.clone())
-                            .unwrap_or_else(|| t!("agents.target.local").to_string())
-                    }),
-            );
+            .option(self.render_model_popover(cx));
         if let Some(run) = running {
             let run_id = run.id;
-            composer = composer.option(
+            composer = composer.without_commit().option(
                 Button::new("agent-console-stop", t!("agents.stop").to_string())
                     .variant(ButtonVariant::Destructive)
                     .size(ButtonSize::Sm)
@@ -931,14 +1052,6 @@ impl Render for AgentConsoleView {
                     .on_click(cx.listener(move |_this, _, _, cx| {
                         cx.emit(AgentConsoleEvent::Stop(run_id));
                     })),
-            );
-        } else {
-            composer = composer.option(
-                Button::new("agent-console-run", t!("agents.run").to_string())
-                    .variant(ButtonVariant::Default)
-                    .size(ButtonSize::Sm)
-                    .icon(IconSource::from("play"))
-                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
             );
         }
 
@@ -1013,14 +1126,13 @@ impl Render for AgentConsoleView {
     }
 }
 
-fn field(label: String, control: impl IntoElement) -> impl IntoElement {
+fn context_select_cell<T: Clone + 'static>(select: Entity<Select<T>>) -> Div {
     div()
         .flex()
-        .flex_col()
-        .w(px(190.0))
-        .gap(px(5.0))
-        .child(field_label(label))
-        .child(control)
+        .flex_1()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .child(select)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1038,22 +1150,6 @@ fn agent_controls_layout(viewport_width: Pixels, rem_size: Pixels) -> AgentContr
     } else {
         AgentControlsLayout::Narrow
     }
-}
-
-fn control_row() -> Div {
-    div()
-        .flex()
-        .items_end()
-        .gap(px(10.0))
-        .w_full()
-        .min_w(px(0.0))
-}
-
-fn field_label(label: String) -> impl IntoElement {
-    div()
-        .text_size(px(10.5))
-        .text_color(ShellDeckColors::text_muted())
-        .child(label)
 }
 
 fn bounded_utf8(mut value: String, max_bytes: usize) -> String {
@@ -1150,7 +1246,7 @@ mod tests {
 
     // SDTEST-1704 — SDUC-475
     #[test]
-    fn sdtest_1704_agent_controls_use_scale_aware_explicit_rows() {
+    fn sdtest_1704_agent_context_panel_uses_scale_aware_explicit_rows() {
         assert_eq!(
             agent_controls_layout(gpui::px(959.0), gpui::px(16.0)),
             AgentControlsLayout::Compact

@@ -21,3 +21,8 @@ conversation. Keep those two layers visually and semantically separate.
 - Keep the prompt on the shared `Composer`; its frame inherits the same theme
   radius, border, shadow, hover and focus tokens as ShellDeck `Input`. Do not
   add Agent-only card chrome around it.
+- Treat provider, target, permissions, and workdir as one execution context.
+  The first three use adabraka `Select::context_label` inside one divided
+  frame; workdir is the editable final row. The model override belongs in the
+  Composer footer because it applies to the next message, and must remain a
+  free-form CLI value rather than a hard-coded shortlist.

@@ -851,6 +851,24 @@ carries no marker of its own — see its entry).
   the core matcher is accepted — adabraka-ui cannot depend on `shelldeck-core`.
 - **Upstream status**: not filed yet.
 
+### SDPATCH-041 — context-panel Select trigger
+
+- **Files / symbols**:
+  - `src/components/select.rs` — `Select::context_label` and `Select::render`
+- **Markers** (4):
+  - `src/components/select.rs` — `// ShellDeck patch: SDPATCH-041 — dense configuration surfaces group`
+  - `src/components/select.rs` — `// ShellDeck patch: SDPATCH-041 — regular Selects keep the upstream`
+  - `src/components/select.rs` — `/// ShellDeck patch: SDPATCH-041 — render the label and selected value in a`
+  - `src/components/select.rs` — `// ShellDeck patch: SDPATCH-041 — the context trigger makes a Select a`
+- **Why**: a row of adjacent configuration choices is one execution context,
+  not a collection of unrelated form fields. The standard Select trigger adds
+  its own 40 px border and requires a separate label above it, so placing three
+  of them inside a shared panel creates nested frames and wastes vertical
+  space. `context_label` keeps the real Select interaction, focus handling and
+  deferred dropdown while offering a two-line, borderless trigger for divided
+  panels. The regular trigger remains the default.
+- **Upstream status**: not filed yet.
+
 ## Sync log
 
 - **2026-07-07** — initial inventory. Marker count 13 = 1+1+1+3+1+4+2
@@ -969,6 +987,9 @@ carries no marker of its own — see its entry).
   surfaces that provide a richer commit button in the option row while keeping
   the shared frame and Enter wiring. The post-merge inventory header was stale
   at 122 markers while the tree already contained 146; current count is 147.
+- **2026-08-25** — added SDPATCH-041: opt-in two-line, borderless Select
+  triggers for divided context panels. 4 new markers; current marker count is
+  152.
 
 ## Retired patches
 
