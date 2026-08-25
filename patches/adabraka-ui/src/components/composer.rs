@@ -20,8 +20,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, App, Div, Entity, FocusHandle, IntoElement, RenderOnce, SharedString,
-    Styled, Window,
+    div, px, AnyElement, App, BoxShadow, Div, Entity, FocusHandle, IntoElement, RenderOnce,
+    SharedString, Styled, Window,
 };
 
 use crate::components::input::{Input, InputVariant};
@@ -241,21 +241,47 @@ impl RenderOnce for Composer {
         // composer's rather than being a constant.
         let commit_id = SharedString::from(format!("{}-commit", self.id));
 
+        // ShellDeck patch: SDPATCH-028 — a Composer is a multiline input, not
+        // a separate card vocabulary. Reuse the same radius, border, shadow,
+        // hover and focus tokens as Input so every ShellDeck entry field reads
+        // as the same control in every theme.
+        let shadow_xs = BoxShadow {
+            offset: theme.tokens.shadow_xs.offset,
+            blur_radius: theme.tokens.shadow_xs.blur_radius,
+            spread_radius: theme.tokens.shadow_xs.spread_radius,
+            inset: false,
+            color: theme.tokens.shadow_xs.color,
+        };
         let mut frame: Div = div()
             .flex()
             .flex_col()
             .w_full()
             .min_w(px(0.0))
-            .bg(theme.tokens.background)
+            .bg(if self.disabled {
+                theme.tokens.muted.opacity(0.5)
+            } else {
+                theme.tokens.background
+            })
             .border_1()
-            .rounded(px(13.0))
-            .overflow_hidden();
+            .rounded(theme.tokens.radius_md)
+            .overflow_hidden()
+            .shadow(smallvec::smallvec![shadow_xs]);
         // The frame — not the field — carries the focus state, which is the
         // whole point of `InputVariant::Bare`.
         if focused {
-            frame = frame.border_color(theme.tokens.ring);
+            frame = frame
+                .border_color(theme.tokens.ring)
+                .shadow(smallvec::smallvec![theme.tokens.focus_ring_light()]);
         } else {
-            frame = frame.border_color(theme.tokens.border);
+            frame = frame.border_color(if self.disabled {
+                theme.tokens.border
+            } else {
+                theme.tokens.input
+            });
+            if !self.disabled {
+                let ring = theme.tokens.ring;
+                frame = frame.hover(move |style| style.border_color(ring));
+            }
         }
 
         if !self.context.is_empty() {

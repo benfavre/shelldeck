@@ -204,6 +204,7 @@ rules loader.
 @.agents/i18n.md
 @.agents/ai.md
 @.agents/ai-mentions.md
+@.agents/agent-console.md
 @.agents/github.md
 @.agents/related-repositories.md
 

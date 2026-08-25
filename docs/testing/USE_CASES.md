@@ -710,8 +710,11 @@ authentication: a logged-out workspace renders the welcome screen.
 
 ### SDUC-152 — Mode enforcement per role
 
-Logged-out users are intercepted by the welcome screen. Authenticated
-regular users and customer admins are forced to User mode.
+Logged-out users are intercepted by the welcome screen. That installed-product
+surface presents one ShellDeck promise and the sign-in/create-account paths;
+broader Inklura marketing, unsupported trial claims, and unsourced business
+statistics remain on the public website rather than competing with login.
+Authenticated regular users and customer admins are forced to User mode.
 `inklura_support` accounts may switch between User and Support;
 super-admins may additionally enter Dev. The titlebar, command palette,
 keyboard actions, activity links, and deep links must expose and execute
@@ -879,9 +882,22 @@ follow-up resumes only when provider, target, permissions, workdir, and model
 still match exactly. Changing any of them starts a fresh provider session, and
 the operator can always choose “Nouvelle session” explicitly. Session IDs are
 never shared across local and SSH targets or persisted by ShellDeck. The
-control bar uses explicit scale-aware rows, and the prompt composer keeps one
-centered frame with one visible execution action from narrow windows to wide
-desktop layouts.
+three execution choices render as divided cells inside one context frame, with
+the editable working directory on its final row. Their rows remain explicit
+and scale-aware instead of wrapping intrinsically. The free-form model override
+lives in a compact composer popover because it applies to the next message, and
+the prompt keeps one centered frame with one round execution action from narrow
+windows to wide desktop layouts. Provider control records never masquerade as repeated user
+status: Claude reports Ready only for its `system/init` event and consecutive
+activity labels collapse. Technical activity stays out of the transcript and
+opens from a round header button in a popover limited to the twelve newest
+labels. The transcript uses conversation-density Markdown so roles, quoted
+prompts, and response paragraphs keep an 8 px rhythm
+instead of document-sized gaps. Its renderer is clipped to the centered
+conversation measure, so Markdown separators and other full-width blocks
+cannot escape toward the window edge on wide layouts. The prompt stays on the
+shared Composer, whose frame uses the same themed radius, input border, shadow,
+hover border and focus ring as every ShellDeck entry field.
 
 ---
 
@@ -2422,6 +2438,25 @@ authority. Automonique is the built-in launch profile (`automonique acp`).
 
 ## Change log
 
+- **2026-08-25** — Amended SDUC-475 after the session setup still looked like
+  four unrelated administrative fields: Agent, target and permissions now
+  share one divided execution-context frame, the directory is its editable
+  final row, and the free-form model override moved into the shared Composer
+  footer. The Select interaction remains shared through SDPATCH-041
+  (SDTEST-1705).
+- **2026-08-25** — Amended SDUC-475 after Claude control records flooded the
+  console with repeated Ready rows and the transcript inherited document
+  spacing: initialization is subtype-specific, activity is deduplicated and
+  moved behind a bounded header popover, and the thread opts into compact,
+  column-clipped Markdown (SDTEST-1675, SDTEST-1707).
+- **2026-08-25** — Amended SDUC-475 after the Agents prompt still read as a
+  large rounded card rather than a ShellDeck field: the shared Composer now
+  inherits the exact Input chrome tokens across Agents, Support, Requests and
+  the assistant.
+- **2026-08-25** — Amended SDUC-152 after the pre-login screen mixed ShellDeck
+  authentication with a second Inklura marketing landing: the installed app
+  now keeps one product promise and removes the unrelated trial/statistics
+  block.
 - **2026-08-24** — Added SDUC-480 and SDTEST-1693/1694 for the stable ACP v1
   client host and fail-closed permission boundary.
 - **2026-08-24** — Renumbered the integrated onboarding and UX repair entries

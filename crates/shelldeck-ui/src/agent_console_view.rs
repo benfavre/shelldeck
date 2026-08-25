@@ -5,11 +5,12 @@
 
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
 use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::components::input::{Input, InputSize};
+use adabraka_ui::components::input::{Input, InputSize, InputVariant};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::components::select::{Select, SelectOption};
+use adabraka_ui::overlays::popover::PopoverContent;
 use adabraka_ui::prelude::{
-    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Composer, Markdown,
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Composer, Markdown, Popover,
 };
 use gpui::prelude::*;
 use gpui::*;
@@ -27,7 +28,24 @@ use crate::theme::ShellDeckColors;
 
 const MAX_TRANSCRIPT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ACTIVITY_ITEMS: usize = 250;
+const MAX_POPOVER_ACTIVITY_ITEMS: usize = 12;
 const MAX_ACTIVITY_BYTES: usize = 4 * 1024;
+
+fn push_activity(activity: &mut Vec<String>, item: String) {
+    if activity.last() == Some(&item) {
+        return;
+    }
+    activity.push(item);
+    let overflow = activity.len().saturating_sub(MAX_ACTIVITY_ITEMS);
+    if overflow > 0 {
+        activity.drain(..overflow);
+    }
+}
+
+fn popover_activity(activity: &[String]) -> &[String] {
+    let start = activity.len().saturating_sub(MAX_POPOVER_ACTIVITY_ITEMS);
+    &activity[start..]
+}
 
 #[derive(Debug, Clone)]
 pub enum AgentConsoleEvent {
@@ -147,6 +165,7 @@ impl AgentConsoleView {
                             .with_icon("icons/lucide/bot.svg"),
                     ])
                     .selected_index(Some(0))
+                    .context_label(t!("agents.provider").to_string())
                     .on_change(move |provider, _window, cx| {
                         parent.update(cx, |this, cx| {
                             this.provider = *provider;
@@ -177,6 +196,7 @@ impl AgentConsoleView {
                         .with_icon("icons/lucide/shield.svg"),
                     ])
                     .selected_index(Some(0))
+                    .context_label(t!("agents.access.label").to_string())
                     .on_change(move |access, _window, cx| {
                         parent.update(cx, |this, cx| {
                             this.access = *access;
@@ -240,6 +260,7 @@ impl AgentConsoleView {
                 .selected_index(selected_index)
                 .searchable(true)
                 .search_placeholder(t!("agents.target.search").to_string())
+                .context_label(t!("agents.target.label").to_string())
                 .on_change(move |connection_id, _window, cx| {
                     parent.update(cx, |this, cx| {
                         this.selected_connection = *connection_id;
@@ -328,18 +349,14 @@ impl AgentConsoleView {
                     .as_ref()
                     .map(|run| run.provider.display_name())
                     .unwrap_or_else(|| self.provider.display_name());
-                self.activity
-                    .push(t!("agents.status.ready", provider = provider).to_string());
+                push_activity(
+                    &mut self.activity,
+                    t!("agents.status.ready", provider = provider).to_string(),
+                );
             }
             AgentStreamEvent::Activity(activity) => {
                 let activity = bounded_utf8(activity, MAX_ACTIVITY_BYTES);
-                if self.activity.last() != Some(&activity) {
-                    self.activity.push(activity);
-                    let overflow = self.activity.len().saturating_sub(MAX_ACTIVITY_ITEMS);
-                    if overflow > 0 {
-                        self.activity.drain(..overflow);
-                    }
-                }
+                push_activity(&mut self.activity, activity);
             }
             AgentStreamEvent::Error(error) => {
                 self.error = Some(bounded_utf8(error, MAX_ACTIVITY_BYTES))
@@ -362,11 +379,14 @@ impl AgentConsoleView {
         if let Some(error) = error {
             self.error = Some(bounded_utf8(error, MAX_ACTIVITY_BYTES));
         }
-        self.activity.push(match exit_code {
-            Some(0) => t!("agents.status.completed").to_string(),
-            Some(code) => t!("agents.status.exit", code = code).to_string(),
-            None => t!("agents.status.stopped").to_string(),
-        });
+        push_activity(
+            &mut self.activity,
+            match exit_code {
+                Some(0) => t!("agents.status.completed").to_string(),
+                Some(code) => t!("agents.status.exit", code = code).to_string(),
+                None => t!("agents.status.stopped").to_string(),
+            },
+        );
         if exit_code == Some(0) && self.session_token.is_none() {
             if let Some(run) = &run {
                 if run.provider == AgentProvider::Claude && run.resume_session.is_none() {
@@ -583,6 +603,185 @@ impl AgentConsoleView {
             })
             .into_any_element()
     }
+
+    fn render_activity_popover(&self) -> AnyElement {
+        let entries = popover_activity(&self.activity).to_vec();
+        let entry_count = self.activity.len();
+        let title = t!("agents.activity.title").to_string();
+        let trigger = div()
+            .id("agent-activity-trigger")
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(28.0))
+            .flex_shrink_0()
+            .rounded_full()
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .cursor_pointer()
+            .text_color(ShellDeckColors::text_muted())
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            .child(lucide_icon("activity", 13.0, ShellDeckColors::text_muted()));
+
+        Popover::new("agent-activity-popover")
+            .anchor(Corner::TopRight)
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let entries = entries.clone();
+                let title = title.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, _cx| {
+                        div()
+                            .w(px(280.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(7.0))
+                                    .child(lucide_icon(
+                                        "activity",
+                                        13.0,
+                                        ShellDeckColors::text_muted(),
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(px(12.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(title.clone()),
+                                    )
+                                    .child(
+                                        Badge::new(entry_count.to_string())
+                                            .variant(BadgeVariant::Secondary),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("agent-activity-list")
+                                    .flex()
+                                    .flex_col()
+                                    .max_h(px(280.0))
+                                    .overflow_y_scroll()
+                                    .children(entries.iter().enumerate().map(
+                                        |(index, activity)| {
+                                            div()
+                                                .id(("agent-activity-row", index))
+                                                .flex()
+                                                .items_start()
+                                                .gap(px(8.0))
+                                                .py(px(5.0))
+                                                .text_size(px(11.0))
+                                                .text_color(ShellDeckColors::text_muted())
+                                                .child(
+                                                    div()
+                                                        .mt(px(5.0))
+                                                        .size(px(4.0))
+                                                        .flex_shrink_0()
+                                                        .rounded_full()
+                                                        .bg(ShellDeckColors::text_muted()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .min_w(px(0.0))
+                                                        .whitespace_normal()
+                                                        .child(activity.clone()),
+                                                )
+                                        },
+                                    )),
+                            )
+                            .into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
+
+    fn render_model_popover(&self, cx: &mut Context<Self>) -> AnyElement {
+        let configured = self.model_state.read(cx).content().trim().to_string();
+        let display = if configured.is_empty() {
+            t!("agents.model.auto").to_string()
+        } else {
+            configured
+        };
+        let trigger = div()
+            .id("agent-model-trigger")
+            .h(px(26.0))
+            .max_w(px(180.0))
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .px(px(6.0))
+            .rounded(px(7.0))
+            .cursor_pointer()
+            .text_size(px(10.5))
+            .text_color(ShellDeckColors::text_muted())
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(display),
+            )
+            .child(lucide_icon(
+                "chevron-down",
+                11.0,
+                ShellDeckColors::text_muted(),
+            ));
+        let model_state = self.model_state.clone();
+        let parent = cx.entity();
+        let title = t!("agents.model.label").to_string();
+        let hint = t!("agents.model.hint").to_string();
+        let placeholder = t!("agents.model.auto").to_string();
+
+        Popover::new("agent-model-popover")
+            .anchor(Corner::BottomRight)
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let model_state = model_state.clone();
+                let parent = parent.clone();
+                let title = title.clone();
+                let hint = hint.clone();
+                let placeholder = placeholder.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, _cx| {
+                        let notify_parent = parent.clone();
+                        div()
+                            .w(px(260.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(7.0))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title.clone()),
+                            )
+                            .child(
+                                Input::new(&model_state)
+                                    .size(InputSize::Sm)
+                                    .placeholder(placeholder.clone())
+                                    .on_change(move |_value, cx| {
+                                        notify_parent.update(cx, |_this, cx| cx.notify());
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .line_height(relative(1.35))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(hint.clone()),
+                            )
+                            .into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
 }
 
 impl Render for AgentConsoleView {
@@ -596,69 +795,132 @@ impl Render for AgentConsoleView {
             }
         };
 
+        let controls_layout =
+            agent_controls_layout(window.viewport_size().width, window.rem_size());
+        let provider = context_select_cell(self.provider_select.clone());
+        let target = context_select_cell(self.target_select.clone());
+        let access = context_select_cell(self.access_select.clone());
+        let select_rows = match controls_layout {
+            AgentControlsLayout::Wide => div()
+                .flex()
+                .w_full()
+                .child(
+                    provider
+                        .border_r_1()
+                        .border_color(ShellDeckColors::border()),
+                )
+                .child(target.border_r_1().border_color(ShellDeckColors::border()))
+                .child(access),
+            AgentControlsLayout::Compact => div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .child(
+                    div()
+                        .flex()
+                        .w_full()
+                        .child(
+                            provider
+                                .border_r_1()
+                                .border_color(ShellDeckColors::border()),
+                        )
+                        .child(target),
+                )
+                .child(access.border_t_1().border_color(ShellDeckColors::border())),
+            AgentControlsLayout::Narrow => div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .child(provider)
+                .child(target.border_t_1().border_color(ShellDeckColors::border()))
+                .child(access.border_t_1().border_color(ShellDeckColors::border())),
+        };
+        let workdir_focused = self
+            .workdir_state
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let workdir = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .min_w(px(0.0))
+            .h(px(42.0))
+            .px(px(11.0))
+            .border_t_1()
+            .border_color(ShellDeckColors::border())
+            .child(lucide_icon("folder", 14.0, ShellDeckColors::text_muted()))
+            .when(controls_layout != AgentControlsLayout::Narrow, |row| {
+                row.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(9.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("agents.workdir_short").to_string()),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h(px(32.0))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(if workdir_focused {
+                        ShellDeckColors::primary()
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .rounded(px(7.0))
+                    .when(workdir_focused, |field| {
+                        field.bg(ShellDeckColors::selected_bg())
+                    })
+                    .child(
+                        Input::new(&self.workdir_state)
+                            .variant(InputVariant::Bare)
+                            .size(InputSize::Sm)
+                            .placeholder("/srv/project"),
+                    ),
+            );
         let controls = div()
             .flex()
             .flex_col()
-            .gap(px(10.0))
+            .gap(px(7.0))
             .px(px(18.0))
             .py(px(12.0))
             .border_b_1()
-            .border_color(ShellDeckColors::border());
-        let provider = field(
-            t!("agents.provider").to_string(),
-            self.provider_select.clone(),
-        )
-        .into_any_element();
-        let target = field(
-            t!("agents.target.label").to_string(),
-            self.target_select.clone(),
-        )
-        .into_any_element();
-        let access = field(
-            t!("agents.access.label").to_string(),
-            self.access_select.clone(),
-        )
-        .into_any_element();
-        let model = div()
-            .flex()
-            .flex_col()
-            .w(px(180.0))
-            .gap(px(5.0))
-            .child(field_label(t!("agents.model.label").to_string()))
+            .border_color(ShellDeckColors::border())
             .child(
-                Input::new(&self.model_state)
-                    .size(InputSize::Sm)
-                    .placeholder(t!("agents.model.auto").to_string()),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(t!("agents.context.title").to_string()),
+                    )
+                    .when(controls_layout != AgentControlsLayout::Narrow, |row| {
+                        row.child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(t!("agents.context.hint").to_string()),
+                        )
+                    }),
             )
-            .into_any_element();
-        let workdir = div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .w_full()
-            .min_w(px(0.0))
-            .gap(px(5.0))
-            .child(field_label(t!("agents.workdir").to_string()))
             .child(
-                Input::new(&self.workdir_state)
-                    .size(InputSize::Sm)
-                    .placeholder("/srv/project"),
-            )
-            .into_any_element();
-        let controls_layout =
-            agent_controls_layout(window.viewport_size().width, window.rem_size());
-        let controls = match controls_layout {
-            AgentControlsLayout::Wide => controls
-                .child(control_row().children([provider, target, access, model]))
-                .child(control_row().child(workdir)),
-            AgentControlsLayout::Compact => controls
-                .child(control_row().children([provider, target, access]))
-                .child(control_row().children([model, workdir])),
-            AgentControlsLayout::Narrow => controls
-                .child(control_row().children([provider, target]))
-                .child(control_row().children([access, model]))
-                .child(control_row().child(workdir)),
-        };
+                div()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .rounded(px(10.0))
+                    .child(select_rows)
+                    .child(workdir),
+            );
 
         let mut output = div()
             .id("agent-console-output")
@@ -726,38 +988,20 @@ impl Render for AgentConsoleView {
                         .child(Badge::new(run.workdir.clone()).variant(BadgeVariant::Secondary)),
                 );
             }
-            for (index, activity) in self.activity.iter().enumerate() {
-                output = output.child(
-                    div()
-                        .id(("agent-activity", index))
-                        .flex()
-                        .items_center()
-                        .gap(px(7.0))
-                        .py(px(4.0))
-                        .overflow_hidden()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(lucide_icon("activity", 12.0, ShellDeckColors::text_muted()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .line_clamp(1)
-                                .child(activity.clone()),
-                        ),
-                );
-            }
             if !self.transcript.is_empty() {
                 output = output.child(
                     div()
                         .w_full()
                         .max_w(px(860.0))
                         .mx_auto()
-                        .py(px(12.0))
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .py(px(8.0))
                         .text_color(ShellDeckColors::text_primary())
                         .child(
                             Markdown::new(self.transcript.clone())
                                 .base_font_size(px(13.0).to_pixels(window.rem_size()))
+                                .compact()
                                 .min_w_0()
                                 .whitespace_normal(),
                         ),
@@ -798,40 +1042,11 @@ impl Render for AgentConsoleView {
             .min_rows(2)
             .max_rows(8)
             .disabled(is_running)
-            .without_commit()
             .on_commit(submit)
-            .option(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .text_size(px(10.5))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(lucide_icon(
-                        if running
-                            .as_ref()
-                            .is_some_and(|run| matches!(&run.target, AgentTarget::Ssh { .. }))
-                            || (running.is_none() && self.selected_connection.is_some())
-                        {
-                            "server"
-                        } else {
-                            "cpu"
-                        },
-                        12.0,
-                        ShellDeckColors::text_muted(),
-                    ))
-                    .child(if let Some(run) = running.as_ref() {
-                        target_label(&run.target)
-                    } else {
-                        self.selected_connection
-                            .and_then(|id| self.connections.iter().find(|c| c.id == id))
-                            .map(|connection| connection.label.clone())
-                            .unwrap_or_else(|| t!("agents.target.local").to_string())
-                    }),
-            );
+            .option(self.render_model_popover(cx));
         if let Some(run) = running {
             let run_id = run.id;
-            composer = composer.option(
+            composer = composer.without_commit().option(
                 Button::new("agent-console-stop", t!("agents.stop").to_string())
                     .variant(ButtonVariant::Destructive)
                     .size(ButtonSize::Sm)
@@ -839,14 +1054,6 @@ impl Render for AgentConsoleView {
                     .on_click(cx.listener(move |_this, _, _, cx| {
                         cx.emit(AgentConsoleEvent::Stop(run_id));
                     })),
-            );
-        } else {
-            composer = composer.option(
-                Button::new("agent-console-run", t!("agents.run").to_string())
-                    .variant(ButtonVariant::Default)
-                    .size(ButtonSize::Sm)
-                    .icon(IconSource::from("play"))
-                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
             );
         }
 
@@ -872,7 +1079,11 @@ impl Render for AgentConsoleView {
                     .variant(BadgeVariant::Secondary),
             );
         }
-        header = header.child(div().flex_1()).child(
+        header = header.child(div().flex_1());
+        if !self.activity.is_empty() {
+            header = header.child(self.render_activity_popover());
+        }
+        header = header.child(
             Button::new(
                 "agent-console-new-session",
                 t!("agents.session.new").to_string(),
@@ -917,14 +1128,13 @@ impl Render for AgentConsoleView {
     }
 }
 
-fn field(label: String, control: impl IntoElement) -> impl IntoElement {
+fn context_select_cell<T: Clone + 'static>(select: Entity<Select<T>>) -> Div {
     div()
         .flex()
-        .flex_col()
-        .w(px(190.0))
-        .gap(px(5.0))
-        .child(field_label(label))
-        .child(control)
+        .flex_1()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .child(select)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -942,22 +1152,6 @@ fn agent_controls_layout(viewport_width: Pixels, rem_size: Pixels) -> AgentContr
     } else {
         AgentControlsLayout::Narrow
     }
-}
-
-fn control_row() -> Div {
-    div()
-        .flex()
-        .items_end()
-        .gap(px(10.0))
-        .w_full()
-        .min_w(px(0.0))
-}
-
-fn field_label(label: String) -> impl IntoElement {
-    div()
-        .text_size(px(10.5))
-        .text_color(ShellDeckColors::text_muted())
-        .child(label)
 }
 
 fn bounded_utf8(mut value: String, max_bytes: usize) -> String {
@@ -994,8 +1188,8 @@ fn retain_recent_utf8(value: &mut String, max_bytes: usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_controls_layout, matching_resume_token, run_disposition, AgentControlsLayout,
-        AgentRunDisposition, AgentSessionContext,
+        agent_controls_layout, matching_resume_token, popover_activity, push_activity,
+        run_disposition, AgentControlsLayout, AgentRunDisposition, AgentSessionContext,
     };
     use shelldeck_core::agent_runtime::{
         AgentAccessMode, AgentProvider, AgentRunRequest, AgentTarget,
@@ -1054,7 +1248,7 @@ mod tests {
 
     // SDTEST-1705 — SDUC-475
     #[test]
-    fn sdtest_1705_agent_controls_use_scale_aware_explicit_rows() {
+    fn sdtest_1705_agent_context_panel_uses_scale_aware_explicit_rows() {
         assert_eq!(
             agent_controls_layout(gpui::px(959.0), gpui::px(16.0)),
             AgentControlsLayout::Compact
@@ -1074,6 +1268,37 @@ mod tests {
         assert_eq!(
             agent_controls_layout(gpui::px(1_920.0), gpui::px(32.0)),
             AgentControlsLayout::Wide
+        );
+    }
+
+    // SDTEST-1707 — SDUC-475
+    #[test]
+    fn sdtest_1707_agent_activity_deduplicates_and_keeps_a_bounded_popover_tail() {
+        let mut activity = Vec::new();
+        for _ in 0..8 {
+            push_activity(&mut activity, "Claude Code est prêt".to_string());
+        }
+        assert_eq!(activity, ["Claude Code est prêt"]);
+
+        for index in 1..=14 {
+            push_activity(&mut activity, format!("étape {index}"));
+        }
+        assert_eq!(
+            popover_activity(&activity),
+            [
+                "étape 3",
+                "étape 4",
+                "étape 5",
+                "étape 6",
+                "étape 7",
+                "étape 8",
+                "étape 9",
+                "étape 10",
+                "étape 11",
+                "étape 12",
+                "étape 13",
+                "étape 14",
+            ]
         );
     }
 }

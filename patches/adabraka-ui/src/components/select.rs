@@ -74,6 +74,10 @@ pub struct Select<T: Clone + 'static> {
     // trigger's hit-test tree, so retain their real bounds for outside-clicks.
     dropdown_bounds: Option<Bounds<Pixels>>,
     leading_icon: Option<IconSource>,
+    // ShellDeck patch: SDPATCH-041 — dense configuration surfaces group
+    // related Selects inside one bordered panel. In that context the trigger
+    // needs an inline eyebrow label and must not draw a second field frame.
+    context_label: Option<SharedString>,
     style: StyleRefinement,
 }
 
@@ -100,6 +104,9 @@ impl<T: Clone + 'static> Select<T> {
             bounds: Bounds::default(),
             dropdown_bounds: None,
             leading_icon: None,
+            // ShellDeck patch: SDPATCH-041 — regular Selects keep the upstream
+            // trigger skin unless callers explicitly opt into context mode.
+            context_label: None,
             style: StyleRefinement::default(),
         }
     }
@@ -157,6 +164,14 @@ impl<T: Clone + 'static> Select<T> {
 
     pub fn leading_icon(mut self, icon: impl Into<IconSource>) -> Self {
         self.leading_icon = Some(icon.into());
+        self
+    }
+
+    /// ShellDeck patch: SDPATCH-041 — render the label and selected value in a
+    /// two-line, borderless trigger intended for a divided context panel.
+    /// Selection, keyboard handling and the deferred dropdown stay unchanged.
+    pub fn context_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.context_label = Some(label.into());
         self
     }
 
@@ -343,7 +358,114 @@ impl<T: Clone + 'static> Render for Select<T> {
             .and_then(|opt| opt.icon.clone());
         let leading_icon = self.leading_icon.clone().or(maybe_selected_icon);
 
-        let trigger = div()
+        // ShellDeck patch: SDPATCH-041 — the context trigger makes a Select a
+        // cell inside one shared frame. It deliberately changes only the
+        // closed trigger; dropdown geometry and interaction remain shared.
+        let trigger = if let Some(context_label) = self.context_label.clone() {
+            div()
+                .id("select-trigger")
+                .relative()
+                .flex()
+                .items_center()
+                .h(px(56.0))
+                .px(px(11.0))
+                .bg(if open {
+                    theme.tokens.muted
+                } else {
+                    gpui::transparent_black()
+                })
+                .text_color(if self.selected_index.is_some() {
+                    theme.tokens.foreground
+                } else {
+                    theme.tokens.muted_foreground
+                })
+                .font_family(theme.tokens.font_family.clone())
+                .cursor(if self.disabled {
+                    CursorStyle::Arrow
+                } else {
+                    CursorStyle::PointingHand
+                })
+                .when(!self.disabled, |div: Stateful<Div>| {
+                    div.hover(|mut style| {
+                        style.background = Some(theme.tokens.muted.opacity(0.55).into());
+                        style
+                    })
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.toggle_dropdown(window, cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .size(px(28.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(7.0))
+                        .bg(theme.tokens.muted)
+                        .when_some(leading_icon.as_ref(), |div, src| {
+                            div.child(
+                                Icon::new(src.clone())
+                                    .size(px(14.0))
+                                    .color(theme.tokens.muted_foreground),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .ml(px(9.0))
+                        .flex()
+                        .flex_col()
+                        .flex_grow()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .text_size(px(9.0))
+                                .text_color(theme.tokens.muted_foreground)
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(context_label),
+                        )
+                        .child(
+                            div()
+                                .mt(px(2.0))
+                                .text_size(px(13.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(display_text.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .ml(px(8.0))
+                        .flex_shrink_0()
+                        .child(
+                            Icon::new(if open { "chevron-up" } else { "chevron-down" })
+                                .size(px(13.0))
+                                .color(theme.tokens.muted_foreground),
+                        ),
+                )
+                .child({
+                    let entity = cx.entity().clone();
+                    canvas(
+                        move |bounds, _, cx| {
+                            entity.update(cx, |this, _| {
+                                this.bounds = bounds;
+                            })
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full()
+                })
+        } else {
+            div()
             .id("select-trigger")
             .relative()
             .flex()
@@ -473,7 +595,8 @@ impl<T: Clone + 'static> Render for Select<T> {
                 )
                 .absolute()
                 .size_full()
-            });
+            })
+        };
 
         let searchable = self.searchable;
         // ShellDeck patch: SDPATCH-022 — render the caller-provided localized

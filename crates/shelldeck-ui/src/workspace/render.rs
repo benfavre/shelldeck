@@ -157,7 +157,12 @@ impl Render for Workspace {
         // Pre-login landing: intercepts before `effective_mode()` gets a say.
         // There is no guest/local bypass; logout returns here as well.
         if self.show_welcome() {
-            main_area = main_area.child(self.render_welcome_screen(is_maximized, _cx));
+            let compact_height = super::user_home::welcome_uses_compact_flow(
+                _window.viewport_size().height.to_f64() as f32,
+                self.ui_font_size,
+            );
+            main_area =
+                main_area.child(self.render_welcome_screen(is_maximized, compact_height, _cx));
             // Fall through to render titlebar + status bar chrome around
             // the welcome — no sidebar, no mode-specific children.
         } else if self.settings_open {

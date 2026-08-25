@@ -1,6 +1,13 @@
 use super::*;
 use crate::overlay::round_window_bottom;
 
+const WELCOME_CENTERED_MIN_LOGICAL_HEIGHT: f32 = 560.0;
+
+pub(super) fn welcome_uses_compact_flow(viewport_height: f32, ui_font_size: f32) -> bool {
+    let scale = crate::scale::scale_for_font_size(ui_font_size);
+    viewport_height / scale < WELCOME_CENTERED_MIN_LOGICAL_HEIGHT
+}
+
 impl Workspace {
     pub(super) fn render_site_section_header(label: &str) -> impl IntoElement {
         div()
@@ -1185,52 +1192,21 @@ impl Workspace {
     /// Pre-login welcome landing — intercepts the render whenever the user
     /// is not signed in (there is no guest path). Two-part layout:
     ///
-    /// 1. **Hero** — ShellDeck brand icon + title + tagline + two CTAs
-    ///    (sign in / create account).
-    /// 2. **Inklura marketing** — the Inklura brand block + value props
-    ///    lifted from inklura.fr, so a first-time visitor understands
-    ///    what they're being invited into before creating an account.
+    /// **Hero** — ShellDeck brand icon + one product promise + two CTAs
+    /// (sign in / create account). The installed app is an authentication
+    /// surface, not a second marketing landing page: broader Inklura claims
+    /// belong on the public website.
     ///
     /// Kept inside a `scrollable_vertical` because on small windows the
-    /// marketing block would push the CTAs offscreen.
+    /// hero and publisher attribution must remain reachable.
     /// `is_maximized` : comme le mode Utilisateur, l'écran de bienvenue est la
     /// couche opaque la plus basse — la barre d'état n'est pas montée ici.
     pub(super) fn render_welcome_screen(
         &self,
         is_maximized: bool,
+        compact_height: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // Small helper for the four Inklura value-prop cards — same shape
-        // so the row reads as a set.
-        fn stat_card(icon: &'static str, value: String, label: String) -> impl IntoElement {
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(4.0))
-                .w(px(150.0))
-                .px(px(12.0))
-                .py(px(14.0))
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .bg(ShellDeckColors::bg_sidebar())
-                .child(lucide_icon(icon, 22.0, ShellDeckColors::primary()))
-                .child(
-                    div()
-                        .text_size(px(18.0))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(value),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(label),
-                )
-        }
-
         let entity = cx.entity();
 
         // Hero — brand + CTAs.
@@ -1239,8 +1215,6 @@ impl Workspace {
             .flex_col()
             .items_center()
             .gap(px(16.0))
-            .pt(px(48.0))
-            .pb(px(32.0))
             .child(
                 // ShellDeck brand mark — PNG (not SVG) because GPUI renders
                 // SVGs in currentColor and the mark's multi-fill palette
@@ -1331,102 +1305,13 @@ impl Workspace {
                     ),
             );
 
-        // Inklura marketing block — content lifted from inklura.fr so the
-        // messaging stays in sync with the marketing site. Not a full
-        // marketing page; just enough for a first-time visitor to know
-        // what they're being invited into.
-        let inklura = div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(14.0))
-            .mt(px(8.0))
-            .pt(px(24.0))
-            .pb(px(48.0))
-            .px(px(32.0))
-            .border_t_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                // Inklura brand square — same 28×42 mark on #146BFF ground
-                // as the login modal, for visual consistency across the
-                // pre-auth surfaces.
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .w(px(28.0))
-                    .h(px(42.0))
-                    .rounded(px(8.0))
-                    .bg(rgb(0x146BFF))
-                    .child(
-                        svg()
-                            .path("images/logo-inklura.svg")
-                            .w(px(28.0))
-                            .h(px(42.0))
-                            .text_color(gpui::white()),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(px(20.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(t!("welcome.inklura.title").to_string()),
-            )
-            .child(
-                div()
-                    .max_w(px(560.0))
-                    .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("welcome.inklura.subtitle").to_string()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(10.0))
-                    .mt(px(6.0))
-                    .child(stat_card(
-                        "zap",
-                        t!("welcome.inklura.stat.savings.value").to_string(),
-                        t!("welcome.inklura.stat.savings.label").to_string(),
-                    ))
-                    .child(stat_card(
-                        "clock",
-                        t!("welcome.inklura.stat.time.value").to_string(),
-                        t!("welcome.inklura.stat.time.label").to_string(),
-                    ))
-                    .child(stat_card(
-                        "shield",
-                        t!("welcome.inklura.stat.uptime.value").to_string(),
-                        t!("welcome.inklura.stat.uptime.label").to_string(),
-                    ))
-                    .child(stat_card(
-                        "users",
-                        t!("welcome.inklura.stat.clients.value").to_string(),
-                        t!("welcome.inklura.stat.clients.label").to_string(),
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .mt(px(8.0))
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(lucide_icon("check", 11.0, ShellDeckColors::success()))
-                    .child(t!("welcome.inklura.trust").to_string()),
-            );
-
         // "Réalisé par WD29" footer — same shape as the Settings > About
         // signature so a first-time visitor sees the same attribution
         // whether they land here or hit About after signing in.
         const LOGO_H: f32 = 20.0;
         let made_by = div()
             .flex()
+            .flex_shrink_0()
             .items_center()
             .justify_center()
             .gap(px(8.0))
@@ -1452,7 +1337,43 @@ impl Workspace {
                 ),
             );
 
-        // Full page — scrolls if the three blocks don't fit the window.
+        // Normal windows center the actual task and pin attribution to the
+        // bottom. At the 400 px application minimum the same blocks switch to
+        // one scrolling column, so neither CTA nor the publisher disappears.
+        let content = if compact_height {
+            scrollable_vertical(
+                div()
+                    .id("welcome-body")
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .w_full()
+                    .py(px(32.0))
+                    .child(hero)
+                    .child(made_by),
+            )
+            .into_any_element()
+        } else {
+            div()
+                .id("welcome-body")
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .w_full()
+                        .items_center()
+                        .justify_center()
+                        .child(hero),
+                )
+                .child(made_by)
+                .into_any_element()
+        };
+
         round_window_bottom(
             div()
                 .size_full()
@@ -1460,23 +1381,7 @@ impl Workspace {
                 .overflow_hidden(),
             is_maximized,
         )
-        .child(scrollable_vertical(
-            div()
-                .id("welcome-body")
-                .flex()
-                .flex_col()
-                .items_center()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .w_full()
-                        .child(hero)
-                        .child(inklura)
-                        .child(made_by),
-                ),
-        ))
+        .child(content)
     }
 
     /// `is_maximized` sert uniquement aux deux coins bas : cette surface est la
@@ -1886,5 +1791,19 @@ impl Workspace {
             is_maximized,
         )
         .child(scrollable_vertical(body))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::welcome_uses_compact_flow;
+
+    // SDTEST-1708 — SDUC-441
+    #[test]
+    fn sdtest_1708_welcome_height_breakpoint_tracks_ui_scale() {
+        assert!(welcome_uses_compact_flow(559.0, 14.0));
+        assert!(!welcome_uses_compact_flow(560.0, 14.0));
+        assert!(welcome_uses_compact_flow(1_119.0, 28.0));
+        assert!(!welcome_uses_compact_flow(1_120.0, 28.0));
     }
 }
