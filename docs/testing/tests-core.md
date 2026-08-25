@@ -289,7 +289,7 @@ Existing: **0 tests**.
 | SDTEST-1684 | shared SDK `session_refresh_and_mutation_keep_typed_refusals` | SDUC-200, SDUC-201 | Green | Cursor expiry and mutation conflicts remain typed outcomes instead of private client retry/error rules; Automonique CI runs the standalone SDK suite. |
 | SDTEST-1685 | `platform.rs::refresh_uses_cursors_per_surface_and_reconciles_pending_receipts` | SDUC-200, SDUC-201, SDUC-476 | Green | A canonical fake server proves steady-state refresh sends resource, directory and pane subscriptions—no snapshot—and reconciles an accepted receipt by ID. |
 | SDTEST-1686 | Automonique `platform_live.rs::platform_capabilities_snapshot_and_controller_are_live_and_durable` | SDUC-201, SDUC-476 | Green | The shared live socket fixture projects a pending approval, executes a revision-bound grant, returns a completed receipt, marks the resolved resource stale, and links a session to its controllable run. |
-| SDTEST-1693 | `platform.rs::sdtest_1693_ambiguous_execute_reconciles_with_the_retained_idempotency_key` | SDUC-201 | Green | When an execute response is lost after submission, ShellDeck queries the durable receipt with the exact key prepared before the mutation instead of issuing a new mutation identity. |
+| SDTEST-1706 | `platform.rs::sdtest_1706_ambiguous_execute_reconciles_with_the_retained_idempotency_key` | SDUC-201 | Green | When an execute response is lost after submission, ShellDeck queries the durable receipt with the exact key prepared before the mutation instead of issuing a new mutation identity. |
 
 ---
 
@@ -473,6 +473,15 @@ Existing: **0 tests**.
 | SDTEST-1655 | `ai/mentions.rs::spans_cover_each_token_once_and_prefer_the_longest_label` | SDUC-468 | Green | `@web-01` colours as one mention rather than `@web` plus loose text; spans come back sorted for a run splitter. |
 | SDTEST-1656 | `ai/mentions.rs::spans_ignore_an_email_and_an_unmentioned_label` | SDUC-468 | Green | Word-boundary rule: an address is never painted, and a label nobody mentioned produces nothing. |
 | SDTEST-1657 | `ai/mentions.rs::spans_are_byte_exact_on_accented_text` | SDUC-468 | Green | Boundaries land on char boundaries — the shaper panics otherwise. |
+
+---
+
+## 25. `acp.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1693 | `acp.rs::permission_broker_output_must_match_an_offered_option` | SDUC-480 | Green | An injected broker cannot fabricate an allow/deny option absent from the exact agent request. |
+| SDTEST-1694 | `acp.rs::request_validation_rejects_relative_workspace_and_empty_prompt` | SDUC-480 | Green | Invalid workspace scope and empty turns fail before an ACP child is spawned. |
 
 ---
 

@@ -50,6 +50,7 @@ pub enum AiBackend {
     ClaudeCli,
     CodexCli,
     AiderCli,
+    AutomoniqueAcp,
     OpenAi,
     Anthropic,
 }
@@ -61,13 +62,17 @@ impl AiBackend {
             Self::ClaudeCli => "Claude Code",
             Self::CodexCli => "Codex",
             Self::AiderCli => "Aider",
+            Self::AutomoniqueAcp => "Automonique (ACP)",
             Self::OpenAi => "OpenAI",
             Self::Anthropic => "Anthropic",
         }
     }
 
     pub fn is_cli(self) -> bool {
-        matches!(self, Self::ClaudeCli | Self::CodexCli | Self::AiderCli)
+        matches!(
+            self,
+            Self::ClaudeCli | Self::CodexCli | Self::AiderCli | Self::AutomoniqueAcp
+        )
     }
 
     pub fn provider_key(self) -> Option<&'static str> {
@@ -92,6 +97,7 @@ impl AiBackend {
             Self::ClaudeCli => Some("claude"),
             Self::CodexCli => Some("codex"),
             Self::AiderCli => Some("aider"),
+            Self::AutomoniqueAcp => Some("automonique"),
             _ => None,
         }
     }
@@ -1553,6 +1559,12 @@ pub fn create_client(config: &AiConfig) -> Result<Box<dyn AiClient>> {
         config.model.trim().to_string()
     };
     match config.backend {
+        AiBackend::AutomoniqueAcp => Ok(Box::new(AcpAiClient {
+            bin: config
+                .cli_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("automonique")),
+        })),
         AiBackend::ClaudeCli | AiBackend::CodexCli | AiBackend::AiderCli => {
             Ok(Box::new(CliAiClient {
                 backend: config.backend,
@@ -1830,6 +1842,48 @@ struct ApiAiClient {
     model: String,
     api_key: String,
     http: reqwest::blocking::Client,
+}
+
+struct AcpAiClient {
+    bin: PathBuf,
+}
+
+impl AiClient for AcpAiClient {
+    fn backend(&self) -> AiBackend {
+        AiBackend::AutomoniqueAcp
+    }
+
+    fn complete(&self, prompt: &str, ctx: AiContext) -> Result<AiResponse> {
+        reject_undeliverable_attachments(self.backend(), &ctx)?;
+        let prompt = composed_prompt(prompt, &ctx)?;
+        let cwd = ctx.cwd.unwrap_or_else(std::env::temp_dir);
+        let result = crate::acp::AcpClient::new(crate::acp::AcpLaunch::automonique(&self.bin))
+            .prompt(crate::acp::AcpTurnRequest::new(
+                cwd,
+                vec![agent_client_protocol::schema::v1::ContentBlock::Text(
+                    agent_client_protocol::schema::v1::TextContent::new(prompt),
+                )],
+            ))?;
+        let mut text = String::new();
+        for notification in result.updates {
+            if let agent_client_protocol::schema::v1::SessionUpdate::AgentMessageChunk(chunk) =
+                notification.update
+            {
+                if let agent_client_protocol::schema::v1::ContentBlock::Text(part) = chunk.content {
+                    text.push_str(&part.text);
+                }
+            }
+        }
+        if text.trim().is_empty() {
+            return Err(ShellDeckError::Connection(
+                "Automonique ACP returned no assistant text".into(),
+            ));
+        }
+        Ok(AiResponse {
+            text: text.trim().to_string(),
+            backend: self.backend(),
+        })
+    }
 }
 
 impl AiClient for ApiAiClient {

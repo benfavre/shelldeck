@@ -4,6 +4,13 @@ ShellDeck AI is opt-in and provider-neutral. All integrations go through
 `shelldeck_core::ai::AiClient`; views must not invoke Claude, Codex, Aider,
 OpenAI, or Anthropic directly.
 
+Automonique is integrated through the stable ACP v1 client in
+`shelldeck_core::acp`. ShellDeck is the ACP client/host and Automonique is the
+agent/server. Launch arguments are explicit (never shell-parsed), session
+updates remain ordered, and permission replies must be selected from the exact
+options offered by the agent. ShellDeck must not advertise filesystem or
+terminal ACP services as a shortcut around the confirmation paths below.
+
 ## Safety contract
 
 - An AI call starts only after an explicit user action. No background

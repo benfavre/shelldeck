@@ -903,9 +903,9 @@ mod tests {
         server.join().unwrap();
     }
 
-    // SDTEST-1693
+    // SDTEST-1706
     #[test]
-    fn sdtest_1693_ambiguous_execute_reconciles_with_the_retained_idempotency_key() {
+    fn sdtest_1706_ambiguous_execute_reconciles_with_the_retained_idempotency_key() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {

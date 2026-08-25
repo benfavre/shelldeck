@@ -1111,10 +1111,12 @@ impl Render for ScriptForm {
                             "script-ai-thinking",
                             28.0,
                             MonolithMotion::Thinking,
+                            cx,
                         ))
                         .child(animated_loading_text(
                             "script-ai-thinking-text",
                             t!("script_form.ai.generating").to_string(),
+                            cx,
                         )),
                 );
             }

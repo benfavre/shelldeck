@@ -137,7 +137,7 @@ onboarding.modes.user_body = "My sites, My requests, and Manage deep links — e
 onboarding.modes.support_title = "Support"
 onboarding.modes.support_body = "Customer tickets, hosted requests, and staff tools (Monique, Platform)."
 onboarding.modes.dev_title = "Dev"
-onboarding.modes.dev_body = "Full sidebar: SSH, scripts, tunnels, Monique Console, Platform, bext Cloud…"
+onboarding.modes.dev_body = "Full sidebar: SSH, scripts, tunnels, Jean Console, Fleet, bext Cloud…"
 
 # Onboarding — shortcut strip at the foot of the last slide
 onboarding.shortcuts.palette = "Open the palette"
@@ -635,6 +635,9 @@ support.chip.unread = "Unread"
 support.chip.sla_breach = "SLA breached"
 support.empty.no_ticket_selected = "No ticket selected"
 support.empty.tickets = "No open tickets"
+support.jean.title = "JEANCLAUDE"
+support.jean.active = "%{count} active"
+support.jean.no_pending = "No pending confirmations"
 support.empty.messages = "No messages"
 support.empty.requests = "No requests yet."
 support.empty.no_request_selected = "No request selected"

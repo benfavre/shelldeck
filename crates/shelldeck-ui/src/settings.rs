@@ -1367,7 +1367,10 @@ impl SettingsView {
                     t!("settings.ai.status.disabled").to_string(),
                     ShellDeckColors::text_muted(),
                 ),
-                AiBackend::ClaudeCli | AiBackend::CodexCli | AiBackend::AiderCli => (
+                AiBackend::ClaudeCli
+                | AiBackend::CodexCli
+                | AiBackend::AiderCli
+                | AiBackend::AutomoniqueAcp => (
                     local_backend_status(backend.cli_command().expect("CLI backend"), !cli_missing),
                     if cli_missing {
                         ShellDeckColors::error()
@@ -3080,12 +3083,15 @@ fn build_ai_backend_select(
         (AiBackend::ClaudeCli, "Claude Code CLI".to_string()),
         (AiBackend::CodexCli, "Codex CLI".to_string()),
         (AiBackend::AiderCli, "Aider CLI".to_string()),
+        (AiBackend::AutomoniqueAcp, "Automonique ACP".to_string()),
         (AiBackend::OpenAi, "OpenAI API".to_string()),
         (AiBackend::Anthropic, "Anthropic API".to_string()),
     ];
     let options = entries
         .iter()
-        .map(|(backend, label)| {
+        .map(|entry| {
+            let backend = entry.0;
+            let label = &entry.1;
             let icon = match backend {
                 AiBackend::Disabled => IconSource::Named("x".into()),
                 AiBackend::ClaudeCli => IconSource::from("icons/simple/claudecode.svg"),
@@ -3093,14 +3099,15 @@ fn build_ai_backend_select(
                     IconSource::from("icons/simple/openai.svg")
                 }
                 AiBackend::AiderCli => IconSource::Named("terminal".into()),
+                AiBackend::AutomoniqueAcp => IconSource::Named("bot".into()),
                 AiBackend::Anthropic => IconSource::from("icons/simple/anthropic.svg"),
             };
-            SelectOption::new(*backend, label.clone()).with_icon(icon)
+            SelectOption::new(backend, label.clone()).with_icon(icon)
         })
         .collect();
     let selected = entries
         .iter()
-        .position(|(backend, _)| *backend == config.ai.backend);
+        .position(|entry| entry.0 == config.ai.backend);
     let parent = cx.entity();
     cx.new(move |select_cx| {
         Select::new(select_cx)
@@ -3331,7 +3338,7 @@ mod tests {
         }
     }
 
-    /// SDTEST-1700 — aucun échec d'enregistrement ne doit atteindre l'écran
+    /// SDTEST-1701 — aucun échec d'enregistrement ne doit atteindre l'écran
     /// sous forme de `Debug` Rust.
     ///
     /// L'onglet Général affichait littéralement
@@ -3339,7 +3346,7 @@ mod tests {
     /// milieu, dès qu'une autre application détenait déjà la combinaison — le
     /// cas courant, pas une anomalie.
     #[test]
-    fn sdtest_1700_shortcut_failures_are_classified_never_dumped() {
+    fn sdtest_1701_shortcut_failures_are_classified_never_dumped() {
         use super::ShortcutFailure;
 
         assert_eq!(

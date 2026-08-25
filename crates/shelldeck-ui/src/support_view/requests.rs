@@ -2339,6 +2339,7 @@ impl SupportView {
                             (AiBackend::ClaudeCli, "Claude Code CLI"),
                             (AiBackend::CodexCli, "Codex CLI"),
                             (AiBackend::AiderCli, "Aider CLI"),
+                            (AiBackend::AutomoniqueAcp, "Automonique ACP"),
                             (AiBackend::OpenAi, "OpenAI API"),
                             (AiBackend::Anthropic, "Anthropic API"),
                         ]

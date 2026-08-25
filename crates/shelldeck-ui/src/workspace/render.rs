@@ -24,7 +24,11 @@ fn workspace_status_bar_visible(show_welcome: bool, mode: AppMode) -> bool {
 }
 
 impl Workspace {
-    fn render_mode_transition_loader(&self, transition: ModeTransition) -> impl IntoElement {
+    fn render_mode_transition_loader(
+        &self,
+        transition: ModeTransition,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mode_label = match transition.target {
             AppMode::User => t!("mode.transition.user").to_string(),
             AppMode::Support => t!("mode.transition.support").to_string(),
@@ -68,6 +72,7 @@ impl Workspace {
                         "mode-transition-mascot",
                         166.0,
                         mascot_motion,
+                        cx,
                     ))
                     .child(
                         div()
@@ -810,14 +815,14 @@ impl Render for Workspace {
         }
 
         if let Some(transition) = self.mode_transition {
-            root = root.child(self.render_mode_transition_loader(transition));
+            root = root.child(self.render_mode_transition_loader(transition, _cx));
         }
 
         // The post-login transition is intentionally last: it covers window
         // chrome, toasts and first-run onboarding until the initial sync has
         // produced a coherent signed-in workspace.
         if let Some(splash) = &self.post_login_splash {
-            root = root.child(self.render_post_login_splash(splash));
+            root = root.child(self.render_post_login_splash(splash, _cx));
         }
 
         root
@@ -832,7 +837,7 @@ mod tests {
         MODE_TRANSITION_OUT_MS, MODE_TRANSITION_TOTAL_MS,
     };
 
-    /// SDTEST-1702 — la courbe suit la durée réelle de la transition.
+    /// SDTEST-1703 — la courbe suit la durée réelle de la transition.
     ///
     /// Le palier était constant à 2,54 s, soit trois secondes pleines à chaque
     /// aller-retour Support ↔ Dev alors que rien ne charge : les entités Dev

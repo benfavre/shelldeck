@@ -20,6 +20,7 @@ use shelldeck_core::agent_runtime::{
 };
 use uuid::Uuid;
 
+use crate::follow_scroll::{follow_latest_if_at_end, pin_to_latest};
 use crate::icons::lucide_icon;
 use crate::scale::px;
 use crate::t;
@@ -287,6 +288,7 @@ impl AgentConsoleView {
     }
 
     pub fn begin_run(&mut self, request: AgentRunRequest, cx: &mut Context<Self>) {
+        pin_to_latest(&self.scroll);
         self.prompt_state.update(cx, |state, cx| state.reset(cx));
         let continuing = request.resume_session.is_some();
         if !continuing {
@@ -317,6 +319,7 @@ impl AgentConsoleView {
     }
 
     pub fn push_stream_event(&mut self, event: AgentStreamEvent, cx: &mut Context<Self>) {
+        follow_latest_if_at_end(&self.scroll);
         match event {
             AgentStreamEvent::Text(text) => {
                 let streamed_jcode = self.run_received_delta
@@ -359,7 +362,6 @@ impl AgentConsoleView {
                 self.error = Some(bounded_utf8(error, MAX_ACTIVITY_BYTES))
             }
         }
-        self.scroll.scroll_to_bottom();
         cx.notify();
     }
 
@@ -396,7 +398,7 @@ impl AgentConsoleView {
             self.session_context = None;
             self.session_token = None;
         }
-        self.scroll.scroll_to_bottom();
+        follow_latest_if_at_end(&self.scroll);
         cx.notify();
     }
 
@@ -1244,9 +1246,9 @@ mod tests {
         }
     }
 
-    // SDTEST-1704 — SDUC-475
+    // SDTEST-1705 — SDUC-475
     #[test]
-    fn sdtest_1704_agent_context_panel_uses_scale_aware_explicit_rows() {
+    fn sdtest_1705_agent_context_panel_uses_scale_aware_explicit_rows() {
         assert_eq!(
             agent_controls_layout(gpui::px(959.0), gpui::px(16.0)),
             AgentControlsLayout::Compact
@@ -1269,9 +1271,9 @@ mod tests {
         );
     }
 
-    // SDTEST-1706 — SDUC-475
+    // SDTEST-1707 — SDUC-475
     #[test]
-    fn sdtest_1706_agent_activity_deduplicates_and_keeps_a_bounded_popover_tail() {
+    fn sdtest_1707_agent_activity_deduplicates_and_keeps_a_bounded_popover_tail() {
         let mut activity = Vec::new();
         for _ in 0..8 {
             push_activity(&mut activity, "Claude Code est prêt".to_string());

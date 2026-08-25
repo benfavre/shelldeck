@@ -1445,7 +1445,7 @@ in the source key. The interpolation contract survives locale
 switches; a key without `%{…}` placeholders ignores extra vars
 without erroring.
 
-### SDUC-478 — Operational vocabulary stays localized and consistent
+### SDUC-482 — Operational vocabulary stays localized and consistent
 
 Server-owned ticket statuses, request statuses, and priorities never appear as
 raw protocol tokens when a newer value reaches an older ShellDeck client; an
@@ -1964,9 +1964,9 @@ announced count. The home also exposes up to four actionable tickets ordered by
 SLA risk, urgency, missing owner, then recency, plus the four most recently
 updated visible requests; selecting either kind opens its real detail.
 Operational lists remain separate tabs. The first-run tour that follows a
-sign-in is role-aware in its own right — see SDUC-477.
+sign-in is role-aware in its own right — see SDUC-481.
 
-### SDUC-477 — The first-run tour is built for the mode the account lands in
+### SDUC-481 — The first-run tour is built for the mode the account lands in
 
 The post-login tour is three sequences, not one. The run is chosen from the
 mode the account actually lands in (`Workspace::effective_mode`): User gets
@@ -2391,6 +2391,51 @@ once the network returns.
 
 ---
 
+## 30. Reading continuity and motion
+
+### SDUC-477 — Streaming output follows the reader, not just the producer
+
+The contextual Assistant and the coding-agent console keep new streamed output
+visible while the reader is already at the bottom. If the reader scrolls up to
+inspect an earlier answer or log line, incoming output preserves that reading
+position instead of forcing the viewport back to the latest item. Returning to
+the bottom resumes following on the next update. Sending a new turn, starting a
+new agent run, or explicitly selecting a conversation is navigation to current
+work and deliberately pins the view to the latest output.
+
+### SDUC-478 — Terminal selections remain attached to retained text
+
+A terminal selection is anchored to its row in retained history, so new output
+and scrollback navigation cannot silently move the highlight or copied text to
+different glyphs that later occupy the same screen coordinate. The highlight
+reappears when its row is scrolled back into view. If the configured scrollback
+limit evicts either selection endpoint, the selection clears; a column-width
+reflow or an alternate-screen boundary also clears it because the original row,
+column, or buffer identity no longer exists.
+
+### SDUC-479 — Application motion follows one accessible, bounded policy
+
+The operating system's reduced-motion preference applies to every GPUI element
+animation: one-shot transitions render their final state, repeating transitions
+render a stable initial state, and neither schedules more animation frames.
+ShellDeck's animated Monolith assets switch to a static badge under the same
+preference. With motion enabled, recurring lightweight indicators share one
+approximately 30 Hz clock instead of each repainting at the display refresh
+rate; the clock stops once no rendered view renews it.
+
+---
+
+### SDUC-480 — ShellDeck hosts stable ACP agents without becoming an executor
+
+ShellDeck can launch an explicitly configured ACP v1 agent without a shell,
+negotiate the official protocol, create or reload its durable session, submit
+baseline and rich prompt content, and preserve every ordered session update.
+Permission requests reach an injected user-decision broker and only an option
+the agent actually offered can be returned. With no broker the request is
+cancelled. ShellDeck advertises no filesystem or terminal service, so ACP
+cannot bypass its typed confirmation paths or Automonique's execution
+authority. Automonique is the built-in launch profile (`automonique acp`).
+
 ## Change log
 
 - **2026-08-25** — Amended SDUC-475 after the session setup still looked like
@@ -2398,12 +2443,12 @@ once the network returns.
   share one divided execution-context frame, the directory is its editable
   final row, and the free-form model override moved into the shared Composer
   footer. The Select interaction remains shared through SDPATCH-041
-  (SDTEST-1704).
+  (SDTEST-1705).
 - **2026-08-25** — Amended SDUC-475 after Claude control records flooded the
   console with repeated Ready rows and the transcript inherited document
   spacing: initialization is subtype-specific, activity is deduplicated and
   moved behind a bounded header popover, and the thread opts into compact,
-  column-clipped Markdown (SDTEST-1675, SDTEST-1706).
+  column-clipped Markdown (SDTEST-1675, SDTEST-1707).
 - **2026-08-25** — Amended SDUC-475 after the Agents prompt still read as a
   large rounded card rather than a ShellDeck field: the shared Composer now
   inherits the exact Input chrome tokens across Agents, Support, Requests and
@@ -2412,28 +2457,31 @@ once the network returns.
   authentication with a second Inklura marketing landing: the installed app
   now keeps one product promise and removes the unrelated trial/statistics
   block.
+- **2026-08-24** — Added SDUC-480 and SDTEST-1693/1694 for the stable ACP v1
+  client host and fail-closed permission boundary.
+- **2026-08-24** — Renumbered the integrated onboarding and UX repair entries
+  after parallel work allocated the same IDs: they now use SDUC-481/482 and
+  SDTEST-1695..1704. The existing terminal, motion, Manage, and ACP entries
+  retain SDUC-477..480 and SDTEST-1687..1694 as sticky IDs.
+- **2026-08-24** — Added SDUC-482 and SDTEST-1704 for the NAV-06/D-05 UX
+  repair: unknown operational values no longer leak protocol English, live
+  status counters are explicit and inflected, and Server Sync / Recent
+  Activity keep one name across navigation surfaces.
 - **2026-08-24** — Amended SDUC-475 with the agent console's responsive chrome
   contract: explicit scale-aware control rows and one centered prompt frame
-  with one visible execution action (SDTEST-1704).
+  with one visible execution action (SDTEST-1705).
 - **2026-08-24** — Amended SDUC-432 after both full-window attachment surfaces
   were found repainting all four floating-window corners: the lightbox and
   capture annotator now own the common radius and deliberately drop it when
   maximized.
 - **2026-08-24** — Enforced SDUC-201's ambiguous-mutation contract with a
   retained idempotency key, immediate receipt reconciliation, and an exact-key
-  retry path (SDTEST-1693).
+  retry path (SDTEST-1706).
 - **2026-08-24** — Amended SDUC-200 and added SDTEST-1692 for explicit,
   namespaced Manage federation endpoints.
-- **2026-08-24** — Reconciled the `dev` test IDs while porting its work onto
-  canonical `main`. The branch had already moved its colliding use cases to
-  SDUC-477/478; because `main` subsequently allocated SDTEST-1692/1693, the
-  ported ten-test block now occupies SDTEST-1694..1703. IDs stay sticky from
-  here. Still duplicated *inside* earlier `main` history and left untouched:
-  SDUC-468 and SDTEST-1200..1203/1377/1655/1656.
-- **2026-08-24** — Added SDUC-478 and SDTEST-1703 for the NAV-06/D-05 UX
-  repair: unknown operational values no longer leak protocol English, live
-  status counters are explicit and inflected, and Server Sync / Recent
-  Activity keep one name across navigation surfaces.
+- **2026-08-23** — Added SDUC-477..479 and SDTEST-1687..1691 for
+  reader-preserving stream follow, history-anchored terminal selection, and a
+  shared reduced-motion / bounded-cadence animation policy.
 - **2026-08-23** — Amended SDUC-201 and SDUC-476 for cursor-based steady-state
   refresh, exact attachment cursors, searchable multi-pane observation,
   reconnect-safe lease loss, approval/run previews, typed ownership refusals,
@@ -2445,11 +2493,6 @@ once the network returns.
   console (Claude Code, Codex, DeepSeek via Jcode), including explicit target,
   access confirmation, resumable same-context turns, streaming output, and
   cancellation.
-
-- **2026-08-24** — Added SDUC-470 and SDTEST-1671 for the NAV-06/D-05 UX
-  repair: unknown operational values no longer leak protocol English, live
-  status counters are explicit and inflected, and Server Sync / Recent
-  Activity keep one name across navigation surfaces.
 - **2026-08-20** — Amended SDUC-468: the mention wash became a padded, rounded
   chip (SDPATCH-041 on the gpui fork, where a run background was a bare
   full-line-height rect), and quoted turns — recent threads and the history
@@ -2526,7 +2569,7 @@ once the network returns.
   Requests share one bounded proportional master column and switch to explicit
   master/detail navigation on narrow windows. Empty details remain contained
   and side-effect-free rather than auto-selecting an arbitrary record.
-- **2026-08-21** — Added SDUC-477 and SDTEST-1694..1697, and amended SDUC-440,
+- **2026-08-21** — Added SDUC-481 and SDTEST-1695..1698, and amended SDUC-440,
   for the role-aware first-run tour. The single four-step sequence became three
   runs chosen from the effective mode, the shortcuts slide became a strip on the
   last slide, and the mode slide is appended only for an account that can

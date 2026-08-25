@@ -137,7 +137,7 @@ onboarding.modes.user_body = "Mes sites, Mes demandes et les liens vers les espa
 onboarding.modes.support_title = "Support"
 onboarding.modes.support_body = "Tickets clients, demandes hébergées et outils staff (Monique, Plateforme)."
 onboarding.modes.dev_title = "Dev"
-onboarding.modes.dev_body = "Barre latérale complète : SSH, scripts, tunnels, Monique Console, Plateforme, bext Cloud…"
+onboarding.modes.dev_body = "Barre latérale complète : SSH, scripts, tunnels, Jean Console, Fleet, bext Cloud…"
 
 # Onboarding — bande de raccourcis, au pied de la dernière diapo
 onboarding.shortcuts.palette = "Ouvrir la palette"
@@ -635,6 +635,9 @@ support.chip.unread = "Non lus"
 support.chip.sla_breach = "SLA dépassé"
 support.empty.no_ticket_selected = "Aucun ticket sélectionné"
 support.empty.tickets = "Aucun ticket ouvert"
+support.jean.title = "JEANCLAUDE"
+support.jean.active = "%{count} actifs"
+support.jean.no_pending = "Aucune confirmation en attente"
 support.empty.messages = "Aucun message"
 support.empty.requests = "Aucune demande pour le moment."
 support.empty.no_request_selected = "Aucune demande sélectionnée"

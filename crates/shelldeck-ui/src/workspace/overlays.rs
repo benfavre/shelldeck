@@ -142,10 +142,19 @@ impl Workspace {
             .child(activity)
     }
 
-    pub(super) fn render_post_login_splash(&self, splash: &PostLoginSplash) -> impl IntoElement {
+    pub(super) fn render_post_login_splash(
+        &self,
+        splash: &PostLoginSplash,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         use std::time::Duration;
 
-        let mascot = animated_monolith("post-login-mascot", 188.0, MonolithMotion::FloatAndBreathe);
+        let mascot = animated_monolith(
+            "post-login-mascot",
+            188.0,
+            MonolithMotion::FloatAndBreathe,
+            cx,
+        );
 
         let progress_bar = div()
             .relative()

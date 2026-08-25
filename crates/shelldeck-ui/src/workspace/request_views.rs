@@ -774,6 +774,7 @@ impl Workspace {
                 (AiBackend::ClaudeCli, "Claude Code CLI"),
                 (AiBackend::CodexCli, "Codex CLI"),
                 (AiBackend::AiderCli, "Aider CLI"),
+                (AiBackend::AutomoniqueAcp, "Automonique ACP"),
                 (AiBackend::OpenAi, "OpenAI API"),
                 (AiBackend::Anthropic, "Anthropic API"),
             ]
@@ -1323,10 +1324,12 @@ impl Workspace {
                             "request-ai-thinking",
                             28.0,
                             MonolithMotion::Thinking,
+                            cx,
                         ))
                         .child(animated_loading_text(
                             "request-ai-thinking-text",
                             t!("user.requests.ai.generating").to_string(),
+                            cx,
                         )),
                 );
             }

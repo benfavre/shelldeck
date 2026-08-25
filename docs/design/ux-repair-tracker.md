@@ -186,7 +186,7 @@ ligne existante.
   passer de Dev à Support laissait « Nouveau terminal », « Basculer barre
   latérale », « Fermer l'onglet » et « Onglet suivant » dans une surface sans
   terminal, sans barre latérale et sans onglets. « Quitter » passe par ailleurs
-  en dernière position ; SDTEST-1699 verrouille l'invariant sur les quatre
+  en dernière position ; SDTEST-1700 verrouille l'invariant sur les quatre
   combinaisons de rôle.
 - **2026-08-21 — UX-019 → À valider.** Le champ bleu de la bannière est peint
   dans l'illustration, dont le recadrage `Cover` déplace le bord avec la
@@ -223,7 +223,7 @@ ligne existante.
   le volet Demandes.
 - **2026-08-21 — UX-025 → À valider.** `classify_shortcut_error` distingue le
   portail absent, la combinaison déjà prise et le reste ; le détail part dans
-  les journaux. SDTEST-1700 pinne les trois cas, dont la forme exacte relevée
+  les journaux. SDTEST-1701 pinne les trois cas, dont la forme exacte relevée
   sur cette machine.
 
 - **2026-08-21 — UX-026 → À valider.** `has_panel` répondait à la question
@@ -231,14 +231,14 @@ ligne existante.
   ce que la vue ne montre pas ? ». Seules Connexions — aucune vue principale ne
   liste les hôtes — et Sites — les sites du locataire Manage, que la vue des
   sites *découverts* ne connaît pas — en gardent un. La fonction porte
-  désormais la raison de chaque réponse, et SDTEST-1701 ferme la liste au lieu
+  désormais la raison de chaque réponse, et SDTEST-1702 ferme la liste au lieu
   de tolérer une exception nommée.
 - **2026-08-21 — UX-027 → À valider.** Le palier devient variable : complet à
   la première entrée dans un mode depuis le lancement, 420 ms ensuite. La
   personnalité de la mascotte, spécifiée dans `mode-transitions.md`, est donc
   vue en entier une fois par mode et par session, sans être refacturée à chaque
   aller-retour. La courbe du voile suit la durée réellement en cours, sinon il
-  disparaissait avant la fin ou restait après ; SDTEST-1702 le vérifie pour les
+  disparaissait avant la fin ou restait après ; SDTEST-1703 le vérifie pour les
   deux durées.
 
 - **2026-08-21 — UX-028 → À valider.** Renommer les deux surfaces ne suffisait
@@ -262,7 +262,7 @@ ligne existante.
   de détail ouverte, le bouton d'agrandissement a effectivement fait passer la
   fenêtre de 1210×810 à 1920×1048, puis retour à l'état flottant.
 - **2026-08-24 — UX-031 → À valider.** `LineWrapper::is_word_char` classe
-  maintenant `U+2019` comme l'apostrophe ASCII. `SDPATCH-115` inventorie le correctif
+  maintenant `U+2019` comme l'apostrophe ASCII. `SDPATCH-116` inventorie le correctif
   et son garde-fou sur `l’échange`, `d’ici`, `qu’importe` et `n’importe`. À 900 puis
   800 px, l'état vide Support garde `l’échange` entier et les Paramètres gardent
   `n’importe` entier.
@@ -278,7 +278,7 @@ ligne existante.
   actives et accorde « connexion active », « redirection active » et « script
   en cours » ; elle ne peut plus faire lire « 0 scripts » comme un inventaire
   vide. Le rail, le menu Aller et les titres partagent enfin
-  « Synchronisation serveur » et « Activité récente ». SDTEST-1703 couvre les
+  « Synchronisation serveur » et « Activité récente ». SDTEST-1704 couvre les
   deux locales dans le scénario séquentiel imposé par `rust_i18n`. Recette X11
   sur le profil isolé : les trois zéros portent leur activité exacte ; les deux
   entrées du menu Aller ont ensuite ouvert une vue au titre strictement identique.

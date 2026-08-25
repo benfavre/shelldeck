@@ -1798,9 +1798,9 @@ impl Workspace {
 mod tests {
     use super::welcome_uses_compact_flow;
 
-    // SDTEST-1705 — SDUC-441
+    // SDTEST-1708 — SDUC-441
     #[test]
-    fn sdtest_1705_welcome_height_breakpoint_tracks_ui_scale() {
+    fn sdtest_1708_welcome_height_breakpoint_tracks_ui_scale() {
         assert!(welcome_uses_compact_flow(559.0, 14.0));
         assert!(!welcome_uses_compact_flow(560.0, 14.0));
         assert!(welcome_uses_compact_flow(1_119.0, 28.0));

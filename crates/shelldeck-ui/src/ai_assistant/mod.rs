@@ -24,6 +24,7 @@ mod composer;
 use composer::{attachment_summary, MentionPicker};
 
 use crate::ai_workflow::capability_result_is_markdown;
+use crate::follow_scroll::{follow_latest_if_at_end, pin_to_latest};
 use crate::icons::{ai_provider_icon, ai_provider_inline, lucide_icon, lucide_path};
 use crate::markdown::{markdown_link_popover, MarkdownLinkAction, MarkdownLinkHandler};
 use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
@@ -570,11 +571,12 @@ impl AiAssistantView {
     }
 
     /// Providers offered by the composer picker, mirroring the Settings list.
-    fn backend_choices() -> [(AiBackend, &'static str); 5] {
+    fn backend_choices() -> [(AiBackend, &'static str); 6] {
         [
             (AiBackend::ClaudeCli, "Claude Code CLI"),
             (AiBackend::CodexCli, "Codex CLI"),
             (AiBackend::AiderCli, "Aider CLI"),
+            (AiBackend::AutomoniqueAcp, "Automonique ACP"),
             (AiBackend::OpenAi, "OpenAI API"),
             (AiBackend::Anthropic, "Anthropic API"),
         ]
@@ -640,7 +642,7 @@ impl AiAssistantView {
                 {
                     conversation.push(AiChatRole::Assistant, text.clone());
                     self.persist_conversations();
-                    self.message_scroll.scroll_to_bottom();
+                    follow_latest_if_at_end(&self.message_scroll);
                 }
                 self.error = None;
             }
@@ -801,6 +803,7 @@ impl AiAssistantView {
 
     fn submit_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
         if !self.loading {
+            pin_to_latest(&self.message_scroll);
             let conversation_id = self.ensure_active_conversation();
             // Resolved against the *draft being sent* and the live directory,
             // so a reference the user deleted — or one that left the caller's
@@ -915,6 +918,7 @@ impl AiAssistantView {
     }
 
     fn new_conversation(&mut self, cx: &mut Context<Self>) {
+        pin_to_latest(&self.message_scroll);
         self.request_gate.invalidate();
         self.active_conversation = None;
         self.loading = false;
@@ -939,7 +943,7 @@ impl AiAssistantView {
             if restored {
                 self.persist_conversations();
             }
-            self.message_scroll.scroll_to_bottom();
+            pin_to_latest(&self.message_scroll);
             cx.notify();
         }
     }
@@ -1839,14 +1843,15 @@ impl AiAssistantView {
                         "ai-assistant-thinking",
                         32.0,
                         MonolithMotion::Thinking,
+                        cx,
                     ))
                     .child(animated_loading_text(
                         "ai-assistant-thinking-text",
                         t!("ai.assistant.generating").to_string(),
+                        cx,
                     )),
             );
         }
-        let _ = cx;
         thread.into_any_element()
     }
 

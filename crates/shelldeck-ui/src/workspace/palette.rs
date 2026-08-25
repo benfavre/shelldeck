@@ -395,14 +395,14 @@ mod tests {
     };
     use gpui::Action;
 
-    /// SDTEST-1699 — « Quitter » ne doit jamais être la première ligne.
+    /// SDTEST-1700 — « Quitter » ne doit jamais être la première ligne.
     ///
     /// La palette présélectionne son premier résultat : avec « Quitter » en
     /// tête, ouvrir la palette et valider fermait l'application, et il n'y
     /// avait aucun moyen clavier d'annuler puisque Échap n'était pas délivré
     /// non plus.
     #[test]
-    fn sdtest_1699_quit_is_never_the_preselected_first_entry() {
+    fn sdtest_1700_quit_is_never_the_preselected_first_entry() {
         for (allowed, current) in [
             (&[][..], AppMode::User),
             (&[AppMode::User][..], AppMode::User),

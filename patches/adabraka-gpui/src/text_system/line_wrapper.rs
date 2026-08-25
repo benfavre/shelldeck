@@ -181,7 +181,7 @@ impl LineWrapper {
         matches!(c, '\u{0400}'..='\u{04FF}') ||
         // Some other known special characters that should be treated as word characters,
         // e.g. `a-b`, `var_name`, `I'm`, '@mention`, `#hashtag`, `100%`, `3.1415`, `2^3`, `a~b`, etc.
-        // ShellDeck patch: SDPATCH-115 — a French typographic apostrophe joins
+        // ShellDeck patch: SDPATCH-116 — a French typographic apostrophe joins
         // both sides of an elision just like the ASCII apostrophe already did.
         matches!(c, '-' | '_' | '.' | '\'' | '’' | '$' | '%' | '@' | '#' | '^' | '~' | ',' | '!' | ';' | '*') ||
         // Characters that used in URL, e.g. `https://github.com/zed-industries/zed?a=1&b=2` for better wrapping a long URL.
@@ -652,7 +652,7 @@ mod tests {
         assert_word("$variable");
         assert_word("more⋯");
 
-        // ShellDeck patch: SDPATCH-115 — keep frequent French elisions on the
+        // ShellDeck patch: SDPATCH-116 — keep frequent French elisions on the
         // same wrapping token instead of starting a line with U+2019.
         assert_word("l’échange");
         assert_word("d’ici");

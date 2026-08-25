@@ -64,6 +64,7 @@ pub fn ai_provider_icon(backend: AiBackend, size_px: f32, color: Hsla) -> AnyEle
         }
         AiBackend::Anthropic => simple_icon("anthropic", size_px, color).into_any_element(),
         AiBackend::AiderCli => lucide_icon("terminal", size_px, color).into_any_element(),
+        AiBackend::AutomoniqueAcp => lucide_icon("bot", size_px, color).into_any_element(),
         AiBackend::Disabled => lucide_icon("sparkles", size_px, color).into_any_element(),
     }
 }

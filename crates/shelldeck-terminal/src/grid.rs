@@ -194,8 +194,8 @@ pub enum SelectionKind {
     Line,
 }
 
-/// Grid position: (column, row) in 0-indexed display coordinates.
-/// Row 0 is the topmost visible row (may be scrollback).
+/// Grid position: (column, row), where selection rows are absolute retained-
+/// history coordinates. Public selection methods still accept display rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GridPos {
     pub col: usize,
@@ -459,6 +459,10 @@ pub struct TerminalGrid {
     scrollback: RingBuffer<Vec<Cell>>,
     /// Per-row flags for scrollback lines (mirrors scrollback RingBuffer).
     scrollback_line_flags: RingBuffer<LineFlags>,
+    /// Number of history rows evicted from the front of `scrollback`.
+    /// Selection anchors add this monotonic base so output cannot retarget a
+    /// selection to whichever text later occupies the same display row.
+    selection_history_base: usize,
     max_scrollback: usize,
     scroll_offset: usize,
     scroll_top: usize,
@@ -562,6 +566,7 @@ impl TerminalGrid {
             title: String::new(),
             scrollback: RingBuffer::new(max_scrollback),
             scrollback_line_flags: RingBuffer::new(max_scrollback),
+            selection_history_base: 0,
             max_scrollback,
             scroll_offset: 0,
             scroll_top: 0,
@@ -978,6 +983,7 @@ impl TerminalGrid {
             }
             2 => {
                 // Clear entire display.
+                self.clear_selection();
                 for r in 0..self.rows {
                     self.cells[r] = self.bce_row();
                 }
@@ -988,12 +994,16 @@ impl TerminalGrid {
             }
             3 => {
                 // Clear entire display + scrollback.
+                self.clear_selection();
                 for r in 0..self.rows {
                     self.cells[r] = self.bce_row();
                 }
                 for f in &mut self.line_flags {
                     *f = LineFlags::default();
                 }
+                self.selection_history_base = self
+                    .selection_history_base
+                    .saturating_add(self.scrollback.len());
                 self.scrollback.clear();
                 self.scrollback_line_flags.clear();
                 self.scroll_offset = 0;
@@ -1186,6 +1196,46 @@ impl TerminalGrid {
 
     // -- Scrolling --
 
+    fn display_to_history_row(&self, row: usize) -> Option<usize> {
+        if row >= self.rows {
+            return None;
+        }
+        let offset = self.scroll_offset.min(self.scrollback.len());
+        Some(
+            self.selection_history_base
+                .saturating_add(self.scrollback.len().saturating_sub(offset))
+                .saturating_add(row),
+        )
+    }
+
+    fn history_row(&self, row: usize) -> Option<&Vec<Cell>> {
+        let logical = row.checked_sub(self.selection_history_base)?;
+        if logical < self.scrollback.len() {
+            self.scrollback.get(logical)
+        } else {
+            self.cells.get(logical - self.scrollback.len())
+        }
+    }
+
+    fn invalidate_evicted_selection(&mut self) {
+        if self.selection.as_ref().is_some_and(|selection| {
+            selection.start.row < self.selection_history_base
+                || selection.end.row < self.selection_history_base
+        }) {
+            self.selection = None;
+        }
+    }
+
+    fn push_scrollback_row(&mut self, row: Vec<Cell>, flags: LineFlags) {
+        let evicted = self.scrollback.len() == self.max_scrollback;
+        self.scrollback.push(row);
+        self.scrollback_line_flags.push(flags);
+        if evicted {
+            self.selection_history_base = self.selection_history_base.saturating_add(1);
+            self.invalidate_evicted_selection();
+        }
+    }
+
     /// Scroll the content within the scroll region up by `n` lines.
     /// Lines scrolled off the top of the scroll region are added to scrollback
     /// (only if the scroll region starts at line 0).
@@ -1205,8 +1255,7 @@ impl TerminalGrid {
                 } else {
                     LineFlags::default()
                 };
-                self.scrollback.push(self.cells[i].clone());
-                self.scrollback_line_flags.push(flags);
+                self.push_scrollback_row(self.cells[i].clone(), flags);
             }
         }
 
@@ -1301,6 +1350,12 @@ impl TerminalGrid {
         let new_cols = new_cols.max(1);
         let old_cols = self.cols;
 
+        // Column reflow changes both row and column boundaries, so an existing
+        // text anchor cannot be preserved without selecting different glyphs.
+        if new_cols != old_cols {
+            self.clear_selection();
+        }
+
         // Reflow: when the terminal grows wider, merge soft-wrapped lines.
         // When it shrinks, re-wrap long lines.
         if new_cols > old_cols {
@@ -1344,13 +1399,12 @@ impl TerminalGrid {
             for _ in 0..remove {
                 if !self.cells.is_empty() {
                     let row = self.cells.remove(0);
-                    self.scrollback.push(row);
                     let flags = if !self.line_flags.is_empty() {
                         self.line_flags.remove(0)
                     } else {
                         LineFlags::default()
                     };
-                    self.scrollback_line_flags.push(flags);
+                    self.push_scrollback_row(row, flags);
                     self.cursor.row = self.cursor.row.saturating_sub(1);
                 }
             }
@@ -1591,6 +1645,7 @@ impl TerminalGrid {
         if self.alt_cells.is_some() {
             return; // Already in alt screen
         }
+        self.clear_selection();
         self.alt_cells = Some(self.cells.clone());
         self.alt_cursor = Some(self.cursor.clone());
         self.alt_line_flags = Some(self.line_flags.clone());
@@ -1604,6 +1659,7 @@ impl TerminalGrid {
 
     /// Switch back from alternate screen buffer.
     pub fn leave_alt_screen(&mut self) {
+        self.clear_selection();
         if let Some(cells) = self.alt_cells.take() {
             self.cells = cells;
         }
@@ -1634,8 +1690,12 @@ impl TerminalGrid {
             return;
         }
         self.max_scrollback = max_scrollback;
+        let old_len = self.scrollback.len();
         self.scrollback.set_capacity(max_scrollback);
         self.scrollback_line_flags.set_capacity(max_scrollback);
+        let evicted = old_len.saturating_sub(self.scrollback.len());
+        self.selection_history_base = self.selection_history_base.saturating_add(evicted);
+        self.invalidate_evicted_selection();
         // Clamp any active scrollback view to the new buffer length.
         if self.scroll_offset > self.scrollback.len() {
             self.scroll_offset = self.scrollback.len();
@@ -1873,6 +1933,9 @@ impl TerminalGrid {
     /// Start a simple (character-level) selection at the given display position.
     /// `col` and `row` are 0-indexed display coordinates.
     pub fn start_selection(&mut self, col: usize, row: usize) {
+        let Some(row) = self.display_to_history_row(row) else {
+            return;
+        };
         let pos = GridPos::new(col, row);
         self.selection = Some(SelectionState {
             start: pos,
@@ -1886,6 +1949,9 @@ impl TerminalGrid {
     /// Start a block/rectangular selection (Alt+click) at the given display position.
     /// In block mode, the selection forms a rectangle defined by two corners.
     pub fn start_block_selection(&mut self, col: usize, row: usize) {
+        let Some(row) = self.display_to_history_row(row) else {
+            return;
+        };
         let pos = GridPos::new(col, row);
         self.selection = Some(SelectionState {
             start: pos,
@@ -1904,6 +1970,9 @@ impl TerminalGrid {
         }
         let row_cells = visible[row];
         let (start_col, end_col) = Self::word_bounds(row_cells, col);
+        let Some(row) = self.display_to_history_row(row) else {
+            return;
+        };
         self.selection = Some(SelectionState {
             start: GridPos::new(start_col, row),
             end: GridPos::new(end_col, row),
@@ -1915,6 +1984,9 @@ impl TerminalGrid {
 
     /// Start a line selection (triple-click): select the full row.
     pub fn start_line_selection(&mut self, _col: usize, row: usize) {
+        let Some(row) = self.display_to_history_row(row) else {
+            return;
+        };
         self.selection = Some(SelectionState {
             start: GridPos::new(0, row),
             end: GridPos::new(self.cols.saturating_sub(1), row),
@@ -1926,6 +1998,9 @@ impl TerminalGrid {
 
     /// Update the selection endpoint during a drag.
     pub fn update_selection(&mut self, col: usize, row: usize) {
+        let Some(row) = self.display_to_history_row(row) else {
+            return;
+        };
         if let Some(ref mut sel) = self.selection {
             if !sel.active {
                 return;
@@ -1962,6 +2037,9 @@ impl TerminalGrid {
 
     /// Check if a cell at display position (col, row) is within the selection.
     pub fn is_selected(&self, col: usize, row: usize) -> bool {
+        let Some(row) = self.display_to_history_row(row) else {
+            return false;
+        };
         let sel = match &self.selection {
             Some(s) => s,
             None => return false,
@@ -2001,7 +2079,6 @@ impl TerminalGrid {
     /// Extract the selected text as a string.
     pub fn selected_text(&self) -> Option<String> {
         let sel = self.selection.as_ref()?;
-        let visible = self.visible_rows();
 
         // Block/rectangular selection: extract the same column range from each row.
         if sel.kind == SelectionKind::Block {
@@ -2012,10 +2089,9 @@ impl TerminalGrid {
 
             let mut lines = Vec::new();
             for row_idx in min_row..=max_row {
-                if row_idx >= visible.len() {
-                    break;
-                }
-                let row_cells = visible[row_idx];
+                let Some(row_cells) = self.history_row(row_idx) else {
+                    continue;
+                };
                 let mut line = String::new();
                 for cell in &row_cells[min_col..=max_col.min(row_cells.len().saturating_sub(1))] {
                     // Skip spacer cells (second half of wide chars).
@@ -2048,10 +2124,9 @@ impl TerminalGrid {
         let mut text = String::new();
 
         for row_idx in start.row..=end.row {
-            if row_idx >= visible.len() {
-                break;
-            }
-            let row_cells = visible[row_idx];
+            let Some(row_cells) = self.history_row(row_idx) else {
+                continue;
+            };
             let col_start = if row_idx == start.row { start.col } else { 0 };
             let col_end = if row_idx == end.row {
                 end.col
@@ -2087,7 +2162,7 @@ impl TerminalGrid {
         }
     }
 
-    /// Return the normalized selection bounds for rendering.
+    /// Return the normalized selection bounds in absolute retained-history rows.
     pub fn selection_bounds(&self) -> Option<(GridPos, GridPos)> {
         let sel = self.selection.as_ref()?;
         if sel.start <= sel.end {
@@ -2827,5 +2902,66 @@ mod tests {
         assert!(g.is_selected(2, 0));
         assert!(!g.is_selected(3, 0));
         assert_eq!(g.selected_text().as_deref(), Some("hel"));
+    }
+
+    // SDTEST-1688
+    #[test]
+    fn selection_follows_retained_text_when_output_scrolls() {
+        let mut g = TerminalGrid::with_scrollback(2, 6, 8);
+        write_str(&mut g, "alpha");
+        g.carriage_return();
+        g.newline();
+        write_str(&mut g, "beta");
+        g.start_selection(0, 0);
+        g.update_selection(4, 0);
+        g.end_selection();
+
+        g.newline();
+
+        assert_eq!(g.selected_text().as_deref(), Some("alpha"));
+        assert!(!g.is_selected(0, 0), "live row now contains beta");
+        g.scroll_view_up(1);
+        assert!(g.is_selected(0, 0), "scrollback row contains alpha");
+    }
+
+    // SDTEST-1689
+    #[test]
+    fn selection_clears_when_its_history_row_is_evicted() {
+        let mut g = TerminalGrid::with_scrollback(2, 6, 1);
+        write_str(&mut g, "alpha");
+        g.carriage_return();
+        g.newline();
+        write_str(&mut g, "beta");
+        g.start_selection(0, 0);
+        g.update_selection(4, 0);
+        g.end_selection();
+
+        g.newline();
+        write_str(&mut g, "gamma");
+        g.newline();
+
+        assert!(g.selection.is_none());
+        assert_eq!(g.selected_text(), None);
+    }
+
+    // SDTEST-872
+    #[test]
+    fn selection_clears_across_alt_screen_boundary() {
+        let mut g = TerminalGrid::new(2, 6);
+        write_str(&mut g, "shell");
+        g.start_selection(0, 0);
+        g.update_selection(4, 0);
+        g.end_selection();
+
+        g.enter_alt_screen();
+        assert!(g.selection.is_none());
+
+        write_str(&mut g, "pager");
+        g.start_selection(0, 0);
+        g.update_selection(4, 0);
+        g.end_selection();
+        g.leave_alt_screen();
+        assert!(g.selection.is_none());
+        assert_eq!(row_text(&g, 0).trim_end(), "shell");
     }
 }

@@ -8,9 +8,9 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **129**
-(sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
-only, out of the src/-scoped marker convention.)
+Total marker occurrences in code: **130**
+(`rg "ShellDeck patch:" src/`; SDPATCH-103 is Cargo.toml-only and outside
+the src-scoped marker convention.)
 
 ## Patches
 
@@ -462,14 +462,30 @@ only, out of the src/-scoped marker convention.)
 - **Upstream status**: not filed yet; suitable for a focused GPUI image-rendering
   bug report and PR.
 
-### SDPATCH-115 — Typographic apostrophes stay inside French words
+### SDPATCH-115 — Element animations honor reduced motion
+
+- **Files / symbols**:
+  - `src/elements/animation.rs` — `AnimationElement::request_layout`
+- **Markers** (1 marker):
+  - `src/elements/animation.rs` — `// ShellDeck patch: reduced-motion platforms snap element animations and schedule no follow-up frames.`
+- **Why**: SDPATCH-112 exposed the operating system's reduced-motion
+  preference, but GPUI's element animation wrapper still requested a frame on
+  every display refresh. One-shot animations now snap to their final state;
+  repeating animations render their stable initial state, report themselves
+  complete, and schedule no follow-up frame. Chained one-shot animations use
+  the final animation in the chain so reduced motion does not leave transitional
+  chrome mounted in its first pose.
+- **Upstream status**: not filed yet — an upstream policy may also want a
+  per-animation opt-out for essential motion.
+
+### SDPATCH-116 — Typographic apostrophes stay inside French words
 
 - **Files / symbols**:
   - `src/text_system/line_wrapper.rs` — `LineWrapper::is_word_char`,
     `tests::test_is_word_char`
 - **Markers** (2 markers):
-  - `src/text_system/line_wrapper.rs` — `// ShellDeck patch: SDPATCH-115 — a French typographic apostrophe joins`
-  - `src/text_system/line_wrapper.rs` — `// ShellDeck patch: SDPATCH-115 — keep frequent French elisions on the`
+  - `src/text_system/line_wrapper.rs` — `// ShellDeck patch: SDPATCH-116 — a French typographic apostrophe joins`
+  - `src/text_system/line_wrapper.rs` — `// ShellDeck patch: SDPATCH-116 — keep frequent French elisions on the`
 - **Why**: The wrapper treated ASCII `'` as part of a word but classified the
   French typographic apostrophe `U+2019` as punctuation. It therefore selected
   the apostrophe itself as a wrap boundary and rendered lines beginning with
@@ -518,6 +534,14 @@ only, out of the src/-scoped marker convention.)
 
 ## Sync log
 
+- **2026-08-24** — Added SDPATCH-116 with 2 markers, bringing the source
+  marker total from 128 to 130. SDPATCH-115 was already assigned to the
+  reduced-motion animation patch, so the French elision patch received the
+  next unused sticky ID during integration.
+- **2026-08-23** — Added SDPATCH-115. The header's accumulated count had
+  drifted from the source (114 documented versus 127 actual before this patch),
+  so it was reconciled to the auditable source count; the new marker brings the
+  total to 128.
 - **2026-07-07** — patch inventory bootstrapped after the fact. Marker
   count 3 = 1 (SDPATCH-101) + 2 (SDPATCH-102). The fork itself predates
   this file; any earlier tweaks made at genesis time that aren't in

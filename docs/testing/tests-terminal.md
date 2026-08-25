@@ -101,6 +101,8 @@ cross-platform coverage.
 | SDTEST-834 | `grid.rs::scroll_view_up_and_to_bottom` | SDUC-010 | Green |
 | SDTEST-835 | `grid.rs::reset_clears_grid_but_keeps_dimensions` | SDUC-018 | Green |
 | SDTEST-836 | `grid.rs::simple_selection_membership_and_text` | SDUC-013 | Green |
+| SDTEST-1688 | `grid.rs::selection_follows_retained_text_when_output_scrolls` | SDUC-478 | Green |
+| SDTEST-1689 | `grid.rs::selection_clears_when_its_history_row_is_evicted` | SDUC-478 | Green |
 
 ### Gaps
 
@@ -108,7 +110,7 @@ cross-platform coverage.
 |---|---|---|---|---|
 | SDTEST-870 | *to write* — resize shrink then grow preserves original content | SDUC-011 | **Red / P1** | Real user path: laptop dock/undock cycle. |
 | SDTEST-871 | *to write* — selection across a soft-wrap yields text without the soft-wrap glyph | SDUC-013 | **Red / P1** | Regression sensor. |
-| SDTEST-872 | *to write* — selection across the alt-screen boundary is safe (no cross-buffer bleed) | SDUC-009, SDUC-013 | **Red / P2** | |
+| SDTEST-872 | `grid.rs::selection_clears_across_alt_screen_boundary` | SDUC-009, SDUC-478 | Green | Entering or leaving a full-screen alternate buffer drops the previous buffer's selection, so identical row coordinates cannot highlight or copy unrelated text. |
 | SDTEST-873 | *to write* — dirty tracking granularity per line (paint only the changed lines) | SDUC-012 | **Red / P1** | Perf regression sensor — reintroducing full-frame dirty flags would silently pass. |
 | SDTEST-874 | *to write* — a wide char written past the last column falls to the next line (does not corrupt cell 0) | SDUC-001 | **Red / P1** | |
 

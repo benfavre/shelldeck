@@ -24,6 +24,8 @@ base64 = { workspace = true }
 url = { workspace = true }
 automonique-platform-client = { workspace = true }
 automonique-protocol = { workspace = true }
+agent-client-protocol = { workspace = true }
+futures = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Already in the dependency tree transitively; used directly for
@@ -33,9 +35,8 @@ libc = "0.2"
 
 [features]
 default = []
-# Compile the ACP transport probe for Jcode. The executor still falls back to
-# the stable `jcode run` process path until ACP has a versioned public client
-# contract we can rely on end-to-end.
+# Retained for configuration compatibility. ACP support is now compiled into
+# the core client and uses the official stable protocol SDK.
 jcode-acp = []
 
 [package.metadata.i18n]
