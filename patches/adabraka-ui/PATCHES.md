@@ -562,6 +562,7 @@ carries no marker of its own — see its entry).
   - `src/components/textarea.rs:154` — `// ShellDeck patch: SDPATCH-028 — Textarea shares InputVariant,`
   - `src/components/textarea.rs:180` — `// ShellDeck patch: SDPATCH-028 — see above.`
   - `src/components/composer.rs:1` — `// ShellDeck patch: SDPATCH-028 — shared message composer.`
+  - `src/components/composer.rs` — `// ShellDeck patch: SDPATCH-028 — a Composer is a multiline input, not`
   - `src/components/composer.rs` — `/// ShellDeck patch: SDPATCH-028 — callers that supply a richer commit`
   - `src/prelude.rs:45` — `// ShellDeck patch: SDPATCH-028 — shared message composer.`
 - **Why**: Five ShellDeck surfaces ask the user to write a message and send it,
@@ -578,7 +579,9 @@ carries no marker of its own — see its entry).
   typed into a composer is not code.
   The `Bare` contract applies while disabled too: generation/loading may mute
   the text and block editing, but must not resurrect the nested input's fill or
-  border inside the Composer frame.
+  border inside the Composer frame. The shared frame deliberately consumes the
+  same radius, border, shadow, hover and focus tokens as `Input`; a composer is
+  a multiline entry field, not a separate rounded-card vocabulary.
 - **Upstream status**: not filed yet. `InputVariant::Bare` is generic and worth
   upstreaming on its own; `Composer` is closer to ShellDeck's own vocabulary.
 
