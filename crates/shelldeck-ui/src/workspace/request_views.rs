@@ -172,7 +172,7 @@ impl Workspace {
         let mine_count = self
             .issues_list
             .iter()
-            .filter(|i| self.is_my_issue(i))
+            .filter(|i| self.is_user_visible_issue(i))
             .count();
         let list = if mine_count == 0 {
             div()
@@ -202,7 +202,7 @@ impl Workspace {
                                 .issues_list
                                 .iter()
                                 .enumerate()
-                                .filter(|(_, issue)| this.is_my_issue(issue))
+                                .filter(|(_, issue)| this.is_user_visible_issue(issue))
                                 .map(|(index, _)| index)
                                 .collect::<Vec<_>>();
                             range
@@ -1678,7 +1678,7 @@ impl Workspace {
                     })
             }));
 
-        if self.is_my_issue(iss) {
+        if self.is_user_visible_issue(iss) {
             heading = heading.child(
                 Button::new("uiss-detail-delete", "")
                     .variant(ButtonVariant::Ghost)

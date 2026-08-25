@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **147**
+Total markers in code: **148**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -532,13 +532,16 @@ carries no marker of its own — see its entry).
   - `src/display/rich_text.rs` — `render_list_items`, `render_table`
 - **Markers**:
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-027 — list text must be the flex child`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-027 — the table itself is a flex child of`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-027 — table headers need a`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-027 — body cells follow the same`
 - **Why**: Markdown paragraphs wrapped in constrained assistant bubbles, but
-  list bodies and table cells were non-shrinkable flex children. GPUI therefore
-  measured them at their intrinsic width and the bubble's overflow guard cut
-  off the remaining text. Giving those children `min-width: 0` and normal
-  whitespace supplies a definite wrap width without weakening the outer cap.
+  list bodies, table cells and the table flex item itself could retain their
+  intrinsic minimum width. GPUI therefore measured the table beyond the
+  assistant column and the column's overflow guard cut off its right edge.
+  Giving the table, rows, cells and the inner inline wrappers a definite,
+  shrinkable width supplies a real wrap constraint without weakening the
+  outer cap.
 - **Upstream status**: not filed yet — generic Markdown overflow fix suitable
   for upstreaming.
 

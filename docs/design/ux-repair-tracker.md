@@ -51,6 +51,16 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-031 | Toute l'application / Texte | Le moteur de retour à la ligne considérait l'apostrophe typographique `U+2019` comme une ponctuation, contrairement à l'apostrophe ASCII, et pouvait donc commencer une ligne par `’échange` ou `’importe`. | P1 | À valider | À largeur contrainte, `l’`, `d’`, `qu’` et `n’` restent attachés aux deux côtés de l'élision. |
 | UX-032 | Onboarding / Dernière étape | L'audit signalait encore la dernière ligne de raccourcis coupée par le pied de page, alors que le correctif du parcours par rôle avait déjà plafonné la carte et rendu son corps défilant. | P1 | À valider | À 800×650, le pied de page reste fixe et le corps défile jusqu'à « Ouvrir les paramètres ». |
 | UX-033 | Dev / Navigation et barre d'état | Les statuts/priorités inconnus reprenaient le jeton serveur brut, les trois compteurs fuyaient en anglais et confondaient activité en cours et inventaire, tandis que deux destinations changeaient de nom selon le rail, le menu ou leur titre. | P2 | À valider | En français puis en anglais, contrôler les trois compteurs à 1 et plusieurs ; « Synchronisation serveur » et « Activité récente » gardent leur nom entre le rail, Aller et le titre. |
+| UX-034 | Support / Accueil | « Commencer le triage » nommait à la fois le bandeau d'action et, 60 px plus bas, la liste des tickets prioritaires : deux rôles différents sous le même titre. | P2 | À valider | Le bandeau conserve l'appel à l'action ; la colonne annonce son contenu, « Urgences et non attribués ». |
+| UX-035 | Connexion / Chargement | La progression atteignait 100 %, puis repartait brièvement à 0 % pendant le fondu : le changement de clé du splash recréait ses animations internes. | P1 | À valider | Après une connexion réussie, la barre et le pourcentage restent à 100 % pendant tout le fondu, jusqu'à l'affichage de l'accueil. |
+| UX-036 | Bienvenue / Promesse | Le bloc d'authentification était centré, mais sa promesse sur deux lignes restait alignée à gauche dans ses 460 px, donnant l'impression que le texte glissait hors de l'axe du titre et des actions. | P2 | À valider | À la largeur de la capture puis en fenêtre étroite, chaque ligne de la promesse reste centrée sous le titre. |
+| UX-037 | Agents / Attente de réponse | Après l'envoi, le rôle « Agent » restait suivi d'un vide jusqu'au premier fragment : aucun retour visuel ne distinguait une réponse en préparation d'une exécution bloquée. | P1 | À valider | Lancer une réponse lente : le Monolith de réflexion et son libellé apparaissent immédiatement, puis disparaissent au premier texte ou à la première erreur. |
+| UX-038 | Agents / Erreurs fournisseur | Une erreur synthétique Claude était interprétée comme une réponse Agent, puis répétée comme alerte : le même échec occupait deux niveaux visuels. | P1 | À valider | Provoquer ou rejouer une erreur Claude `isApiErrorMessage` : une seule alerte s'affiche, aucun faux message Agent. |
+| UX-039 | Agents / Tours de conversation | La console injectait `---` entre deux tours ; le renderer Markdown le transformait en longue règle horizontale sans signification fonctionnelle. | P2 | À valider | Envoyer deux prompts successifs : les rôles et l'espacement séparent les tours, aucune barre ne traverse la colonne. |
+| UX-040 | Agents / Défilement | Les enfants directs du conteneur scrollable pouvaient rétrécir ; un transcript long était rogné pour tenir au-dessus du compositeur au lieu d'augmenter la hauteur défilable. | P1 | À valider | Pendant une réponse longue, faire défiler jusqu'aux anciens messages puis revenir au dernier ; le compositeur reste fixe et aucun texte n'est rogné. |
+| UX-041 | Agents / Arrêt | Pendant une exécution, l'action ronde d'envoi était remplacée par un bouton rectangulaire rouge « Arrêter », visuellement étranger au pied du Composer. | P2 | À valider | Lancer un agent : l'arrêt occupe le même cercle de 28 px que l'envoi, avec carré blanc et libellé au survol. |
+| UX-042 | Agents / Tableaux Markdown | Après restauration du scroll, les tableaux révélaient une largeur intrinsèque non contrainte : le wrapper de 860 px masquait net le bord droit au lieu de donner aux cellules une largeur de retour à la ligne. | P1 | À valider | Afficher un tableau à deux colonnes avec des sujets longs : chaque cellule revient à la ligne dans la colonne, sans texte coupé ni débordement horizontal. |
+| UX-043 | User / Mes demandes | Le serveur recevait déjà `mine=1`, mais l'UI rejetait encore chaque ligne dont `requested_by` ne correspondait pas exactement au nom ou à l'e-mail du compte : un identifiant ou un libellé composite suffisait à vider l'écran. | P1 | Validé | Contrôlé sur la démo avec deux lignes `mine=1` dont `requested_by` vaut `Équipe de démonstration <support@exemple.test>` : le compteur et la liste affichent bien 2. |
 
 ## Règle de mise à jour
 
@@ -291,3 +301,53 @@ ligne existante.
   sur le profil isolé : une vraie demande courte a gardé son dernier message
   contre le pied ; la fixture longue s'est ouverte sur son dernier message,
   puis a défilé jusqu'au premier sans faire bouger le compositeur.
+- **2026-08-25 — UX-034 → À valider.** L'accueil Support utilise maintenant
+  deux clés distinctes : le bandeau garde l'action « Commencer le triage » et
+  la colonne de tickets devient « Urgences et non attribués ». Les locales
+  française et anglaise suivent la même hiérarchie ; SDTEST-1414 porte la
+  future recette GPUI de cette distinction.
+- **2026-08-25 — UX-035 → À valider.** Le fondu de sortie change toujours la
+  clé d'animation du splash, mais le réducteur d'affichage fige désormais la
+  barre et le pourcentage à 100 % dès que `dismissing` devient vrai. Ils ne
+  peuvent donc plus repartir de zéro pendant les 380 ms où le splash reste
+  monté. SDTEST-1709 verrouille cette transition.
+- **2026-08-25 — UX-036 → À valider.** La promesse de bienvenue conserve sa
+  largeur maximale de 460 px et reçoit l'alignement centré du texte. Son bloc,
+  le titre et les deux actions partagent maintenant le même axe, y compris
+  lorsque la phrase revient sur deux lignes.
+- **2026-08-25 — UX-037 → À valider.** La console Agents affiche maintenant le
+  Monolith de réflexion partagé et « L’agent prépare sa réponse… » entre
+  l'envoi et le premier contenu. Le témoin disparaît aussi sur erreur et suit
+  la politique globale de réduction des animations. SDTEST-1711 verrouille sa
+  fenêtre d'affichage.
+- **2026-08-25 — UX-038 → À valider.** Le parseur Claude reconnaît désormais
+  `isApiErrorMessage` sur un événement assistant et le normalise directement
+  en erreur. Le texte n'entre donc plus dans la conversation avant d'être
+  répété dans l'alerte ; le fixture SDTEST-1675 couvre cette forme réelle.
+- **2026-08-25 — UX-039 → À valider.** Le séparateur de tour n'est plus un
+  élément Markdown : deux retours suffisent entre le dernier contenu et le
+  rôle « Vous ». SDTEST-1712 empêche le retour d'une règle horizontale.
+- **2026-08-25 — UX-040 → À valider.** Les métadonnées, le transcript,
+  l'indicateur de préparation et l'alerte deviennent non réductibles dans
+  l'unique colonne `overflow_y_scroll`. Le contenu retrouve donc une hauteur
+  intrinsèque et la molette peut réellement le parcourir sans déplacer le
+  compositeur.
+- **2026-08-25 — UX-041 → À valider.** L'arrêt conserve la variante destructive
+  et l'action typée, mais devient une commande icône de 28 px, ronde, avec
+  carré blanc et infobulle « Arrêter » — la même empreinte que l'envoi normal.
+- **2026-08-25 — UX-042 → À valider.** La première contrainte posée sur la
+  racine `Markdown` s'est révélée insuffisante en recette : le tableau, enfant
+  flex, conservait encore son minimum intrinsèque. SDPATCH-027 contraint
+  désormais la table, chaque ligne et l'enveloppe inline de chaque cellule à
+  la largeur disponible ; les cellules grandissent verticalement au lieu de
+  faire passer le bord droit sous le masque du transcript.
+- **2026-08-25 — UX-043 → Validé.** Le cache mémorise désormais si sa
+  réponse provient d'une requête Manage `mine=1`. Dans ce cas, le périmètre
+  serveur est l'autorité et aucune comparaison de présentation sur
+  `requested_by` ne peut supprimer une ligne valide. Pendant la transition
+  depuis un cache Support plus large, l'ancienne comparaison reste au contraire
+  active pour empêcher l'apparition d'une demande tierce. SDTEST-1715 verrouille
+  les quatre combinaisons de périmètre et de correspondance locale. La fixture
+  démo renvoie maintenant deux auteurs composites qui ne correspondent pas par
+  égalité stricte ; recette X11 réussie sur l'Accueil (`2 demandes en cours`)
+  puis sur « Mes demandes » (les deux lignes visibles avec leurs métadonnées).

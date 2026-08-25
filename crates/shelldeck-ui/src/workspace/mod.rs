@@ -306,6 +306,19 @@ fn post_login_simulated_progress(delta: f32) -> f32 {
     1.0
 }
 
+/// Once dismissal starts the progress animation is no longer meaningful: the
+/// sync is complete and the splash only remains mounted for its fade-out.
+/// Returning a fixed completion value also prevents GPUI from visibly
+/// restarting the nested progress animations when the parent animation key
+/// switches from `visible` to `fade-out`.
+fn post_login_display_progress(dismissing: bool, delta: f32) -> f32 {
+    if dismissing {
+        1.0
+    } else {
+        post_login_simulated_progress(delta)
+    }
+}
+
 fn post_login_splash_opacity(dismissing: bool, delta: f32) -> f32 {
     if dismissing {
         1.0 - delta.clamp(0.0, 1.0)
@@ -585,6 +598,10 @@ pub struct Workspace {
     mention_people: Vec<shelldeck_core::config::manage_directory::DirectoryPerson>,
     /// Hosted issue-management (requests) cache — shared by User + Support.
     issues_list: Vec<Issue>,
+    /// True only when the current cache came from Manage with `mine=1`.
+    /// User surfaces may then trust every returned row instead of repeating a
+    /// fragile display-name comparison against `requested_by`.
+    issues_list_owner_scoped: bool,
     issues_staff: bool,
     /// Server-side filter state passed to `issues::list_issues` on every
     /// refresh. Fed by `SupportViewEvent::IssuesFilterChanged` — the
@@ -1358,6 +1375,7 @@ impl Workspace {
             fleet_request_epoch: 0,
             mention_people: Vec::new(),
             issues_list: Vec::new(),
+            issues_list_owner_scoped: false,
             issues_staff: false,
             issues_filter: issues::IssueListFilter::default(),
             issues_instances: Vec::new(),
@@ -1576,9 +1594,9 @@ fn resize_edge(pos: Point<Pixels>, border: Pixels, size: Size<Pixels>) -> Option
 #[cfg(test)]
 mod tests {
     use super::{
-        post_login_simulated_progress, post_login_splash_opacity, post_login_splash_remaining,
-        shortcut_failure_toasts, shortcut_status_is_failure, ShortcutToastKind,
-        POST_LOGIN_SPLASH_MIN_MS,
+        post_login_display_progress, post_login_simulated_progress, post_login_splash_opacity,
+        post_login_splash_remaining, shortcut_failure_toasts, shortcut_status_is_failure,
+        ShortcutToastKind, POST_LOGIN_SPLASH_MIN_MS,
     };
     use crate::settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus};
     use crate::t;
@@ -1620,6 +1638,17 @@ mod tests {
         );
         assert!(post_login_simulated_progress(0.1) >= 0.17);
         assert!(post_login_simulated_progress(0.86) < 0.95);
+    }
+
+    // SDTEST-1709 — changing the splash animation key for the fade-out causes
+    // GPUI to rebuild its nested animations. The display reducer must pin both
+    // the bar and percentage at completion throughout that final repaint.
+    #[test]
+    fn post_login_progress_stays_complete_while_the_splash_fades() {
+        assert_eq!(post_login_display_progress(true, 0.0), 1.0);
+        assert_eq!(post_login_display_progress(true, 0.5), 1.0);
+        assert_eq!(post_login_display_progress(true, 1.0), 1.0);
+        assert_eq!(post_login_display_progress(false, 0.0), 0.0);
     }
 
     #[test]
