@@ -250,11 +250,92 @@ pub struct IssueInstance {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+pub struct IssueCounts {
+    #[serde(default)]
+    pub all: usize,
+    #[serde(default)]
+    pub open: usize,
+    #[serde(default)]
+    pub triaging: usize,
+    #[serde(default)]
+    pub in_progress: usize,
+    #[serde(default)]
+    pub blocked: usize,
+    #[serde(default)]
+    pub done: usize,
+    #[serde(default)]
+    pub closed: usize,
+}
+
+impl IssueCounts {
+    pub fn for_status_filter(&self, status: &str) -> usize {
+        match status {
+            "open" => self.open,
+            "triaging" => self.triaging,
+            "in_progress" => self.in_progress,
+            "blocked" => self.blocked,
+            "done" => self.done,
+            "closed" => self.closed,
+            _ => self.all,
+        }
+    }
+
+    pub fn increment(&mut self, status: &str) {
+        self.all = self.all.saturating_add(1);
+        self.increment_status(status);
+    }
+
+    pub fn decrement(&mut self, status: &str) {
+        if self.decrement_status(status) {
+            self.all = self.all.saturating_sub(1);
+        }
+    }
+
+    pub fn replace_status(&mut self, previous: &str, next: &str) {
+        if previous != next && self.decrement_status(previous) {
+            self.increment_status(next);
+        }
+    }
+
+    fn increment_status(&mut self, status: &str) {
+        let count = match status {
+            "open" => &mut self.open,
+            "triaging" => &mut self.triaging,
+            "in_progress" => &mut self.in_progress,
+            "blocked" => &mut self.blocked,
+            "done" => &mut self.done,
+            "closed" => &mut self.closed,
+            _ => return,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    fn decrement_status(&mut self, status: &str) -> bool {
+        let count = match status {
+            "open" => &mut self.open,
+            "triaging" => &mut self.triaging,
+            "in_progress" => &mut self.in_progress,
+            "blocked" => &mut self.blocked,
+            "done" => &mut self.done,
+            "closed" => &mut self.closed,
+            _ => return false,
+        };
+        if *count == 0 {
+            return false;
+        }
+        *count -= 1;
+        true
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct IssueList {
     #[serde(default)]
     pub ok: bool,
     #[serde(default)]
     pub issues: Vec<Issue>,
+    #[serde(default)]
+    pub counts: IssueCounts,
     /// Whether the token is internal Support or super-admin staff — drives the triage action bar.
     #[serde(default)]
     pub staff: bool,
@@ -896,6 +977,8 @@ mod tests {
 
     const LIST_FIXTURE: &str = r#"{
       "ok": true, "staff": true,
+      "counts": { "all":2, "open":1, "triaging":0, "in_progress":0,
+        "blocked":0, "done":1, "closed":0 },
       "issues": [
         { "id":"iss_1", "tenant_id":"t1", "tenant_name":"Acme", "site_id":null, "site_label":null,
           "title":"Bug hero", "status":"open", "priority":"high", "source":"user",
@@ -946,8 +1029,35 @@ mod tests {
         assert!(l.issues[0].created_at > 0.0, "ISO created_at parsed");
         assert!(l.issues[0].is_unassigned());
         assert!(l.issues[1].is_closed());
+        assert_eq!(l.counts.all, 2);
+        assert_eq!(l.counts.for_status_filter("open"), 1);
+        assert_eq!(l.counts.for_status_filter("done"), 1);
         assert_eq!(l.instances.len(), 1);
         assert_eq!(l.instances[0].name, "activ-2");
+    }
+
+    // SDTEST-1725 — status pills use one server-owned count universe and
+    // optimistic local mutations cannot underflow or drift between statuses.
+    #[test]
+    fn issue_counts_follow_filter_and_optimistic_mutations() {
+        let mut counts = IssueCounts {
+            all: 2,
+            open: 1,
+            done: 1,
+            ..Default::default()
+        };
+        counts.replace_status("open", "in_progress");
+        assert_eq!(counts.open, 0);
+        assert_eq!(counts.in_progress, 1);
+        assert_eq!(counts.all, 2);
+
+        counts.increment("blocked");
+        counts.decrement("done");
+        counts.decrement("done");
+        assert_eq!(counts.all, 2);
+        assert_eq!(counts.blocked, 1);
+        assert_eq!(counts.done, 0);
+        assert_eq!(counts.for_status_filter("unknown"), counts.all);
     }
 
     #[test]

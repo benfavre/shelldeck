@@ -712,6 +712,7 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(list) => {
                     ws.issues_list = list.issues.clone();
+                    ws.issues_counts = list.counts;
                     ws.issues_list_owner_scoped = owner_scoped;
                     ws.issues_staff = list.staff;
                     ws.issues_instances = list.instances.clone();
@@ -738,6 +739,7 @@ impl Workspace {
 
     pub(super) fn push_issues_to_support(&mut self, cx: &mut Context<Self>) {
         let issues = self.issues_list.clone();
+        let counts = self.issues_counts.clone();
         let staff = self.issues_staff;
         let instances = self.issues_instances.clone();
         let detail = self.issue_detail.clone();
@@ -749,7 +751,7 @@ impl Workspace {
             .unwrap_or_default();
         self.support.update(cx, |v, cx| {
             v.set_account(&acc_name, &acc_email);
-            v.set_issues(issues, staff, instances);
+            v.set_issues(issues, counts, staff, instances);
             v.set_issue_detail(detail, cx);
             cx.notify();
         });
@@ -870,14 +872,20 @@ impl Workspace {
     /// the updated record so we don't need an eager list refetch.
     pub(super) fn upsert_issue_in_list(&mut self, iss: Issue) {
         if let Some(pos) = self.issues_list.iter().position(|i| i.id == iss.id) {
+            self.issues_counts
+                .replace_status(&self.issues_list[pos].status, &iss.status);
             self.issues_list[pos] = iss;
         } else {
+            self.issues_counts.increment(&iss.status);
             self.issues_list.insert(0, iss);
         }
     }
 
     /// Drop an issue from `issues_list` by id (soft-delete).
     pub(super) fn remove_issue_from_list(&mut self, id: &str) {
+        if let Some(issue) = self.issues_list.iter().find(|issue| issue.id == id) {
+            self.issues_counts.decrement(&issue.status);
+        }
         self.issues_list.retain(|i| i.id != id);
     }
 

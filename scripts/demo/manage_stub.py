@@ -151,7 +151,7 @@ def owned_by_account(iss):
 
 def body_for(path):
     if "auth" in path:
-        return {"ok": True, "label": "Démonstration",
+        return {"ok": True, "token": "demo-token", "label": "Démonstration",
                 # `user.roles` est le sac de rôles que le client lit pour la
                 # carte « Rôles » ; `role`/`roleNames` sont les formes héritées.
                 "user": {"name": AGENT["name"], "email": AGENT["email"],
@@ -200,7 +200,17 @@ def body_for(path):
                 )
                 for issue in listed
             ]
-        return {"ok": True, "issues": listed, "total": len(listed),
+        count_universe = listed
+        if "status=" in path:
+            selected_status = path.split("status=")[-1].split("&")[0]
+            listed = [issue for issue in listed if issue.get("status") == selected_status]
+        counts = {"all": len(count_universe), "open": 0, "triaging": 0,
+                  "in_progress": 0, "blocked": 0, "done": 0, "closed": 0}
+        for issue in count_universe:
+            status = issue.get("status", "")
+            if status in counts:
+                counts[status] += 1
+        return {"ok": True, "issues": listed, "total": len(listed), "counts": counts,
                 "staff": True, "instances": []}
 
     if "sites" in path:

@@ -42,7 +42,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use shelldeck_core::config::issues::{
-    Issue, IssueAttachment, IssueInstance, ISSUE_ATTACHMENT_MAX_COUNT,
+    Issue, IssueAttachment, IssueCounts, IssueInstance, ISSUE_ATTACHMENT_MAX_COUNT,
 };
 use shelldeck_core::config::manage_support::{
     SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportMessageDelivery, SupportTicket,
@@ -625,6 +625,7 @@ pub struct SupportView {
     // Requests (issues) tab, fed by the workspace.
     section: SupportSection,
     issues: Vec<Issue>,
+    issue_counts: IssueCounts,
     issues_staff: bool,
     /// Signed-in account identity, **pre-lowercased and trimmed** — used to
     /// gate the delete action on requests the current user filed themselves
@@ -736,6 +737,7 @@ impl SupportView {
             monique_available: false,
             section: SupportSection::Home,
             issues: Vec::new(),
+            issue_counts: IssueCounts::default(),
             issues_staff: false,
             account_name_lc: String::new(),
             account_email_lc: String::new(),
@@ -790,8 +792,15 @@ impl SupportView {
         self.thread_link_action = None;
     }
 
-    pub fn set_issues(&mut self, issues: Vec<Issue>, staff: bool, instances: Vec<IssueInstance>) {
+    pub fn set_issues(
+        &mut self,
+        issues: Vec<Issue>,
+        counts: IssueCounts,
+        staff: bool,
+        instances: Vec<IssueInstance>,
+    ) {
         self.issues = issues;
+        self.issue_counts = counts;
         self.issues_staff = staff;
         self.issue_instances = instances;
     }

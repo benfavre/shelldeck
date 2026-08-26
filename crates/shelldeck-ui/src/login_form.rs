@@ -1,5 +1,5 @@
-//! Sign-in modal for Inklura Manage: email + password, plus one-click OIDC
-//! (SSO / Google / GitHub) that hands off to the browser device-authorize flow.
+//! Sign-in modal for Inklura Manage: email + password first, with browser/OIDC
+//! alternatives disclosed on demand instead of competing with the primary path.
 //!
 //! Text entry mirrors `connection_form.rs`: a focused root captures `on_key_down`
 //! and edits the active field. The password field renders masked.
@@ -14,6 +14,42 @@ use crate::overlay::{window_backdrop, InputEscape};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OtherLoginMethod {
+    id: &'static str,
+    label_key: &'static str,
+    icon_path: Option<&'static str>,
+    provider: Option<&'static str>,
+}
+
+const OTHER_METHODS_DEFAULT_EXPANDED: bool = false;
+const OTHER_LOGIN_METHODS: [OtherLoginMethod; 4] = [
+    OtherLoginMethod {
+        id: "login-oidc-sso",
+        label_key: "login.oidc_sso",
+        icon_path: Some("images/logo-1clicpro.svg"),
+        provider: Some("sso"),
+    },
+    OtherLoginMethod {
+        id: "login-oidc-google",
+        label_key: "login.oidc_google",
+        icon_path: Some("images/logo-google.svg"),
+        provider: Some("google"),
+    },
+    OtherLoginMethod {
+        id: "login-oidc-github",
+        label_key: "login.oidc_github",
+        icon_path: Some("images/logo-github.svg"),
+        provider: Some("github"),
+    },
+    OtherLoginMethod {
+        id: "login-oidc-browser",
+        label_key: "login.oidc_browser",
+        icon_path: None,
+        provider: None,
+    },
+];
+
 #[derive(Debug, Clone)]
 pub enum LoginFormEvent {
     /// Submit email + password for password login.
@@ -24,6 +60,8 @@ pub enum LoginFormEvent {
     /// Start the browser OIDC flow. `None` = generic SSO; otherwise
     /// "google"/"github"/"sso".
     StartOidc(Option<String>),
+    /// Open Manage's password-recovery page in the system browser.
+    OpenForgotPassword,
     Cancel,
 }
 
@@ -37,6 +75,7 @@ pub struct LoginForm {
     /// A request is in flight (login or OIDC wait): disable inputs + show spinner.
     busy: bool,
     error: Option<String>,
+    other_methods_expanded: bool,
     focus_handle: FocusHandle,
     needs_focus: bool,
 }
@@ -50,6 +89,7 @@ impl LoginForm {
             server,
             busy: false,
             error: None,
+            other_methods_expanded: OTHER_METHODS_DEFAULT_EXPANDED,
             focus_handle: cx.focus_handle(),
             needs_focus: true,
         }
@@ -278,13 +318,49 @@ impl Render for LoginForm {
             .disabled(self.busy)
             .on_enter(submit_on_enter);
 
+        let mut forgot_password = div()
+            .id("login-forgot-password")
+            .text_size(px(12.0))
+            .text_color(ShellDeckColors::primary())
+            .child(t!("login.forgot_password").to_string());
+        if self.busy {
+            forgot_password = forgot_password.opacity(0.5);
+        } else {
+            forgot_password = forgot_password
+                .cursor_pointer()
+                .hover(|el| el.underline())
+                .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                    cx.emit(LoginFormEvent::OpenForgotPassword);
+                }));
+        }
+
+        let password_field = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("login.password").to_string()),
+                    )
+                    .child(forgot_password),
+            )
+            .child(password_input);
+
         let mut body = div()
             .flex()
             .flex_col()
             .gap(px(12.0))
             .p(px(20.0))
             .child(labeled(t!("login.email").to_string(), email_input))
-            .child(labeled(t!("login.password").to_string(), password_input));
+            .child(password_field);
 
         if let Some(ref err) = self.error {
             body = body.child(
@@ -325,62 +401,64 @@ impl Render for LoginForm {
         }
         body = body.child(submit_btn);
 
-        // Divider with "ou".
-        body = body.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .py(px(2.0))
-                .child(div().flex_1().h(px(1.0)).bg(ShellDeckColors::border()))
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("login.or").to_string()),
-                )
-                .child(div().flex_1().h(px(1.0)).bg(ShellDeckColors::border())),
-        );
+        let disclosure_icon = if self.other_methods_expanded {
+            "chevron-down"
+        } else {
+            "chevron-right"
+        };
+        let mut disclosure = div()
+            .id("login-other-methods")
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px(px(12.0))
+            .py(px(8.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .text_size(px(13.0))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(ShellDeckColors::text_primary())
+            .child(t!("login.other_methods").to_string())
+            .child(
+                svg()
+                    .path(format!("icons/lucide/{disclosure_icon}.svg"))
+                    .size(px(14.0))
+                    .text_color(ShellDeckColors::text_muted()),
+            );
+        if self.busy {
+            disclosure = disclosure.opacity(0.5);
+        } else {
+            disclosure = disclosure
+                .cursor_pointer()
+                .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.other_methods_expanded = !this.other_methods_expanded;
+                    cx.notify();
+                }));
+        }
+        body = body.child(disclosure);
 
-        let oidc_sso = t!("login.oidc_sso").to_string();
-        let oidc_browser = t!("login.oidc_browser").to_string();
-        body = body
-            .child(self.oidc_button(
-                "login-oidc-sso",
-                &oidc_sso,
-                Some("images/logo-1clicpro.svg"),
-                Some("sso"),
-                cx,
-            ))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(8.0))
-                    .child(div().flex_1().child(self.oidc_button(
-                        "login-oidc-google",
-                        "Google",
-                        Some("images/logo-google.svg"),
-                        Some("google"),
-                        cx,
-                    )))
-                    .child(div().flex_1().child(self.oidc_button(
-                        "login-oidc-github",
-                        "GitHub",
-                        Some("images/logo-github.svg"),
-                        Some("github"),
-                        cx,
-                    ))),
-            )
-            // Provider-less browser sign-in → manage password login page, which
-            // round-trips back to authorize. For users with an existing manage
-            // session or a password manager in the browser.
-            .child(self.oidc_button("login-oidc-browser", &oidc_browser, None, None, cx))
-            .child(
+        if self.other_methods_expanded {
+            let mut methods = div().flex().flex_col().gap(px(8.0));
+            for method in OTHER_LOGIN_METHODS {
+                methods = methods.child(self.oidc_button(
+                    method.id,
+                    &t!(method.label_key).to_string(),
+                    method.icon_path,
+                    method.provider,
+                    cx,
+                ));
+            }
+            methods = methods.child(
                 div()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
                     .child(t!("login.device", device = self.device.clone()).to_string()),
             );
+            body = body.child(methods);
+        }
 
         card = card.child(body);
 
@@ -402,5 +480,20 @@ impl Render for LoginForm {
             .justify_center()
             .items_center()
             .child(card)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OTHER_LOGIN_METHODS, OTHER_METHODS_DEFAULT_EXPANDED};
+
+    #[test]
+    fn alternative_login_methods_are_complete_and_collapsed_by_default() {
+        assert!(!OTHER_METHODS_DEFAULT_EXPANDED);
+        assert_eq!(OTHER_LOGIN_METHODS.len(), 4);
+        assert_eq!(
+            OTHER_LOGIN_METHODS.map(|method| method.provider),
+            [Some("sso"), Some("google"), Some("github"), None]
+        );
     }
 }

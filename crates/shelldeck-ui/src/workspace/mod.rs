@@ -33,7 +33,7 @@ use shelldeck_core::config::app_config::{AppConfig, CompanionConfig, ThemePrefer
 use shelldeck_core::config::bext_cloud;
 use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
 use shelldeck_core::config::deep_link::DeepLink;
-use shelldeck_core::config::issues::{self, Issue, IssueInstance};
+use shelldeck_core::config::issues::{self, Issue, IssueCounts, IssueInstance};
 use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
 use shelldeck_core::config::manage_support;
 use shelldeck_core::config::monique::{
@@ -598,6 +598,8 @@ pub struct Workspace {
     mention_people: Vec<shelldeck_core::config::manage_directory::DirectoryPerson>,
     /// Hosted issue-management (requests) cache — shared by User + Support.
     issues_list: Vec<Issue>,
+    /// Counts for the same authorized/non-status filter universe as the list.
+    issues_counts: IssueCounts,
     /// True only when the current cache came from Manage with `mine=1`.
     /// User surfaces may then trust every returned row instead of repeating a
     /// fragile display-name comparison against `requested_by`.
@@ -1375,6 +1377,7 @@ impl Workspace {
             fleet_request_epoch: 0,
             mention_people: Vec::new(),
             issues_list: Vec::new(),
+            issues_counts: IssueCounts::default(),
             issues_list_owner_scoped: false,
             issues_staff: false,
             issues_filter: issues::IssueListFilter::default(),

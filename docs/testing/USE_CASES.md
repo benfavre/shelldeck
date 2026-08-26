@@ -1383,9 +1383,11 @@ none.
 
 ### SDUC-315 — Login form flows
 
-Email + password submit is disabled while empty; OIDC buttons pass
-the provider correctly; browser password button emits
-`StartOidc(None)`.
+Email + password is the one primary path and submit stays disabled while either
+field is empty. Password recovery opens the active Manage origin's public
+`/manage/forgot-password` page. SSO, Google, GitHub, and browser-password login
+are collapsed under Other methods by default; expanding it preserves their
+exact provider routing, with browser password emitting `StartOidc(None)`.
 
 ---
 
@@ -2523,8 +2525,28 @@ on macOS. The application's keybinding registration imports the catalogue's
 binding constants, so changing a displayed binding cannot silently leave the
 real action behind.
 
+### SDUC-486 — Request status filters retain one authorized count universe
+
+The Manage Issues list response includes a total and one count for every issue
+status. It computes them only after tenant/owner authorization and all active
+non-status filters, but before applying the selected status filter. Switching a
+Support request chip therefore narrows the returned rows without making the
+other chip counts disappear or exposing information outside the caller's scope.
+
+ShellDeck defaults missing counts to zero for compatibility with older servers,
+uses the server values for the Support request pills, and keeps them coherent
+during local create, status-change, and delete updates until the next poll. The
+four visible filters use the same compact button plus secondary count badge as
+the neighboring Tickets queue.
+
 ## Change log
 
+- **2026-08-26** — Added SDUC-486 and SDTEST-1725: Manage returns privacy-safe
+  request status counts before the selected status slice, and Support renders
+  them with the same pill/badge structure as Tickets.
+- **2026-08-26** — Amended SDUC-315 and added SDTEST-1723/1724: password login
+  is now the sole initially visible path, recovery targets the real Manage
+  page, and the four browser alternatives remain complete behind one disclosure.
 - **2026-08-26** — Amended SDUC-481 and added SDTEST-1722: the Scripts and
   Assistant banners now focus one readable interaction at 560×200, while every
   number badge previously anchored near the bottom moves above the caption.
