@@ -70,6 +70,7 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-050 | Dev / Raccourcis | Le tableau de bord, l’état vide Terminal, la visite et même À propos maintenaient quatre listes, quatre styles et parfois des touches différentes selon la plateforme. | P2 | Validé | Recette X11 : Dashboard et Terminal affichent la même référence complète sans coupe ; À propos ajoute Fermer/Quitter dans son scroll, et la visite filtre le catalogue selon le rôle. |
 | UX-051 | Dev / Rail d’activités | La marque colorée dominait la sélection, les activités et outils formaient une suite sans repère, et le tracé de pouls d’« Activité récente » était difficile à identifier. | P2 | Validé | Recette X11 : la marque monochrome reste secondaire, la tuile active domine nettement et le séparateur avant Synchronisation reste lisible sans élargir le rail. |
 | UX-052 | Onboarding / Géométrie | La carte n’avait qu’une hauteur maximale : les diapositives courtes se contractaient et déplaçaient « Suivant » sous le curseur à chaque étape. | P2 | Validé | Recette X11 à 1210×810 : les six cartes restent à y=40–769 et leur action principale à y=713–754 ; le même clic traverse toute la visite. |
+| UX-053 | Onboarding / Illustrations | Scripts réduisait une liste et un éditeur complets, Assistant trois mentions et un compositeur, tandis que plusieurs badges entraient sous le dégradé de légende. | P2 | Validé | Recette X11 : commandes et action du script restent lisibles, le compositeur n’a plus qu’un repère de contexte, et le badge Terminal reste entièrement au-dessus de sa légende. |
 
 ## Règle de mise à jour
 
@@ -418,3 +419,9 @@ ligne existante.
   plus la hauteur intrinsèque de chaque diapositive. Recette X11 réussie sur
   les six écrans Dev à 1210×810 : carte et action principale ne bougent pas,
   tandis que le dernier corps conserve son défilement.
+- **2026-08-26 — UX-053 → Validé.** Les compositions Dev Scripts et
+  Assistant abandonnent leurs miniatures multiples au profit d’un script
+  exécutable et d’un compositeur avec un seul repère de contexte, dimensionnés
+  pour 560×200. Les quatre badges auparavant ancrés près du bas remontent hors
+  du dégradé de légende ; SDTEST-1722 verrouille ces choix dans la source.
+  Recette X11 réussie sur les étapes 2, 3 et 5 dans la carte réelle à 560×200.

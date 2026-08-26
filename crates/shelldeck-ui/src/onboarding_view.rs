@@ -876,4 +876,56 @@ mod tests {
             assert!(seen.contains(&step), "{step:?} is never shown to anyone");
         }
     }
+
+    /// SDTEST-1722 — O-03 / SDUC-481.
+    ///
+    /// The exported banners are halved to 560×200 in the tour. Two Dev scenes
+    /// used to shrink several complete UI regions into that space, turning
+    /// their text into noise; several number badges also sat under the runtime
+    /// caption gradient. Keep one focused product fragment in each dense scene
+    /// and anchor the affected badges from the safe top edge.
+    #[test]
+    fn sdtest_1722_dev_artwork_keeps_one_focus_and_badges_above_the_caption() {
+        let source = include_str!("../../../docs/design/onboarding-role-visuals.html");
+        let article = |slug: &str| {
+            source
+                .split(&format!("data-export=\"{slug}\""))
+                .nth(1)
+                .expect("onboarding article exists")
+                .split("</article>")
+                .next()
+                .expect("onboarding article closes")
+        };
+
+        let scripts = article("dev-03-scripts");
+        assert_eq!(scripts.matches("class=\"window\"").count(), 1);
+        assert!(!scripts.contains("script-list"));
+
+        let assistant = article("dev-05-ai");
+        assert_eq!(assistant.matches("class=\"window\"").count(), 1);
+        assert_eq!(assistant.matches("class=\"mention\"").count(), 1);
+
+        for selector in [
+            "#user-02 .number",
+            "#user-04 .number",
+            "#support-04 .number",
+            "#dev-02 .number",
+        ] {
+            let rule = source
+                .split(selector)
+                .nth(1)
+                .expect("number rule exists")
+                .split('}')
+                .next()
+                .expect("number rule closes");
+            assert!(
+                rule.contains("top:"),
+                "{selector} must use the safe top edge"
+            );
+            assert!(
+                !rule.contains("bottom:"),
+                "{selector} must stay out of the bottom caption gradient"
+            );
+        }
+    }
 }

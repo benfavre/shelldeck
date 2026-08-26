@@ -2030,6 +2030,11 @@ regardless of the current slide. Its body is the only elastic scrolling row,
 so the footer stays reachable on the longest run and Previous / Next / Finish
 never move under the pointer while stepping through a run.
 
+Artwork is composed for its actual 560×200 display size, not for the 1120×400
+export canvas: dense product screens crop to one readable interaction. Number
+badges stay above the runtime caption gradient rather than competing with its
+bottom-left label.
+
 ---
 
 ## 28. Application chrome
@@ -2520,6 +2525,9 @@ real action behind.
 
 ## Change log
 
+- **2026-08-26** — Amended SDUC-481 and added SDTEST-1722: the Scripts and
+  Assistant banners now focus one readable interaction at 560×200, while every
+  number badge previously anchored near the bottom moves above the caption.
 - **2026-08-26** — Amended SDUC-443 and added SDTEST-1721: the Dev rail now
   subordinates its brand mark, strengthens its active state, separates primary
   work from tools, and aligns Recent Activity's clock with the Aller menu.
