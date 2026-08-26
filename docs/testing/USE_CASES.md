@@ -2025,8 +2025,10 @@ sidebar bindings only for a Dev-capable account.
 Every slide carries role-aware artwork from
 `assets/images/onboarding/role-aware/`, embedded and listed in `main.rs`, and
 resolves its own `title` / `intro` / `media_caption` plus a title/body pair per
-bullet in both locales. The card is capped at 90% of the window height with a
-scrolling body, so the footer stays reachable on the longest run.
+bullet in both locales. The card always occupies 90% of the window height,
+regardless of the current slide. Its body is the only elastic scrolling row,
+so the footer stays reachable on the longest run and Previous / Next / Finish
+never move under the pointer while stepping through a run.
 
 ---
 

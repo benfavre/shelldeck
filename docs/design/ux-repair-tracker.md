@@ -69,6 +69,7 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-049 | Support / Compteurs | Un `counts.all` absent ou inférieur à la liste faisait annoncer zéro dans l’en-tête, l’onglet et le filtre « Tous » au-dessus de tickets pourtant visibles. | P2 | Validé | Recette X11 avec `counts.all` volontairement absent : « Tickets (4) », « 4 tickets » et « Tous 4 » restent cohérents avec les quatre lignes reçues. |
 | UX-050 | Dev / Raccourcis | Le tableau de bord, l’état vide Terminal, la visite et même À propos maintenaient quatre listes, quatre styles et parfois des touches différentes selon la plateforme. | P2 | Validé | Recette X11 : Dashboard et Terminal affichent la même référence complète sans coupe ; À propos ajoute Fermer/Quitter dans son scroll, et la visite filtre le catalogue selon le rôle. |
 | UX-051 | Dev / Rail d’activités | La marque colorée dominait la sélection, les activités et outils formaient une suite sans repère, et le tracé de pouls d’« Activité récente » était difficile à identifier. | P2 | Validé | Recette X11 : la marque monochrome reste secondaire, la tuile active domine nettement et le séparateur avant Synchronisation reste lisible sans élargir le rail. |
+| UX-052 | Onboarding / Géométrie | La carte n’avait qu’une hauteur maximale : les diapositives courtes se contractaient et déplaçaient « Suivant » sous le curseur à chaque étape. | P2 | Validé | Recette X11 à 1210×810 : les six cartes restent à y=40–769 et leur action principale à y=713–754 ; le même clic traverse toute la visite. |
 
 ## Règle de mise à jour
 
@@ -411,3 +412,9 @@ ligne existante.
   sémantiques et l’unique rupture de groupe. Recette X11 réussie : la marque
   ne concurrence plus la tuile Connexions active et le séparateur reste
   perceptible sans épaissir les 48 px du rail.
+- **2026-08-26 — UX-052 → Validé.** La carte de visite remplace sa simple
+  hauteur maximale par une hauteur relative fixe de 90 %. Le corps reste
+  l’unique ligne élastique et défilable ; l’en-tête et le pied ne suivent donc
+  plus la hauteur intrinsèque de chaque diapositive. Recette X11 réussie sur
+  les six écrans Dev à 1210×810 : carte et action principale ne bougent pas,
+  tandis que le dernier corps conserve son défilement.

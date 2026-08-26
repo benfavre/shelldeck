@@ -468,10 +468,12 @@ impl Render for OnboardingView {
             .flex()
             .flex_col()
             .w(px(560.0))
-            // Window-relative, like adabraka's `Dialog`: a fixed cap is either
-            // too tall for a small window or forces the longest slide (the one
-            // carrying the shortcut strip) to scroll on a roomy one.
-            .max_h(relative(0.9))
+            // Every step occupies the same window-relative height. A `max_h`
+            // alone let short slides shrink to their intrinsic content, so the
+            // Next button moved under the pointer from one step to the next.
+            // The body below is the only elastic/scrolling row, which keeps
+            // this stable on both roomy and compact windows.
+            .h(relative(0.9))
             .bg(ShellDeckColors::bg_surface())
             .rounded(px(12.0))
             .border_1()
