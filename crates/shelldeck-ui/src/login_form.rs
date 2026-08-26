@@ -445,7 +445,7 @@ impl Render for LoginForm {
             for method in OTHER_LOGIN_METHODS {
                 methods = methods.child(self.oidc_button(
                     method.id,
-                    &t!(method.label_key).to_string(),
+                    t!(method.label_key).as_ref(),
                     method.icon_path,
                     method.provider,
                     cx,
