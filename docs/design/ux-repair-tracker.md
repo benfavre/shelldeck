@@ -68,6 +68,7 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-048 | Support / Accueil | Le titre « Bonjour, l’équipe Support » présentait l’équipe au lieu de l’interpeller, donnant une tournure artificielle au premier texte de l’écran. | P2 | Validé | Recette X11 : l’accueil affiche exactement « Bonjour, équipe Support » au-dessus des quatre compteurs. |
 | UX-049 | Support / Compteurs | Un `counts.all` absent ou inférieur à la liste faisait annoncer zéro dans l’en-tête, l’onglet et le filtre « Tous » au-dessus de tickets pourtant visibles. | P2 | Validé | Recette X11 avec `counts.all` volontairement absent : « Tickets (4) », « 4 tickets » et « Tous 4 » restent cohérents avec les quatre lignes reçues. |
 | UX-050 | Dev / Raccourcis | Le tableau de bord, l’état vide Terminal, la visite et même À propos maintenaient quatre listes, quatre styles et parfois des touches différentes selon la plateforme. | P2 | Validé | Recette X11 : Dashboard et Terminal affichent la même référence complète sans coupe ; À propos ajoute Fermer/Quitter dans son scroll, et la visite filtre le catalogue selon le rôle. |
+| UX-051 | Dev / Rail d’activités | La marque colorée dominait la sélection, les activités et outils formaient une suite sans repère, et le tracé de pouls d’« Activité récente » était difficile à identifier. | P2 | Validé | Recette X11 : la marque monochrome reste secondaire, la tuile active domine nettement et le séparateur avant Synchronisation reste lisible sans élargir le rail. |
 
 ## Règle de mise à jour
 
@@ -403,3 +404,10 @@ ligne existante.
   Recette X11 réussie : les deux références Dev sont complètes et identiques,
   le Terminal les répartit sur deux colonnes sans couper la dernière ligne, et
   À propos conserve Fermer/Quitter dans son défilement existant.
+- **2026-08-26 — UX-051 → Validé.** Le rail Dev remplace la vignette de
+  marque colorée par le Monolith monochrome, renforce la sélection, sépare les
+  cinq activités principales des outils et aligne l’icône d’Activité récente
+  sur l’horloge du menu Aller. SDTEST-1721 verrouille les deux repères
+  sémantiques et l’unique rupture de groupe. Recette X11 réussie : la marque
+  ne concurrence plus la tuile Connexions active et le séparateur reste
+  perceptible sans épaissir les 48 px du rail.

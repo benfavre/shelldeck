@@ -2062,6 +2062,12 @@ pinned to the bottom, and connected-host / open-tab counts carried as badges.
 Destinations without a panel — Monique, Fleet, bext Cloud — are reached from
 the Aller menu and the command palette rather than taking a rail slot.
 
+The rail keeps the ShellDeck mark small and monochrome so it does not compete
+with navigation. The selected activity has a filled tile, outline and side
+marker; a divider separates primary work from secondary tools. Every glyph has
+its localized label in a tooltip, and Recent Activity uses the same clock icon
+as the Aller menu rather than an ambiguous pulse trace.
+
 The panel follows the selected activity: Connections keeps its grouped host
 list with pins and per-row actions, while Terminals lists open tabs, Scripts
 the saved scripts, Port Forwards the configured forwards, Sites the available
@@ -2512,6 +2518,9 @@ real action behind.
 
 ## Change log
 
+- **2026-08-26** — Amended SDUC-443 and added SDTEST-1721: the Dev rail now
+  subordinates its brand mark, strengthens its active state, separates primary
+  work from tools, and aligns Recent Activity's clock with the Aller menu.
 - **2026-08-26** — Added SDUC-485 and SDTEST-1720: four divergent shortcut
   references now consume one ordered, translated, platform-aware catalogue and
   shared row; application key registration imports the same binding constants.

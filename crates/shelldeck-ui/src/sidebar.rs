@@ -211,6 +211,11 @@ impl SidebarSection {
         ]
     }
 
+    /// Starts the secondary/tool group in the compact activity rail.
+    pub fn starts_rail_tool_group(&self) -> bool {
+        matches!(self, SidebarSection::ServerSync)
+    }
+
     /// Whether this activity backs its rail icon with a contextual panel.
     ///
     /// `false` means selecting it switches the main view and collapses the
@@ -282,7 +287,7 @@ impl SidebarSection {
             SidebarSection::PortForwards => "arrow-left-right",
             SidebarSection::ServerSync => "refresh-cw",
             SidebarSection::Sites => "globe",
-            SidebarSection::Recent => "activity",
+            SidebarSection::Recent => "clock",
             SidebarSection::FileEditor => "pencil",
             SidebarSection::MoniqueConsole => "cpu",
             SidebarSection::Fleet => "box",
@@ -536,7 +541,10 @@ impl SidebarView {
             .child(lucide_icon(icon, 18.0, icon_color));
 
         if is_active {
-            item = item.bg(ShellDeckColors::primary().opacity(0.15));
+            item = item
+                .bg(ShellDeckColors::primary().opacity(0.20))
+                .border_1()
+                .border_color(ShellDeckColors::primary().opacity(0.32));
             // Active marker on the left edge, VS Code style. Inset vertically
             // so it reads as a marker rather than a full-height divider.
             item = item.child(
@@ -545,8 +553,8 @@ impl SidebarView {
                     .left(gpui::px(-8.0))
                     .top(gpui::px(6.0))
                     .bottom(gpui::px(6.0))
-                    .w(gpui::px(2.0))
-                    .rounded(gpui::px(1.0))
+                    .w(gpui::px(3.0))
+                    .rounded(gpui::px(1.5))
                     .bg(ShellDeckColors::primary()),
             );
         } else {
@@ -595,6 +603,15 @@ impl SidebarView {
 
         let mut top = div().flex().flex_col().items_center().gap(gpui::px(4.0));
         for &section in SidebarSection::rail_activities() {
+            if section.starts_rail_tool_group() {
+                top = top.child(
+                    div()
+                        .w(gpui::px(20.0))
+                        .h(gpui::px(1.0))
+                        .my(gpui::px(3.0))
+                        .bg(ShellDeckColors::border()),
+                );
+            }
             // Badges come from the activity's own data, so a section with
             // nothing to count simply has none.
             let count = match section {
@@ -625,7 +642,7 @@ impl SidebarView {
                     .gap(gpui::px(8.0))
                     .min_h(gpui::px(0.0))
                     .overflow_hidden()
-                    .child(crate::brand::brand_badge_abs(24.0))
+                    .child(crate::brand::brand_mark_abs(18.0, 18.0))
                     .child(top),
             )
             .child(self.render_rail_item(SidebarSection::Settings, None, cx))
@@ -1374,6 +1391,33 @@ mod tests {
             vec![super::SidebarSection::Connections],
             "seules les activités dont le panneau apporte une information \
              absente de leur vue en gardent un"
+        );
+    }
+
+    // SDTEST-1721 — the compact rail relies on icon semantics and one stable
+    // group break because labels only appear in tooltips. Keep recent activity
+    // aligned with the clock used by the Aller menu and isolate the secondary
+    // tools after the five primary work activities.
+    #[test]
+    fn rail_landmarks_keep_clear_icons_and_one_tool_group() {
+        use super::SidebarSection;
+
+        assert_eq!(SidebarSection::ServerSync.lucide_icon(), "refresh-cw");
+        assert_eq!(SidebarSection::Recent.lucide_icon(), "clock");
+
+        let group_starts: Vec<_> = SidebarSection::rail_activities()
+            .iter()
+            .copied()
+            .filter(SidebarSection::starts_rail_tool_group)
+            .collect();
+        assert_eq!(group_starts, vec![SidebarSection::ServerSync]);
+        assert_eq!(
+            SidebarSection::rail_activities()[4],
+            SidebarSection::PortForwards
+        );
+        assert_eq!(
+            SidebarSection::rail_activities()[5],
+            SidebarSection::ServerSync
         );
     }
 
