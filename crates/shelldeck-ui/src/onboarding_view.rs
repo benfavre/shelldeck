@@ -14,6 +14,7 @@
 use crate::icons::lucide_icon;
 use crate::overlay::{window_backdrop, InputEscape};
 use crate::scale::px;
+use crate::shortcut_reference::{render_shortcut_rows, shortcuts_for, ShortcutSurface};
 use crate::t;
 use crate::theme::ShellDeckColors;
 use adabraka_ui::prelude::*;
@@ -371,63 +372,21 @@ impl OnboardingView {
             )
     }
 
-    fn shortcut_row(keys: &str, desc: String) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .py(px(5.0))
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(desc),
-            )
-            .child(
-                div()
-                    .px(px(8.0))
-                    .py(px(3.0))
-                    .rounded(px(6.0))
-                    .bg(ShellDeckColors::bg_sidebar())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(keys.to_string()),
-            )
-    }
-
     /// The last slide of every run closes with the shortcuts that reach the
     /// surfaces just described — the tour used to spend a whole slide on them.
     fn render_shortcut_strip(&self) -> impl IntoElement {
-        let mut strip = div()
+        let shortcuts = shortcuts_for(
+            ShortcutSurface::Onboarding,
+            self.allowed_modes.contains(&AppMode::Dev),
+        );
+        div()
             .flex()
             .flex_col()
-            .gap(px(2.0))
             .mt(px(4.0))
             .pt(px(8.0))
             .border_t_1()
             .border_color(ShellDeckColors::border())
-            .child(Self::shortcut_row(
-                "Ctrl+Shift+P",
-                t!("onboarding.shortcuts.palette").to_string(),
-            ));
-        if self.allowed_modes.contains(&AppMode::Dev) {
-            strip = strip
-                .child(Self::shortcut_row(
-                    "Ctrl+T",
-                    t!("onboarding.shortcuts.terminal").to_string(),
-                ))
-                .child(Self::shortcut_row(
-                    "Ctrl+B",
-                    t!("onboarding.shortcuts.sidebar").to_string(),
-                ));
-        }
-        strip.child(Self::shortcut_row(
-            "Ctrl+,",
-            t!("onboarding.shortcuts.settings").to_string(),
-        ))
+            .child(render_shortcut_rows(shortcuts))
     }
 
     fn render_step_body(&self) -> impl IntoElement {
@@ -858,10 +817,10 @@ mod tests {
             "onboarding.modes.support_body",
             "onboarding.modes.dev_title",
             "onboarding.modes.dev_body",
-            "onboarding.shortcuts.palette",
-            "onboarding.shortcuts.terminal",
-            "onboarding.shortcuts.sidebar",
-            "onboarding.shortcuts.settings",
+            "shortcuts.command_palette",
+            "shortcuts.new_terminal",
+            "shortcuts.toggle_sidebar",
+            "shortcuts.settings",
         ] {
             assert_ne!(crate::t!(key).to_string(), key, "{key} has no translation");
         }

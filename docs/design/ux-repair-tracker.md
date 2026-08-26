@@ -65,6 +65,9 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-045 | User / Mes sites | « Activer » faisait croire à une mise en ligne alors que l'action ne choisissait que le site courant, et aucune ouverture du site public ou de sa fiche Manage n'était proposée. | P2 | Validé | Recette X11 à deux sites : les trois actions restent distinctes et « Choisir ce site » promeut la bonne carte active avec ses deux liens libellés. |
 | UX-046 | User / Mes informations | La page exposait le jargon « Rôles CM », les slugs serveur, deux champs vides et l'URL du portail collée à l'e-mail ; le badge d'en-tête pouvait contredire le sac de rôles. | P2 | Validé | Recette X11 : « Vos accès » affiche les deux libellés humains, les dates absentes ont disparu et l'en-tête ne garde que l'e-mail. |
 | UX-047 | User / Paramètres Général | Les réglages de reconnexion des terminaux et d'attachement tmux restaient visibles sans accès Dev, bien que les onglets Terminal et Éditeur soient déjà filtrés. | P2 | Validé | Recette X11 croisée : le compte client ne voit aucun des quatre éléments Dev ; le super-admin conserve les deux onglets et les deux réglages. |
+| UX-048 | Support / Accueil | Le titre « Bonjour, l’équipe Support » présentait l’équipe au lieu de l’interpeller, donnant une tournure artificielle au premier texte de l’écran. | P2 | Validé | Recette X11 : l’accueil affiche exactement « Bonjour, équipe Support » au-dessus des quatre compteurs. |
+| UX-049 | Support / Compteurs | Un `counts.all` absent ou inférieur à la liste faisait annoncer zéro dans l’en-tête, l’onglet et le filtre « Tous » au-dessus de tickets pourtant visibles. | P2 | Validé | Recette X11 avec `counts.all` volontairement absent : « Tickets (4) », « 4 tickets » et « Tous 4 » restent cohérents avec les quatre lignes reçues. |
+| UX-050 | Dev / Raccourcis | Le tableau de bord, l’état vide Terminal, la visite et même À propos maintenaient quatre listes, quatre styles et parfois des touches différentes selon la plateforme. | P2 | Validé | Recette X11 : Dashboard et Terminal affichent la même référence complète sans coupe ; À propos ajoute Fermer/Quitter dans son scroll, et la visite filtre le catalogue selon le rôle. |
 
 ## Règle de mise à jour
 
@@ -381,3 +384,22 @@ ligne existante.
   Éditeur. SDTEST-1718 verrouille les deux états du prédicat partagé. Recette
   X11 sur les deux niveaux : les quatre éléments disparaissent ensemble pour
   le client et restent disponibles ensemble pour le super-admin.
+- **2026-08-26 — UX-048 → Validé.** Le titre de l’accueil devient
+  « Bonjour, équipe Support » dans la locale française ; l’anglais conserve sa
+  formulation naturelle « Hello, Support team ». La parité de clés FR/EN reste
+  couverte par le test i18n partagé. Recette X11 réussie sur l’accueil Support,
+  au-dessus des quatre compteurs opérationnels.
+- **2026-08-26 — UX-049 → Validé.** `SupportView::set_list` réconcilie le
+  total serveur avec la longueur de la liste reçue avant d’alimenter l’accueil,
+  l’onglet, l’en-tête et le filtre « Tous ». SDTEST-1719 couvre le compteur
+  absent, sous-estimé, supérieur et la liste vide ; le bouchon de démo omet
+  désormais volontairement `counts.all`. Recette X11 réussie : l’onglet,
+  l’en-tête et le filtre annoncent tous 4 au-dessus des quatre lignes reçues.
+- **2026-08-26 — UX-050 → Validé.** `shortcut_reference.rs` devient le
+  catalogue traduit et le composant de ligne commun au tableau de bord, à
+  l’état vide Terminal, à la visite et à À propos. Les constantes du catalogue
+  alimentent aussi l’enregistrement réel des touches ; SDTEST-1720 verrouille
+  l’ordre commun, le filtrage par capacité et les variantes macOS/Linux.
+  Recette X11 réussie : les deux références Dev sont complètes et identiques,
+  le Terminal les répartit sur deux colonnes sans couper la dernière ligne, et
+  À propos conserve Fermer/Quitter dans son défilement existant.

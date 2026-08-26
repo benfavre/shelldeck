@@ -75,6 +75,11 @@ pub enum SupportFilter {
     Closed,
 }
 
+fn reconciled_ticket_total(reported: u32, ticket_count: usize) -> u32 {
+    let visible = u32::try_from(ticket_count).unwrap_or(u32::MAX);
+    reported.max(visible)
+}
+
 impl SupportFilter {
     fn label(self) -> String {
         match self {
@@ -904,7 +909,17 @@ impl SupportView {
         &self.tickets
     }
 
-    pub fn set_list(&mut self, tickets: Vec<SupportTicket>, counts: SupportCounts, me: SupportMe) {
+    pub fn set_list(
+        &mut self,
+        tickets: Vec<SupportTicket>,
+        mut counts: SupportCounts,
+        me: SupportMe,
+    ) {
+        // Older / partial Support responses may omit `counts.all`, which
+        // deserializes to zero. Every surface reads this one cached count, so
+        // reconcile it before the home, tab and ticket header can disagree
+        // with the list that is already visible.
+        counts.all = reconciled_ticket_total(counts.all, tickets.len());
         self.tickets = tickets;
         self.counts = counts;
         self.me = me;
@@ -1994,7 +2009,7 @@ pub(crate) fn render_attachment_delete_dialog(
 
 #[cfg(test)]
 mod tests {
-    use super::support_compact_layout;
+    use super::{reconciled_ticket_total, support_compact_layout};
 
     // SDTEST-1618
     #[test]
@@ -2003,5 +2018,15 @@ mod tests {
         assert!(!support_compact_layout(gpui::px(760.0), gpui::px(16.0)));
         assert!(support_compact_layout(gpui::px(1_519.0), gpui::px(32.0)));
         assert!(!support_compact_layout(gpui::px(1_520.0), gpui::px(32.0)));
+    }
+
+    // SDTEST-1719 — a missing `counts.all` deserializes to zero, but the
+    // already-visible list is a stronger lower bound for every total label.
+    #[test]
+    fn support_total_never_falls_below_the_received_ticket_list() {
+        assert_eq!(reconciled_ticket_total(0, 4), 4);
+        assert_eq!(reconciled_ticket_total(6, 4), 6);
+        assert_eq!(reconciled_ticket_total(0, 0), 0);
+        assert_eq!(reconciled_ticket_total(1, usize::MAX), u32::MAX);
     }
 }

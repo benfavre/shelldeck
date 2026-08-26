@@ -1,4 +1,11 @@
 use gpui::*;
+use shelldeck_ui::shortcut_reference::{
+    CLEAR_TERMINAL_BINDING, CLOSE_TAB_BINDING, COMMAND_PALETTE_BINDING, MACOS_COPY_BINDING,
+    MACOS_PASTE_BINDING, MACOS_SPLIT_BINDING, NEW_TERMINAL_BINDING, NEXT_TAB_BINDING,
+    OTHER_COPY_BINDING, OTHER_PASTE_BINDING, OTHER_SPLIT_BINDING, QUIT_BINDING, SEARCH_BINDING,
+    SETTINGS_BINDING, TOGGLE_SIDEBAR_BINDING, ZOOM_IN_BINDING, ZOOM_OUT_BINDING,
+    ZOOM_RESET_BINDING,
+};
 
 // Re-export workspace actions for keybinding registration
 pub use shelldeck_ui::workspace::{
@@ -32,34 +39,34 @@ pub fn register_keybindings(cx: &mut App) {
         // Contextual AI assistant: keep Quick Connect's established Cmd/Ctrl+K.
         KeyBinding::new("secondary-shift-k", OpenAiAssistant, None),
         // New terminal: Cmd+T (macOS) / Ctrl+T (Linux/Win)
-        KeyBinding::new("secondary-t", NewTerminal, None),
+        KeyBinding::new(NEW_TERMINAL_BINDING, NewTerminal, None),
         // Toggle sidebar: Cmd+B (macOS) / Ctrl+B (Linux/Win)
-        KeyBinding::new("secondary-b", ToggleSidebar, None),
+        KeyBinding::new(TOGGLE_SIDEBAR_BINDING, ToggleSidebar, None),
         // Toggle application menu bar; remains available after the row hides.
         KeyBinding::new("secondary-shift-m", ToggleMenuBar, None),
         // Settings: Cmd+, (macOS) / Ctrl+, (Linux/Win)
-        KeyBinding::new("secondary-,", OpenSettings, None),
+        KeyBinding::new(SETTINGS_BINDING, OpenSettings, None),
         // Tab navigation (Ctrl+Tab on all platforms)
-        KeyBinding::new("ctrl-tab", NextTab, None),
+        KeyBinding::new(NEXT_TAB_BINDING, NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
         // Close tab: Cmd+W (macOS) / Ctrl+W (Linux/Win)
-        KeyBinding::new("secondary-w", CloseTab, None),
+        KeyBinding::new(CLOSE_TAB_BINDING, CloseTab, None),
         // Clear terminal: Cmd+L (macOS) / Ctrl+L (Linux/Win)
-        KeyBinding::new("secondary-l", ClearTerminal, None),
+        KeyBinding::new(CLEAR_TERMINAL_BINDING, ClearTerminal, None),
         // Search: Cmd+F (macOS) / Ctrl+F (Linux/Win) — intercepted before terminal
-        KeyBinding::new("secondary-f", ToggleSearch, None),
+        KeyBinding::new(SEARCH_BINDING, ToggleSearch, None),
         // Zoom: Cmd+=/- (macOS) / Ctrl+=/- (Linux/Win)
-        KeyBinding::new("secondary-=", ZoomIn, None),
-        KeyBinding::new("secondary--", ZoomOut, None),
-        KeyBinding::new("secondary-0", ZoomReset, None),
+        KeyBinding::new(ZOOM_IN_BINDING, ZoomIn, None),
+        KeyBinding::new(ZOOM_OUT_BINDING, ZoomOut, None),
+        KeyBinding::new(ZOOM_RESET_BINDING, ZoomReset, None),
         // Command palette: Cmd+Shift+P / Ctrl+Shift+P
-        KeyBinding::new("secondary-shift-p", ToggleCommandPalette, None),
+        KeyBinding::new(COMMAND_PALETTE_BINDING, ToggleCommandPalette, None),
         // File editor: Cmd+E (macOS) / Ctrl+E (Linux/Win)
         KeyBinding::new("secondary-e", OpenFileEditorView, None),
         // Toggle split focus: Alt+[ (all platforms)
         KeyBinding::new("alt-[", ToggleSplitFocus, None),
         // Quit: Cmd+Q (macOS) / Ctrl+Q (Linux/Win)
-        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new(QUIT_BINDING, Quit, None),
     ];
 
     // Platform-specific bindings for actions that conflict with terminal
@@ -67,20 +74,20 @@ pub fn register_keybindings(cx: &mut App) {
     if cfg!(target_os = "macos") {
         bindings.extend([
             // Cmd+D / Cmd+Shift+D — no terminal conflict on macOS
-            KeyBinding::new("cmd-d", SplitHorizontal, None),
+            KeyBinding::new(MACOS_SPLIT_BINDING, SplitHorizontal, None),
             KeyBinding::new("cmd-shift-d", SplitVertical, None),
             // Cmd+C / Cmd+V — no terminal conflict on macOS
-            KeyBinding::new("cmd-c", CopySelection, None),
-            KeyBinding::new("cmd-v", PasteClipboard, None),
+            KeyBinding::new(MACOS_COPY_BINDING, CopySelection, None),
+            KeyBinding::new(MACOS_PASTE_BINDING, PasteClipboard, None),
         ]);
     } else {
         bindings.extend([
             // Ctrl+Shift+D — avoids Ctrl+D (EOF) conflict
-            KeyBinding::new("ctrl-shift-d", SplitHorizontal, None),
+            KeyBinding::new(OTHER_SPLIT_BINDING, SplitHorizontal, None),
             KeyBinding::new("ctrl-shift-alt-d", SplitVertical, None),
             // Ctrl+Shift+C/V — standard terminal emulator copy/paste
-            KeyBinding::new("ctrl-shift-c", CopySelection, None),
-            KeyBinding::new("ctrl-shift-v", PasteClipboard, None),
+            KeyBinding::new(OTHER_COPY_BINDING, CopySelection, None),
+            KeyBinding::new(OTHER_PASTE_BINDING, PasteClipboard, None),
         ]);
     }
 

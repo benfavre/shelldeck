@@ -14,6 +14,7 @@
 //! for which account in which mode* — testable without a GPUI context, per
 //! `.agents/testing.md`.
 
+use crate::shortcut_reference::display_accelerator;
 use shelldeck_core::config::cloud_account::AppMode;
 
 /// Height of the menu row, in logical px before UI scaling.
@@ -161,28 +162,7 @@ pub struct MenuBarContext {
 /// spells them. `secondary` is Cmd on macOS and Ctrl elsewhere, matching
 /// `crates/shelldeck/src/actions.rs`.
 fn accel(keys: &str) -> String {
-    #[cfg(target_os = "macos")]
-    const SECONDARY: &str = "Cmd";
-    #[cfg(not(target_os = "macos"))]
-    const SECONDARY: &str = "Ctrl";
-
-    keys.split('-')
-        .map(|part| match part {
-            "secondary" => SECONDARY.to_string(),
-            "ctrl" => "Ctrl".to_string(),
-            "alt" => "Alt".to_string(),
-            "shift" => "Shift".to_string(),
-            "tab" => "Tab".to_string(),
-            other => {
-                let mut chars = other.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                    None => String::new(),
-                }
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("+")
+    display_accelerator(keys)
 }
 
 /// Build the menu bar for the given application state.

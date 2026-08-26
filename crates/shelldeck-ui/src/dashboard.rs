@@ -6,6 +6,9 @@ use shelldeck_core::config::activity::{ActivityEntry, ActivityKind};
 use uuid::Uuid;
 
 use crate::icons::lucide_icon;
+use crate::shortcut_reference::{
+    render_shortcut_rows, shortcuts_for, ShortcutGroup, ShortcutSurface,
+};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -131,34 +134,6 @@ impl DashboardView {
                     .text_color(ShellDeckColors::text_muted())
                     .flex_shrink_0()
                     .child(crate::i18n::rel_time(at_ms)),
-            )
-    }
-
-    fn render_shortcut_item(keys: &str, description: &str) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .px(px(12.0))
-            .py(px(6.0))
-            .rounded(px(4.0))
-            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(description.to_string()),
-            )
-            .child(
-                div()
-                    .px(px(6.0))
-                    .py(px(2.0))
-                    .rounded(px(4.0))
-                    .bg(ShellDeckColors::primary().opacity(0.12))
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(ShellDeckColors::primary())
-                    .child(keys.to_string()),
             )
     }
 
@@ -364,17 +339,17 @@ impl Render for DashboardView {
                 .child(activity_panel),
         );
 
-        // Keyboard shortcuts reference
-        let (ctrl, cmd) = if cfg!(target_os = "macos") {
-            ("\u{2318}", "\u{2318}")
-        } else {
-            ("Ctrl+", "Ctrl+")
-        };
-        let shift = if cfg!(target_os = "macos") {
-            "\u{21E7}"
-        } else {
-            "Shift+"
-        };
+        // Keyboard shortcuts reference. Both Dev surfaces consume this same
+        // ordered catalogue; only the two-column grouping belongs here.
+        let shortcuts = shortcuts_for(ShortcutSurface::Dashboard, true);
+        let navigation_shortcuts = shortcuts
+            .iter()
+            .copied()
+            .filter(|shortcut| shortcut.group == ShortcutGroup::Navigation);
+        let terminal_shortcuts = shortcuts
+            .iter()
+            .copied()
+            .filter(|shortcut| shortcut.group == ShortcutGroup::Terminal);
 
         container = container.child(
             div()
@@ -392,7 +367,7 @@ impl Render for DashboardView {
                                 .text_size(px(16.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(ShellDeckColors::text_primary())
-                                .child(t!("dashboard.shortcuts.title").to_string()),
+                                .child(t!("shortcuts.title").to_string()),
                         ),
                 )
                 .child(
@@ -417,28 +392,9 @@ impl Render for DashboardView {
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(ShellDeckColors::text_muted())
                                         .mb(px(4.0))
-                                        .child(t!("dashboard.shortcuts.navigation").to_string()),
+                                        .child(t!("shortcuts.group.navigation").to_string()),
                                 )
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}T", cmd),
-                                    t!("dashboard.shortcut.new_terminal").as_ref(),
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    "Ctrl+Tab",
-                                    t!("dashboard.shortcut.next_tab").as_ref(),
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}B", cmd),
-                                    t!("dashboard.shortcut.toggle_sidebar").as_ref(),
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{},", cmd),
-                                    t!("dashboard.shortcut.settings").as_ref(),
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}{}P", cmd, shift),
-                                    t!("dashboard.shortcut.command_palette").as_ref(),
-                                )),
+                                .child(render_shortcut_rows(navigation_shortcuts)),
                         )
                         .child(
                             // Column 2: Terminal
@@ -458,32 +414,9 @@ impl Render for DashboardView {
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(ShellDeckColors::text_muted())
                                         .mb(px(4.0))
-                                        .child(t!("dashboard.shortcuts.terminal").to_string()),
+                                        .child(t!("shortcuts.group.terminal").to_string()),
                                 )
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}{}C", ctrl, shift),
-                                    t!("dashboard.shortcut.copy").as_ref(),
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}{}V", ctrl, shift),
-                                    t!("dashboard.shortcut.paste").as_ref(),
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}F", cmd),
-                                    t!("dashboard.shortcut.search").as_ref(),
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}L", cmd),
-                                    t!("dashboard.shortcut.clear").as_ref(),
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}{}D", ctrl, shift),
-                                    t!("dashboard.shortcut.split").as_ref(),
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}= / {}-", cmd, cmd),
-                                    t!("dashboard.shortcut.zoom").as_ref(),
-                                )),
+                                .child(render_shortcut_rows(terminal_shortcuts)),
                         ),
                 ),
         );

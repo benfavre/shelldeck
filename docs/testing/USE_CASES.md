@@ -1987,12 +1987,18 @@ Support mode opens on its own Accueil tab with open,
 SLA-risk, unassigned, and hosted request counters. Every counter is a route,
 not decoration: it opens the matching Tickets/Requests queue after clearing
 stale search and advanced constraints so the visible rows agree with the
-announced count. The home also exposes up to four actionable tickets ordered by
+announced count. The Support payload's reported all-ticket total is reconciled
+against the received list length before presentation: an omitted, zero, or
+stale-low count can never make the home, Tickets tab, header, and All filter
+announce fewer tickets than the rows already available. The home also exposes
+up to four actionable tickets ordered by
 SLA risk, urgency, missing owner, then recency, plus the four most recently
 updated visible requests; selecting either kind opens its real detail. The
 action banner says « Commencer le triage » while the list it introduces is
 named by its contents, « Urgences et non attribués », so two adjacent blocks
-never present different roles under the same heading.
+never present different roles under the same heading. Its greeting addresses
+the team directly (« Bonjour, équipe Support ») instead of presenting it with
+an article.
 Operational lists remain separate tabs. The first-run tour that follows a
 sign-in is role-aware in its own right — see SDUC-481.
 
@@ -2491,8 +2497,30 @@ merged into a non-empty bag. Both the header badge and the information card cons
 this same presentation, so a malformed or transitional payload cannot display two
 different access levels.
 
+### SDUC-485 — Shortcut references are one platform-aware catalogue
+
+Every in-app shortcut reference consumes one ordered catalogue and one shared,
+non-interactive row component. The Dev dashboard and empty-terminal reference
+contain the same items in the same order; Settings → About extends that source
+with Close Tab and Quit rather than maintaining another hand-written list. The
+last onboarding slide filters the same order by capability: palette and
+settings for everyone, plus terminal and sidebar only for Dev-capable accounts.
+Its modifiers therefore follow the host platform instead of advertising Ctrl
+on macOS. The application's keybinding registration imports the catalogue's
+binding constants, so changing a displayed binding cannot silently leave the
+real action behind.
+
 ## Change log
 
+- **2026-08-26** — Added SDUC-485 and SDTEST-1720: four divergent shortcut
+  references now consume one ordered, translated, platform-aware catalogue and
+  shared row; application key registration imports the same binding constants.
+- **2026-08-26** — Amended SDUC-440 and added SDTEST-1719: Support's shared
+  all-ticket count now uses the received list length as a lower bound, keeping
+  the home, tab, header, and filter coherent when Manage omits or under-reports
+  `counts.all`.
+- **2026-08-26** — Amended SDUC-440 and the pending SDTEST-1414 recipe: the
+  Support greeting now addresses the team directly in natural French.
 - **2026-08-25** — Amended SDUC-310 and added SDTEST-1718: the two Dev-session
   controls embedded in the shared General tab now follow the same capability
   boundary as the Terminal and Editor tabs.

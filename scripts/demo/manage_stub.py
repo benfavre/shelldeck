@@ -169,8 +169,10 @@ def body_for(path):
         if "action=agents" in path:
             return {"ok": True, "agents": [AGENT]}
         if "action=list" in path or path.endswith("support"):
+            # S-05 regression fixture: older/partial servers may omit `all`.
+            # ShellDeck must use the received list as the total's lower bound.
             return {"ok": True, "tickets": TICKETS,
-                    "counts": {"all": len(TICKETS), "unassigned": 3, "mine": 1,
+                    "counts": {"unassigned": 3, "mine": 1,
                                "open": 2, "pending": 1, "breaching": 1,
                                "closed": 1},
                     "me": AGENT}

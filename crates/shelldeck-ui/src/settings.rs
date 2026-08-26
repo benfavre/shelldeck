@@ -12,6 +12,7 @@ use adabraka_ui::prelude::{
 use gpui::prelude::*;
 use gpui::*;
 
+use crate::shortcut_reference::{render_shortcut_rows, shortcuts_for, ShortcutSurface};
 use crate::t;
 use shelldeck_core::ai::{
     configured_cli_available, AiAutonomyLevel, AiBackend, ClippyAppearanceConfig,
@@ -2540,32 +2541,6 @@ impl SettingsView {
             ),
         ];
 
-        let shortcuts = [
-            (
-                t!("settings.about.shortcut.new_terminal").to_string(),
-                "Ctrl+T",
-            ),
-            (
-                t!("settings.about.shortcut.close_tab").to_string(),
-                "Ctrl+W",
-            ),
-            (
-                t!("settings.about.shortcut.toggle_sidebar").to_string(),
-                "Ctrl+B",
-            ),
-            (
-                t!("settings.about.shortcut.command_palette").to_string(),
-                "Ctrl+Shift+P",
-            ),
-            (t!("settings.about.shortcut.settings").to_string(), "Ctrl+,"),
-            (t!("settings.about.shortcut.search").to_string(), "Ctrl+F"),
-            (
-                t!("settings.about.shortcut.zoom").to_string(),
-                "Ctrl++ / Ctrl+-",
-            ),
-            (t!("settings.about.shortcut.quit").to_string(), "Ctrl+Q"),
-        ];
-
         let mut root = div()
             .flex()
             .flex_col()
@@ -2630,34 +2605,11 @@ impl SettingsView {
         }
 
         // Keyboard shortcuts section
-        card = card.child(Self::render_about_section(
-            t!("settings.about.shortcuts").as_ref(),
-        ));
-        for (label, key) in &shortcuts {
-            card = card.child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .w_full()
-                    .py(px(3.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(label.to_string()),
-                    )
-                    .child(
-                        div()
-                            .px(px(6.0))
-                            .py(px(1.0))
-                            .rounded(px(3.0))
-                            .bg(ShellDeckColors::hint_bg())
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(key.to_string()),
-                    ),
-            );
-        }
+        card = card.child(Self::render_about_section(t!("shortcuts.title").as_ref()));
+        card = card.child(render_shortcut_rows(shortcuts_for(
+            ShortcutSurface::About,
+            true,
+        )));
 
         // Links section
         card = card.child(Self::render_about_section(
