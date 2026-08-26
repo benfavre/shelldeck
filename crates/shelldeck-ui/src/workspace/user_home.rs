@@ -8,7 +8,116 @@ pub(super) fn welcome_uses_compact_flow(viewport_height: f32, ui_font_size: f32)
     viewport_height / scale < WELCOME_CENTERED_MIN_LOGICAL_HEIGHT
 }
 
+fn managed_site_public_url(host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return None;
+    }
+    let candidate = if host.contains("://") {
+        host.to_string()
+    } else {
+        format!("https://{host}")
+    };
+    let parsed = url::Url::parse(&candidate).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+    Some(parsed.to_string())
+}
+
+fn user_role_tokens(account: &cloud_account::AccountInfo) -> Vec<String> {
+    let mut roles = Vec::new();
+    for raw in &account.roles {
+        let role = raw.trim().to_lowercase();
+        if !role.is_empty() && !roles.iter().any(|existing| existing == &role) {
+            roles.push(role);
+        }
+    }
+    if roles.is_empty() {
+        let fallback = if account.is_superadmin {
+            "superadmin"
+        } else if account.is_inklura_support {
+            "inklura_support"
+        } else if account.is_admin {
+            "admin"
+        } else {
+            "user"
+        };
+        roles.push(fallback.to_string());
+    }
+    roles
+}
+
+fn humanize_custom_role(role: &str) -> String {
+    let words = role
+        .split(['_', '-'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut chars = words.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
+fn user_role_label(role: &str) -> String {
+    match role {
+        "superadmin" | "super_admin" => t!("user.infos.role.superadmin").to_string(),
+        "inklura_support" => t!("user.infos.role.inklura_support").to_string(),
+        "admin" | "administrator" => t!("user.infos.role.admin").to_string(),
+        "tenant_admin" => t!("user.infos.role.tenant_admin").to_string(),
+        "owner" => t!("user.infos.role.owner").to_string(),
+        "user" => t!("user.infos.role.user").to_string(),
+        custom => humanize_custom_role(custom),
+    }
+}
+
+fn primary_user_role(roles: &[String]) -> Option<&str> {
+    const PRIORITY: [&str; 7] = [
+        "superadmin",
+        "super_admin",
+        "inklura_support",
+        "admin",
+        "administrator",
+        "tenant_admin",
+        "owner",
+    ];
+    PRIORITY
+        .into_iter()
+        .find(|candidate| roles.iter().any(|role| role == candidate))
+        .or_else(|| roles.first().map(String::as_str))
+}
+
+fn nonempty_text(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 impl Workspace {
+    fn open_user_site_url(&mut self, url: String, cx: &mut Context<Self>) {
+        match cloud_account::open_in_browser(&url) {
+            Ok(_) => self.show_toast(
+                t!("toast.opening_browser").to_string(),
+                ToastLevel::Info,
+                cx,
+            ),
+            Err(e) => self.show_toast(
+                t!(
+                    "toast.open_browser_failed",
+                    error = crate::i18n::api_error_message(&e)
+                )
+                .to_string(),
+                ToastLevel::Error,
+                cx,
+            ),
+        }
+    }
+
     pub(super) fn render_site_section_header(label: &str) -> impl IntoElement {
         div()
             .px(px(8.0))
@@ -34,22 +143,7 @@ impl Workspace {
             .filter(|o| !o.is_empty())
             .unwrap_or_else(|| self.account_base_url());
         let url = manage_sites::manage_area_url(&origin, &site, &area_path);
-        match cloud_account::open_in_browser(&url) {
-            Ok(_) => self.show_toast(
-                t!("toast.opening_browser").to_string(),
-                ToastLevel::Info,
-                cx,
-            ),
-            Err(e) => self.show_toast(
-                t!(
-                    "toast.open_browser_failed",
-                    error = crate::i18n::api_error_message(&e)
-                )
-                .to_string(),
-                ToastLevel::Error,
-                cx,
-            ),
-        }
+        self.open_user_site_url(url, cx);
     }
 
     /// Split the site directory into `(active, others)` — the active site
@@ -186,8 +280,35 @@ impl Workspace {
                 ),
         );
 
-        // Row 2: wp-admin shortcut (if any) + area deep-links.
+        // Row 2: public site, Manage, wp-admin (if any) + area deep-links.
         let mut areas_row = div().flex().flex_wrap().gap(px(6.0));
+        if let Some(public_url) = managed_site_public_url(&site.host) {
+            areas_row = areas_row.child(
+                Button::new(
+                    SharedString::from(format!("uh-open-public-{sid}")),
+                    t!("user.sites.open_public").to_string(),
+                )
+                .variant(ButtonVariant::Outline)
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("external-link"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_user_site_url(public_url.clone(), cx);
+                })),
+            );
+        }
+        let manage_site = site.clone();
+        areas_row = areas_row.child(
+            Button::new(
+                SharedString::from(format!("uh-open-manage-{sid}")),
+                t!("user.sites.open_manage").to_string(),
+            )
+            .variant(ButtonVariant::Outline)
+            .size(ButtonSize::Sm)
+            .icon(IconSource::from("settings"))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.open_area_for_site(manage_site.clone(), "/manage/sites".to_string(), cx);
+            })),
+        );
         if let Some(wp_url) = site.wp_admin_url.as_ref().filter(|u| !u.is_empty()) {
             let wp_url_owned = wp_url.clone();
             areas_row = areas_row.child(
@@ -282,6 +403,8 @@ impl Workspace {
             .unwrap_or(ShellDeckColors::border());
         let sid_for_click = sid.clone();
         let label_for_click = label.clone();
+        let public_url = managed_site_public_url(&site.host);
+        let manage_site = site.clone();
 
         div().w_full().h(px(SITE_ROW_H)).py(px(4.0)).child(
             div()
@@ -337,33 +460,56 @@ impl Workspace {
                     );
                     identity
                 })
-                .child(
-                    div()
-                        .id(ElementId::from(SharedString::from(format!(
-                            "uh-act-{}",
-                            sid
-                        ))))
-                        .px(px(10.0))
-                        .py(px(5.0))
-                        .rounded(px(6.0))
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .flex_shrink_0()
-                        .border_1()
-                        .border_color(ShellDeckColors::border())
-                        .bg(ShellDeckColors::bg_primary())
-                        .text_color(ShellDeckColors::text_primary())
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                        .child(t!("user.sites.activate").to_string())
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                .child({
+                    let mut actions = div().flex().items_center().gap(px(4.0)).flex_shrink_0();
+                    if let Some(public_url) = public_url {
+                        actions = actions.child(
+                            Button::new(SharedString::from(format!("uh-row-public-{sid}")), "")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Icon)
+                                .icon(IconSource::from("external-link"))
+                                .tooltip(t!("user.sites.open_public").to_string())
+                                .w(px(28.0))
+                                .h(px(28.0))
+                                .px(px(0.0))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_user_site_url(public_url.clone(), cx);
+                                })),
+                        );
+                    }
+                    actions = actions.child(
+                        Button::new(SharedString::from(format!("uh-row-manage-{sid}")), "")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Icon)
+                            .icon(IconSource::from("settings"))
+                            .tooltip(t!("user.sites.open_manage").to_string())
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .px(px(0.0))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_area_for_site(
+                                    manage_site.clone(),
+                                    "/manage/sites".to_string(),
+                                    cx,
+                                );
+                            })),
+                    );
+                    actions.child(
+                        Button::new(
+                            SharedString::from(format!("uh-choose-{sid}")),
+                            t!("user.sites.choose").to_string(),
+                        )
+                        .variant(ButtonVariant::Outline)
+                        .size(ButtonSize::Sm)
+                        .on_click(cx.listener(move |this, _, _, cx| {
                             this.select_site(
                                 Some(sid_for_click.clone()),
                                 Some(label_for_click.clone()),
                                 cx,
                             );
                         })),
-                ),
+                    )
+                }),
         )
     }
 
@@ -498,29 +644,6 @@ impl Workspace {
                 .flex_1()
         };
 
-        let entity = cx.entity();
-        let sites_action = Button::new("home-open-sites", t!("user.home.open_sites").to_string())
-            .variant(ButtonVariant::Outline)
-            .icon(IconSource::from("globe"))
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |this, cx| {
-                    this.user_home_tab = UserHomeTab::Sites;
-                    cx.notify();
-                });
-            });
-        let entity = cx.entity();
-        let requests_action = Button::new(
-            "home-open-requests",
-            t!("user.home.open_requests").to_string(),
-        )
-        .variant(ButtonVariant::Outline)
-        .icon(IconSource::from("tag"))
-        .on_click(move |_, _, cx| {
-            entity.update(cx, |this, cx| {
-                this.user_home_tab = UserHomeTab::Requests;
-                cx.notify();
-            });
-        });
         let entity = cx.entity();
         let new_request = Button::new("home-new-request", t!("user.home.new_request").to_string())
             .icon(IconSource::from("plus"))
@@ -835,8 +958,6 @@ impl Workspace {
                                 .flex_wrap()
                                 .justify_end()
                                 .gap(px(8.0))
-                                .child(sites_action)
-                                .child(requests_action)
                                 .child(new_request),
                         ),
                 ),
@@ -954,14 +1075,15 @@ impl Workspace {
             )
     }
 
-    /// User-mode "Mes informations" tab — surfaces every field the
-    /// `/whoami` payload returned (device label, created_at, last_seen_at,
-    /// role) plus the account bits and directory stats. Deliberately
-    /// read-only so it can't accidentally mutate credentials.
+    /// User-mode "Mes informations" tab — surfaces the meaningful fields the
+    /// `/whoami` payload returned plus the account bits and directory stats.
+    /// Missing optional values are omitted rather than rendered as dashes.
+    /// Deliberately read-only so it can't accidentally mutate credentials.
     pub(super) fn render_user_infos_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let account = self.app_config.account.clone().unwrap_or_default();
         let server = self.account_base_url();
         let payload = self.site_directory.clone().unwrap_or_default();
+        let role_tokens = user_role_tokens(&account);
         let whoami = self.last_whoami.clone().unwrap_or_default();
 
         // Small helper: one "field row" (label muted small, value primary
@@ -1001,11 +1123,7 @@ impl Workspace {
                             div()
                                 .text_size(px(13.0))
                                 .text_color(ShellDeckColors::text_primary())
-                                .child(if value.trim().is_empty() {
-                                    t!("user.infos.unknown").to_string()
-                                } else {
-                                    value
-                                }),
+                                .child(value),
                         ),
                 )
         };
@@ -1042,60 +1160,51 @@ impl Workspace {
                 .child(div().flex().flex_col().px(px(16.0)).py(px(4.0)).child(body))
         };
 
-        let role_label = if account.is_superadmin {
-            t!("user.infos.role.superadmin").to_string()
-        } else if account.is_inklura_support {
-            t!("user.infos.role.inklura_support").to_string()
-        } else if account.is_admin {
-            t!("user.infos.role.admin").to_string()
-        } else {
-            t!("user.infos.role.user").to_string()
-        };
-
-        // Session — device + role + timestamps returned by whoami.
-        let session_body = div()
-            .flex()
-            .flex_col()
-            .child(field(
+        // Session — only values actually returned by whoami. Empty optional
+        // timestamps must not turn into rows whose value is just an em dash.
+        let mut session_body = div().flex().flex_col();
+        if let Some(device) = whoami.label.as_deref().and_then(nonempty_text) {
+            session_body = session_body.child(field(
                 t!("user.infos.field.device").to_string(),
-                whoami.label.clone().unwrap_or_default(),
+                device,
                 "keyboard",
-            ))
-            .child(field(
-                t!("user.infos.field.role").to_string(),
-                role_label,
-                "shield",
-            ))
-            .child(field(
+            ));
+        }
+        if let Some(created_at) = whoami.created_at.as_deref().and_then(nonempty_text) {
+            session_body = session_body.child(field(
                 t!("user.infos.field.since").to_string(),
-                whoami.created_at.clone().unwrap_or_default(),
+                created_at,
                 "calendar",
-            ))
-            .child(field(
+            ));
+        }
+        if let Some(last_seen_at) = whoami.last_seen_at.as_deref().and_then(nonempty_text) {
+            session_body = session_body.child(field(
                 t!("user.infos.field.last_seen").to_string(),
-                whoami.last_seen_at.clone().unwrap_or_default(),
+                last_seen_at,
                 "clock",
             ));
+        }
 
         // Account — identity + Manage server.
-        let account_body = div()
-            .flex()
-            .flex_col()
-            .child(field(
-                t!("user.infos.field.name").to_string(),
-                account.display_name(),
-                "user",
-            ))
-            .child(field(
+        let mut account_body = div().flex().flex_col();
+        if let Some(name) = nonempty_text(&account.display_name()) {
+            account_body =
+                account_body.child(field(t!("user.infos.field.name").to_string(), name, "user"));
+        }
+        if let Some(email) = nonempty_text(&account.email) {
+            account_body = account_body.child(field(
                 t!("user.infos.field.email").to_string(),
-                account.email.clone(),
+                email,
                 "mail",
-            ))
-            .child(field(
+            ));
+        }
+        if let Some(server) = nonempty_text(&server) {
+            account_body = account_body.child(field(
                 t!("user.infos.field.server").to_string(),
                 server,
                 "globe",
             ));
+        }
 
         // Scope — tenant + sites the server exposed to us.
         let tenant_name = payload
@@ -1105,59 +1214,46 @@ impl Workspace {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_default();
         let sites_count = payload.sites.len();
-        let scope_body = div()
-            .flex()
-            .flex_col()
-            .child(field(
+        let mut scope_body = div().flex().flex_col();
+        if let Some(tenant_name) = nonempty_text(&tenant_name) {
+            scope_body = scope_body.child(field(
                 t!("user.infos.field.tenant").to_string(),
                 tenant_name,
                 "users",
-            ))
-            .child(field(
-                t!("user.infos.field.sites_available", count = sites_count).to_string(),
-                t!("user.infos.field.sites_count", count = sites_count).to_string(),
-                "globe",
             ));
+        }
+        scope_body = scope_body.child(field(
+            t!("user.infos.field.sites_available", count = sites_count).to_string(),
+            t!("user.infos.field.sites_count", count = sites_count).to_string(),
+            "globe",
+        ));
 
-        // Roles — one badge per entry in the CM role bag. Surfaces every
-        // custom role (`content_editor`, `customer_service`, …) the tenant
-        // admin defined in Manage, not just the hardcoded super-admin /
-        // admin tiers the mode gate uses. See `.agents/roles.md` for the
-        // "bag is the truth, predicates are shortcuts" rule.
+        // Access — one human label per entry in the CM role bag, including
+        // custom roles. Explicit capability flags supply one coherent fallback
+        // only for legacy tokens whose bag is absent; they are never merged
+        // into a non-empty bag. See `.agents/roles.md`.
         let roles_body = {
-            let mut container = div().flex().flex_col().py(px(4.0));
-            if account.roles.is_empty() {
-                container = container.child(
+            let mut row = div().flex().flex_wrap().gap(px(6.0)).py(px(8.0));
+            for role in &role_tokens {
+                row = row.child(
                     div()
-                        .py(px(8.0))
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("user.infos.roles.empty").to_string()),
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .px(px(8.0))
+                        .py(px(3.0))
+                        .rounded(px(6.0))
+                        .bg(ShellDeckColors::primary().opacity(0.12))
+                        .border_1()
+                        .border_color(ShellDeckColors::primary().opacity(0.35))
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(ShellDeckColors::primary())
+                        .child(lucide_icon("shield", 10.0, ShellDeckColors::primary()))
+                        .child(user_role_label(role)),
                 );
-            } else {
-                let mut row = div().flex().flex_wrap().gap(px(6.0)).py(px(8.0));
-                for role in &account.roles {
-                    row = row.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .px(px(8.0))
-                            .py(px(3.0))
-                            .rounded(px(6.0))
-                            .bg(ShellDeckColors::primary().opacity(0.12))
-                            .border_1()
-                            .border_color(ShellDeckColors::primary().opacity(0.35))
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::primary())
-                            .child(lucide_icon("shield", 10.0, ShellDeckColors::primary()))
-                            .child(role.clone()),
-                    );
-                }
-                container = container.child(row);
             }
-            container
+            div().flex().flex_col().py(px(4.0)).child(row)
         };
 
         let _ = cx; // no listeners here — the tab is read-only.
@@ -1189,7 +1285,7 @@ impl Workspace {
     }
 
     /// User mode: a manage-centric home — account header + "Mes sites" list with
-    /// per-site Activer + area deep links.
+    /// per-site selection plus public-site and Manage deep links.
     /// Pre-login welcome landing — intercepts the render whenever the user
     /// is not signed in (there is no guest path). Two-part layout:
     ///
@@ -1395,8 +1491,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let account = self.app_config.account.clone().unwrap_or_default();
-        let server = self.account_base_url();
         let payload = self.site_directory.clone().unwrap_or_default();
+        let role_tokens = user_role_tokens(&account);
+        let primary_role = primary_user_role(&role_tokens)
+            .filter(|role| *role != "user")
+            .map(user_role_label);
 
         // Preferred area buttons for each site row (subset of the directory).
         let preferred = [
@@ -1450,10 +1549,10 @@ impl Workspace {
                                 .text_color(ShellDeckColors::text_primary())
                                 .child(account.display_name()),
                         );
-                        // Super-admin badge (`shield` + label, primary tint)
-                        // — surfaces the role the token was minted with so
-                        // the user knows why they see Support/Dev options.
-                        if account.is_superadmin {
+                        // The header consumes the same role presentation as
+                        // Mes informations. A contradictory legacy payload can
+                        // therefore never show two different access levels.
+                        if let Some(role_label) = primary_role.clone() {
                             name_row = name_row.child(
                                 div()
                                     .flex()
@@ -1469,15 +1568,19 @@ impl Workspace {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(ShellDeckColors::primary())
                                     .child(lucide_icon("shield", 10.0, ShellDeckColors::primary()))
-                                    .child(t!("user.badge.super_admin").to_string()),
+                                    .child(role_label),
                             );
                         }
-                        div().flex().flex_col().child(name_row).child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(ShellDeckColors::text_muted())
-                                .child(format!("{} · {}", account.email, server)),
-                        )
+                        let mut identity = div().flex().flex_col().child(name_row);
+                        if let Some(email) = nonempty_text(&account.email) {
+                            identity = identity.child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(email),
+                            );
+                        }
+                        identity
                     }),
             )
             .child(
@@ -1653,9 +1756,9 @@ impl Workspace {
         }
 
         // Active site sits at the top as a full "rich" card (identity +
-        // wp-admin shortcut + all six area deep-links). It's the only card
-        // that owns the areas — Activer on any other row promotes that
-        // site here.
+        // public/Manage shortcuts + all six area deep-links). It's the only
+        // card that owns the areas — choosing any other row promotes that site
+        // here.
         if let Some(site) = active_site.as_ref() {
             list = list.child(self.render_active_site_card(site, &area_buttons, cx));
         }
@@ -1798,7 +1901,11 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::welcome_uses_compact_flow;
+    use super::{
+        humanize_custom_role, managed_site_public_url, nonempty_text, primary_user_role,
+        user_role_tokens, welcome_uses_compact_flow,
+    };
+    use shelldeck_core::config::cloud_account::AccountInfo;
 
     // SDTEST-1708 — SDUC-441
     #[test]
@@ -1807,5 +1914,56 @@ mod tests {
         assert!(!welcome_uses_compact_flow(560.0, 14.0));
         assert!(welcome_uses_compact_flow(1_119.0, 28.0));
         assert!(!welcome_uses_compact_flow(1_120.0, 28.0));
+    }
+
+    // SDTEST-1716 — remote site metadata is allowed to omit the scheme, but
+    // it must never turn the browser action into a credential-bearing or
+    // non-HTTP destination.
+    #[test]
+    fn managed_site_public_links_are_normalized_and_http_only() {
+        assert_eq!(
+            managed_site_public_url("boutique.example.test"),
+            Some("https://boutique.example.test/".to_string())
+        );
+        assert_eq!(
+            managed_site_public_url("http://boutique.example.test/catalogue"),
+            Some("http://boutique.example.test/catalogue".to_string())
+        );
+        assert_eq!(managed_site_public_url(""), None);
+        assert_eq!(managed_site_public_url("javascript://alert"), None);
+        assert_eq!(managed_site_public_url("https://user@example.test"), None);
+    }
+
+    // SDTEST-1717 — Mes informations must not combine the capability flags
+    // with a different role bag. The bag wins when present; legacy tokens get
+    // one coherent fallback, and absent optional values disappear entirely.
+    #[test]
+    fn user_information_uses_one_role_source_and_hides_empty_values() {
+        let contradictory = AccountInfo {
+            is_superadmin: true,
+            roles: vec![
+                " tenant_admin ".into(),
+                "CONTENT_EDITOR".into(),
+                "tenant_admin".into(),
+            ],
+            ..Default::default()
+        };
+        let roles = user_role_tokens(&contradictory);
+        assert_eq!(roles, ["tenant_admin", "content_editor"]);
+        assert_eq!(primary_user_role(&roles), Some("tenant_admin"));
+        assert_eq!(humanize_custom_role("content_editor"), "Content editor");
+
+        let legacy_staff = AccountInfo {
+            is_superadmin: true,
+            ..Default::default()
+        };
+        assert_eq!(user_role_tokens(&legacy_staff), ["superadmin"]);
+        assert_eq!(user_role_tokens(&AccountInfo::default()), ["user"]);
+
+        assert_eq!(nonempty_text("  "), None);
+        assert_eq!(
+            nonempty_text("  Poste de Karim  "),
+            Some("Poste de Karim".into())
+        );
     }
 }

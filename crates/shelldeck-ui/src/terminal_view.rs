@@ -19,6 +19,9 @@ use shelldeck_core::config::themes::TerminalTheme;
 
 use crate::glyph_cache::GlyphCache;
 use crate::monolith::{animated_monolith, MonolithMotion};
+use crate::shortcut_reference::{
+    render_shortcut_rows, shortcuts_for, ShortcutGroup, ShortcutSurface,
+};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -2156,7 +2159,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-zoom-out",
                     "minus",
-                    shortcut_tooltip(t!("terminal.shortcut.zoom").as_ref(), format!("{primary}-")),
+                    shortcut_tooltip(t!("shortcuts.zoom").as_ref(), format!("{primary}-")),
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.zoom_out();
@@ -2192,7 +2195,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-zoom-in",
                     "plus",
-                    shortcut_tooltip(t!("terminal.shortcut.zoom").as_ref(), format!("{primary}=")),
+                    shortcut_tooltip(t!("shortcuts.zoom").as_ref(), format!("{primary}=")),
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.zoom_in();
@@ -4578,49 +4581,16 @@ impl TerminalView {
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (ctrl, cmd) = if cfg!(target_os = "macos") {
-            ("\u{2318}", "\u{2318}")
+        let cmd = if cfg!(target_os = "macos") {
+            "\u{2318}"
         } else {
-            ("Ctrl+", "Ctrl+")
-        };
-        let shift = if cfg!(target_os = "macos") {
-            "\u{21E7}"
-        } else {
-            "Shift+"
-        };
-
-        let shortcut_row = |keys: String, desc: String| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.0))
-                .py(px(3.0))
-                .child(
-                    div()
-                        .min_w(px(140.0))
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(ShellDeckColors::primary())
-                        .child(
-                            div()
-                                .px(px(6.0))
-                                .py(px(2.0))
-                                .rounded(px(4.0))
-                                .bg(ShellDeckColors::primary().opacity(0.12))
-                                .child(keys),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(desc),
-                )
+            "Ctrl+"
         };
 
         let mut launchers = div()
             .flex()
             .flex_wrap()
+            .flex_shrink_0()
             .items_center()
             .justify_center()
             .gap(px(10.0))
@@ -4676,12 +4646,26 @@ impl TerminalView {
             );
         }
 
+        let shortcuts = shortcuts_for(ShortcutSurface::TerminalEmpty, true);
+        let navigation_shortcuts = shortcuts
+            .iter()
+            .copied()
+            .filter(|shortcut| shortcut.group == ShortcutGroup::Navigation);
+        let terminal_shortcuts = shortcuts
+            .iter()
+            .copied()
+            .filter(|shortcut| shortcut.group == ShortcutGroup::Terminal);
+
         div()
+            .id("terminal-empty-scroll")
             .flex()
             .flex_col()
             .items_center()
-            .justify_center()
+            .justify_start()
             .size_full()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .py(px(24.0))
             // Chrome applicatif, pas sortie de terminal : cet écran suit le
             // thème de l'application (`.agents/theming.md`). Il peignait le
             // fond de la palette *terminal*, si bien qu'un thème clair
@@ -4694,6 +4678,7 @@ impl TerminalView {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_shrink_0()
                     .items_center()
                     .gap(px(8.0))
                     .child(animated_monolith(
@@ -4721,12 +4706,14 @@ impl TerminalView {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_shrink_0()
                     .p(px(20.0))
                     .rounded(px(8.0))
                     .bg(ShellDeckColors::bg_surface())
                     .border_1()
                     .border_color(ShellDeckColors::border())
-                    .max_w(px(420.0))
+                    .w_full()
+                    .max_w(px(700.0))
                     .gap(px(2.0))
                     .child(
                         div()
@@ -4734,48 +4721,46 @@ impl TerminalView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
                             .mb(px(8.0))
-                            .child(t!("terminal.empty.shortcuts_title").to_string()),
+                            .child(t!("shortcuts.title").to_string()),
                     )
-                    .child(shortcut_row(
-                        format!("{}T", cmd),
-                        t!("terminal.shortcut.new_terminal").to_string(),
-                    ))
-                    .child(shortcut_row(
-                        format!("{}{}P", cmd, shift),
-                        t!("terminal.shortcut.command_palette").to_string(),
-                    ))
-                    .child(shortcut_row(
-                        format!("{}F", cmd),
-                        t!("terminal.shortcut.search").to_string(),
-                    ))
-                    .child(shortcut_row(
-                        format!("{}B", cmd),
-                        t!("terminal.shortcut.toggle_sidebar").to_string(),
-                    ))
-                    .child(shortcut_row(
-                        format!("{}{}D", ctrl, shift),
-                        t!("terminal.shortcut.split").to_string(),
-                    ))
-                    .child(shortcut_row(
-                        format!("{}{}C", ctrl, shift),
-                        t!("terminal.shortcut.copy").to_string(),
-                    ))
-                    .child(shortcut_row(
-                        format!("{}{}V", ctrl, shift),
-                        t!("terminal.shortcut.paste").to_string(),
-                    ))
-                    .child(shortcut_row(
-                        format!("{}= / {}-", cmd, cmd),
-                        t!("terminal.shortcut.zoom").to_string(),
-                    ))
-                    .child(shortcut_row(
-                        format!("{},", cmd),
-                        t!("terminal.shortcut.settings").to_string(),
-                    ))
-                    .child(shortcut_row(
-                        "Ctrl+Tab".to_string(),
-                        t!("terminal.shortcut.next_tab").to_string(),
-                    )),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(16.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w(px(260.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(ShellDeckColors::text_muted())
+                                            .mb(px(4.0))
+                                            .child(t!("shortcuts.group.navigation").to_string()),
+                                    )
+                                    .child(render_shortcut_rows(navigation_shortcuts)),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w(px(260.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(ShellDeckColors::text_muted())
+                                            .mb(px(4.0))
+                                            .child(t!("shortcuts.group.terminal").to_string()),
+                                    )
+                                    .child(render_shortcut_rows(terminal_shortcuts)),
+                            ),
+                    ),
             )
     }
 }

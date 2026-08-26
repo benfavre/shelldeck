@@ -61,6 +61,18 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-041 | Agents / Arrêt | Pendant une exécution, l'action ronde d'envoi était remplacée par un bouton rectangulaire rouge « Arrêter », visuellement étranger au pied du Composer. | P2 | À valider | Lancer un agent : l'arrêt occupe le même cercle de 28 px que l'envoi, avec carré blanc et libellé au survol. |
 | UX-042 | Agents / Tableaux Markdown | Après restauration du scroll, les tableaux révélaient une largeur intrinsèque non contrainte : le wrapper de 860 px masquait net le bord droit au lieu de donner aux cellules une largeur de retour à la ligne. | P1 | À valider | Afficher un tableau à deux colonnes avec des sujets longs : chaque cellule revient à la ligne dans la colonne, sans texte coupé ni débordement horizontal. |
 | UX-043 | User / Mes demandes | Le serveur recevait déjà `mine=1`, mais l'UI rejetait encore chaque ligne dont `requested_by` ne correspondait pas exactement au nom ou à l'e-mail du compte : un identifiant ou un libellé composite suffisait à vider l'écran. | P1 | Validé | Contrôlé sur la démo avec deux lignes `mine=1` dont `requested_by` vaut `Équipe de démonstration <support@exemple.test>` : le compteur et la liste affichent bien 2. |
+| UX-044 | User / Accueil | Le bloc « Accès rapides » répétait les onglets Sites et Demandes placés juste au-dessus, ajoutant une seconde navigation pour les mêmes destinations. | P2 | Validé | Contrôlé sur la démo : « Accès rapide » ne contient plus que « Nouvelle demande », qui ouvre bien la feuille de création. |
+| UX-045 | User / Mes sites | « Activer » faisait croire à une mise en ligne alors que l'action ne choisissait que le site courant, et aucune ouverture du site public ou de sa fiche Manage n'était proposée. | P2 | Validé | Recette X11 à deux sites : les trois actions restent distinctes et « Choisir ce site » promeut la bonne carte active avec ses deux liens libellés. |
+| UX-046 | User / Mes informations | La page exposait le jargon « Rôles CM », les slugs serveur, deux champs vides et l'URL du portail collée à l'e-mail ; le badge d'en-tête pouvait contredire le sac de rôles. | P2 | Validé | Recette X11 : « Vos accès » affiche les deux libellés humains, les dates absentes ont disparu et l'en-tête ne garde que l'e-mail. |
+| UX-047 | User / Paramètres Général | Les réglages de reconnexion des terminaux et d'attachement tmux restaient visibles sans accès Dev, bien que les onglets Terminal et Éditeur soient déjà filtrés. | P2 | Validé | Recette X11 croisée : le compte client ne voit aucun des quatre éléments Dev ; le super-admin conserve les deux onglets et les deux réglages. |
+| UX-048 | Support / Accueil | Le titre « Bonjour, l’équipe Support » présentait l’équipe au lieu de l’interpeller, donnant une tournure artificielle au premier texte de l’écran. | P2 | Validé | Recette X11 : l’accueil affiche exactement « Bonjour, équipe Support » au-dessus des quatre compteurs. |
+| UX-049 | Support / Compteurs | Un `counts.all` absent ou inférieur à la liste faisait annoncer zéro dans l’en-tête, l’onglet et le filtre « Tous » au-dessus de tickets pourtant visibles. | P2 | Validé | Recette X11 avec `counts.all` volontairement absent : « Tickets (4) », « 4 tickets » et « Tous 4 » restent cohérents avec les quatre lignes reçues. |
+| UX-050 | Dev / Raccourcis | Le tableau de bord, l’état vide Terminal, la visite et même À propos maintenaient quatre listes, quatre styles et parfois des touches différentes selon la plateforme. | P2 | Validé | Recette X11 : Dashboard et Terminal affichent la même référence complète sans coupe ; À propos ajoute Fermer/Quitter dans son scroll, et la visite filtre le catalogue selon le rôle. |
+| UX-051 | Dev / Rail d’activités | La marque colorée dominait la sélection, les activités et outils formaient une suite sans repère, et le tracé de pouls d’« Activité récente » était difficile à identifier. | P2 | Validé | Recette X11 : la marque monochrome reste secondaire, la tuile active domine nettement et le séparateur avant Synchronisation reste lisible sans élargir le rail. |
+| UX-052 | Onboarding / Géométrie | La carte n’avait qu’une hauteur maximale : les diapositives courtes se contractaient et déplaçaient « Suivant » sous le curseur à chaque étape. | P2 | Validé | Recette X11 à 1210×810 : les six cartes restent à y=40–769 et leur action principale à y=713–754 ; le même clic traverse toute la visite. |
+| UX-053 | Onboarding / Illustrations | Scripts réduisait une liste et un éditeur complets, Assistant trois mentions et un compositeur, tandis que plusieurs badges entraient sous le dégradé de légende. | P2 | Validé | Recette X11 : commandes et action du script restent lisibles, le compositeur n’a plus qu’un repère de contexte, et le badge Terminal reste entièrement au-dessus de sa légende. |
+| UX-054 | Connexion / Méthodes | Cinq chemins concurrents étaient visibles d’emblée, dont deux par mot de passe sans distinction, et aucune récupération n’était proposée près du champ. | P1 | Validé | Recette X11 : seule la connexion native est ouverte ; récupération à côté du mot de passe ; quatre alternatives distinctes derrière « Autres méthodes ». |
+| UX-055 | Support / Filtres Demandes | Les pastilles de Demandes ne portaient aucun compteur, contrairement à la file Tickets voisine, et la tranche déjà filtrée reçue du serveur empêchait un calcul local honnête. | P1 | Validé | Recette X11 : Toutes 5, À traiter 2, En cours 2 et Résolues 1 restent visibles et stables après sélection d’À traiter ; la liste contient alors exactement deux lignes. |
 
 ## Règle de mise à jour
 
@@ -351,3 +363,77 @@ ligne existante.
   démo renvoie maintenant deux auteurs composites qui ne correspondent pas par
   égalité stricte ; recette X11 réussie sur l'Accueil (`2 demandes en cours`)
   puis sur « Mes demandes » (les deux lignes visibles avec leurs métadonnées).
+- **2026-08-25 — UX-044 → Validé.** Les actions « Voir mes sites » et « Voir
+  mes demandes » ont quitté la carte d'accueil : leurs onglets primaires sont
+  déjà visibles immédiatement au-dessus. La carte passe au singulier et ne
+  conserve que « Nouvelle demande ». Recette X11 sur la démo : une seule
+  action rendue, puis ouverture effective de la feuille de création.
+- **2026-08-25 — UX-045 → Validé.** « Activer » devient « Choisir ce site »
+  et ne peut plus se confondre avec une mise en ligne. Chaque site expose aussi
+  une destination publique HTTP(S) et sa fiche `/manage/sites`, avec des actions
+  séparées. SDTEST-1716 verrouille la normalisation et la frontière de sécurité
+  de l'URL publique. Recette X11 avec deux sites : les lignes compactes restent
+  lisibles et la sélection d'Atelier le promeut en carte active sans perdre les
+  deux destinations.
+- **2026-08-25 — UX-046 → Validé.** Les rôles passent par une présentation
+  unique, sac CM prioritaire et repli ancien jeton seulement si ce sac est vide.
+  Les noms connus sont traduits, les rôles personnalisés humanisés, et les
+  valeurs optionnelles vides ne créent plus de ligne. L'origine Manage quitte
+  l'en-tête et reste disponible dans « Votre compte ». SDTEST-1717 verrouille
+  la sélection de source et l'omission des valeurs vides. Recette X11 : les
+  badges « Super-administrateur » et « Support Inklura » sont cohérents, les
+  dates absentes ne réservent aucune ligne et l'en-tête ne garde que l'e-mail.
+- **2026-08-25 — UX-047 → Validé.** Les lignes « Reconnecter les sessions à
+  l'ouverture » et « Attacher tmux automatiquement » consomment désormais
+  `dev_tabs_enabled`, le même résultat de capacité que les onglets Terminal et
+  Éditeur. SDTEST-1718 verrouille les deux états du prédicat partagé. Recette
+  X11 sur les deux niveaux : les quatre éléments disparaissent ensemble pour
+  le client et restent disponibles ensemble pour le super-admin.
+- **2026-08-26 — UX-048 → Validé.** Le titre de l’accueil devient
+  « Bonjour, équipe Support » dans la locale française ; l’anglais conserve sa
+  formulation naturelle « Hello, Support team ». La parité de clés FR/EN reste
+  couverte par le test i18n partagé. Recette X11 réussie sur l’accueil Support,
+  au-dessus des quatre compteurs opérationnels.
+- **2026-08-26 — UX-049 → Validé.** `SupportView::set_list` réconcilie le
+  total serveur avec la longueur de la liste reçue avant d’alimenter l’accueil,
+  l’onglet, l’en-tête et le filtre « Tous ». SDTEST-1719 couvre le compteur
+  absent, sous-estimé, supérieur et la liste vide ; le bouchon de démo omet
+  désormais volontairement `counts.all`. Recette X11 réussie : l’onglet,
+  l’en-tête et le filtre annoncent tous 4 au-dessus des quatre lignes reçues.
+- **2026-08-26 — UX-050 → Validé.** `shortcut_reference.rs` devient le
+  catalogue traduit et le composant de ligne commun au tableau de bord, à
+  l’état vide Terminal, à la visite et à À propos. Les constantes du catalogue
+  alimentent aussi l’enregistrement réel des touches ; SDTEST-1720 verrouille
+  l’ordre commun, le filtrage par capacité et les variantes macOS/Linux.
+  Recette X11 réussie : les deux références Dev sont complètes et identiques,
+  le Terminal les répartit sur deux colonnes sans couper la dernière ligne, et
+  À propos conserve Fermer/Quitter dans son défilement existant.
+- **2026-08-26 — UX-051 → Validé.** Le rail Dev remplace la vignette de
+  marque colorée par le Monolith monochrome, renforce la sélection, sépare les
+  cinq activités principales des outils et aligne l’icône d’Activité récente
+  sur l’horloge du menu Aller. SDTEST-1721 verrouille les deux repères
+  sémantiques et l’unique rupture de groupe. Recette X11 réussie : la marque
+  ne concurrence plus la tuile Connexions active et le séparateur reste
+  perceptible sans épaissir les 48 px du rail.
+- **2026-08-26 — UX-052 → Validé.** La carte de visite remplace sa simple
+  hauteur maximale par une hauteur relative fixe de 90 %. Le corps reste
+  l’unique ligne élastique et défilable ; l’en-tête et le pied ne suivent donc
+  plus la hauteur intrinsèque de chaque diapositive. Recette X11 réussie sur
+  les six écrans Dev à 1210×810 : carte et action principale ne bougent pas,
+  tandis que le dernier corps conserve son défilement.
+- **2026-08-26 — UX-053 → Validé.** Les compositions Dev Scripts et
+  Assistant abandonnent leurs miniatures multiples au profit d’un script
+  exécutable et d’un compositeur avec un seul repère de contexte, dimensionnés
+  pour 560×200. Les quatre badges auparavant ancrés près du bas remontent hors
+  du dégradé de légende ; SDTEST-1722 verrouille ces choix dans la source.
+  Recette X11 réussie sur les étapes 2, 3 et 5 dans la carte réelle à 560×200.
+- **2026-08-26 — UX-054 → Validé.** La modale fait de l’e-mail/mot de passe
+  son unique chemin initial, place la récupération près du champ et replie
+  SSO, Google, GitHub et le mot de passe navigateur sous « Autres méthodes ».
+  SDTEST-1723 verrouille la route Manage réelle, SDTEST-1724 les quatre
+  alternatives ; les deux états ont été contrôlés sur X11.
+- **2026-08-26 — UX-055 → Validé.** Manage calcule les compteurs Issues sur
+  le périmètre autorisé et les filtres actifs avant le statut sélectionné ;
+  ShellDeck les désérialise, les maintient lors des mutations optimistes et
+  les affiche avec la même géométrie bouton + badge que Tickets. SDTEST-1725
+  couvre le contrat client. Recette X11 réussie sur Toutes puis À traiter.

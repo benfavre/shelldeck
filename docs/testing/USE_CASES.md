@@ -1355,8 +1355,11 @@ Switching between Dev / User / Support hides the Dev surface without
 destroying terminal sessions (SDUC-023 must not be interrupted).
 Settings is a closable personal surface available in every authenticated
 mode. User/Support expose General, AI, Appearance and About; Dev-capable
-accounts additionally expose Terminal and Editor. Opening Settings pauses
-surface-only polling and closing it returns to the intact current mode.
+accounts additionally expose Terminal and Editor. The shared General tab also
+applies that capability boundary to its SSH-session controls: reconnecting
+terminal sessions on startup and automatically attaching tmux are absent for a
+User/Support-only account. Opening Settings pauses surface-only polling and
+closing it returns to the intact current mode.
 
 ### SDUC-311 — Toasts respect level
 
@@ -1380,9 +1383,11 @@ none.
 
 ### SDUC-315 — Login form flows
 
-Email + password submit is disabled while empty; OIDC buttons pass
-the provider correctly; browser password button emits
-`StartOidc(None)`.
+Email + password is the one primary path and submit stays disabled while either
+field is empty. Password recovery opens the active Manage origin's public
+`/manage/forgot-password` page. SSO, Google, GitHub, and browser-password login
+are collapsed under Other methods by default; expanding it preserves their
+exact provider routing, with browser password emitting `StartOidc(None)`.
 
 ---
 
@@ -1970,21 +1975,32 @@ English locale.
 ### SDUC-440 — User and Support modes have a real home
 
 User mode opens on an Accueil tab summarizing available sites and open
-requests, with direct actions for Sites, Requests, and a new request. Its three
-most recent requests open directly from the dashboard, while a compact status
-card exposes the Manage session, active site, synchronized directory, and a
-manual sync action. A dashboard-specific network illustration with a contrast
-gradient gives the page a clear identity without reducing the readability of
-those operational cards. Support mode opens on its own Accueil tab with open,
+requests. Sites and Requests remain the adjacent primary tabs instead of being
+duplicated inside the page; the single quick action opens the distinct new
+request composer. Its three most recent requests open directly from the
+dashboard, while a compact status card exposes the Manage session, active site,
+synchronized directory, and a manual sync action. A dashboard-specific network
+illustration with a contrast gradient gives the page a clear identity without
+reducing the readability of those operational cards. In Mes sites, choosing a
+site is explicitly labelled as selection rather than activation. Every row also
+offers separate public-site and Manage-page destinations; a host without a
+scheme becomes HTTPS, while non-HTTP(S) or credential-bearing URLs stay inert.
+Support mode opens on its own Accueil tab with open,
 SLA-risk, unassigned, and hosted request counters. Every counter is a route,
 not decoration: it opens the matching Tickets/Requests queue after clearing
 stale search and advanced constraints so the visible rows agree with the
-announced count. The home also exposes up to four actionable tickets ordered by
+announced count. The Support payload's reported all-ticket total is reconciled
+against the received list length before presentation: an omitted, zero, or
+stale-low count can never make the home, Tickets tab, header, and All filter
+announce fewer tickets than the rows already available. The home also exposes
+up to four actionable tickets ordered by
 SLA risk, urgency, missing owner, then recency, plus the four most recently
 updated visible requests; selecting either kind opens its real detail. The
 action banner says « Commencer le triage » while the list it introduces is
 named by its contents, « Urgences et non attribués », so two adjacent blocks
-never present different roles under the same heading.
+never present different roles under the same heading. Its greeting addresses
+the team directly (« Bonjour, équipe Support ») instead of presenting it with
+an article.
 Operational lists remain separate tabs. The first-run tour that follows a
 sign-in is role-aware in its own right — see SDUC-481.
 
@@ -2011,8 +2027,15 @@ sidebar bindings only for a Dev-capable account.
 Every slide carries role-aware artwork from
 `assets/images/onboarding/role-aware/`, embedded and listed in `main.rs`, and
 resolves its own `title` / `intro` / `media_caption` plus a title/body pair per
-bullet in both locales. The card is capped at 90% of the window height with a
-scrolling body, so the footer stays reachable on the longest run.
+bullet in both locales. The card always occupies 90% of the window height,
+regardless of the current slide. Its body is the only elastic scrolling row,
+so the footer stays reachable on the longest run and Previous / Next / Finish
+never move under the pointer while stepping through a run.
+
+Artwork is composed for its actual 560×200 display size, not for the 1120×400
+export canvas: dense product screens crop to one readable interaction. Number
+badges stay above the runtime caption gradient rather than competing with its
+bottom-left label.
 
 ---
 
@@ -2047,6 +2070,12 @@ have a contextual panel behind them, with the active one marked, Settings
 pinned to the bottom, and connected-host / open-tab counts carried as badges.
 Destinations without a panel — Monique, Fleet, bext Cloud — are reached from
 the Aller menu and the command palette rather than taking a rail slot.
+
+The rail keeps the ShellDeck mark small and monochrome so it does not compete
+with navigation. The selected activity has a filled tile, outline and side
+marker; a divider separates primary work from secondary tools. Every glyph has
+its localized label in a tooltip, and Recent Activity uses the same clock icon
+as the Aller menu rather than an ambiguous pulse trace.
 
 The panel follows the selected activity: Connections keeps its grouped host
 list with pins and per-row actions, while Terminals lists open tabs, Scripts
@@ -2467,8 +2496,84 @@ both stay visibly complete throughout the fade-out; changing the splash's
 animation phase must never restart either indicator at 0% before the signed-in
 home appears.
 
+### SDUC-484 — Account information is customer-facing and internally consistent
+
+User → Mes informations presents account, access, session and organisation data
+in customer-facing language. The portal origin belongs only in the account card,
+not beside the e-mail in the persistent header. Optional whoami values such as
+device label, sign-in date and last activity render only when non-empty; an absent
+value never creates a dash-only row.
+
+The normalized CM role bag is the sole display source whenever it is present.
+Known roles receive localized labels and custom slugs receive a readable label.
+For an older token that omitted the bag entirely, exactly one access label may be
+derived from its explicit server-issued capability flags. That fallback is never
+merged into a non-empty bag. Both the header badge and the information card consume
+this same presentation, so a malformed or transitional payload cannot display two
+different access levels.
+
+### SDUC-485 — Shortcut references are one platform-aware catalogue
+
+Every in-app shortcut reference consumes one ordered catalogue and one shared,
+non-interactive row component. The Dev dashboard and empty-terminal reference
+contain the same items in the same order; Settings → About extends that source
+with Close Tab and Quit rather than maintaining another hand-written list. The
+last onboarding slide filters the same order by capability: palette and
+settings for everyone, plus terminal and sidebar only for Dev-capable accounts.
+Its modifiers therefore follow the host platform instead of advertising Ctrl
+on macOS. The application's keybinding registration imports the catalogue's
+binding constants, so changing a displayed binding cannot silently leave the
+real action behind.
+
+### SDUC-486 — Request status filters retain one authorized count universe
+
+The Manage Issues list response includes a total and one count for every issue
+status. It computes them only after tenant/owner authorization and all active
+non-status filters, but before applying the selected status filter. Switching a
+Support request chip therefore narrows the returned rows without making the
+other chip counts disappear or exposing information outside the caller's scope.
+
+ShellDeck defaults missing counts to zero for compatibility with older servers,
+uses the server values for the Support request pills, and keeps them coherent
+during local create, status-change, and delete updates until the next poll. The
+four visible filters use the same compact button plus secondary count badge as
+the neighboring Tickets queue.
+
 ## Change log
 
+- **2026-08-26** — Added SDUC-486 and SDTEST-1725: Manage returns privacy-safe
+  request status counts before the selected status slice, and Support renders
+  them with the same pill/badge structure as Tickets.
+- **2026-08-26** — Amended SDUC-315 and added SDTEST-1723/1724: password login
+  is now the sole initially visible path, recovery targets the real Manage
+  page, and the four browser alternatives remain complete behind one disclosure.
+- **2026-08-26** — Amended SDUC-481 and added SDTEST-1722: the Scripts and
+  Assistant banners now focus one readable interaction at 560×200, while every
+  number badge previously anchored near the bottom moves above the caption.
+- **2026-08-26** — Amended SDUC-443 and added SDTEST-1721: the Dev rail now
+  subordinates its brand mark, strengthens its active state, separates primary
+  work from tools, and aligns Recent Activity's clock with the Aller menu.
+- **2026-08-26** — Added SDUC-485 and SDTEST-1720: four divergent shortcut
+  references now consume one ordered, translated, platform-aware catalogue and
+  shared row; application key registration imports the same binding constants.
+- **2026-08-26** — Amended SDUC-440 and added SDTEST-1719: Support's shared
+  all-ticket count now uses the received list length as a lower bound, keeping
+  the home, tab, header, and filter coherent when Manage omits or under-reports
+  `counts.all`.
+- **2026-08-26** — Amended SDUC-440 and the pending SDTEST-1414 recipe: the
+  Support greeting now addresses the team directly in natural French.
+- **2026-08-25** — Amended SDUC-310 and added SDTEST-1718: the two Dev-session
+  controls embedded in the shared General tab now follow the same capability
+  boundary as the Terminal and Editor tabs.
+- **2026-08-25** — Added SDUC-484 and SDTEST-1717 after Mes informations mixed
+  raw CM slugs, absent-value dashes and a second flag-derived role source. Role
+  presentation is now shared, humanized and bag-first; empty optional rows vanish.
+- **2026-08-25** — Amended SDUC-440 and added SDTEST-1716: User site rows now
+  distinguish choosing the active filter from opening the public site or its
+  Manage page; the public URL boundary accepts only credential-free HTTP(S).
+- **2026-08-25** — Amended SDUC-440 and the pending SDTEST-1414 recipe after
+  removing the duplicate Sites/Requests actions from the User home; the sole
+  quick action now opens the distinct New Request composer.
 - **2026-08-25** — Amended SDUC-228 and added SDTEST-1715: a successful
   `mine=1` response is authoritative even when Manage formats `requested_by`
   differently; the local identity predicate now serves only as the privacy

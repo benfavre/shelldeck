@@ -41,6 +41,16 @@ pub fn brand_mark(width: f32, height: f32) -> impl IntoElement {
         .text_color(ShellDeckColors::text_muted())
 }
 
+/// Absolute-pixel variant for fixed chrome such as the Dev activity rail.
+pub fn brand_mark_abs(width: f32, height: f32) -> impl IntoElement {
+    svg()
+        .path("images/shelldeck-mark.svg")
+        .w(gpui::px(width))
+        .h(gpui::px(height))
+        .flex_shrink_0()
+        .text_color(ShellDeckColors::text_muted().opacity(0.72))
+}
+
 /// The ShellDeck wordmark — "Shell" in the primary text color, "Deck" in the
 /// brand accent color. `text_size` sets the point size of both halves.
 pub fn brand_wordmark(text_size: f32) -> impl IntoElement {
