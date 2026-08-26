@@ -124,6 +124,9 @@ impl Workspace {
                 LoginFormEvent::StartOidc(provider) => {
                     this.start_oidc_login(provider.clone(), cx);
                 }
+                LoginFormEvent::OpenForgotPassword => {
+                    this.open_forgot_password(cx);
+                }
                 LoginFormEvent::Cancel => {
                     this.login_form = None;
                     this._login_form_sub = None;
@@ -136,6 +139,26 @@ impl Workspace {
         self.login_form = Some(form);
         self._login_form_sub = Some(sub);
         cx.notify();
+    }
+
+    fn open_forgot_password(&mut self, cx: &mut Context<Self>) {
+        let url = cloud_account::forgot_password_url(&self.account_base_url());
+        match cloud_account::open_in_browser(&url) {
+            Ok(_) => self.show_toast(
+                t!("toast.opening_browser").to_string(),
+                ToastLevel::Info,
+                cx,
+            ),
+            Err(e) => self.show_toast(
+                t!(
+                    "toast.open_browser_failed",
+                    error = crate::i18n::api_error_message(&e)
+                )
+                .to_string(),
+                ToastLevel::Error,
+                cx,
+            ),
+        }
     }
 
     /// Open the post-login onboarding tour. Callable from Settings replay
@@ -471,6 +494,8 @@ impl Workspace {
             cx.notify();
         });
         self.issues_list.clear();
+        self.issues_counts = Default::default();
+        self.issues_list_owner_scoped = false;
         self.issues_instances.clear();
         self.issues_staff = false;
         self.reset_issue_selection(cx);
@@ -508,7 +533,7 @@ impl Workspace {
         self.support.update(cx, |support, cx| {
             support.set_list(Vec::new(), Default::default(), Default::default());
             support.set_agents(Vec::new());
-            support.set_issues(Vec::new(), false, Vec::new());
+            support.set_issues(Vec::new(), Default::default(), false, Vec::new());
             support.set_monique_available(false);
             support.clear_selection();
             cx.notify();

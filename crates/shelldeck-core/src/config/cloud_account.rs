@@ -540,6 +540,11 @@ pub fn browser_connect_url(
     url
 }
 
+/// Public Manage page that starts password recovery.
+pub fn forgot_password_url(base_url: &str) -> String {
+    format!("{}/manage/forgot-password", base_url.trim_end_matches('/'))
+}
+
 /// Wait for the browser to redirect to `http://127.0.0.1:<port>/callback?token=…&state=…`
 /// on `listener`, verify the `state` matches, and return the token.
 ///
@@ -884,6 +889,18 @@ mod tests {
 
         let no_prov = browser_connect_url("https://x.test", 5000, "s", "d", None);
         assert!(!no_prov.contains("provider="));
+    }
+
+    #[test]
+    fn forgot_password_url_targets_the_manage_recovery_page() {
+        assert_eq!(
+            forgot_password_url("https://manage.inklura.fr/"),
+            "https://manage.inklura.fr/manage/forgot-password"
+        );
+        assert_eq!(
+            forgot_password_url("https://tenant.example.test"),
+            "https://tenant.example.test/manage/forgot-password"
+        );
     }
 
     #[test]

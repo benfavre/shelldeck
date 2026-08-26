@@ -84,8 +84,10 @@ Rationale:
       the role bag matches `isInkluraSupport(user)` server-side.
     * `is_admin: bool` — kept for Manage-side gates (invite links,
       admin console), **no longer used** for ShellDeck mode gating.
-    * `roles: Vec<String>` — full CM role bag, displayed as badges in
-      User → Mes informations tab. Custom roles included.
+    * `roles: Vec<String>` — full CM role bag, displayed with human labels as
+      badges in User → Mes informations tab. Custom roles included. This bag is
+      the display source whenever present; explicit capability flags provide a
+      single legacy fallback only when an older token omitted the bag entirely.
   * `AppMode::can_switch(signed_in, is_inklura_support, is_superadmin)` —
     signed-in super-admins OR inklura-support may switch.
   * `AppMode::resolve_effective(signed_in, is_inklura_support,
@@ -109,10 +111,12 @@ Rationale:
   * **Never** persist role decisions. Re-read the bag from `last_whoami`
     or refresh it — logout / re-login is the only clean way to change
     tier client-side.
-  * **The bag drives display; predicates drive gating.** Custom CM
-    roles show up as badges without ceremony, but never magically
-    unlock a mode — every gate is a spelled-out predicate on both
-    server and client.
+  * **The bag drives display; predicates drive gating.** Custom CM roles show
+    up as humanized badges without ceremony, but never magically unlock a mode
+    — every gate is a spelled-out predicate on both server and client. When a
+    legacy token has no bag, the already server-issued capability booleans may
+    supply one display fallback so the header and information card cannot
+    contradict each other; they must never be merged into a non-empty bag.
 
 ## Not signed in → welcome landing (no guest mode)
 
@@ -163,6 +167,6 @@ Once `feat/paillard-mobilier-2883` carries #37 + #38 and is deployed:
     → User + Support, switcher visible.
   * Login super-admin (existing) → User + Support + Dev.
 
-The Mes informations tab surfaces every CM role from the bag as a
-badge; the role field shows the top tier (Super-admin → Inklura
-Support → Admin → Utilisateur).
+The Mes informations tab surfaces every CM role from the bag as a humanized
+badge under « Vos accès ». The header consumes the same normalized presentation
+and never derives a competing badge directly from the capability flags.

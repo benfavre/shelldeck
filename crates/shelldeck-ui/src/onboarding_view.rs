@@ -14,6 +14,7 @@
 use crate::icons::lucide_icon;
 use crate::overlay::{window_backdrop, InputEscape};
 use crate::scale::px;
+use crate::shortcut_reference::{render_shortcut_rows, shortcuts_for, ShortcutSurface};
 use crate::t;
 use crate::theme::ShellDeckColors;
 use adabraka_ui::prelude::*;
@@ -371,63 +372,21 @@ impl OnboardingView {
             )
     }
 
-    fn shortcut_row(keys: &str, desc: String) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .py(px(5.0))
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(desc),
-            )
-            .child(
-                div()
-                    .px(px(8.0))
-                    .py(px(3.0))
-                    .rounded(px(6.0))
-                    .bg(ShellDeckColors::bg_sidebar())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(keys.to_string()),
-            )
-    }
-
     /// The last slide of every run closes with the shortcuts that reach the
     /// surfaces just described — the tour used to spend a whole slide on them.
     fn render_shortcut_strip(&self) -> impl IntoElement {
-        let mut strip = div()
+        let shortcuts = shortcuts_for(
+            ShortcutSurface::Onboarding,
+            self.allowed_modes.contains(&AppMode::Dev),
+        );
+        div()
             .flex()
             .flex_col()
-            .gap(px(2.0))
             .mt(px(4.0))
             .pt(px(8.0))
             .border_t_1()
             .border_color(ShellDeckColors::border())
-            .child(Self::shortcut_row(
-                "Ctrl+Shift+P",
-                t!("onboarding.shortcuts.palette").to_string(),
-            ));
-        if self.allowed_modes.contains(&AppMode::Dev) {
-            strip = strip
-                .child(Self::shortcut_row(
-                    "Ctrl+T",
-                    t!("onboarding.shortcuts.terminal").to_string(),
-                ))
-                .child(Self::shortcut_row(
-                    "Ctrl+B",
-                    t!("onboarding.shortcuts.sidebar").to_string(),
-                ));
-        }
-        strip.child(Self::shortcut_row(
-            "Ctrl+,",
-            t!("onboarding.shortcuts.settings").to_string(),
-        ))
+            .child(render_shortcut_rows(shortcuts))
     }
 
     fn render_step_body(&self) -> impl IntoElement {
@@ -509,10 +468,12 @@ impl Render for OnboardingView {
             .flex()
             .flex_col()
             .w(px(560.0))
-            // Window-relative, like adabraka's `Dialog`: a fixed cap is either
-            // too tall for a small window or forces the longest slide (the one
-            // carrying the shortcut strip) to scroll on a roomy one.
-            .max_h(relative(0.9))
+            // Every step occupies the same window-relative height. A `max_h`
+            // alone let short slides shrink to their intrinsic content, so the
+            // Next button moved under the pointer from one step to the next.
+            // The body below is the only elastic/scrolling row, which keeps
+            // this stable on both roomy and compact windows.
+            .h(relative(0.9))
             .bg(ShellDeckColors::bg_surface())
             .rounded(px(12.0))
             .border_1()
@@ -858,10 +819,10 @@ mod tests {
             "onboarding.modes.support_body",
             "onboarding.modes.dev_title",
             "onboarding.modes.dev_body",
-            "onboarding.shortcuts.palette",
-            "onboarding.shortcuts.terminal",
-            "onboarding.shortcuts.sidebar",
-            "onboarding.shortcuts.settings",
+            "shortcuts.command_palette",
+            "shortcuts.new_terminal",
+            "shortcuts.toggle_sidebar",
+            "shortcuts.settings",
         ] {
             assert_ne!(crate::t!(key).to_string(), key, "{key} has no translation");
         }
@@ -913,6 +874,58 @@ mod tests {
         );
         for step in ALL_STEPS {
             assert!(seen.contains(&step), "{step:?} is never shown to anyone");
+        }
+    }
+
+    /// SDTEST-1722 — O-03 / SDUC-481.
+    ///
+    /// The exported banners are halved to 560×200 in the tour. Two Dev scenes
+    /// used to shrink several complete UI regions into that space, turning
+    /// their text into noise; several number badges also sat under the runtime
+    /// caption gradient. Keep one focused product fragment in each dense scene
+    /// and anchor the affected badges from the safe top edge.
+    #[test]
+    fn sdtest_1722_dev_artwork_keeps_one_focus_and_badges_above_the_caption() {
+        let source = include_str!("../../../docs/design/onboarding-role-visuals.html");
+        let article = |slug: &str| {
+            source
+                .split(&format!("data-export=\"{slug}\""))
+                .nth(1)
+                .expect("onboarding article exists")
+                .split("</article>")
+                .next()
+                .expect("onboarding article closes")
+        };
+
+        let scripts = article("dev-03-scripts");
+        assert_eq!(scripts.matches("class=\"window\"").count(), 1);
+        assert!(!scripts.contains("script-list"));
+
+        let assistant = article("dev-05-ai");
+        assert_eq!(assistant.matches("class=\"window\"").count(), 1);
+        assert_eq!(assistant.matches("class=\"mention\"").count(), 1);
+
+        for selector in [
+            "#user-02 .number",
+            "#user-04 .number",
+            "#support-04 .number",
+            "#dev-02 .number",
+        ] {
+            let rule = source
+                .split(selector)
+                .nth(1)
+                .expect("number rule exists")
+                .split('}')
+                .next()
+                .expect("number rule closes");
+            assert!(
+                rule.contains("top:"),
+                "{selector} must use the safe top edge"
+            );
+            assert!(
+                !rule.contains("bottom:"),
+                "{selector} must stay out of the bottom caption gradient"
+            );
         }
     }
 }

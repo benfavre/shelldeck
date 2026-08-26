@@ -431,6 +431,16 @@ pub fn parse_stream_line(provider: AgentProvider, line: &str) -> Vec<AgentStream
 fn parse_claude_event(value: &Value) -> Vec<AgentStreamEvent> {
     let mut events = session_events(value);
     match value.get("type").and_then(Value::as_str) {
+        Some("assistant")
+            if value.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) =>
+        {
+            events.extend(
+                value
+                    .pointer("/message/content")
+                    .and_then(text_from_value)
+                    .map(AgentStreamEvent::Error),
+            )
+        }
         Some("assistant") => events.extend(
             value
                 .pointer("/message/content")
@@ -709,6 +719,13 @@ mod tests {
                 r#"{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}"#,
             ),
             vec![AgentStreamEvent::Text("done".to_string())]
+        );
+        assert_eq!(
+            parse_stream_line(
+                AgentProvider::Claude,
+                r#"{"type":"assistant","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: blocked"}]}}"#,
+            ),
+            vec![AgentStreamEvent::Error("API Error: blocked".to_string())]
         );
         assert_eq!(
             parse_stream_line(

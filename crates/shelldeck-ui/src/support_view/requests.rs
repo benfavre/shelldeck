@@ -9,6 +9,17 @@ use super::*;
 use crate::icons::{ai_provider_icon, ai_provider_inline};
 use adabraka_ui::prelude::{tooltip, Composer};
 
+const ISSUE_STATUS_FILTERS: [(&str, &str); 4] = [
+    ("", "support.issues.filter.all"),
+    ("open", "support.issues.filter.open"),
+    ("in_progress", "support.issues.filter.in_progress"),
+    ("done", "support.issues.filter.done"),
+];
+
+fn issue_status_filter_counts(counts: &IssueCounts) -> [usize; 4] {
+    ISSUE_STATUS_FILTERS.map(|(status, _)| counts.for_status_filter(status))
+}
+
 #[derive(Clone, Copy)]
 enum TimelineGroup {
     Opening,
@@ -224,40 +235,42 @@ impl SupportView {
             .gap(px(4.0))
             .px(px(10.0))
             .pb(px(6.0));
-        let entries: &[(&str, &str)] = &[
-            ("", "support.issues.filter.all"),
-            ("open", "support.issues.filter.open"),
-            ("in_progress", "support.issues.filter.in_progress"),
-            ("done", "support.issues.filter.done"),
-        ];
-        for (value, label_key) in entries {
+        let counts = issue_status_filter_counts(&self.issue_counts);
+        for ((value, label_key), count) in ISSUE_STATUS_FILTERS.iter().zip(counts) {
             let active = self.issues_filter.status == *value;
             let value_owned: String = (*value).to_string();
             let entity = cx.entity();
             chips_row = chips_row.child(
-                Self::compact_filter_button(
-                    ElementId::from(SharedString::from(format!(
-                        "iss-sf-{}",
-                        if value.is_empty() { "all" } else { value }
-                    ))),
-                    t!(*label_key).to_string(),
-                )
-                .variant(ButtonVariant::Outline)
-                .selected(active)
-                .on_click({
-                    let entity = entity.clone();
-                    move |_, _, cx| {
-                        let value = value_owned.clone();
-                        entity.update(cx, |this, cx| {
-                            let q = this.issues_search_state.read(cx).content().to_string();
-                            this.issues_filter.status = value;
-                            this.issues_filter.q = q;
-                            let filter = this.issues_filter.clone();
-                            cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
-                            cx.notify();
-                        });
-                    }
-                }),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(
+                        Self::compact_filter_button(
+                            ElementId::from(SharedString::from(format!(
+                                "iss-sf-{}",
+                                if value.is_empty() { "all" } else { value }
+                            ))),
+                            t!(*label_key).to_string(),
+                        )
+                        .variant(ButtonVariant::Outline)
+                        .selected(active)
+                        .on_click({
+                            let entity = entity.clone();
+                            move |_, _, cx| {
+                                let value = value_owned.clone();
+                                entity.update(cx, |this, cx| {
+                                    let q = this.issues_search_state.read(cx).content().to_string();
+                                    this.issues_filter.status = value;
+                                    this.issues_filter.q = q;
+                                    let filter = this.issues_filter.clone();
+                                    cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                    )
+                    .child(Badge::new(count.to_string()).variant(BadgeVariant::Secondary)),
             );
         }
 
@@ -2540,7 +2553,29 @@ impl SupportView {
 
 #[cfg(test)]
 mod tests {
-    use super::thread_scroll_to_restore;
+    use super::{issue_status_filter_counts, thread_scroll_to_restore, ISSUE_STATUS_FILTERS};
+    use shelldeck_core::config::issues::IssueCounts;
+
+    // SDTEST-1725 — the four visible Request pills consume the same server
+    // universe in their displayed order; hidden workflow statuses stay in the
+    // additive contract without being mislabeled as one of these filters.
+    #[test]
+    fn request_status_pills_map_to_server_counts_in_display_order() {
+        let counts = IssueCounts {
+            all: 11,
+            open: 2,
+            triaging: 3,
+            in_progress: 4,
+            blocked: 5,
+            done: 1,
+            closed: 6,
+        };
+        assert_eq!(
+            ISSUE_STATUS_FILTERS.map(|(status, _)| status),
+            ["", "open", "in_progress", "done"]
+        );
+        assert_eq!(issue_status_filter_counts(&counts), [11, 2, 4, 1]);
+    }
 
     // SDTEST-1599 — a periodic detail refresh may rebuild measured timeline
     // rows, but it restores an active reading position. A new selection and a

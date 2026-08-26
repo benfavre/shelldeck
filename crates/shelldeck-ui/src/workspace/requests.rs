@@ -14,6 +14,14 @@ fn issue_list_filter_for_mode(
     }
 }
 
+/// A successful `mine=1` response is authoritative even when Manage formats
+/// `requested_by` differently from the account payload. The identity match is
+/// retained only as a privacy-safe fallback while a broader Support cache is
+/// still visible during a mode transition.
+fn user_issue_is_visible(server_owner_scoped: bool, local_identity_match: bool) -> bool {
+    server_owner_scoped || local_identity_match
+}
+
 impl Workspace {
     // --- Hosted issue management (requests) ---
 
@@ -695,6 +703,7 @@ impl Workspace {
         // account switches down to it. Ask Manage for owned requests only;
         // Support mode retains its triage filters and broader staff scope.
         let filter = issue_list_filter_for_mode(self.effective_mode(), &self.issues_filter);
+        let owner_scoped = filter.mine;
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -703,6 +712,8 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(list) => {
                     ws.issues_list = list.issues.clone();
+                    ws.issues_counts = list.counts;
+                    ws.issues_list_owner_scoped = owner_scoped;
                     ws.issues_staff = list.staff;
                     ws.issues_instances = list.instances.clone();
                     // Fixture de phase de test uniquement : son interrupteur
@@ -728,6 +739,7 @@ impl Workspace {
 
     pub(super) fn push_issues_to_support(&mut self, cx: &mut Context<Self>) {
         let issues = self.issues_list.clone();
+        let counts = self.issues_counts.clone();
         let staff = self.issues_staff;
         let instances = self.issues_instances.clone();
         let detail = self.issue_detail.clone();
@@ -739,7 +751,7 @@ impl Workspace {
             .unwrap_or_default();
         self.support.update(cx, |v, cx| {
             v.set_account(&acc_name, &acc_email);
-            v.set_issues(issues, staff, instances);
+            v.set_issues(issues, counts, staff, instances);
             v.set_issue_detail(detail, cx);
             cx.notify();
         });
@@ -798,6 +810,7 @@ impl Workspace {
             self.issue_selected = Some(id.clone());
             if let Some(iss) = self.issues_list.iter().find(|i| i.id == id).cloned() {
                 self.issue_detail = Some(iss);
+                crate::follow_scroll::pin_to_latest(&self.user_issue_thread_scroll);
             }
             self.push_issues_to_support(cx);
             cx.notify();
@@ -813,6 +826,7 @@ impl Workspace {
             self.issue_attachment_url_open = false;
             self.issue_comment_attachments_open = false;
         }
+        let pin_user_thread = self.issue_selected.as_deref() != Some(id.as_str());
         self.issue_selected = Some(id.clone());
         self.add_activity_entry(
             ActivityEntry::new(
@@ -831,6 +845,9 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(iss) => {
                     ws.issue_detail = Some(iss);
+                    if pin_user_thread {
+                        crate::follow_scroll::pin_to_latest(&ws.user_issue_thread_scroll);
+                    }
                     ws.push_issues_to_support(cx);
                     cx.notify();
                 }
@@ -855,14 +872,20 @@ impl Workspace {
     /// the updated record so we don't need an eager list refetch.
     pub(super) fn upsert_issue_in_list(&mut self, iss: Issue) {
         if let Some(pos) = self.issues_list.iter().position(|i| i.id == iss.id) {
+            self.issues_counts
+                .replace_status(&self.issues_list[pos].status, &iss.status);
             self.issues_list[pos] = iss;
         } else {
+            self.issues_counts.increment(&iss.status);
             self.issues_list.insert(0, iss);
         }
     }
 
     /// Drop an issue from `issues_list` by id (soft-delete).
     pub(super) fn remove_issue_from_list(&mut self, id: &str) {
+        if let Some(issue) = self.issues_list.iter().find(|issue| issue.id == id) {
+            self.issues_counts.decrement(&issue.status);
+        }
         self.issues_list.retain(|i| i.id != id);
     }
 
@@ -1033,6 +1056,7 @@ impl Workspace {
                     Ok(iss) => {
                         ws.upsert_issue_in_list(iss.clone());
                         ws.issue_detail = Some(iss);
+                        crate::follow_scroll::pin_to_latest(&ws.user_issue_thread_scroll);
                         if let Some((id, title)) = ws
                             .issue_detail
                             .as_ref()
@@ -1479,6 +1503,13 @@ impl Workspace {
         (!name.is_empty() && rb == name) || (!email.is_empty() && rb == email)
     }
 
+    /// Visibility predicate for User surfaces. Once Manage confirms that the
+    /// cache is owner-scoped, do not reject valid rows because `requested_by`
+    /// uses an id, different casing or a composite `Name <email>` label.
+    pub(super) fn is_user_visible_issue(&self, iss: &Issue) -> bool {
+        user_issue_is_visible(self.issues_list_owner_scoped, self.is_my_issue(iss))
+    }
+
     /// Destructive confirm modal for soft-deleting a request from User mode.
     pub(super) fn render_delete_issue_modal(
         &self,
@@ -1696,7 +1727,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{issue_list_filter_for_mode, issues, AppMode};
+    use super::{issue_list_filter_for_mode, issues, user_issue_is_visible, AppMode};
 
     // SDTEST-1433
     #[test]
@@ -1726,5 +1757,19 @@ mod tests {
         assert_eq!(retained.q, "database");
         assert_eq!(retained.tenant_id, "tenant-2");
         assert_eq!(retained.has_github, Some(true));
+    }
+
+    // SDTEST-1715 — `mine=1` is the ownership proof. Repeating an exact
+    // `requested_by` comparison after that response used to erase valid rows
+    // whenever Manage returned an id or a composite display label.
+    #[test]
+    fn owner_scoped_issue_rows_do_not_depend_on_requested_by_formatting() {
+        assert!(user_issue_is_visible(true, false));
+        assert!(user_issue_is_visible(true, true));
+
+        // A stale Support-scoped cache remains defensive until the User-mode
+        // refresh succeeds, so another requester's row cannot flash onscreen.
+        assert!(user_issue_is_visible(false, true));
+        assert!(!user_issue_is_visible(false, false));
     }
 }

@@ -151,7 +151,7 @@ def owned_by_account(iss):
 
 def body_for(path):
     if "auth" in path:
-        return {"ok": True, "label": "Démonstration",
+        return {"ok": True, "token": "demo-token", "label": "Démonstration",
                 # `user.roles` est le sac de rôles que le client lit pour la
                 # carte « Rôles » ; `role`/`roleNames` sont les formes héritées.
                 "user": {"name": AGENT["name"], "email": AGENT["email"],
@@ -169,8 +169,10 @@ def body_for(path):
         if "action=agents" in path:
             return {"ok": True, "agents": [AGENT]}
         if "action=list" in path or path.endswith("support"):
+            # S-05 regression fixture: older/partial servers may omit `all`.
+            # ShellDeck must use the received list as the total's lower bound.
             return {"ok": True, "tickets": TICKETS,
-                    "counts": {"all": len(TICKETS), "unassigned": 3, "mine": 1,
+                    "counts": {"unassigned": 3, "mine": 1,
                                "open": 2, "pending": 1, "breaching": 1,
                                "closed": 1},
                     "me": AGENT}
@@ -186,7 +188,29 @@ def body_for(path):
         # `mine=1` est envoyé par le mode Utilisateur : le respecter évite de
         # laisser croire que le client voit les demandes des autres.
         listed = [i for i in ISSUES if owned_by_account(i)] if "mine=1" in path else ISSUES
-        return {"ok": True, "issues": listed, "total": len(listed),
+        if "mine=1" in path:
+            # U-05 regression fixture: Manage may prove ownership with its
+            # internal actor id while presenting a composite author label.
+            # ShellDeck must trust the owner-scoped response instead of
+            # filtering the same rows again by exact display-name equality.
+            listed = [
+                dict(
+                    issue,
+                    requested_by=f'{AGENT["name"]} <{AGENT["email"]}>',
+                )
+                for issue in listed
+            ]
+        count_universe = listed
+        if "status=" in path:
+            selected_status = path.split("status=")[-1].split("&")[0]
+            listed = [issue for issue in listed if issue.get("status") == selected_status]
+        counts = {"all": len(count_universe), "open": 0, "triaging": 0,
+                  "in_progress": 0, "blocked": 0, "done": 0, "closed": 0}
+        for issue in count_universe:
+            status = issue.get("status", "")
+            if status in counts:
+                counts[status] += 1
+        return {"ok": True, "issues": listed, "total": len(listed), "counts": counts,
                 "staff": True, "instances": []}
 
     if "sites" in path:
@@ -194,6 +218,10 @@ def body_for(path):
                 "sites": [{"site_id": "site-boutique",
                            "label": "Boutique de démonstration",
                            "host": "boutique.exemple.test",
+                           "tenant_id": "demo", "tenant_name": "Démonstration"},
+                          {"site_id": "site-atelier",
+                           "label": "Atelier de démonstration",
+                           "host": "atelier.exemple.test",
                            "tenant_id": "demo", "tenant_name": "Démonstration"}],
                 "areas": []}
 
