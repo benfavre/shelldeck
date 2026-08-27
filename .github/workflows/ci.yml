@@ -56,9 +56,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-check-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-check-
+          # The registry cache contains our applied lightweight crate patches.
+          # Never restore a cache produced by a different patch/applicator
+          # revision: a partially compatible source tree can make `patch`
+          # apply only some hunks and fail before any tests run.
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('Cargo.lock', 'scripts/apply-crate-patches.sh', 'patches/diffs/*.patch') }}
 
       - name: Apply crate patches
         run: ./scripts/apply-crate-patches.sh
@@ -116,9 +118,9 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-core-test-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-core-test-
+          # Keep patched registry sources coupled to the exact replay inputs.
+          # Broad restore prefixes can resurrect an older partial SDPATCH.
+          key: ${{ runner.os }}-cargo-core-test-${{ hashFiles('Cargo.lock', 'scripts/apply-crate-patches.sh', 'patches/diffs/*.patch') }}
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
