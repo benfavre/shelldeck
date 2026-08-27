@@ -1,4 +1,9 @@
 use super::*;
+use crate::config::workspace_catalog::{
+    CatalogProjectId, CheckoutHost, PlatformContextRef, PlatformMappingReconciliation,
+    PlatformV2Mapping, ProjectCheckout, ProjectRecord, RepositoryIdentity, WorkspaceLaunchIntake,
+    WorkspaceLaunchRequest,
+};
 use crate::workspace_navigation::{PaneLeaf, ProviderSessionBinding, WorkspaceTab, WorkspaceTabId};
 
 fn uuid(value: u128) -> Uuid {
@@ -13,6 +18,10 @@ fn checkout(value: u128) -> CatalogCheckoutId {
     CatalogCheckoutId::from_uuid(uuid(value))
 }
 
+fn project(value: u128) -> CatalogProjectId {
+    CatalogProjectId::from_uuid(uuid(value))
+}
+
 fn path(value: &str) -> WorkspaceRelativePath {
     WorkspaceRelativePath::new(value).unwrap()
 }
@@ -24,6 +33,11 @@ fn temp_root(label: &str) -> PathBuf {
         Uuid::new_v4()
     ));
     std::fs::create_dir_all(&root).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     root
 }
 
@@ -81,6 +95,71 @@ fn repository_grant(expires: u64) -> AuthorityGrant {
     AuthorityGrant::repository(workspace(1), actor(), 7, expires, checkout(2), true)
 }
 
+fn current<'a>(
+    target: MutationTargetEvidence<'a>,
+    grant: &'a AuthorityGrant,
+) -> CurrentMutationEvidence<'a> {
+    CurrentMutationEvidence { target, grant }
+}
+
+fn catalog_for(workspace_id: CatalogWorkspaceId, platform_workspace: &str) -> ProjectCatalog {
+    let mut catalog = ProjectCatalog::default();
+    catalog
+        .insert_project(ProjectRecord::new(project(30), "Project"))
+        .unwrap();
+    catalog
+        .add_checkout(
+            project(30),
+            ProjectCheckout::new(
+                checkout(2),
+                "Checkout",
+                CheckoutHost::Local {
+                    device_label: "Local".into(),
+                    root: std::env::temp_dir().join("shelldeck-review-checkout"),
+                },
+                RepositoryIdentity {
+                    slug: "owner/repo".into(),
+                    canonical_url: None,
+                },
+            ),
+        )
+        .unwrap();
+    catalog
+        .create_workspace(WorkspaceLaunchRequest {
+            id: workspace_id,
+            project_id: project(30),
+            checkout_id: checkout(2),
+            name: "Review".into(),
+            intake: WorkspaceLaunchIntake::Manual,
+        })
+        .unwrap();
+    catalog
+        .set_platform_mapping(
+            workspace_id,
+            None,
+            PlatformV2Mapping {
+                reconciliation_revision: 1,
+                project: PlatformContextRef {
+                    id: "platform-project".into(),
+                    revision: 1,
+                },
+                checkout: PlatformContextRef {
+                    id: "platform-checkout".into(),
+                    revision: 1,
+                },
+                user_workspace: PlatformContextRef {
+                    id: platform_workspace.into(),
+                    revision: 1,
+                },
+                reconciliation: PlatformMappingReconciliation::Exact {
+                    reconciled_at_millis: 1,
+                },
+            },
+        )
+        .unwrap();
+    catalog
+}
+
 fn provider_projection(revision: u64) -> ProviderSessionProjection {
     ProviderSessionProjection {
         workspace: workspace(1),
@@ -132,6 +211,42 @@ fn receipt(preview: &ReviewMutationPreview) -> ReviewMutationReceipt {
         actor_id: preview.actor().id.clone(),
         outcome: MutationOutcome::Completed,
         recorded_at_millis: 20,
+    }
+}
+
+fn review_comment(id: u128) -> ReviewCommentDraft {
+    ReviewCommentDraft {
+        id: ReviewCommentId::from_uuid(uuid(id)),
+        author: actor().id,
+        anchor: ReviewLineAnchor {
+            review_revision: 9,
+            path: path("src/main.rs"),
+            section: ChangeSection::Unstaged,
+            hunk: ReviewHunkId::from_uuid(uuid(3)),
+            side: ReviewLineSide::New,
+            line: 1,
+        },
+        body: "Please keep this exact behavior.".into(),
+        selected: true,
+    }
+}
+
+fn provider_surface(platform_workspace: &str) -> WorkspaceSurfaceState {
+    WorkspaceSurfaceState {
+        root: Some(PaneNode::Leaf(PaneLeaf {
+            id: PaneId::from_uuid(uuid(40)),
+            tabs: vec![WorkspaceTab {
+                id: WorkspaceTabId::from_uuid(uuid(41)),
+                title: "Agent".into(),
+                content: WorkspaceTabContent::ProviderSession(ProviderSessionBinding {
+                    platform_user_workspace_id: platform_workspace.into(),
+                    session_id: "session-1".into(),
+                    run_id: None,
+                }),
+            }],
+            active_tab: Some(WorkspaceTabId::from_uuid(uuid(41))),
+        })),
+        focus: None,
     }
 }
 
@@ -194,6 +309,8 @@ fn sdtest_1752_drafts_use_workspace_paths_monotone_cas_and_expected_identity() {
             anchor: ReviewLineAnchor {
                 review_revision: 9,
                 path: path("src/main.rs"),
+                section: ChangeSection::Unstaged,
+                hunk: ReviewHunkId::from_uuid(uuid(3)),
                 side: ReviewLineSide::New,
                 line: 1,
             },
@@ -237,7 +354,83 @@ fn sdtest_1752_drafts_use_workspace_paths_monotone_cas_and_expected_identity() {
         ReviewDraftStore::load_at(root.clone(), workspace(2)),
         Err(ReviewDraftError::WrongWorkspace)
     ));
+    let legacy_path = workspace_state_path(&root, workspace(3), "drafts.json");
+    ensure_private_directory(legacy_path.parent().unwrap()).unwrap();
+    let legacy = serde_json::json!({
+        "schema_version": 1,
+        "revision": 1,
+        "workspace": workspace(3),
+        "comments": []
+    });
+    crate::util::atomic_write(&legacy_path, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+    assert!(matches!(
+        ReviewDraftStore::load_at(root.clone(), workspace(3)),
+        Err(ReviewDraftError::UnsupportedSchema(1))
+    ));
     std::fs::remove_dir_all(root).ok();
+}
+
+#[cfg(unix)]
+// SDTEST-1759
+#[test]
+fn sdtest_1759_draft_persistence_refuses_links_and_reads_one_bounded_descriptor() {
+    use std::os::unix::fs::symlink;
+
+    let root = temp_root("draft-path-safety");
+    let outside = temp_root("draft-path-outside");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    ReviewDraftStore::load_at(root.clone(), workspace(1)).unwrap();
+    assert_eq!(
+        std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let linked_workspace = root.join(workspace(1).to_string());
+    symlink(&outside, &linked_workspace).unwrap();
+    assert!(ReviewDraftStore::load_at(root.clone(), workspace(1)).is_err());
+    std::fs::remove_file(&linked_workspace).unwrap();
+
+    let draft_path = workspace_state_path(&root, workspace(1), "drafts.json");
+    ensure_private_directory(draft_path.parent().unwrap()).unwrap();
+    let outside_file = outside.join("outside.json");
+    std::fs::write(&outside_file, b"outside").unwrap();
+    symlink(&outside_file, &draft_path).unwrap();
+    assert!(ReviewDraftStore::load_at(root.clone(), workspace(1)).is_err());
+    std::fs::remove_file(&draft_path).unwrap();
+
+    std::fs::write(&draft_path, b"original").unwrap();
+    let replacement = draft_path.with_extension("replacement");
+    let bytes = storage::bounded_read_after_open_for_test(&draft_path, 8, || {
+        std::fs::rename(&draft_path, &replacement).unwrap();
+        std::fs::write(&draft_path, b"replacement-is-too-large").unwrap();
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(bytes, b"original");
+    std::fs::remove_file(&draft_path).unwrap();
+    std::fs::rename(&replacement, &draft_path).unwrap();
+    assert_eq!(
+        storage::bounded_read_after_open_for_test(&draft_path, 8, || {
+            use std::io::Write;
+            let mut writer = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&draft_path)
+                .unwrap();
+            writer.write_all(b"-growth").unwrap();
+        })
+        .unwrap()
+        .unwrap()
+        .len(),
+        9
+    );
+
+    std::fs::remove_file(&draft_path).unwrap();
+    symlink(&outside_file, lock_path(&draft_path)).unwrap();
+    let mut store = ReviewDraftStore::load_at(root.clone(), workspace(1)).unwrap();
+    store.add(review_comment(99)).unwrap();
+    assert!(store.save().is_err());
+    std::fs::remove_dir_all(root).ok();
+    std::fs::remove_dir_all(outside).ok();
 }
 
 // SDTEST-1753
@@ -265,10 +458,11 @@ fn sdtest_1753_only_registered_unexpired_previews_can_submit() {
         ),
         Err(ReviewWorkflowError::WrongAuthority)
     );
+    let repository = repository_grant(20);
     let preview = workflow
         .prepare(
             MutationTargetEvidence::LocalReview(&snapshot()),
-            &repository_grant(20),
+            &repository,
             ReviewMutationKind::StageHunks {
                 hunks: vec![ReviewHunkId::from_uuid(uuid(3))],
             },
@@ -281,7 +475,10 @@ fn sdtest_1753_only_registered_unexpired_previews_can_submit() {
     assert_eq!(
         workflow.submit(
             &forged,
-            MutationTargetEvidence::LocalReview(&snapshot()),
+            current(
+                MutationTargetEvidence::LocalReview(&snapshot()),
+                &repository
+            ),
             11,
         ),
         Err(ReviewWorkflowError::MutationAlreadyPending)
@@ -289,11 +486,238 @@ fn sdtest_1753_only_registered_unexpired_previews_can_submit() {
     assert_eq!(
         workflow.submit(
             &preview,
-            MutationTargetEvidence::LocalReview(&snapshot()),
+            current(
+                MutationTargetEvidence::LocalReview(&snapshot()),
+                &repository
+            ),
             20,
         ),
         Err(ReviewWorkflowError::ExpiredGrant)
     );
+
+    let current_repository = repository_grant(1_000);
+    let current_preview = workflow
+        .prepare(
+            MutationTargetEvidence::LocalReview(&snapshot()),
+            &current_repository,
+            ReviewMutationKind::StageHunks {
+                hunks: vec![ReviewHunkId::from_uuid(uuid(3))],
+            },
+            30,
+        )
+        .unwrap();
+    let revoked = AuthorityGrant::repository(
+        workspace(1),
+        actor(),
+        current_repository.revision,
+        current_repository.expires_at_millis,
+        checkout(2),
+        false,
+    );
+    assert_eq!(
+        workflow.submit(
+            &current_preview,
+            current(MutationTargetEvidence::LocalReview(&snapshot()), &revoked),
+            31,
+        ),
+        Err(ReviewWorkflowError::CurrentTargetMismatch)
+    );
+    let superseded = AuthorityGrant::repository(
+        workspace(1),
+        actor(),
+        current_repository.revision + 1,
+        current_repository.expires_at_millis,
+        checkout(2),
+        true,
+    );
+    assert_eq!(
+        workflow.submit(
+            &current_preview,
+            current(
+                MutationTargetEvidence::LocalReview(&snapshot()),
+                &superseded,
+            ),
+            31,
+        ),
+        Err(ReviewWorkflowError::CurrentTargetMismatch)
+    );
+    workflow
+        .submit(
+            &current_preview,
+            current(
+                MutationTargetEvidence::LocalReview(&snapshot()),
+                &current_repository,
+            ),
+            31,
+        )
+        .unwrap();
+    std::fs::remove_dir_all(root).ok();
+}
+
+// SDTEST-1760
+#[test]
+fn sdtest_1760_comment_batches_require_exact_workspace_surface_and_unique_anchors() {
+    let root = temp_root("comment-workspace");
+    let review = snapshot();
+    let catalog = catalog_for(workspace(1), "platform-workspace");
+    let surface = provider_surface("platform-workspace");
+    let grant = AuthorityGrant::provider_session(
+        workspace(1),
+        actor(),
+        8,
+        1_000,
+        "session-1".into(),
+        true,
+        false,
+    );
+    let mut workflow = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    let kind = ReviewMutationKind::SendComments {
+        session_id: "session-1".into(),
+        comments: vec![review_comment(50)],
+    };
+    let preview = workflow
+        .prepare(
+            MutationTargetEvidence::ReviewAndProviderSession {
+                review: &review,
+                session: &provider_projection(5),
+                catalog: &catalog,
+                surface: &surface,
+            },
+            &grant,
+            kind,
+            10,
+        )
+        .unwrap();
+
+    let mut foreign_session = provider_projection(5);
+    foreign_session.workspace = workspace(2);
+    assert_eq!(
+        workflow.submit(
+            &preview,
+            current(
+                MutationTargetEvidence::ReviewAndProviderSession {
+                    review: &review,
+                    session: &foreign_session,
+                    catalog: &catalog,
+                    surface: &surface,
+                },
+                &grant,
+            ),
+            11,
+        ),
+        Err(ReviewWorkflowError::CurrentTargetMismatch)
+    );
+    let foreign_grant = AuthorityGrant::provider_session(
+        workspace(2),
+        actor(),
+        8,
+        1_000,
+        "session-1".into(),
+        true,
+        false,
+    );
+    assert_eq!(
+        workflow.submit(
+            &preview,
+            current(
+                MutationTargetEvidence::ReviewAndProviderSession {
+                    review: &review,
+                    session: &provider_projection(5),
+                    catalog: &catalog,
+                    surface: &surface,
+                },
+                &foreign_grant,
+            ),
+            11,
+        ),
+        Err(ReviewWorkflowError::WrongWorkspace)
+    );
+    let mut foreign_review = review.clone();
+    foreign_review.workspace = workspace(2);
+    assert_eq!(
+        workflow.submit(
+            &preview,
+            current(
+                MutationTargetEvidence::ReviewAndProviderSession {
+                    review: &foreign_review,
+                    session: &provider_projection(5),
+                    catalog: &catalog,
+                    surface: &surface,
+                },
+                &grant,
+            ),
+            11,
+        ),
+        Err(ReviewWorkflowError::WrongWorkspace)
+    );
+    let foreign_surface = provider_surface("foreign-platform-workspace");
+    assert_eq!(
+        workflow.submit(
+            &preview,
+            current(
+                MutationTargetEvidence::ReviewAndProviderSession {
+                    review: &review,
+                    session: &provider_projection(5),
+                    catalog: &catalog,
+                    surface: &foreign_surface,
+                },
+                &grant,
+            ),
+            11,
+        ),
+        Err(ReviewWorkflowError::CurrentTargetMismatch)
+    );
+
+    let duplicate = review_comment(51);
+    assert_eq!(
+        workflow.prepare(
+            MutationTargetEvidence::ReviewAndProviderSession {
+                review: &review,
+                session: &provider_projection(5),
+                catalog: &catalog,
+                surface: &surface,
+            },
+            &grant,
+            ReviewMutationKind::SendComments {
+                session_id: "session-1".into(),
+                comments: vec![duplicate.clone(), duplicate],
+            },
+            11,
+        ),
+        Err(ReviewWorkflowError::InvalidSelection)
+    );
+
+    let mut aliased_review = review.clone();
+    aliased_review.changes.push(ReviewFileChange {
+        path: path("src/main.rs"),
+        section: ChangeSection::Staged,
+        conflict: ChangeConflict::None,
+        hunks: vec![ReviewHunk {
+            id: ReviewHunkId::from_uuid(uuid(52)),
+            header: "@@ -1 +1 @@".into(),
+            lines: vec![DiffLine {
+                kind: DiffLineKind::Added,
+                old_line: None,
+                new_line: Some(1),
+                text: "fn main() {}".into(),
+            }],
+        }],
+    });
+    assert!(aliased_review.contains_anchor(&review_comment(53).anchor));
+    let mut wrong_hunk = review_comment(54);
+    wrong_hunk.anchor.section = ChangeSection::Staged;
+    wrong_hunk.anchor.hunk = ReviewHunkId::from_uuid(uuid(3));
+    assert!(!aliased_review.contains_anchor(&wrong_hunk.anchor));
+
+    let mut duplicate_lines = review.clone();
+    let duplicate_line = duplicate_lines.changes[0].hunks[0].lines[0].clone();
+    duplicate_lines.changes[0].hunks[0]
+        .lines
+        .push(duplicate_line);
+    assert!(matches!(
+        validate_fresh_review(&duplicate_lines),
+        Err(ReviewWorkflowError::BoundsExceeded(_))
+    ));
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -302,10 +726,11 @@ fn sdtest_1753_only_registered_unexpired_previews_can_submit() {
 fn sdtest_1754_dispatched_ledger_recovers_only_by_original_receipt() {
     let root = temp_root("ledger");
     let mut workflow = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    let repository = repository_grant(1_000);
     let preview = workflow
         .prepare(
             MutationTargetEvidence::LocalReview(&snapshot()),
-            &repository_grant(1_000),
+            &repository,
             ReviewMutationKind::StageHunks {
                 hunks: vec![ReviewHunkId::from_uuid(uuid(3))],
             },
@@ -315,7 +740,10 @@ fn sdtest_1754_dispatched_ledger_recovers_only_by_original_receipt() {
     workflow
         .submit(
             &preview,
-            MutationTargetEvidence::LocalReview(&snapshot()),
+            current(
+                MutationTargetEvidence::LocalReview(&snapshot()),
+                &repository,
+            ),
             11,
         )
         .unwrap();
@@ -331,7 +759,10 @@ fn sdtest_1754_dispatched_ledger_recovers_only_by_original_receipt() {
     assert_eq!(
         recovered.submit(
             &preview,
-            MutationTargetEvidence::LocalReview(&snapshot()),
+            current(
+                MutationTargetEvidence::LocalReview(&snapshot()),
+                &repository
+            ),
             12,
         ),
         Err(ReviewWorkflowError::MutationAlreadyPending)
@@ -351,17 +782,75 @@ fn sdtest_1754_dispatched_ledger_recovers_only_by_original_receipt() {
         completed.mutation(preview.operation()).unwrap().state(),
         PendingMutationState::Completed(_)
     ));
+    assert_eq!(completed.recoverable_mutations().len(), 1);
+    drop(completed);
+    let mut completed = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    completed.acknowledge_terminal(preview.operation()).unwrap();
+    drop(completed);
+    assert!(ReviewWorkflow::load_at(root.clone(), workspace(1))
+        .unwrap()
+        .recoverable_mutations()
+        .is_empty());
     std::fs::remove_dir_all(root).ok();
 }
 
+// SDTEST-1761
 #[test]
-fn reconciliation_not_found_terminates_without_redispatch() {
-    let root = temp_root("ledger-not-found");
+fn sdtest_1761_prepared_and_refused_records_remain_until_explicit_ack() {
+    let root = temp_root("ledger-terminal-ack");
+    let repository = repository_grant(1_000);
     let mut workflow = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
     let preview = workflow
         .prepare(
             MutationTargetEvidence::LocalReview(&snapshot()),
-            &repository_grant(1_000),
+            &repository,
+            ReviewMutationKind::StageHunks {
+                hunks: vec![ReviewHunkId::from_uuid(uuid(3))],
+            },
+            10,
+        )
+        .unwrap();
+    drop(workflow);
+    let mut recovered = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    let records = recovered.recoverable_mutations();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].preview().operation(), preview.operation());
+    assert!(matches!(records[0].state(), PendingMutationState::Prepared));
+    assert_eq!(
+        recovered.acknowledge_terminal(preview.operation()),
+        Err(ReviewWorkflowError::MutationAlreadyPending)
+    );
+    recovered.abandon_prepared(preview.operation()).unwrap();
+    drop(recovered);
+    let mut recovered = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    assert!(matches!(
+        recovered
+            .recoverable_mutations()
+            .first()
+            .unwrap()
+            .state(),
+        PendingMutationState::Refused { category }
+            if category == "abandoned_before_dispatch"
+    ));
+    recovered.acknowledge_terminal(preview.operation()).unwrap();
+    drop(recovered);
+    assert!(ReviewWorkflow::load_at(root.clone(), workspace(1))
+        .unwrap()
+        .recoverable_mutations()
+        .is_empty());
+    std::fs::remove_dir_all(root).ok();
+}
+
+// SDTEST-1762
+#[test]
+fn sdtest_1762_reconciliation_not_found_terminates_without_redispatch() {
+    let root = temp_root("ledger-not-found");
+    let mut workflow = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    let repository = repository_grant(1_000);
+    let preview = workflow
+        .prepare(
+            MutationTargetEvidence::LocalReview(&snapshot()),
+            &repository,
             ReviewMutationKind::StageHunks {
                 hunks: vec![ReviewHunkId::from_uuid(uuid(3))],
             },
@@ -371,7 +860,10 @@ fn reconciliation_not_found_terminates_without_redispatch() {
     workflow
         .submit(
             &preview,
-            MutationTargetEvidence::LocalReview(&snapshot()),
+            current(
+                MutationTargetEvidence::LocalReview(&snapshot()),
+                &repository,
+            ),
             11,
         )
         .unwrap();
@@ -387,17 +879,32 @@ fn reconciliation_not_found_terminates_without_redispatch() {
     assert_eq!(
         recovered.submit(
             &preview,
-            MutationTargetEvidence::LocalReview(&snapshot()),
+            current(
+                MutationTargetEvidence::LocalReview(&snapshot()),
+                &repository
+            ),
             12,
         ),
         Err(ReviewWorkflowError::MutationAlreadyPending)
     );
+    drop(recovered);
+    let mut recovered = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    assert!(matches!(
+        recovered
+            .recoverable_mutations()
+            .first()
+            .unwrap()
+            .state(),
+        PendingMutationState::Refused { category } if category == "receipt_not_found"
+    ));
+    recovered.acknowledge_terminal(preview.operation()).unwrap();
     std::fs::remove_dir_all(root).ok();
 }
 
 // SDTEST-1755
 #[test]
 fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_closed() {
+    let catalog = catalog_for(workspace(1), "platform-workspace");
     let pane = PaneId::from_uuid(uuid(20));
     let tab = WorkspaceTabId::from_uuid(uuid(21));
     let provider_tab = |id, session: &str| WorkspaceTab {
@@ -435,13 +942,35 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
     let mut board = AttentionBoard::new(workspace(1));
     board.apply(item.clone()).unwrap();
     assert_eq!(
-        board.open_target(id, workspace(2), &surface),
+        board.open_target(id, workspace(2), &catalog, &surface),
         Err(AttentionError::WrongWorkspace)
     );
-    board.open_target(id, workspace(1), &surface).unwrap();
+    board
+        .open_target(id, workspace(1), &catalog, &surface)
+        .unwrap();
     assert!(!board.is_unread(id));
     assert!(!board.apply(item).unwrap());
     assert!(!board.is_unread(id));
+    let foreign_surface = WorkspaceSurfaceState {
+        root: Some(PaneNode::Leaf(PaneLeaf {
+            id: pane,
+            tabs: vec![WorkspaceTab {
+                id: tab,
+                title: "Agent".into(),
+                content: WorkspaceTabContent::ProviderSession(ProviderSessionBinding {
+                    platform_user_workspace_id: "foreign-platform-workspace".into(),
+                    session_id: "session-1".into(),
+                    run_id: None,
+                }),
+            }],
+            active_tab: Some(tab),
+        })),
+        focus: None,
+    };
+    assert_eq!(
+        board.open_target(id, workspace(1), &catalog, &foreign_surface),
+        Err(AttentionError::InvalidSurface)
+    );
     let duplicate_surface = WorkspaceSurfaceState {
         root: Some(PaneNode::Leaf(PaneLeaf {
             id: pane,
@@ -451,7 +980,7 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
         focus: None,
     };
     assert_eq!(
-        board.open_target(id, workspace(1), &duplicate_surface),
+        board.open_target(id, workspace(1), &catalog, &duplicate_surface),
         Err(AttentionError::DuplicateSessionCoordinate)
     );
 }
@@ -487,17 +1016,29 @@ fn sdtest_1756_delivery_mutations_require_exact_fresh_projection_revision() {
     let mut advanced = delivery.clone();
     advanced.revision = 4;
     assert_eq!(
-        workflow.submit(&preview, MutationTargetEvidence::Delivery(&advanced), 11),
+        workflow.submit(
+            &preview,
+            current(MutationTargetEvidence::Delivery(&advanced), &grant),
+            11,
+        ),
         Err(ReviewWorkflowError::CurrentTargetMismatch)
     );
     let mut stale = delivery.clone();
     stale.freshness = ObservationFreshness::Stale;
     assert!(matches!(
-        workflow.submit(&preview, MutationTargetEvidence::Delivery(&stale), 11),
+        workflow.submit(
+            &preview,
+            current(MutationTargetEvidence::Delivery(&stale), &grant),
+            11,
+        ),
         Err(ReviewWorkflowError::CurrentTargetMismatch)
     ));
     workflow
-        .submit(&preview, MutationTargetEvidence::Delivery(&delivery), 11)
+        .submit(
+            &preview,
+            current(MutationTargetEvidence::Delivery(&delivery), &grant),
+            11,
+        )
         .unwrap();
     let mut wrong_target_receipt = receipt(&preview);
     if let MutationTargetFence::DeliveryPullRequest {
@@ -513,6 +1054,28 @@ fn sdtest_1756_delivery_mutations_require_exact_fresh_projection_revision() {
         ),
         Err(ReviewWorkflowError::ReceiptMismatch)
     );
+
+    let mut board = DeliveryBoard::default();
+    board.apply(delivery.clone()).unwrap();
+    let mut higher_stale = delivery.clone();
+    higher_stale.revision += 1;
+    higher_stale.freshness = ObservationFreshness::Stale;
+    assert_eq!(
+        board.apply(higher_stale),
+        Err(DeliveryProjectionError::StaleObservation)
+    );
+    let mut higher_unknown = delivery.clone();
+    higher_unknown.revision += 2;
+    higher_unknown.freshness = ObservationFreshness::Unknown;
+    assert_eq!(
+        board.apply(higher_unknown),
+        Err(DeliveryProjectionError::StaleObservation)
+    );
+    assert_eq!(board.get(workspace(1)).unwrap(), &delivery);
+    let mut higher_fresh = delivery.clone();
+    higher_fresh.revision += 1;
+    board.apply(higher_fresh.clone()).unwrap();
+    assert_eq!(board.get(workspace(1)).unwrap(), &higher_fresh);
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -549,7 +1112,7 @@ fn sdtest_1757_approval_is_bound_to_pending_id_and_session_revision() {
     assert!(matches!(
         workflow.submit(
             &preview,
-            MutationTargetEvidence::ProviderSession(&advanced),
+            current(MutationTargetEvidence::ProviderSession(&advanced), &grant),
             11,
         ),
         Err(ReviewWorkflowError::InvalidSelection | ReviewWorkflowError::CurrentTargetMismatch)

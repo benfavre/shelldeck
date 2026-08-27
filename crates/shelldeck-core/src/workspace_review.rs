@@ -9,11 +9,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::config::workspace_catalog::{
-    CatalogCheckoutId, CatalogWorkspaceId, WorkspaceRelativePath,
+    CatalogCheckoutId, CatalogWorkspaceId, ProjectCatalog, WorkspaceRelativePath,
 };
 use crate::workspace_navigation::{
     PaneId, PaneNode, WorkspaceFocus, WorkspaceSurfaceState, WorkspaceTabContent,
@@ -28,9 +28,16 @@ use validation::{
     validate_delivery_evidence, validate_fresh_review, validate_pending_record,
     validate_preview_bounds, validate_provider_evidence,
 };
+#[path = "workspace_review_storage.rs"]
+mod storage;
+use storage::{
+    bounded_read, ensure_private_directory, lock_path, open_lock_file, read_disk_identity,
+    secure_atomic_write, workflow_bounded_read, workflow_disk_revision, workspace_review_root,
+    workspace_state_path,
+};
 
-const REVIEW_DRAFT_SCHEMA: u16 = 1;
-const REVIEW_WORKFLOW_SCHEMA: u16 = 1;
+const REVIEW_DRAFT_SCHEMA: u16 = 2;
+const REVIEW_WORKFLOW_SCHEMA: u16 = 2;
 const MAX_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_CHARS: usize = 250_000;
 const MAX_DRAFT_FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -177,17 +184,22 @@ impl ReviewSnapshot {
 
     #[must_use]
     pub fn contains_anchor(&self, anchor: &ReviewLineAnchor) -> bool {
-        anchor.review_revision == self.revision
-            && self
-                .changes
-                .iter()
-                .filter(|change| change.path == anchor.path)
-                .flat_map(|change| &change.hunks)
-                .flat_map(|hunk| &hunk.lines)
-                .any(|line| match anchor.side {
-                    ReviewLineSide::Old => line.old_line == Some(anchor.line),
-                    ReviewLineSide::New => line.new_line == Some(anchor.line),
-                })
+        if anchor.review_revision != self.revision {
+            return false;
+        }
+        self.changes
+            .iter()
+            .filter(|change| change.path == anchor.path && change.section == anchor.section)
+            .flat_map(|change| &change.hunks)
+            .filter(|hunk| hunk.id == anchor.hunk)
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| match anchor.side {
+                ReviewLineSide::Old => line.old_line == Some(anchor.line),
+                ReviewLineSide::New => line.new_line == Some(anchor.line),
+            })
+            .take(2)
+            .count()
+            == 1
     }
 }
 
@@ -303,6 +315,8 @@ pub enum ReviewLineSide {
 pub struct ReviewLineAnchor {
     pub review_revision: u64,
     pub path: WorkspaceRelativePath,
+    pub section: ChangeSection,
+    pub hunk: ReviewHunkId,
     pub side: ReviewLineSide,
     pub line: u32,
 }
@@ -459,12 +473,7 @@ impl ReviewDraftStore {
         })?;
         ensure_private_directory(parent)?;
         let lock_path = lock_path(&self.path);
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(lock_path)?;
+        let lock = open_lock_file(&lock_path)?;
         fs2::FileExt::lock_exclusive(&lock)?;
         let actual = read_disk_identity(&self.path)?;
         if actual
@@ -496,7 +505,7 @@ impl ReviewDraftStore {
         if payload.len() as u64 > MAX_DRAFT_FILE_BYTES {
             return Err(ReviewDraftError::BoundsExceeded("file size"));
         }
-        crate::util::atomic_write(&self.path, &payload)?;
+        secure_atomic_write(&self.path, &payload)?;
         self.revision = next;
         self.dirty = false;
         Ok(())
@@ -552,6 +561,7 @@ fn validate_comment(comment: &ReviewCommentDraft) -> Result<(), ReviewDraftError
     if comment.id.as_uuid().is_nil()
         || !bounded_nonempty(&comment.author, MAX_ID_BYTES)
         || !bounded_nonempty(&comment.body, MAX_COMMENT_BYTES)
+        || comment.anchor.hunk.as_uuid().is_nil()
         || comment.anchor.line == 0
         || comment.anchor.path.as_str().len() > MAX_PATH_BYTES
     {
@@ -560,72 +570,8 @@ fn validate_comment(comment: &ReviewCommentDraft) -> Result<(), ReviewDraftError
     Ok(())
 }
 
-fn workspace_review_root() -> PathBuf {
-    crate::config::app_config::AppConfig::config_dir().join("workspace-review")
-}
-
-fn workspace_state_path(root: &Path, workspace: CatalogWorkspaceId, file_name: &str) -> PathBuf {
-    root.join(workspace.to_string()).join(file_name)
-}
-
-fn ensure_private_directory(path: &Path) -> Result<(), ReviewDraftError> {
-    std::fs::create_dir_all(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
-
-fn bounded_read(path: &Path, maximum: u64) -> Result<Option<Vec<u8>>, ReviewDraftError> {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if metadata.len() > maximum {
-        return Err(ReviewDraftError::BoundsExceeded("file size"));
-    }
-    let bytes = std::fs::read(path)?;
-    if bytes.len() as u64 > maximum {
-        return Err(ReviewDraftError::BoundsExceeded("file size"));
-    }
-    Ok(Some(bytes))
-}
-
 fn bounded_nonempty(value: &str, maximum: usize) -> bool {
     !value.trim().is_empty() && value.len() <= maximum
-}
-
-fn lock_path(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_os_string();
-    name.push(".lock");
-    PathBuf::from(name)
-}
-
-struct ReviewDraftDiskIdentity {
-    revision: u64,
-    workspace: Option<CatalogWorkspaceId>,
-}
-
-fn read_disk_identity(path: &Path) -> Result<ReviewDraftDiskIdentity, ReviewDraftError> {
-    match bounded_read(path, MAX_DRAFT_FILE_BYTES)? {
-        Some(bytes) => {
-            let disk = serde_json::from_slice::<ReviewDraftDisk>(&bytes)?;
-            if disk.schema_version != REVIEW_DRAFT_SCHEMA {
-                return Err(ReviewDraftError::UnsupportedSchema(disk.schema_version));
-            }
-            Ok(ReviewDraftDiskIdentity {
-                revision: disk.revision,
-                workspace: Some(disk.workspace),
-            })
-        }
-        None => Ok(ReviewDraftDiskIdentity {
-            revision: 0,
-            workspace: None,
-        }),
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -634,7 +580,7 @@ pub struct ActorIdentity {
     pub display_name: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 enum AuthorityScope {
     Repository {
         checkout: CatalogCheckoutId,
@@ -810,6 +756,7 @@ pub struct ReviewMutationPreview {
     target: MutationTargetFence,
     authority_revision: u64,
     authority_expires_at_millis: u64,
+    authority_scope: AuthorityScope,
     actor: ActorIdentity,
     kind: ReviewMutationKind,
 }
@@ -972,9 +919,16 @@ pub enum MutationTargetEvidence<'a> {
     ReviewAndProviderSession {
         review: &'a ReviewSnapshot,
         session: &'a ProviderSessionProjection,
+        catalog: &'a ProjectCatalog,
+        surface: &'a WorkspaceSurfaceState,
     },
     ProviderSession(&'a ProviderSessionProjection),
     Delivery(&'a DeliveryProjection),
+}
+
+pub struct CurrentMutationEvidence<'a> {
+    pub target: MutationTargetEvidence<'a>,
+    pub grant: &'a AuthorityGrant,
 }
 
 impl ReviewWorkflow {
@@ -1071,6 +1025,7 @@ impl ReviewWorkflow {
             target,
             authority_revision: grant.revision,
             authority_expires_at_millis: grant.expires_at_millis,
+            authority_scope: grant.scope.clone(),
             actor: grant.actor.clone(),
             kind,
         };
@@ -1098,7 +1053,7 @@ impl ReviewWorkflow {
     pub fn submit(
         &mut self,
         preview: &ReviewMutationPreview,
-        current: MutationTargetEvidence<'_>,
+        current: CurrentMutationEvidence<'_>,
         now_millis: u64,
     ) -> Result<(), ReviewWorkflowError> {
         let stored = self
@@ -1111,7 +1066,7 @@ impl ReviewWorkflow {
         if preview.authority_expires_at_millis <= now_millis {
             return Err(ReviewWorkflowError::ExpiredGrant);
         }
-        validate_current_target(preview, &current)?;
+        validate_current_target(preview, &current, now_millis)?;
         let operation = preview.operation;
         self.transact(|pending| {
             pending
@@ -1235,6 +1190,38 @@ impl ReviewWorkflow {
         self.pending.get(&operation)
     }
 
+    /// Enumerate every durable operation after reload so a lost in-memory
+    /// operation id cannot make prepared or terminal records unreachable.
+    /// Records remain bounded by the ledger limit and are never auto-deleted.
+    pub fn recoverable_mutations(&self) -> Vec<PendingMutation> {
+        self.pending.values().cloned().collect()
+    }
+
+    /// Explicitly terminalize a prepared operation that was never dispatched.
+    /// The resulting refusal still requires [`Self::acknowledge_terminal`]
+    /// before its bounded ledger slot is released.
+    pub fn abandon_prepared(
+        &mut self,
+        operation: ReviewMutationId,
+    ) -> Result<(), ReviewWorkflowError> {
+        let pending = self
+            .pending
+            .get(&operation)
+            .ok_or(ReviewWorkflowError::UnknownMutation)?;
+        if !matches!(pending.state, PendingMutationState::Prepared) {
+            return Err(ReviewWorkflowError::MutationAlreadyPending);
+        }
+        self.transact(|pending| {
+            pending
+                .get_mut(&operation)
+                .ok_or(ReviewWorkflowError::UnknownMutation)?
+                .state = PendingMutationState::Refused {
+                category: "abandoned_before_dispatch".into(),
+            };
+            Ok(())
+        })
+    }
+
     #[must_use]
     pub fn reconciliation_lookups(&self) -> Vec<MutationReceiptLookup> {
         self.pending
@@ -1295,12 +1282,7 @@ impl ReviewWorkflow {
         })?;
         ensure_private_directory(parent)
             .map_err(|error| ReviewWorkflowError::Storage(error.to_string()))?;
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(lock_path(&self.path))
+        let lock = open_lock_file(&lock_path(&self.path))
             .map_err(|error| ReviewWorkflowError::Storage(error.to_string()))?;
         fs2::FileExt::lock_exclusive(&lock)
             .map_err(|error| ReviewWorkflowError::Storage(error.to_string()))?;
@@ -1327,7 +1309,7 @@ impl ReviewWorkflow {
                 "mutation ledger file exceeds its bound",
             ));
         }
-        crate::util::atomic_write(&self.path, &payload)
+        secure_atomic_write(&self.path, &payload)
             .map_err(|error| ReviewWorkflowError::Storage(error.to_string()))?;
         self.revision = next;
         Ok(())
@@ -1389,15 +1371,40 @@ fn prepare_target(
                 send_comments: true,
                 ..
             },
-            MutationTargetEvidence::ReviewAndProviderSession { review, session },
+            MutationTargetEvidence::ReviewAndProviderSession {
+                review,
+                session,
+                catalog,
+                surface,
+            },
         ) if session_id == granted && session_id == &session.session_id => {
             validate_fresh_review(review)?;
             validate_provider_evidence(session, grant, true, None)?;
+            surface
+                .validate_for(catalog, review.workspace)
+                .map_err(|_| ReviewWorkflowError::CurrentTargetMismatch)?;
+            let platform_workspace = catalog
+                .workspace(review.workspace)
+                .ok()
+                .and_then(|workspace| workspace.platform_mapping())
+                .filter(|mapping| mapping.is_exact())
+                .map(|mapping| mapping.user_workspace.id.as_str())
+                .ok_or(ReviewWorkflowError::CurrentTargetMismatch)?;
+            if count_provider_session(
+                surface.root.as_ref(),
+                platform_workspace,
+                &session.session_id,
+            ) != 1
+            {
+                return Err(ReviewWorkflowError::CurrentTargetMismatch);
+            }
             if comments.is_empty() {
                 return Err(ReviewWorkflowError::EmptyMutation);
             }
+            let mut comment_ids = BTreeSet::new();
             if comments.iter().any(|comment| {
-                !comment.selected
+                !comment_ids.insert(comment.id)
+                    || !comment.selected
                     || !review.contains_anchor(&comment.anchor)
                     || comment.body.trim().is_empty()
                     || comment.author != grant.actor.id
@@ -1516,75 +1523,114 @@ fn prepare_target(
 
 fn validate_current_target(
     preview: &ReviewMutationPreview,
-    current: &MutationTargetEvidence<'_>,
+    current: &CurrentMutationEvidence<'_>,
+    now_millis: u64,
 ) -> Result<(), ReviewWorkflowError> {
-    if evidence_workspace(current) != preview.workspace {
+    if evidence_workspace(&current.target) != preview.workspace
+        || current.grant.workspace != preview.workspace
+    {
         return Err(ReviewWorkflowError::WrongWorkspace);
     }
-    let grant = AuthorityGrant {
-        workspace: preview.workspace,
-        actor: preview.actor.clone(),
-        revision: preview.authority_revision,
-        expires_at_millis: preview.authority_expires_at_millis,
-        scope: authority_scope_for_preview(preview),
-    };
-    let current_target = prepare_target(current, &grant, &preview.kind)?;
+    if current.grant.expires_at_millis <= now_millis {
+        return Err(ReviewWorkflowError::ExpiredGrant);
+    }
+    if current.grant.actor != preview.actor
+        || current.grant.revision != preview.authority_revision
+        || current.grant.expires_at_millis != preview.authority_expires_at_millis
+        || current.grant.scope != preview.authority_scope
+    {
+        return Err(ReviewWorkflowError::CurrentTargetMismatch);
+    }
+    let current_target = prepare_target(&current.target, current.grant, &preview.kind)?;
     if current_target != preview.target {
         return Err(ReviewWorkflowError::CurrentTargetMismatch);
     }
     Ok(())
 }
 
-fn authority_scope_for_preview(preview: &ReviewMutationPreview) -> AuthorityScope {
-    match (&preview.kind, &preview.target) {
+fn count_provider_session(
+    root: Option<&PaneNode>,
+    platform_workspace: &str,
+    session_id: &str,
+) -> usize {
+    match root {
+        None => 0,
+        Some(PaneNode::Leaf(leaf)) => leaf
+            .tabs
+            .iter()
+            .filter(|tab| {
+                matches!(
+                    &tab.content,
+                    WorkspaceTabContent::ProviderSession(binding)
+                        if binding.platform_user_workspace_id == platform_workspace
+                            && binding.session_id == session_id
+                )
+            })
+            .count(),
+        Some(PaneNode::Split { first, second, .. }) => {
+            count_provider_session(Some(first), platform_workspace, session_id)
+                + count_provider_session(Some(second), platform_workspace, session_id)
+        }
+    }
+}
+
+fn authority_scope_admits_preview(preview: &ReviewMutationPreview) -> bool {
+    match (&preview.kind, &preview.target, &preview.authority_scope) {
         (
             ReviewMutationKind::StageHunks { .. } | ReviewMutationKind::UnstageHunks { .. },
             MutationTargetFence::LocalReview { checkout, .. },
-        ) => AuthorityScope::Repository {
-            checkout: *checkout,
-            stage_hunks: true,
-        },
-        (ReviewMutationKind::SendComments { session_id, .. }, _) => {
+            AuthorityScope::Repository {
+                checkout: granted_checkout,
+                stage_hunks: true,
+            },
+        ) => checkout == granted_checkout,
+        (
+            ReviewMutationKind::SendComments { session_id, .. },
+            MutationTargetFence::ReviewAndProviderSession { .. },
             AuthorityScope::ProviderSession {
-                session_id: session_id.clone(),
+                session_id: granted_session,
                 send_comments: true,
-                decide_approval: false,
-            }
-        }
-        (ReviewMutationKind::DecideApproval { session_id, .. }, _) => {
+                ..
+            },
+        ) => session_id == granted_session,
+        (
+            ReviewMutationKind::DecideApproval { session_id, .. },
+            MutationTargetFence::ProviderApproval { .. },
             AuthorityScope::ProviderSession {
-                session_id: session_id.clone(),
-                send_comments: false,
+                session_id: granted_session,
                 decide_approval: true,
-            }
-        }
+                ..
+            },
+        ) => session_id == granted_session,
         (
             ReviewMutationKind::RetryCheck {
                 provider,
                 repository,
                 ..
             },
-            _,
-        ) => AuthorityScope::Delivery {
-            provider: provider.clone(),
-            repository: repository.clone(),
-            retry_checks: true,
-            merge_pull_request: false,
-        },
+            MutationTargetFence::DeliveryCheck { .. },
+            AuthorityScope::Delivery {
+                provider: granted_provider,
+                repository: granted_repository,
+                retry_checks: true,
+                ..
+            },
+        ) => provider == granted_provider && repository == granted_repository,
         (
             ReviewMutationKind::MergePullRequest {
                 provider,
                 repository,
                 ..
             },
-            _,
-        ) => AuthorityScope::Delivery {
-            provider: provider.clone(),
-            repository: repository.clone(),
-            retry_checks: false,
-            merge_pull_request: true,
-        },
-        _ => unreachable!("prepared preview target and mutation kind must agree"),
+            MutationTargetFence::DeliveryPullRequest { .. },
+            AuthorityScope::Delivery {
+                provider: granted_provider,
+                repository: granted_repository,
+                merge_pull_request: true,
+                ..
+            },
+        ) => provider == granted_provider && repository == granted_repository,
+        _ => false,
     }
 }
 
@@ -1626,44 +1672,6 @@ fn validate_receipt(
         return Err(ReviewWorkflowError::ReceiptMismatch);
     }
     Ok(())
-}
-
-fn workflow_bounded_read(path: &Path) -> Result<Option<Vec<u8>>, ReviewWorkflowError> {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(ReviewWorkflowError::Storage(error.to_string())),
-    };
-    if metadata.len() > MAX_WORKFLOW_FILE_BYTES {
-        return Err(ReviewWorkflowError::BoundsExceeded(
-            "mutation ledger file exceeds its bound",
-        ));
-    }
-    let bytes =
-        std::fs::read(path).map_err(|error| ReviewWorkflowError::Storage(error.to_string()))?;
-    if bytes.len() as u64 > MAX_WORKFLOW_FILE_BYTES {
-        return Err(ReviewWorkflowError::BoundsExceeded(
-            "mutation ledger file exceeds its bound",
-        ));
-    }
-    Ok(Some(bytes))
-}
-
-fn workflow_disk_revision(
-    path: &Path,
-    workspace: CatalogWorkspaceId,
-) -> Result<u64, ReviewWorkflowError> {
-    let Some(bytes) = workflow_bounded_read(path)? else {
-        return Ok(0);
-    };
-    let disk: ReviewWorkflowDisk = serde_json::from_slice(&bytes)
-        .map_err(|error| ReviewWorkflowError::Storage(error.to_string()))?;
-    if disk.schema_version != REVIEW_WORKFLOW_SCHEMA || disk.workspace != workspace {
-        return Err(ReviewWorkflowError::Storage(
-            "invalid mutation ledger identity or schema".into(),
-        ));
-    }
-    Ok(disk.revision)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1778,6 +1786,11 @@ impl DeliveryBoard {
             return Err(DeliveryProjectionError::InvalidObservation);
         }
         if let Some(current) = self.projections.get(&projection.workspace) {
+            if current.freshness == ObservationFreshness::Fresh
+                && projection.freshness != ObservationFreshness::Fresh
+            {
+                return Err(DeliveryProjectionError::StaleObservation);
+            }
             if projection.revision < current.revision {
                 return Err(DeliveryProjectionError::StaleObservation);
             }
@@ -1915,6 +1928,7 @@ impl AttentionBoard {
         &mut self,
         id: AttentionItemId,
         workspace: CatalogWorkspaceId,
+        catalog: &ProjectCatalog,
         surface: &WorkspaceSurfaceState,
     ) -> Result<WorkspaceFocus, AttentionError> {
         let item = self.items.get_mut(&id).ok_or(AttentionError::InvalidItem)?;
@@ -1922,7 +1936,7 @@ impl AttentionBoard {
             return Err(AttentionError::WrongWorkspace);
         }
         surface
-            .validate()
+            .validate_for(catalog, workspace)
             .map_err(|_| AttentionError::InvalidSurface)?;
         let leaf = find_pane(surface.root.as_ref(), item.target.pane)
             .ok_or(AttentionError::UnknownPane)?;

@@ -2613,15 +2613,20 @@ A workspace review combines staged, unstaged, untracked, and conflict state at
 one observed repository revision. Text and recognized bounded images may be
 previewed; HTML is escaped and displayed only as inert source, while oversized
 or unknown binary content is refused. The core draft ledger persists line
-comments against their exact
-file, side, line, and review revision, and only explicitly selected current
-comments form a send batch. Stage, approval, check, and delivery mutations are
+comments against their exact file, section, unique hunk, side, line, and review
+revision; its pre-anchor schema is refused rather than guessed, and only
+explicitly selected current comments with unique comment IDs form a send batch.
+Stage, approval, check, and delivery mutations are
 separately scoped: provider-session control cannot grant repository, CI, or
 pull-request authority. A crate-private grant can prepare only a workflow-owned
-capability. Durable submit rechecks expiry and the exact fresh local-review,
-provider-session/approval, or delivery target fence. Receipts echo the actor,
+capability. Durable submit rechecks the current grant (including revocation,
+supersession, actor and scope) and the exact fresh local-review,
+provider-session/approval, catalog-validated workspace surface, or delivery
+target fence. Receipts echo the actor,
 authority revision, typed target and one idempotency key. An in-flight operation
 reloaded after restart becomes reconciliation-only work with that original key.
+Prepared and terminal records remain enumerable after operation-ID loss; only
+explicit abandonment and terminal acknowledgement release a bounded ledger slot.
 Forced-process and real-adapter no-replay evidence remains a Red release gate.
 
 ### SDUC-493 — Agent attention always returns to its authoritative work context
@@ -2633,12 +2638,17 @@ Older or conflicting same-revision observations are refused. Opening an item in
 the core validates all coordinates against a validated workspace surface,
 refuses duplicate pane/session coordinates, returns only that exact tab, and
 records local read state separately from the authoritative observation revision.
-Delivery checks, review status, merge
-readiness, and delivery state carry their observed authority and freshness and
-cannot be overwritten by stale evidence.
+Delivery checks, review status, merge readiness, and delivery state carry their
+observed authority and freshness. Once Fresh, they cannot be overwritten by a
+Stale or Unknown projection even if that projection claims a higher revision.
 
 ## Change log
 
+- **2026-08-27** — Hardened SDUC-492/493 and added SDTEST-1759..1762 with
+  section/hunk-bound anchors,
+  current-grant and exact-workspace revalidation, recoverable terminal ledger
+  acknowledgement, no-follow maximum-plus-one persistence reads,
+  catalog-validated attention surfaces, and Fresh-preserving delivery state.
 - **2026-08-27** — Added SDUC-492/493 and SDTEST-1751..1758 for combined
   workspace review state, bounded inert previews, workspace-keyed draft CAS,
   separately scoped typed revision fences, durable reconciliation obligations,

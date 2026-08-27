@@ -29,11 +29,17 @@ pub(super) fn validate_fresh_review(snapshot: &ReviewSnapshot) -> Result<(), Rev
                 ));
             }
             total_lines = total_lines.saturating_add(hunk.lines.len());
-            if hunk
-                .lines
-                .iter()
-                .any(|line| line.text.len() > MAX_COMMENT_BYTES)
-            {
+            let mut old_lines = BTreeSet::new();
+            let mut new_lines = BTreeSet::new();
+            if hunk.lines.iter().any(|line| {
+                line.text.len() > MAX_COMMENT_BYTES
+                    || line
+                        .old_line
+                        .is_some_and(|line| line == 0 || !old_lines.insert(line))
+                    || line
+                        .new_line
+                        .is_some_and(|line| line == 0 || !new_lines.insert(line))
+            }) {
                 return Err(ReviewWorkflowError::BoundsExceeded(
                     "review projection exceeds its bound",
                 ));
@@ -54,7 +60,8 @@ pub(super) fn validate_provider_evidence(
     sending_comments: bool,
     approval: Option<&String>,
 ) -> Result<(), ReviewWorkflowError> {
-    if session.freshness != ObservationFreshness::Fresh
+    if session.workspace != grant.workspace
+        || session.freshness != ObservationFreshness::Fresh
         || session.authority_revision != grant.revision
         || session.observed_actor.as_ref() != Some(&grant.actor)
         || !bounded_nonempty(&session.session_id, MAX_ID_BYTES)
@@ -84,7 +91,8 @@ pub(super) fn validate_delivery_evidence(
     delivery: &DeliveryProjection,
     grant: &AuthorityGrant,
 ) -> Result<(), ReviewWorkflowError> {
-    if delivery.freshness != ObservationFreshness::Fresh
+    if delivery.workspace != grant.workspace
+        || delivery.freshness != ObservationFreshness::Fresh
         || delivery.authority_revision != grant.revision
         || delivery.authority.observed_actor.as_ref() != Some(&grant.actor)
         || !bounded_nonempty(&delivery.authority.provider, MAX_ID_BYTES)
@@ -139,13 +147,14 @@ pub(super) fn validate_preview_bounds(
                 ..
             },
         ) => {
+            let mut ids = BTreeSet::new();
             bounded_nonempty(session_id, MAX_ID_BYTES)
                 && session_id == target_session
                 && !comments.is_empty()
                 && comments.len() <= MAX_MUTATION_ITEMS
                 && comments
                     .iter()
-                    .all(|comment| validate_comment(comment).is_ok())
+                    .all(|comment| ids.insert(comment.id) && validate_comment(comment).is_ok())
         }
         (
             ReviewMutationKind::DecideApproval {
@@ -206,7 +215,7 @@ pub(super) fn validate_preview_bounds(
         }
         _ => false,
     };
-    if !valid {
+    if !valid || !authority_scope_admits_preview(preview) {
         return Err(ReviewWorkflowError::BoundsExceeded(
             "mutation kind or target exceeds its bound",
         ));
