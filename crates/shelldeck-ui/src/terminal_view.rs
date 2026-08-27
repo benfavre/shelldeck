@@ -5431,6 +5431,7 @@ mod tests {
         });
     }
 
+    // SDTEST-1736
     #[test]
     fn missing_required_workspace_cwd_blocks_open_and_cli_without_home_fallback() {
         let root = tempfile::tempdir().unwrap();
@@ -5452,6 +5453,7 @@ mod tests {
         });
     }
 
+    // SDTEST-1736
     #[test]
     fn disappearing_required_workspace_cwd_blocks_split_of_a_live_local_session() {
         let initial_root = tempfile::tempdir().unwrap();

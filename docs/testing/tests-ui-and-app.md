@@ -495,7 +495,7 @@ parallel `cargo test`.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1736 | `workspace::workspaces::tests_file::tests::{keyed_gpui_workspace_entity_retention_preserves_hidden_terminal_state,retained_terminal_activation_keeps_the_complete_runtime_config,pending_interaction_and_completion_use_only_the_authorized_checkout_cwd,folder_disappearing_before_attach_reports_only_localized_unavailability,loading_existing_workspace_with_missing_root_is_fail_closed_and_localized}` and `terminal_view::tests::{canonical_workspace_cwd_reaches_tabs_splits_and_cli_created_terminals,missing_required_workspace_cwd_blocks_open_split_and_cli_without_home_fallback,native_workspace_snapshot_reapplies_split_focus_and_ratio}` | SDUC-490 | Yellow | Tests prove stable GPUI workspace/terminal entity identity across A→B→A, native terminal snapshot round-tripping, canonical checkout-cwd inheritance before and after completion, fail-closed localized behavior for a disappearing or already-missing catalog root, and retained-terminal runtime configuration hydration. Editor/files/browser pane restoration and a live multi-workspace PTY archive/resume journey are not covered and remain unsupported. |
+| SDTEST-1736 | `workspace::workspaces::tests_file::tests::{keyed_gpui_workspace_entity_retention_preserves_hidden_terminal_state,retained_terminal_activation_keeps_the_complete_runtime_config,pending_interaction_and_completion_use_only_the_authorized_checkout_cwd,folder_disappearing_before_attach_reports_only_localized_unavailability,loading_existing_workspace_with_missing_root_is_fail_closed_and_localized}` and `terminal_view::tests::{canonical_workspace_cwd_reaches_tabs_splits_and_cli_created_terminals,missing_required_workspace_cwd_blocks_open_and_cli_without_home_fallback,disappearing_required_workspace_cwd_blocks_split_of_a_live_local_session,native_workspace_snapshot_reapplies_split_focus_and_ratio}` | SDUC-490 | Yellow | Tests prove stable GPUI workspace/terminal entity identity across A→B→A, native terminal snapshot round-tripping, canonical checkout-cwd inheritance before and after completion, fail-closed localized behavior for a disappearing or already-missing catalog root, a real guarded secondary spawn attempt from an existing live local tab, and retained-terminal runtime configuration hydration. Editor/files/browser pane restoration and a live multi-workspace PTY archive/resume journey are not covered and remain unsupported. |
 | SDTEST-1737 | *to write* — non-blocking local and SSH workspace launcher lifecycle | SDUC-488, SDUC-489, SDUC-491 | **Red / P0** | Through fake local/SSH executors, exercise manual and issue/PR/task-prefilled create, progress, cancellation, typed conflicts, catalog-revision retry and archive/resume without blocking the GPUI thread. Compile and run the portable path fixtures on Linux, macOS and Windows. |
 | SDTEST-1738 | `workspace::workspaces::tests_file::tests::{workspace_card_keeps_external_and_provider_authorities_distinct,git_source_never_erases_provider_or_conflict_evidence,provider_only_observation_never_presents_retained_git_as_current}` | SDUC-489, SDUC-490 | Yellow | Pure aggregation/projection tests prove external-task versus orchestration separation and that unavailable or unobserved Git cannot borrow provider freshness or present retained Git facts as current. A live provider observation subscription and rendered interaction coverage are not implemented. Exact provider-to-workspace admission remains covered separately by core SDTEST-1734. |
 
@@ -519,10 +519,13 @@ checklist:
 - SDTEST-1584 (`#[cfg(windows)]` Jcode executor spawn — **no CI target
   compiles or runs it today**; needs a windows-latest test or
   `cargo check --tests --target x86_64-pc-windows-msvc` job)
-- SDTEST-1729, SDTEST-1735, SDTEST-1739..1742 (portable
+- SDTEST-1729, SDTEST-1735, SDTEST-1739..1743 (portable
   catalog schema/CAS/path, native atomic replacement, interprocess lock, and
-  executor path-admission primitives; the `platform-core-tests` CI matrix runs
-  the core tests on macOS and Windows in addition to the Linux check job)
+  executor/PTY path-admission primitives; the `platform-core-tests` CI matrix
+  runs the core tests plus SDTEST-1743 on macOS and Windows in addition to the
+  Linux check job)
+- SDTEST-1744 (Yellow — the Windows runner compile-checks the patched
+  `portable-pty` tests, but no live CreateProcessW race is executed)
 - SDTEST-1737 (Red / P0 launcher lifecycle and portable-path integration)
 
 The release-day rule: **all P0 cross-platform tests must be green on

@@ -116,6 +116,24 @@ jobs:
         shell: bash
         run: ./scripts/apply-crate-patches.sh
 
+      # ShellDeck's own PTY boundary must reject a vanished authorized cwd on
+      # every supported OS before any native PTY or process side effect.
+      - name: Test terminal cwd authority boundary
+        run: cargo test -p shelldeck-terminal --lib missing_cwd_is_rejected_at_the_pty_boundary
+
+      # SDPATCH-117 changes a cfg(windows) dependency branch. Compile the
+      # patched crate's tests directly because dependency tests are not part of
+      # `cargo test --workspace`; this is compile-only, not a CreateProcessW
+      # runtime/race claim (SDTEST-1744 remains Yellow).
+      - name: Compile portable-pty Windows cwd authority regression
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          crate_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name 'portable-pty-0.8.1' | head -1)"
+          test -n "$crate_dir"
+          grep -F -q '// SDTEST-1744' "$crate_dir/src/cmdbuilder.rs"
+          cargo check --manifest-path "$crate_dir/Cargo.toml" --tests
+
       - name: Test shelldeck-core
         run: cargo test -p shelldeck-core
 

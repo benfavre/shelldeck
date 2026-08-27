@@ -443,6 +443,7 @@ mod shell_fallback_tests {
         );
     }
 
+    // SDTEST-1743
     #[test]
     fn missing_cwd_is_rejected_at_the_pty_boundary() {
         let missing = std::env::temp_dir().join(format!(
