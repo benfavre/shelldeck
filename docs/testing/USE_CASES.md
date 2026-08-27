@@ -2557,8 +2557,64 @@ session revision. Detach, lease loss, sign-out, directory disappearance, and
 late responses remove or ignore only the affected session state. Provider
 session authority never implies terminal, repository, or filesystem authority.
 
+### SDUC-488 — Projects group portable local and SSH checkouts without credentials
+
+The revisioned project catalog groups one repository's checkouts under explicit
+local-device or existing ShellDeck SSH-connection hosts. Local roots use the
+native path representation; SSH roots use a validated absolute POSIX path and
+store only the connection ID. Passwords, private-key paths, and Automonique
+grants never enter this file. Compare-and-swap persistence rejects stale
+writers through an OS-level interprocess lock and native atomic replacement,
+and schema-v1 and schema-v2 records migrate explicitly to schema v3 without
+silently losing legacy run display metadata. A workspace
+launcher selects an already-catalogued checkout instead of admitting an
+arbitrary path, so local and SSH workspaces share one model without widening
+host or filesystem authority.
+
+### SDUC-489 — Manual and external-task intake share one workspace lifecycle
+
+Manual creation and issue, pull-request, or task-prefilled creation enter the
+same validated launcher and produce the same resumable local workspace record.
+Local UUIDs are never treated as Platform identities: a durable project,
+checkout, and user-workspace mapping carries the authoritative Platform v2 IDs
+and revisions plus a monotonic, expected-prior-fenced reconciliation revision.
+Pending evidence cannot demote an exact mapping, and identity changes must pass
+through an explicit diverged transition. Archive and resume have one catalog
+owner. An external tracker item and an internal Automonique orchestration run
+remain separate typed identities, and no session may bind until the mapping is
+exact and names that same authoritative user workspace.
+
+### SDUC-490 — Workspace switching preserves one exact retained work surface
+
+Navigation keys pane trees, tab order, active tabs, focus, editor and terminal
+drafts, terminal viewport positions, and stable live-terminal bindings by user
+workspace. Switching or archiving changes visibility only. Hidden workspace
+state stays retained, so resuming restores the exact coherent surface instead
+of opening disconnected Fleet and terminal views. Invalid split ratios,
+ambiguous focus, duplicate tabs, authority-mismatched checkout/SSH bindings,
+cross-workspace terminal reuse, and stale card observations are refused before
+they can replace valid state. Live GPUI entity retention remains release-blocking
+integration coverage rather than an inference from snapshot equality.
+
+### SDUC-491 — Background workspace creation has a typed cancellable lifecycle
+
+Create operations report monotonic phases and bounded step progress without
+blocking the UI. Cancellation, host/worktree/branch/catalog conflicts,
+classified failures, completion, and retry are distinct states. Every event is
+fenced by its operation ID and starting catalog revision. Phase transitions and
+step totals are monotonic, completion requires the finished final phase, and
+Start cannot bypass retryability. Once retry starts, a late completion or
+failure from the earlier attempt is rejected and cannot overwrite the new
+operation.
+
 ## Change log
 
+- **2026-08-27** — Added SDUC-488..491 and SDTEST-1729..1742 for the revisioned
+  local/SSH project catalog, Platform v2 reconciliation mapping, portable path
+  and authority admission, interprocess/Windows-safe persistence, canonical
+  local and delegated SSH-beneath path admission, shared manual/task launcher,
+  stale-fenced navigation and creation reducers, plus explicit Red
+  GPUI/executor/card integration gates.
 - **2026-08-27** — Added SDUC-487 and SDTEST-1726..1728 for the native retained
   transcript/composer, retention-gap replacement, exact revision fence, and
   no-replay receipt reconciliation contract.

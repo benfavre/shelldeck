@@ -18,6 +18,7 @@ pub mod ssh_config;
 pub mod store;
 pub mod themes;
 pub mod watcher;
+pub mod workspace_catalog;
 pub mod workspace_state;
 
 pub use activity::{ActivityAction, ActivityEntry, ActivityKind, ActivityStore};
@@ -32,4 +33,12 @@ pub use monique::MoniqueConfig;
 pub use store::ConnectionStore;
 pub use themes::TerminalTheme;
 pub use watcher::ConfigWatcher;
+pub use workspace_catalog::{
+    AuthorizedLocalPath, CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, CheckoutHost,
+    ExternalWorkItem, ExternalWorkItemKind, LegacyOrchestrationRunRef, OrchestrationRunRef,
+    PlatformContextRef, PlatformMappingReconciliation, PlatformV2Mapping, ProjectCatalog,
+    ProjectCheckout, ProjectRecord, RemoteBeneathAuthority, RemotePosixPath, RepositoryIdentity,
+    SshBeneathExecutor, UserWorkspaceLifecycle, UserWorkspaceRecord, WorkspaceCatalogError,
+    WorkspaceLaunchIntake, WorkspaceLaunchRequest, WorkspaceRelativePath,
+};
 pub use workspace_state::WorkspaceState;
