@@ -8,6 +8,7 @@ members = [
     "crates/shelldeck-ui",
     "crates/shelldeck-update",
 ]
+exclude = ["patches/portable-pty"]
 
 [workspace.package]
 version = "0.9.3"
@@ -93,6 +94,7 @@ windows-sys = { version = "0.60", features = [
 
 [patch.crates-io]
 adabraka-gpui = { path = "patches/adabraka-gpui" }
+portable-pty = { path = "patches/portable-pty" }
 # Local fork of adabraka-ui with:
 #   - `InputState` cursor color pulled from `theme.tokens.ring` instead of a
 #     hardcoded #0066ff.

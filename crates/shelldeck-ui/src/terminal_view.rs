@@ -5354,7 +5354,7 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_ai_command, PaneNode, TerminalView};
+    use super::{validate_ai_command, PaneId, PaneNode, TerminalView};
     use gpui::{AppContext, TestAppContext};
 
     // SDTEST-1333 / SDTEST-1334 retired 2026-08-06: command_available now
@@ -5432,7 +5432,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_required_workspace_cwd_blocks_open_split_and_cli_without_home_fallback() {
+    fn missing_required_workspace_cwd_blocks_open_and_cli_without_home_fallback() {
         let root = tempfile::tempdir().unwrap();
         let intended = root.path().to_path_buf();
         root.close().unwrap();
@@ -5446,10 +5446,39 @@ mod tests {
                 message.contains("Aucun terminal local") || message.contains("No local terminal")
             );
             terminal.spawn_local_terminal(cx);
-            terminal.split_horizontal(cx);
             terminal.launch_cli("true", "test", cx);
             assert_eq!(terminal.tab_count(), 0);
             assert!(terminal.active_session().is_none());
+        });
+    }
+
+    #[test]
+    fn disappearing_required_workspace_cwd_blocks_split_of_a_live_local_session() {
+        let initial_root = tempfile::tempdir().unwrap();
+        let split_root = tempfile::tempdir().unwrap();
+        let disappearing = std::fs::canonicalize(split_root.path()).unwrap();
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            terminal.set_default_cwd(initial_root.path()).unwrap();
+            terminal.spawn_local_terminal(cx);
+            assert_eq!(terminal.tab_count(), 1, "fixture must own a live local tab");
+
+            terminal.set_default_cwd(&disappearing).unwrap();
+            split_root.close().unwrap();
+            assert!(!disappearing.exists(), "authorized split cwd must be gone");
+
+            terminal.split_horizontal(cx);
+            assert_eq!(terminal.tab_count(), 1);
+            assert!(
+                terminal.layout.extra.is_empty(),
+                "failed split must not retain a secondary PTY"
+            );
+            assert!(
+                matches!(terminal.layout.tree, PaneNode::Leaf(PaneId::Primary)),
+                "failed split must not mutate the pane tree"
+            );
+            terminal.close_all_sessions();
         });
     }
 }
