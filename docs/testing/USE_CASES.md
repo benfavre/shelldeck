@@ -2609,7 +2609,7 @@ operation.
 
 ## Change log
 
-- **2026-08-27** — Added SDUC-488..491 and SDTEST-1729..1741 for the revisioned
+- **2026-08-27** — Added SDUC-488..491 and SDTEST-1729..1742 for the revisioned
   local/SSH project catalog, Platform v2 reconciliation mapping, portable path
   and authority admission, interprocess/Windows-safe persistence, canonical
   local and delegated SSH-beneath path admission, shared manual/task launcher,

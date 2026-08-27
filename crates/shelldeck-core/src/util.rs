@@ -88,6 +88,7 @@ fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
+    use std::time::Duration;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
@@ -98,21 +99,53 @@ fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
         .encode_wide()
         .chain(Some(0))
         .collect();
-    // SAFETY: both paths are owned, NUL-terminated UTF-16 buffers that remain
-    // alive for the duration of the call. The flags request a same-volume
-    // replacement and make the move wait for the filesystem write-through.
-    let replaced = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if replaced == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
+    // Two writers replacing the same destination can briefly observe a
+    // sharing/access/lock violation even though both source handles are
+    // already closed. Retry only those documented Win32 contention errors;
+    // every other failure remains immediate and fail-closed. The bound keeps
+    // an externally held file from stalling a save indefinitely.
+    const MAX_ATTEMPTS: usize = 8;
+    for attempt in 0..MAX_ATTEMPTS {
+        // SAFETY: both paths are owned, NUL-terminated UTF-16 buffers that
+        // remain alive for the duration of the call. The flags request a
+        // same-volume replacement and make the move wait for filesystem
+        // write-through.
+        let replaced = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if replaced != 0 {
+            return Ok(());
+        }
+
+        let error = std::io::Error::last_os_error();
+        if attempt + 1 == MAX_ATTEMPTS || !is_windows_file_contention(&error) {
+            return Err(error);
+        }
+        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1));
     }
+    unreachable!("bounded replacement loop always returns")
+}
+
+/// Win32 reports both non-blocking file locks and short replacement races
+/// through raw system codes instead of consistently mapping them to
+/// `ErrorKind::WouldBlock`.
+#[cfg(windows)]
+pub(crate) fn is_windows_file_contention(error: &std::io::Error) -> bool {
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+    };
+
+    error.raw_os_error().is_some_and(|code| {
+        matches!(
+            code as u32,
+            ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION
+        )
+    })
 }
 
 /// Shell-escape a string for safe embedding in single-quoted shell arguments.
@@ -402,6 +435,29 @@ mod tests {
         assert!(result == b"first" || result == b"second");
         assert_eq!(count_tmp_files(&dir), 0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // SDTEST-1742
+    #[cfg(windows)]
+    #[test]
+    fn windows_atomic_replace_retries_only_file_contention_errors() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_LOCK_VIOLATION,
+            ERROR_SHARING_VIOLATION,
+        };
+
+        for code in [
+            ERROR_ACCESS_DENIED,
+            ERROR_SHARING_VIOLATION,
+            ERROR_LOCK_VIOLATION,
+        ] {
+            assert!(is_windows_file_contention(
+                &std::io::Error::from_raw_os_error(code as i32)
+            ));
+        }
+        assert!(!is_windows_file_contention(
+            &std::io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32)
+        ));
     }
 
     // ------------------------------------------------------------------

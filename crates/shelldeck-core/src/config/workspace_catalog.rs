@@ -1008,7 +1008,7 @@ impl CatalogFileLock {
         let file = open_catalog_lock(catalog_path)?;
         match fs2::FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self(file))),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) if is_lock_contention(&error) => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
@@ -1017,6 +1017,21 @@ impl Drop for CatalogFileLock {
     fn drop(&mut self) {
         let _ = fs2::FileExt::unlock(&self.0);
     }
+}
+
+#[cfg(test)]
+fn is_lock_contention(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+
+        return error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32);
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 fn open_catalog_lock(catalog_path: &Path) -> Result<std::fs::File> {

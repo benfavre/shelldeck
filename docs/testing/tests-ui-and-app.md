@@ -519,7 +519,7 @@ checklist:
 - SDTEST-1584 (`#[cfg(windows)]` Jcode executor spawn — **no CI target
   compiles or runs it today**; needs a windows-latest test or
   `cargo check --tests --target x86_64-pc-windows-msvc` job)
-- SDTEST-1729, SDTEST-1735, SDTEST-1739, SDTEST-1740, SDTEST-1741 (portable
+- SDTEST-1729, SDTEST-1735, SDTEST-1739..1742 (portable
   catalog schema/CAS/path, native atomic replacement, interprocess lock, and
   executor path-admission primitives; the `platform-core-tests` CI matrix runs
   the core tests on macOS and Windows in addition to the Linux check job)
