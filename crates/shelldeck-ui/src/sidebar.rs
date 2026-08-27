@@ -175,6 +175,7 @@ pub struct PanelItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SidebarSection {
     Connections,
+    Workspaces,
     Terminals,
     Agents,
     Scripts,
@@ -200,6 +201,7 @@ impl SidebarSection {
     pub fn rail_activities() -> &'static [SidebarSection] {
         &[
             SidebarSection::Connections,
+            SidebarSection::Workspaces,
             SidebarSection::Terminals,
             SidebarSection::Agents,
             SidebarSection::Scripts,
@@ -233,6 +235,7 @@ impl SidebarSection {
             // Aucune vue principale ne liste les hôtes : le panneau est la
             // seule navigation vers eux, groupes et épingles compris.
             SidebarSection::Connections => true,
+            SidebarSection::Workspaces => false,
             // Le panneau listait les sites du locataire Manage pendant que la
             // vue annonçait « Aucun site détecté » : deux collections
             // différentes sous un seul mot, côte à côte. L'activité porte sur
@@ -281,6 +284,7 @@ impl SidebarSection {
     pub fn lucide_icon(&self) -> &'static str {
         match self {
             SidebarSection::Connections => "server",
+            SidebarSection::Workspaces => "layout-dashboard",
             SidebarSection::Terminals => "terminal",
             SidebarSection::Agents => "bot",
             SidebarSection::Scripts => "scroll-text",
@@ -299,6 +303,7 @@ impl SidebarSection {
     pub fn label(&self) -> String {
         match self {
             SidebarSection::Connections => t!("sidebar.nav.connections"),
+            SidebarSection::Workspaces => t!("sidebar.nav.workspaces"),
             SidebarSection::Terminals => t!("sidebar.nav.terminals"),
             SidebarSection::Agents => t!("sidebar.nav.agents"),
             SidebarSection::Scripts => t!("sidebar.nav.scripts"),
@@ -1397,7 +1402,7 @@ mod tests {
     // SDTEST-1721 — the compact rail relies on icon semantics and one stable
     // group break because labels only appear in tooltips. Keep recent activity
     // aligned with the clock used by the Aller menu and isolate the secondary
-    // tools after the five primary work activities.
+    // tools after the primary work activities.
     #[test]
     fn rail_landmarks_keep_clear_icons_and_one_tool_group() {
         use super::SidebarSection;
@@ -1411,13 +1416,13 @@ mod tests {
             .filter(SidebarSection::starts_rail_tool_group)
             .collect();
         assert_eq!(group_starts, vec![SidebarSection::ServerSync]);
+        let tools_index = SidebarSection::rail_activities()
+            .iter()
+            .position(|section| *section == SidebarSection::ServerSync)
+            .unwrap();
         assert_eq!(
-            SidebarSection::rail_activities()[4],
+            SidebarSection::rail_activities()[tools_index - 1],
             SidebarSection::PortForwards
-        );
-        assert_eq!(
-            SidebarSection::rail_activities()[5],
-            SidebarSection::ServerSync
         );
     }
 

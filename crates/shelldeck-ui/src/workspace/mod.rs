@@ -139,6 +139,7 @@ mod ssh;
 mod support;
 mod tray;
 mod user_home;
+mod workspaces;
 
 /// Health of the signed-in cloud account, surfaced as the titlebar status dot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,6 +332,7 @@ fn post_login_splash_opacity(dismissing: bool, delta: f32) -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
     Dashboard,
+    Workspaces,
     Terminal,
     Agents,
     Scripts,
@@ -426,6 +428,7 @@ pub struct Workspace {
     store: ConnectionStore,
     sidebar: Entity<SidebarView>,
     dashboard: Entity<DashboardView>,
+    workspace_hub: Entity<workspaces::WorkspaceHubView>,
     terminal: Entity<TerminalView>,
     agent_console: Entity<AgentConsoleView>,
     scripts: Entity<ScriptEditorView>,
@@ -496,6 +499,7 @@ pub struct Workspace {
     active_agent_runs: HashMap<Uuid, agents::ActiveAgentRun>,
     // Keep subscriptions alive
     _sidebar_sub: Subscription,
+    _workspace_hub_sub: Subscription,
     _terminal_sub: Subscription,
     _agent_console_sub: Subscription,
     _palette_sub: Subscription,
@@ -704,6 +708,9 @@ pub struct Workspace {
     /// Same idea for a previewed terminal color theme: the terminal theme name
     /// to restore if the palette is dismissed without committing.
     terminal_theme_before_preview: Option<String>,
+    /// Aperçu terminal actuellement affiché. Il doit suivre un terminal
+    /// retenu lorsqu'un changement de workspace intervient pendant l'aperçu.
+    terminal_theme_preview: Option<String>,
     /// Optional publisher into the system-tray state channel. Set once
     /// at startup by `main.rs` after `TrayService::new` returns; `None`
     /// when the tray failed to come up (Flatpak sandbox, missing GTK,
@@ -912,6 +919,20 @@ impl Workspace {
         });
 
         let terminal = cx.new(TerminalView::new);
+        let workspace_connections = connections
+            .iter()
+            .map(|connection| (connection.id, connection.display_name().to_string()))
+            .collect::<Vec<_>>();
+        let workspace_catalog = shelldeck_core::config::workspace_catalog::ProjectCatalog::load()
+            .map_err(|error| error.to_string());
+        let workspace_hub = cx.new(|cx| {
+            workspaces::WorkspaceHubView::new(
+                workspace_catalog,
+                &workspace_connections,
+                terminal.clone(),
+                cx,
+            )
+        });
         let agent_console = cx.new(|cx| {
             let mut view = AgentConsoleView::new(cx);
             view.set_connections(
@@ -973,18 +994,21 @@ impl Workspace {
             let cursor_blink = cfg.cursor_blink;
             let scrollback = cfg.scrollback_lines;
             let menu_bar_visible = config.general.menu_bar_visible;
-            terminal.update(cx, |t, _| {
-                t.set_menu_bar_visible(menu_bar_visible);
-                t.set_terminal_theme(&theme);
-                t.set_font_size(font_size);
-                t.set_font_family(font_family);
-                t.set_default_shell(default_shell);
-                t.set_cursor_style(&cursor_style);
-                t.set_cursor_blink(cursor_blink);
-                t.set_scrollback_lines(scrollback);
-                // Panel + activity rail: the rail is on unless the persisted
-                // "navigation collapsed" preference hides it.
-                t.set_sidebar_width(initial_sidebar_width + crate::sidebar::RAIL_WIDTH);
+            workspace_hub.update(cx, |hub, cx| {
+                hub.configure_terminals(
+                    workspaces::WorkspaceTerminalConfig {
+                        theme,
+                        font_size,
+                        font_family,
+                        default_shell,
+                        cursor_style,
+                        cursor_blink,
+                        scrollback_lines: scrollback,
+                        sidebar_width: initial_sidebar_width + crate::sidebar::RAIL_WIDTH,
+                        menu_bar_visible,
+                    },
+                    cx,
+                );
             });
         }
 
@@ -1123,6 +1147,19 @@ impl Workspace {
         let terminal_sub = cx.subscribe(&terminal, |this, _terminal, event: &TerminalEvent, cx| {
             this.handle_terminal_event(event, cx);
         });
+        let workspace_hub_sub = cx.subscribe(
+            &workspace_hub,
+            |this, _hub, event: &workspaces::WorkspaceHubEvent, cx| {
+                let workspaces::WorkspaceHubEvent::ActiveTerminal(terminal) = event;
+                this.terminal = terminal.clone();
+                this._terminal_sub =
+                    cx.subscribe(terminal, |this, _terminal, event: &TerminalEvent, cx| {
+                        this.handle_terminal_event(event, cx);
+                    });
+                this.hydrate_active_terminal_runtime(cx);
+                cx.notify();
+            },
+        );
         let agent_console_sub = cx.subscribe(
             &agent_console,
             |this, _view, event: &AgentConsoleEvent, cx| {
@@ -1268,6 +1305,7 @@ impl Workspace {
             store,
             sidebar,
             dashboard,
+            workspace_hub,
             terminal,
             agent_console,
             scripts,
@@ -1318,6 +1356,7 @@ impl Workspace {
             active_scripts: HashMap::new(),
             active_agent_runs: HashMap::new(),
             _sidebar_sub: sidebar_sub,
+            _workspace_hub_sub: workspace_hub_sub,
             _terminal_sub: terminal_sub,
             _agent_console_sub: agent_console_sub,
             _palette_sub: palette_sub,
@@ -1425,6 +1464,7 @@ impl Workspace {
             _bext_poll: None,
             theme_before_preview: None,
             terminal_theme_before_preview: None,
+            terminal_theme_preview: None,
             tray_state_publisher: None,
             tray_notifier: None,
             companion_config_publisher: None,

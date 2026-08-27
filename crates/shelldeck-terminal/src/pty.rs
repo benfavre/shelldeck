@@ -238,6 +238,25 @@ impl LocalPty {
         rows: u16,
         cols: u16,
     ) -> crate::Result<(Self, Box<dyn Read + Send>)> {
+        let home =
+            shelldeck_core::util::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        Self::spawn_at(shell, rows, cols, &home)
+    }
+
+    /// Spawn a PTY rooted at a caller-authorized existing directory.
+    pub fn spawn_at(
+        shell: Option<&str>,
+        rows: u16,
+        cols: u16,
+        cwd: &std::path::Path,
+    ) -> crate::Result<(Self, Box<dyn Read + Send>)> {
+        if !cwd.is_dir() {
+            return Err(crate::TerminalError::Pty(format!(
+                "working directory `{}` is unavailable",
+                cwd.display()
+            )));
+        }
+
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -251,12 +270,9 @@ impl LocalPty {
         let shell_path = resolve_shell(shell);
 
         let mut cmd = CommandBuilder::new(&shell_path);
-        // Start in the user's home directory; fall back to the process cwd
-        // (`.`) when it cannot be determined — never a hardcoded `/`, which
-        // is meaningless on Windows.
-        let home =
-            shelldeck_core::util::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        cmd.cwd(home);
+        // The caller resolved this working directory from its authority
+        // boundary; the PTY boundary independently enforces availability.
+        cmd.cwd(cwd);
 
         // Set TERM so applications know what terminal features are available.
         cmd.env("TERM", "xterm-256color");
@@ -331,7 +347,7 @@ impl LocalPty {
 
 #[cfg(test)]
 mod shell_fallback_tests {
-    use super::resolve_shell_from;
+    use super::{resolve_shell_from, LocalPty};
 
     // SDTEST-1579
     #[test]
@@ -424,6 +440,20 @@ mod shell_fallback_tests {
         assert_eq!(
             resolve_shell_from(Some(""), true, None, None, true),
             "powershell.exe"
+        );
+    }
+
+    // SDTEST-1743
+    #[test]
+    fn missing_cwd_is_rejected_at_the_pty_boundary() {
+        let missing = std::env::temp_dir().join(format!(
+            "shelldeck-missing-pty-cwd-{}",
+            uuid::Uuid::new_v4()
+        ));
+        assert!(!missing.exists());
+        assert!(
+            LocalPty::spawn_at(None, 24, 80, &missing).is_err(),
+            "an explicit missing cwd must never fall back to the user home"
         );
     }
 }
