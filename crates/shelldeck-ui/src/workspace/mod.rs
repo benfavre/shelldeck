@@ -139,6 +139,7 @@ mod ssh;
 mod support;
 mod tray;
 mod user_home;
+mod workspaces;
 
 /// Health of the signed-in cloud account, surfaced as the titlebar status dot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,6 +332,7 @@ fn post_login_splash_opacity(dismissing: bool, delta: f32) -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
     Dashboard,
+    Workspaces,
     Terminal,
     Agents,
     Scripts,
@@ -426,6 +428,7 @@ pub struct Workspace {
     store: ConnectionStore,
     sidebar: Entity<SidebarView>,
     dashboard: Entity<DashboardView>,
+    workspace_hub: Entity<workspaces::WorkspaceHubView>,
     terminal: Entity<TerminalView>,
     agent_console: Entity<AgentConsoleView>,
     scripts: Entity<ScriptEditorView>,
@@ -911,6 +914,16 @@ impl Workspace {
             d
         });
 
+        let workspace_connections = connections
+            .iter()
+            .map(|connection| (connection.id, connection.display_name().to_string()))
+            .collect::<Vec<_>>();
+        let workspace_catalog = shelldeck_core::config::workspace_catalog::ProjectCatalog::load()
+            .map_err(|error| error.to_string());
+        let workspace_hub = cx.new(|cx| {
+            workspaces::WorkspaceHubView::new(workspace_catalog, &workspace_connections, cx)
+        });
+
         let terminal = cx.new(TerminalView::new);
         let agent_console = cx.new(|cx| {
             let mut view = AgentConsoleView::new(cx);
@@ -1268,6 +1281,7 @@ impl Workspace {
             store,
             sidebar,
             dashboard,
+            workspace_hub,
             terminal,
             agent_console,
             scripts,

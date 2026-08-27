@@ -495,9 +495,9 @@ parallel `cargo test`.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1736 | *to write* — keyed GPUI workspace entity retention | SDUC-490 | **Red / P0** | Switch A→B→A with live local and SSH terminals, editor/file/browser tabs, split panes, focus, drafts and scrollback. Prove the same terminal entities remain alive while hidden and that archive/resume restores one coherent surface. The pure reducer cannot prove entity lifetime. |
+| SDTEST-1736 | `workspace::workspaces::tests::keyed_gpui_workspace_entity_retention_preserves_hidden_terminal_state` | SDUC-490 | Green | A real GPUI entity registry captures a split local surface with terminal/editor/files/browser tabs, focus, terminal and editor drafts, and scrollback alongside an SSH terminal surface. A→B→A and archive/resume preserve the exact workspace/terminal entity IDs and complete snapshot while hidden. |
 | SDTEST-1737 | *to write* — non-blocking local and SSH workspace launcher lifecycle | SDUC-488, SDUC-489, SDUC-491 | **Red / P0** | Through fake local/SSH executors, exercise manual and issue/PR/task-prefilled create, progress, cancellation, typed conflicts, catalog-revision retry and archive/resume without blocking the GPUI thread. Compile and run the portable path fixtures on Linux, macOS and Windows. |
-| SDTEST-1738 | *to write* — workspace cards and external/internal identity presentation | SDUC-489, SDUC-490 | **Red / P0** | Render host, repository, branch, dirty state, linked external work item, distinct internal run, agent state, unread/attention and freshness from fenced facts; verify a provider session cannot appear under a differently mapped local workspace. |
+| SDTEST-1738 | `workspace::workspaces::tests::workspace_card_keeps_external_and_provider_authorities_distinct` | SDUC-489, SDUC-490 | Green (pure/rendered projection) | The shared card presenter independently projects project/host/repository/checkout, branch, dirty counts, agent, unread/attention, freshness, external work and internal orchestration. The rendered card labels terminal/filesystem authority separately from provider-session authority; exact provider-to-workspace admission remains pinned by core SDTEST-1734. |
 
 ---
 

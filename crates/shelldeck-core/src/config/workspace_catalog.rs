@@ -190,6 +190,10 @@ impl ProjectCheckout {
         self.id
     }
     #[must_use]
+    pub const fn label(&self) -> &str {
+        self.label.as_str()
+    }
+    #[must_use]
     pub const fn host(&self) -> &CheckoutHost {
         &self.host
     }
@@ -323,6 +327,10 @@ impl ProjectRecord {
     pub const fn id(&self) -> CatalogProjectId {
         self.id
     }
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
     pub fn checkouts(&self) -> impl ExactSizeIterator<Item = &ProjectCheckout> {
         self.checkouts.iter()
     }
@@ -454,6 +462,10 @@ impl UserWorkspaceRecord {
     #[must_use]
     pub const fn checkout_id(&self) -> CatalogCheckoutId {
         self.checkout_id
+    }
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
     }
     #[must_use]
     pub const fn lifecycle(&self) -> UserWorkspaceLifecycle {

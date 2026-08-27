@@ -390,6 +390,7 @@ impl Workspace {
     pub fn switch_to_section(&mut self, section: SidebarSection) {
         self.active_view = match section {
             SidebarSection::Connections => ActiveView::Dashboard,
+            SidebarSection::Workspaces => ActiveView::Workspaces,
             SidebarSection::Terminals => ActiveView::Terminal,
             SidebarSection::Agents => ActiveView::Agents,
             SidebarSection::Scripts => ActiveView::Scripts,
