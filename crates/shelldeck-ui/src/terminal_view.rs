@@ -191,6 +191,18 @@ enum TerminalPaneNodeSnapshot {
     },
 }
 
+/// Politique de cwd des nouveaux PTY locaux. `Unscoped` est réservé au
+/// terminal général; un terminal de workspace reste `Required` même lorsque
+/// sa racine n'est plus disponible, afin de ne jamais retomber sur HOME.
+#[derive(Clone, Debug)]
+enum LocalCwdScope {
+    Unscoped,
+    Required {
+        intended: std::path::PathBuf,
+        canonical: Option<std::path::PathBuf>,
+    },
+}
+
 pub struct TerminalView {
     pub pane: TerminalPane,
     pub tabs: Vec<TerminalTab>,
@@ -202,8 +214,8 @@ pub struct TerminalView {
     /// `shelldeck-terminal` ($SHELL → /bin/bash on Unix; PowerShell →
     /// %COMSPEC% → cmd.exe on Windows).
     default_shell: Option<String>,
-    /// Canonical checkout root used by every subsequently-created local PTY.
-    default_cwd: Option<std::path::PathBuf>,
+    /// Portée de checkout exigée par chaque nouveau PTY local.
+    default_cwd: LocalCwdScope,
     pub focus_handle: FocusHandle,
     _refresh_task: Option<gpui::Task<()>>,
     /// Last known grid dimensions so we can detect when a resize is needed.
@@ -364,7 +376,7 @@ impl TerminalView {
             font_size: 14.0,
             font_family: "JetBrains Mono".to_string(),
             default_shell: None,
-            default_cwd: None,
+            default_cwd: LocalCwdScope::Unscoped,
             focus_handle: cx.focus_handle(),
             _refresh_task: None,
             last_grid_rows: 0,
@@ -478,11 +490,19 @@ impl TerminalView {
     /// Set the canonical checkout root for every future local tab, split, or
     /// CLI-created terminal owned by this view.
     pub(crate) fn set_default_cwd(&mut self, cwd: &std::path::Path) -> Result<(), String> {
+        let intended = cwd.to_path_buf();
+        self.default_cwd = LocalCwdScope::Required {
+            intended: intended.clone(),
+            canonical: None,
+        };
         let canonical = std::fs::canonicalize(cwd).map_err(|error| error.to_string())?;
         if !canonical.is_dir() {
             return Err("terminal working directory is not a directory".into());
         }
-        self.default_cwd = Some(canonical);
+        self.default_cwd = LocalCwdScope::Required {
+            intended,
+            canonical: Some(canonical),
+        };
         Ok(())
     }
 
@@ -493,7 +513,27 @@ impl TerminalView {
     /// fermée avec cette racine au lieu d'utiliser un autre répertoire.
     pub(crate) fn install_authorized_default_cwd(&mut self, canonical_cwd: &std::path::Path) {
         debug_assert!(canonical_cwd.is_absolute());
-        self.default_cwd = Some(canonical_cwd.to_path_buf());
+        self.default_cwd = LocalCwdScope::Required {
+            intended: canonical_cwd.to_path_buf(),
+            canonical: Some(canonical_cwd.to_path_buf()),
+        };
+    }
+
+    pub(crate) fn required_cwd_unavailable_message(&self) -> Option<String> {
+        let LocalCwdScope::Required {
+            intended,
+            canonical: None,
+        } = &self.default_cwd
+        else {
+            return None;
+        };
+        Some(
+            t!(
+                "terminal.empty.workspace_folder_unavailable",
+                path = intended.display().to_string().as_str()
+            )
+            .to_string(),
+        )
     }
 
     #[cfg(test)]
@@ -510,23 +550,39 @@ impl TerminalView {
     }
 
     fn spawn_configured_local(
-        &self,
+        &mut self,
         rows: u16,
         cols: u16,
     ) -> shelldeck_terminal::Result<TerminalSession> {
-        if let Some(cwd) = self.default_cwd.as_deref() {
-            // `portable-pty` peut retomber silencieusement sur le répertoire
-            // du processus lorsque `cwd` disparaît. Refuser ici ferme cette
-            // course pour tous les onglets, splits et lanceurs CLI.
-            if !cwd.is_dir() {
+        let cwd = match &self.default_cwd {
+            LocalCwdScope::Unscoped => {
+                return TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols);
+            }
+            LocalCwdScope::Required {
+                canonical: Some(cwd),
+                ..
+            } => cwd.clone(),
+            LocalCwdScope::Required {
+                canonical: None, ..
+            } => {
                 return Err(shelldeck_terminal::TerminalError::Pty(
-                    "authorized terminal working directory is unavailable".into(),
+                    "required workspace terminal directory is unavailable".into(),
                 ));
             }
-            TerminalSession::spawn_local_at(self.default_shell.as_deref(), rows, cols, cwd)
-        } else {
-            TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols)
+        };
+        // `portable-pty` peut retomber silencieusement sur le répertoire du
+        // processus lorsque `cwd` disparaît. Refuser ici ferme cette course
+        // pour tous les onglets, splits et lanceurs CLI, puis rend l'état
+        // indisponible visible au prochain rendu.
+        if !cwd.is_dir() {
+            if let LocalCwdScope::Required { canonical, .. } = &mut self.default_cwd {
+                *canonical = None;
+            }
+            return Err(shelldeck_terminal::TerminalError::Pty(
+                "authorized terminal working directory is unavailable".into(),
+            ));
         }
+        TerminalSession::spawn_local_at(self.default_shell.as_deref(), rows, cols, &cwd)
     }
 
     /// Update the cursor style preference.
@@ -4779,6 +4835,33 @@ impl TerminalView {
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(message) = self.required_cwd_unavailable_message() {
+            return div()
+                .id("terminal-workspace-folder-unavailable")
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .size_full()
+                .p(px(24.0))
+                .gap(px(8.0))
+                .bg(ShellDeckColors::bg_primary())
+                .child(
+                    div()
+                        .text_size(px(16.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(t!("terminal.empty.workspace_unavailable_title").to_string()),
+                )
+                .child(
+                    div()
+                        .max_w(px(620.0))
+                        .text_center()
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(message),
+                );
+        }
         let cmd = if cfg!(target_os = "macos") {
             "\u{2318}"
         } else {
@@ -5345,6 +5428,28 @@ mod tests {
                 Some(canonical.as_path())
             );
             terminal.close_all_sessions();
+        });
+    }
+
+    #[test]
+    fn missing_required_workspace_cwd_blocks_open_split_and_cli_without_home_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let intended = root.path().to_path_buf();
+        root.close().unwrap();
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            assert!(terminal.set_default_cwd(&intended).is_err());
+            let message = terminal.required_cwd_unavailable_message().unwrap();
+            assert!(message.contains(&intended.display().to_string()));
+            assert!(
+                message.contains("Aucun terminal local") || message.contains("No local terminal")
+            );
+            terminal.spawn_local_terminal(cx);
+            terminal.split_horizontal(cx);
+            terminal.launch_cli("true", "test", cx);
+            assert_eq!(terminal.tab_count(), 0);
+            assert!(terminal.active_session().is_none());
         });
     }
 }

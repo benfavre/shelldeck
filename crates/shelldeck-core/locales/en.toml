@@ -980,6 +980,8 @@ terminal.empty.launch_claude = "Launch Claude Code"
 terminal.empty.launch_claude_caption = "Skips action confirmations"
 terminal.empty.launch_codex = "Launch Codex"
 terminal.empty.launch_codex_caption = "Sandboxed, asks on request"
+terminal.empty.workspace_unavailable_title = "Workspace folder unavailable"
+terminal.empty.workspace_folder_unavailable = "The required folder is unavailable: %{path}. No local terminal will be opened."
 
 # User mode
 user.account.title = "Inklura Manage Account"

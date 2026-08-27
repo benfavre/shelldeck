@@ -980,6 +980,8 @@ terminal.empty.launch_claude = "Lancer Claude Code"
 terminal.empty.launch_claude_caption = "Sans confirmation des actions"
 terminal.empty.launch_codex = "Lancer Codex"
 terminal.empty.launch_codex_caption = "Bac à sable, accord à la demande"
+terminal.empty.workspace_unavailable_title = "Dossier du workspace indisponible"
+terminal.empty.workspace_folder_unavailable = "Le dossier requis n'est pas accessible : %{path}. Aucun terminal local ne sera ouvert."
 
 # User mode
 user.account.title = "Compte Inklura Manage"

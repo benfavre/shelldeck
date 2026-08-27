@@ -162,6 +162,56 @@ mod tests {
     }
 
     #[test]
+    fn loading_existing_workspace_with_missing_root_is_fail_closed_and_localized() {
+        let root = tempfile::tempdir().unwrap();
+        let missing_root = std::fs::canonicalize(root.path()).unwrap();
+        root.close().unwrap();
+        let project_id = CatalogProjectId::new();
+        let checkout_id = CatalogCheckoutId::new();
+        let workspace = CatalogWorkspaceId::new();
+        let mut project = ProjectRecord::new(project_id, "Missing checkout");
+        project.add_checkout(ProjectCheckout::new(
+            checkout_id,
+            "missing",
+            CheckoutHost::Local {
+                device_label: "Local".into(),
+                root: missing_root.clone(),
+            },
+            RepositoryIdentity {
+                slug: "inklura/missing".into(),
+                canonical_url: None,
+            },
+        ));
+        let mut catalog = ProjectCatalog::default();
+        catalog.insert_project(project).unwrap();
+        catalog
+            .create_workspace(WorkspaceLaunchRequest {
+                id: workspace,
+                project_id,
+                checkout_id,
+                name: "Missing".into(),
+                intake: WorkspaceLaunchIntake::Manual,
+            })
+            .unwrap();
+
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let _hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal.clone(), cx))
+        });
+        terminal.update(&mut app, |terminal, cx| {
+            let message = terminal.required_cwd_unavailable_message().unwrap();
+            assert!(message.contains(&missing_root.display().to_string()));
+            assert!(
+                message.contains("Aucun terminal local") || message.contains("No local terminal")
+            );
+            terminal.spawn_local_terminal(cx);
+            assert_eq!(terminal.tab_count(), 0);
+            assert!(terminal.active_session().is_none());
+        });
+    }
+
+    #[test]
     fn retained_terminal_activation_keeps_the_complete_runtime_config() {
         let mut cx = TestAppContext::single();
         let (catalog, workspace_a, workspace_b, ..) = fixture_catalog();
@@ -665,6 +715,14 @@ mod tests {
             // L'action interactive précédant la complétion échoue fermée:
             // aucun PTY n'est créé dans le cwd du processus ou le HOME.
             assert_eq!(terminal.read(cx).tab_count(), 0);
+            let message = terminal
+                .read(cx)
+                .required_cwd_unavailable_message()
+                .unwrap();
+            assert!(message.contains(&vanished.display().to_string()));
+            assert!(
+                message.contains("Aucun terminal local") || message.contains("No local terminal")
+            );
             advance_creation_to_binding(hub, revision, workspace, operation);
             hub.apply_executor_event(
                 workspace,
