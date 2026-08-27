@@ -8,6 +8,9 @@
 ## SDPATCH-117 — Preserve an explicit cwd through process creation
 
 - **Diff**: `portable-pty-SDPATCH-117.patch`
+- **Cache migration**: `portable-pty-SDPATCH-117-legacy.patch` is the exact
+  prior Windows-only revision and is used only to reverse stale CI registry
+  caches before the current patch is applied. It is never an active patch.
 - **Files / symbols**: `src/cmdbuilder.rs` — `CommandBuilder::current_directory`,
   `CommandBuilder::as_command`,
   `tests::{explicit_missing_unix_cwd_is_forwarded_instead_of_falling_back_home,explicit_missing_cwd_is_forwarded_instead_of_falling_back_home}`

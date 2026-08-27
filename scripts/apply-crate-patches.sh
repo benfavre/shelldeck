@@ -48,12 +48,25 @@ portable_pty_patch_is_complete() {
         && grep -F -q '// SDTEST-1744' "$source"
 }
 
+portable_pty_patch_is_legacy_complete() {
+    local source="$1"
+    local marker_count
+
+    marker_count="$(grep -F -c 'ShellDeck patch: SDPATCH-117' "$source" || true)"
+    [[ "$marker_count" == "2" ]] \
+        && grep -F -q 'let dir: Option<&OsStr> = self.cwd.as_deref().or(home);' "$source" \
+        && grep -F -q '.filter(|dir| std::path::Path::new(dir).is_dir())' "$source" \
+        && grep -F -q '// SDTEST-1744' "$source" \
+        && ! grep -F -q '// SDTEST-1745' "$source"
+}
+
 apply_portable_pty() {
     local patch="$ROOT/patches/diffs/portable-pty-SDPATCH-117.patch"
+    local legacy_patch="$ROOT/patches/diffs/portable-pty-SDPATCH-117-legacy.patch"
     local dir source
 
-    if [[ ! -f "$patch" ]]; then
-        echo "apply-crate-patches: missing $patch" >&2
+    if [[ ! -f "$patch" || ! -f "$legacy_patch" ]]; then
+        echo "apply-crate-patches: missing portable-pty patch input" >&2
         exit 1
     fi
 
@@ -67,6 +80,16 @@ apply_portable_pty() {
     if grep -F -q 'ShellDeck patch: SDPATCH-117' "$source" 2>/dev/null; then
         if portable_pty_patch_is_complete "$source"; then
             echo "apply-crate-patches: portable-pty SDPATCH-117 already applied"
+            return 0
+        fi
+        if portable_pty_patch_is_legacy_complete "$source"; then
+            patch --batch --reverse -p0 -d "$dir" < "$legacy_patch"
+            patch --batch --forward -p0 -d "$dir" < "$patch"
+            if ! portable_pty_patch_is_complete "$source"; then
+                echo "apply-crate-patches: portable-pty SDPATCH-117 cache upgrade failed" >&2
+                exit 1
+            fi
+            echo "apply-crate-patches: upgraded cached portable-pty SDPATCH-117"
             return 0
         fi
         echo "apply-crate-patches: portable-pty SDPATCH-117 is only partially applied" >&2

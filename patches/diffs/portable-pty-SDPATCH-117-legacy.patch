@@ -1,0 +1,42 @@
+--- src/cmdbuilder.rs
++++ src/cmdbuilder.rs
+@@ -566,2 +566,4 @@
+-        let cwd: Option<&OsStr> = self.cwd.as_deref().filter(|path| Path::new(path).is_dir());
+-        let dir: Option<&OsStr> = cwd.or(home);
++        // ShellDeck patch: SDPATCH-117 — preserve an explicit cwd even after it
++        // disappears so CreateProcessW fails closed instead of silently starting
++        // the shell in USERPROFILE outside the authorized workspace.
++        let dir: Option<&OsStr> = self.cwd.as_deref().or(home);
+@@ -754,4 +756,32 @@
+         cmd.env_remove("cARGO_pKG_aUTHORS");
+         assert!(cmd.get_env("CARGO_PKG_AUTHORS").is_none());
+     }
++
++    // SDTEST-1744
++    // ShellDeck patch: SDPATCH-117 — compile-check the Windows cwd authority
++    // regression beside the dependency code that forwards it to CreateProcessW.
++    #[cfg(windows)]
++    #[test]
++    fn explicit_missing_cwd_is_forwarded_instead_of_falling_back_home() {
++        use std::os::windows::ffi::OsStringExt;
++        use std::time::{SystemTime, UNIX_EPOCH};
++
++        let missing = std::env::temp_dir().join(format!(
++            "portable-pty-missing-cwd-{}-{}",
++            std::process::id(),
++            SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .unwrap()
++                .as_nanos()
++        ));
++        assert!(!missing.exists());
++
++        let mut cmd = CommandBuilder::new("dummy");
++        cmd.env("USERPROFILE", std::env::temp_dir());
++        cmd.cwd(&missing);
++
++        let mut encoded = cmd.current_directory().expect("explicit cwd");
++        assert_eq!(encoded.pop(), Some(0));
++        assert_eq!(OsString::from_wide(&encoded), missing.into_os_string());
++    }
+ }
