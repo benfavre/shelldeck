@@ -86,8 +86,8 @@ apply_portable_pty() {
             # BSD patch (the macOS runner) handles zero-context hunks
             # differently from GNU patch. Git's applicator is available on
             # every supported runner and gives this replay one exact behavior.
-            (cd "$dir" && git apply -p0 --unidiff-zero --check "$cache_upgrade")
-            (cd "$dir" && git apply -p0 --unidiff-zero "$cache_upgrade")
+            (cd "$dir" && git apply -p0 --unidiff-zero --ignore-space-change --check "$cache_upgrade")
+            (cd "$dir" && git apply -p0 --unidiff-zero --ignore-space-change "$cache_upgrade")
             if ! portable_pty_patch_is_complete "$source"; then
                 echo "apply-crate-patches: portable-pty SDPATCH-117 cache upgrade failed" >&2
                 exit 1
@@ -99,8 +99,12 @@ apply_portable_pty() {
         exit 1
     fi
 
-    (cd "$dir" && git apply -p0 --unidiff-zero --check "$patch")
-    (cd "$dir" && git apply -p0 --unidiff-zero "$patch")
+    # Windows checkout may convert the repository-owned patch file to CRLF
+    # while Cargo extracts the registry source with LF. Ignore that sole
+    # whitespace difference; every semantic hunk and the marker audit below
+    # must still match exactly.
+    (cd "$dir" && git apply -p0 --unidiff-zero --ignore-space-change --check "$patch")
+    (cd "$dir" && git apply -p0 --unidiff-zero --ignore-space-change "$patch")
     if ! portable_pty_patch_is_complete "$source"; then
         echo "apply-crate-patches: portable-pty SDPATCH-117 failed its post-apply audit" >&2
         exit 1
