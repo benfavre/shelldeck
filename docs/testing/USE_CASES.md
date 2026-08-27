@@ -2564,7 +2564,9 @@ local-device or existing ShellDeck SSH-connection hosts. Local roots use the
 native path representation; SSH roots use a validated absolute POSIX path and
 store only the connection ID. Passwords, private-key paths, and Automonique
 grants never enter this file. Compare-and-swap persistence rejects stale
-writers, and schema-v1 records migrate explicitly to schema v2. A workspace
+writers through an OS-level interprocess lock and native atomic replacement,
+and schema-v1 and schema-v2 records migrate explicitly to schema v3 without
+silently losing legacy run display metadata. A workspace
 launcher selects an already-catalogued checkout instead of admitting an
 arbitrary path, so local and SSH workspaces share one model without widening
 host or filesystem authority.
@@ -2575,7 +2577,9 @@ Manual creation and issue, pull-request, or task-prefilled creation enter the
 same validated launcher and produce the same resumable local workspace record.
 Local UUIDs are never treated as Platform identities: a durable project,
 checkout, and user-workspace mapping carries the authoritative Platform v2 IDs
-and revisions plus its reconciliation state. Archive and resume have one catalog
+and revisions plus a monotonic, expected-prior-fenced reconciliation revision.
+Pending evidence cannot demote an exact mapping, and identity changes must pass
+through an explicit diverged transition. Archive and resume have one catalog
 owner. An external tracker item and an internal Automonique orchestration run
 remain separate typed identities, and no session may bind until the mapping is
 exact and names that same authoritative user workspace.
@@ -2605,10 +2609,12 @@ operation.
 
 ## Change log
 
-- **2026-08-27** — Added SDUC-488..491 and SDTEST-1729..1739 for the revisioned
+- **2026-08-27** — Added SDUC-488..491 and SDTEST-1729..1741 for the revisioned
   local/SSH project catalog, Platform v2 reconciliation mapping, portable path
-  and authority admission, shared manual/task launcher, stale-fenced navigation
-  and creation reducers, plus explicit Red GPUI/executor/card integration gates.
+  and authority admission, interprocess/Windows-safe persistence, canonical
+  local and delegated SSH-beneath path admission, shared manual/task launcher,
+  stale-fenced navigation and creation reducers, plus explicit Red
+  GPUI/executor/card integration gates.
 - **2026-08-27** — Added SDUC-487 and SDTEST-1726..1728 for the native retained
   transcript/composer, retention-gap replacement, exact revision fence, and
   no-replay receipt reconciliation contract.

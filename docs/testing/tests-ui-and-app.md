@@ -519,8 +519,10 @@ checklist:
 - SDTEST-1584 (`#[cfg(windows)]` Jcode executor spawn — **no CI target
   compiles or runs it today**; needs a windows-latest test or
   `cargo check --tests --target x86_64-pc-windows-msvc` job)
-- SDTEST-1729, SDTEST-1735, SDTEST-1739 (portable catalog schema/CAS/path and
-  atomic-file primitives; CI must run the core tests on all three release platforms)
+- SDTEST-1729, SDTEST-1735, SDTEST-1739, SDTEST-1740, SDTEST-1741 (portable
+  catalog schema/CAS/path, native atomic replacement, interprocess lock, and
+  executor path-admission primitives; the `platform-core-tests` CI matrix runs
+  the core tests on macOS and Windows in addition to the Linux check job)
 - SDTEST-1737 (Red / P0 launcher lifecycle and portable-path integration)
 
 The release-day rule: **all P0 cross-platform tests must be green on

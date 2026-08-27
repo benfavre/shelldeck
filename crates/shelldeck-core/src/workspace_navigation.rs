@@ -443,9 +443,12 @@ pub enum WorkspaceFreshness {
     Offline,
 }
 
-/// Presentation-only facts. `source_revision` and observation time fence late polls.
+/// Complete presentation aggregate produced by one authoritative workspace-card
+/// DTO owner. Individual git/agent/attention pollers must reconcile upstream;
+/// they must not publish partial instances with unrelated revision domains.
+/// `source_revision` and observation time fence late aggregate projections.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct WorkspaceCardState {
+pub struct WorkspaceCardAggregate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     pub dirty: GitDirtyState,
@@ -456,6 +459,11 @@ pub struct WorkspaceCardState {
     pub source_revision: u64,
     pub observed_at_millis: u64,
 }
+
+/// Compatibility name for the retained state slot. The concrete DTO is an
+/// indivisible [`WorkspaceCardAggregate`], not a bag of independently fenced
+/// partial poll results.
+pub type WorkspaceCardState = WorkspaceCardAggregate;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetainedWorkspaceState {
@@ -498,6 +506,7 @@ pub enum NavigationError {
         owner: CatalogWorkspaceId,
     },
     StaleCard,
+    ConflictingCardFence,
     Catalog(WorkspaceCatalogError),
 }
 impl fmt::Display for NavigationError {
@@ -512,6 +521,9 @@ impl fmt::Display for NavigationError {
                 "terminal {terminal} is already owned by workspace {owner}"
             ),
             Self::StaleCard => f.write_str("workspace card observation is stale"),
+            Self::ConflictingCardFence => {
+                f.write_str("workspace card changed without advancing its aggregate fence")
+            }
             Self::Catalog(error) => error.fmt(f),
         }
     }
@@ -602,13 +614,20 @@ impl WorkspaceNavigationState {
                     .workspaces
                     .get_mut(&id)
                     .ok_or(NavigationError::UnknownWorkspace(id))?;
-                if (card.source_revision, card.observed_at_millis)
-                    < (
-                        workspace.card.source_revision,
-                        workspace.card.observed_at_millis,
-                    )
-                {
+                let incoming_fence = (card.source_revision, card.observed_at_millis);
+                let current_fence = (
+                    workspace.card.source_revision,
+                    workspace.card.observed_at_millis,
+                );
+                if incoming_fence < current_fence {
                     return Err(NavigationError::StaleCard);
+                }
+                if incoming_fence == current_fence {
+                    return if card == workspace.card {
+                        Ok(())
+                    } else {
+                        Err(NavigationError::ConflictingCardFence)
+                    };
                 }
                 workspace.card = card;
             }
@@ -963,7 +982,7 @@ impl WorkspaceCreationReducer {
                     .get(&workspace)
                     .map(BackgroundWorkspaceCreateState::catalog_revision)
                     .ok_or(WorkspaceCreateError::UnknownWorkspaceJob(workspace))?;
-                let allow_revision_change = matches!(conflict, WorkspaceCreateConflict::CatalogRevisionChanged { expected, actual } if expected == stored_revision && expected != actual && actual == catalog_revision);
+                let allow_revision_change = matches!(conflict, WorkspaceCreateConflict::CatalogRevisionChanged { expected, actual } if expected == stored_revision && actual > expected && actual == catalog_revision);
                 let state = self.matching_state_mut(
                     workspace,
                     operation,
@@ -1028,12 +1047,25 @@ impl WorkspaceCreationReducer {
                 prior_operation,
                 operation,
             } => {
+                let allow_revision_change = self.jobs.get(&workspace).is_some_and(|state| {
+                    matches!(
+                        state,
+                        BackgroundWorkspaceCreateState::Conflict {
+                            catalog_revision: stored,
+                            conflict: WorkspaceCreateConflict::CatalogRevisionChanged {
+                                expected,
+                                actual,
+                            },
+                            ..
+                        } if expected == stored && *actual == catalog_revision
+                    )
+                });
                 {
                     let state = self.matching_state_mut(
                         workspace,
                         prior_operation,
                         catalog_revision,
-                        true,
+                        allow_revision_change,
                     )?;
                     if !matches!(
                         state,
@@ -1245,6 +1277,28 @@ mod tests {
             ),
             Err(NavigationError::StaleCard)
         );
+        let same_card = navigation.workspace(workspace(10)).unwrap().card.clone();
+        navigation
+            .reduce(
+                &catalog,
+                WorkspaceNavigationAction::UpdateCard {
+                    id: workspace(10),
+                    card: same_card.clone(),
+                },
+            )
+            .expect("identical aggregate replay is idempotent");
+        let mut conflicting_card = same_card;
+        conflicting_card.unread = 1;
+        assert_eq!(
+            navigation.reduce(
+                &catalog,
+                WorkspaceNavigationAction::UpdateCard {
+                    id: workspace(10),
+                    card: conflicting_card,
+                }
+            ),
+            Err(NavigationError::ConflictingCardFence)
+        );
         let second = terminal_surface(21, checkout(2), None);
         navigation
             .reduce(
@@ -1438,6 +1492,46 @@ mod tests {
             ),
             Err(WorkspaceCreateError::InvalidTransition)
         );
+
+        let retryable_workspace = workspace(12);
+        let retryable_operation = CreationOperationId::from_uuid(uuid(45));
+        reducer
+            .reduce(
+                8,
+                WorkspaceCreateEvent::Start {
+                    workspace: retryable_workspace,
+                    operation: retryable_operation,
+                },
+            )
+            .unwrap();
+        reducer
+            .reduce(
+                8,
+                WorkspaceCreateEvent::Failed {
+                    workspace: retryable_workspace,
+                    operation: retryable_operation,
+                    failure: WorkspaceCreateFailure {
+                        kind: WorkspaceCreateFailureKind::Transport,
+                        message: "Retry".into(),
+                        retryable: true,
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            reducer.reduce(
+                9,
+                WorkspaceCreateEvent::Retry {
+                    workspace: retryable_workspace,
+                    prior_operation: retryable_operation,
+                    operation: CreationOperationId::from_uuid(uuid(46)),
+                }
+            ),
+            Err(WorkspaceCreateError::CatalogRevisionChanged {
+                expected: 8,
+                actual: 9,
+            })
+        );
     }
 
     // SDTEST-1734
@@ -1470,7 +1564,9 @@ mod tests {
         catalog
             .set_platform_mapping(
                 id,
+                None,
                 PlatformV2Mapping {
+                    reconciliation_revision: 1,
                     project: PlatformContextRef {
                         id: "project".into(),
                         revision: 1,

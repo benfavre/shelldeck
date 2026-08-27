@@ -47,9 +47,13 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }
+    drop(file);
 
-    // Atomic replace.
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
+    // Atomic replace. `std::fs::rename` cannot replace an existing destination
+    // on Windows, so the platform seam uses MoveFileExW there. Keeping the
+    // replacement in one helper also means the same overwrite tests exercise
+    // the native primitive on every release runner.
+    if let Err(e) = atomic_replace(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }
@@ -74,6 +78,41 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: both paths are owned, NUL-terminated UTF-16 buffers that remain
+    // alive for the duration of the call. The flags request a same-volume
+    // replacement and make the move wait for the filesystem write-through.
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Shell-escape a string for safe embedding in single-quoted shell arguments.
