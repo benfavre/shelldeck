@@ -2,10 +2,16 @@ use super::*;
 use crate::overlay::round_window_bottom;
 
 const WELCOME_CENTERED_MIN_LOGICAL_HEIGHT: f32 = 560.0;
+const USER_HOME_COMPACT_MAX_LOGICAL_WIDTH: f32 = 600.0;
 
 pub(super) fn welcome_uses_compact_flow(viewport_height: f32, ui_font_size: f32) -> bool {
     let scale = crate::scale::scale_for_font_size(ui_font_size);
     viewport_height / scale < WELCOME_CENTERED_MIN_LOGICAL_HEIGHT
+}
+
+pub(super) fn user_home_uses_compact_flow(viewport_width: f32, ui_font_size: f32) -> bool {
+    let scale = crate::scale::scale_for_font_size(ui_font_size);
+    viewport_width / scale <= USER_HOME_COMPACT_MAX_LOGICAL_WIDTH
 }
 
 fn managed_site_public_url(host: &str) -> Option<String> {
@@ -383,16 +389,18 @@ impl Workspace {
         card.child(areas_row)
     }
 
-    /// Fixed-height compact row for a non-active site. The full slot
-    /// (`SITE_ROW_H = 64px`) contains an inner card that's ~56px tall with
-    /// 4px padding top/bottom, giving an 8px visual gap between adjacent
-    /// rows without breaking `uniform_list`'s uniform-height contract.
+    /// Fixed-height compact row for a non-active site. The wide composition
+    /// uses a 64 px slot; the compact User-home composition uses 88 px so the
+    /// identity owns the first level and the three actions own the second.
+    /// Both retain 4 px padding top/bottom, preserving the visual row gap
+    /// without breaking `uniform_list`'s uniform-height contract.
     /// Width fills the parent (`w_full`) so rows land on the same right
     /// edge as the active card above. Areas + wp-admin chip are dropped
     /// here on purpose — activation promotes the site to the top card.
     pub(super) fn render_compact_site_row(
         &self,
         site: &manage_sites::ManagedSiteInfo,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let sid = site.site_id.clone();
@@ -406,111 +414,141 @@ impl Workspace {
         let public_url = managed_site_public_url(&site.host);
         let manage_site = site.clone();
 
-        div().w_full().h(px(SITE_ROW_H)).py(px(4.0)).child(
-            div()
-                .w_full()
-                .h_full()
-                .flex()
-                .items_center()
-                .gap(px(10.0))
-                .px(px(12.0))
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(border_color)
-                .bg(ShellDeckColors::bg_sidebar())
-                .child({
-                    let mut identity = div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden();
-                    let mut label_row = div().flex().items_center().gap(px(6.0)).child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .truncate()
-                            .child(label.clone()),
-                    );
-                    if site.is_wordpress == Some(true) {
-                        label_row = label_row.child(
-                            div()
-                                .px(px(5.0))
-                                .py(px(1.0))
-                                .rounded(px(4.0))
-                                .bg(ShellDeckColors::primary().opacity(0.12))
-                                .text_size(px(10.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(ShellDeckColors::primary())
-                                .flex_shrink_0()
-                                .child("WP"),
-                        );
-                    }
-                    identity = identity.child(label_row).child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .truncate()
-                            .child(if site.host.is_empty() {
-                                site.tenant_name.clone()
-                            } else {
-                                site.host.clone()
-                            }),
-                    );
-                    identity
-                })
-                .child({
-                    let mut actions = div().flex().items_center().gap(px(4.0)).flex_shrink_0();
-                    if let Some(public_url) = public_url {
-                        actions = actions.child(
-                            Button::new(SharedString::from(format!("uh-row-public-{sid}")), "")
-                                .variant(ButtonVariant::Ghost)
-                                .size(ButtonSize::Icon)
-                                .icon(IconSource::from("external-link"))
-                                .tooltip(t!("user.sites.open_public").to_string())
-                                .w(px(28.0))
-                                .h(px(28.0))
-                                .px(px(0.0))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.open_user_site_url(public_url.clone(), cx);
-                                })),
-                        );
-                    }
-                    actions = actions.child(
-                        Button::new(SharedString::from(format!("uh-row-manage-{sid}")), "")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Icon)
-                            .icon(IconSource::from("settings"))
-                            .tooltip(t!("user.sites.open_manage").to_string())
-                            .w(px(28.0))
-                            .h(px(28.0))
-                            .px(px(0.0))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open_area_for_site(
-                                    manage_site.clone(),
-                                    "/manage/sites".to_string(),
-                                    cx,
-                                );
-                            })),
-                    );
-                    actions.child(
-                        Button::new(
-                            SharedString::from(format!("uh-choose-{sid}")),
-                            t!("user.sites.choose").to_string(),
-                        )
-                        .variant(ButtonVariant::Outline)
-                        .size(ButtonSize::Sm)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_site(
-                                Some(sid_for_click.clone()),
-                                Some(label_for_click.clone()),
-                                cx,
-                            );
-                        })),
-                    )
-                }),
-        )
+        let row_h = if compact {
+            SITE_ROW_H_COMPACT
+        } else {
+            SITE_ROW_H
+        };
+        let mut label_text = div()
+            .min_w(px(0.0))
+            .text_size(px(14.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(ShellDeckColors::text_primary());
+        label_text = if compact {
+            label_text.line_clamp(1)
+        } else {
+            label_text.truncate()
+        };
+        let mut label_row = div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .child(label_text.child(label.clone()));
+        if site.is_wordpress == Some(true) {
+            label_row = label_row.child(
+                div()
+                    .px(px(5.0))
+                    .py(px(1.0))
+                    .rounded(px(4.0))
+                    .bg(ShellDeckColors::primary().opacity(0.12))
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::primary())
+                    .flex_shrink_0()
+                    .child("WP"),
+            );
+        }
+        let mut identity = div()
+            .flex()
+            .flex_col()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .child(label_row)
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .truncate()
+                    .child(if site.host.is_empty() {
+                        site.tenant_name.clone()
+                    } else {
+                        site.host.clone()
+                    }),
+            );
+        if compact {
+            identity = identity.w_full();
+        } else {
+            identity = identity.flex_1();
+        }
+
+        let mut actions = div().flex().items_center().gap(px(4.0)).flex_shrink_0();
+        if let Some(public_url) = public_url {
+            actions = actions.child(
+                Button::new(SharedString::from(format!("uh-row-public-{sid}")), "")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Icon)
+                    .icon(IconSource::from("external-link"))
+                    .tooltip(t!("user.sites.open_public").to_string())
+                    .w(px(28.0))
+                    .h(px(28.0))
+                    .px(px(0.0))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_user_site_url(public_url.clone(), cx);
+                    })),
+            );
+        }
+        actions = actions.child(
+            Button::new(SharedString::from(format!("uh-row-manage-{sid}")), "")
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Icon)
+                .icon(IconSource::from("settings"))
+                .tooltip(t!("user.sites.open_manage").to_string())
+                .w(px(28.0))
+                .h(px(28.0))
+                .px(px(0.0))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_area_for_site(manage_site.clone(), "/manage/sites".to_string(), cx);
+                })),
+        );
+        actions = actions.child(
+            Button::new(
+                SharedString::from(format!("uh-choose-{sid}")),
+                t!("user.sites.choose").to_string(),
+            )
+            .variant(ButtonVariant::Outline)
+            .size(ButtonSize::Sm)
+            // Match the two neighboring icon actions. The default small
+            // button is taller and makes the whole action row sit
+            // optically against the card's bottom edge.
+            .h(px(28.0))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.select_site(
+                    Some(sid_for_click.clone()),
+                    Some(label_for_click.clone()),
+                    cx,
+                );
+            })),
+        );
+        if compact {
+            actions = actions.w_full().justify_end();
+        }
+
+        let mut card = div()
+            .w_full()
+            // The slot owns 4 px above and below. `h_full()` would resolve
+            // against the slot's full height before those paddings and make
+            // the card overflow downward, producing asymmetric whitespace.
+            .h(px(row_h - 8.0))
+            .flex()
+            .px(px(12.0))
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(border_color)
+            .bg(ShellDeckColors::bg_sidebar());
+        if compact {
+            // Text line boxes carry more invisible space above their glyphs
+            // than the fixed-height buttons do below. Bias the centered group
+            // upward by 2 px so the *visible* top/bottom whitespace matches.
+            card = card.flex_col().justify_center().gap(px(3.0)).pb(px(4.0));
+        } else {
+            card = card.items_center().gap(px(10.0));
+        }
+
+        div()
+            .w_full()
+            .h(px(row_h))
+            .py(px(4.0))
+            .child(card.child(identity).child(actions))
     }
 
     /// Tab bar for the User-mode home. Same visual shape as
@@ -584,7 +622,11 @@ impl Workspace {
             ))
     }
 
-    pub(super) fn render_user_overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_user_overview(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let sites = self
             .site_directory
             .as_ref()
@@ -803,6 +845,122 @@ impl Workspace {
                 entity.update(cx, |this, cx| this.cloud_sync_now(cx));
             });
 
+        let mut hero = div()
+            .relative()
+            .w_full()
+            .flex_shrink_0()
+            .overflow_hidden()
+            .rounded(use_theme().tokens.radius_lg)
+            .border_1()
+            .border_color(ShellDeckColors::primary().opacity(0.40))
+            // Match the surrounding page so GPUI's rectangular background
+            // paint cannot show behind the curved border. The artwork itself
+            // stays safely inset below.
+            .bg(ShellDeckColors::bg_primary());
+        hero = if compact {
+            // The compact banner needs enough vertical room for localized
+            // copy, but remains a banner rather than turning into a card.
+            hero.h(px(156.0))
+        } else {
+            hero.h(px(132.0))
+        };
+
+        let mut hero_copy = div()
+            .relative()
+            .ml_auto()
+            .h_full()
+            .flex()
+            .flex_col()
+            .justify_center()
+            .items_start();
+        hero_copy = if compact {
+            // At 600 logical pixels the old 52% column lost 68 px to padding,
+            // clipping the counter and subtitle. Keep the copy over the
+            // artwork's dark half while giving the text a definite safe zone.
+            hero_copy
+                .w(relative(0.52))
+                .gap(px(5.0))
+                .pl(px(28.0))
+                .pr(px(14.0))
+        } else {
+            hero_copy
+                .w(relative(0.52))
+                .gap(px(7.0))
+                // The blue field edge lives in the illustration and moves
+                // with `Cover`, so the wide composition stays clear of it.
+                .pl(px(44.0))
+                .pr(px(24.0))
+        };
+        hero_copy = hero_copy
+            .child(
+                div()
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .rounded_full()
+                    // A solid backdrop keeps the counter readable wherever
+                    // the cover crop places the light modelling-clay area.
+                    .bg(ShellDeckColors::backdrop())
+                    .border_1()
+                    .border_color(ShellDeckColors::primary().opacity(0.55))
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(hsla(0.47, 0.78, 0.72, 1.0))
+                    .child(directory_count.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(21.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(white())
+                    .child(t!("user.home.title").to_string()),
+            )
+            .child(
+                div()
+                    .max_w(px(430.0))
+                    .text_size(px(12.0))
+                    .text_color(white().opacity(0.72))
+                    .child(t!("user.home.subtitle").to_string()),
+            );
+
+        let hero = hero
+            .child(
+                img("images/home/user-dashboard-colorful-v2.webp")
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    // Preserve the illustration at every window width.
+                    // Branding is a sibling below, never baked into or
+                    // stretched with the raster artwork.
+                    .rounded(use_theme().tokens.radius_lg)
+                    .object_fit(ObjectFit::Cover),
+            )
+            .child(
+                // This is intentionally a real UI element rather than pixels
+                // in the image: cropping must never distort the wordmark.
+                div()
+                    .absolute()
+                    .left(px(18.0))
+                    .bottom(px(10.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .child(
+                        svg()
+                            .path("images/shelldeck-mark.svg")
+                            .size(px(22.0))
+                            .flex_shrink_0()
+                            .text_color(white().opacity(0.90)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(white().opacity(0.90))
+                            .child("ShellDeck"),
+                    ),
+            )
+            .child(hero_copy);
+
         div()
             .id("user-overview-scroll")
             .flex()
@@ -811,110 +969,7 @@ impl Workspace {
             .overflow_y_scroll()
             .gap(px(16.0))
             .p(px(16.0))
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .h(px(132.0))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .rounded(use_theme().tokens.radius_lg)
-                    .border_1()
-                    .border_color(ShellDeckColors::primary().opacity(0.40))
-                    // Match the surrounding page so GPUI's rectangular
-                    // background paint cannot show behind the curved border.
-                    // The artwork itself stays safely inset below.
-                    .bg(ShellDeckColors::bg_primary())
-                    .child(
-                        img("images/home/user-dashboard-colorful-v2.webp")
-                            .absolute()
-                            .inset_0()
-                            .size_full()
-                            // Preserve the illustration at every window width.
-                            // Branding is a sibling below, never baked into or
-                            // stretched with the raster artwork.
-                            .rounded(use_theme().tokens.radius_lg)
-                            .object_fit(ObjectFit::Cover),
-                    )
-                    .child(
-                        // This is intentionally a real UI element rather than
-                        // pixels in the hero image: resizing may crop the
-                        // landscape, but it must never distort the wordmark.
-                        div()
-                            .absolute()
-                            .left(px(18.0))
-                            .bottom(px(10.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(7.0))
-                            .child(
-                                svg()
-                                    .path("images/shelldeck-mark.svg")
-                                    .size(px(22.0))
-                                    .flex_shrink_0()
-                                    .text_color(white().opacity(0.90)),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(14.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(white().opacity(0.90))
-                                    .child("ShellDeck"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .ml_auto()
-                            .w(relative(0.52))
-                            .h_full()
-                            .flex()
-                            .flex_col()
-                            .justify_center()
-                            .items_start()
-                            .gap(px(7.0))
-                            // Marge gauche plus généreuse que la droite : le
-                            // bord du champ bleu vit dans l'illustration et se
-                            // déplace avec le recadrage, on s'en écarte.
-                            .pl(px(44.0))
-                            .pr(px(24.0))
-                            .child(
-                                div()
-                                    .px(px(8.0))
-                                    .py(px(3.0))
-                                    .rounded_full()
-                                    // Fond sombre plein, et non une teinte à
-                                    // 22 % : le champ bleu de la bannière est
-                                    // peint dans l'illustration, dont le
-                                    // recadrage `Cover` déplace le bord selon
-                                    // la largeur de fenêtre. À certaines
-                                    // tailles la pastille retombait sur la
-                                    // pâte à modeler claire, et son texte
-                                    // disparaissait.
-                                    .bg(ShellDeckColors::backdrop())
-                                    .border_1()
-                                    .border_color(ShellDeckColors::primary().opacity(0.55))
-                                    .text_size(px(10.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(hsla(0.47, 0.78, 0.72, 1.0))
-                                    .child(directory_count.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(21.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(white())
-                                    .child(t!("user.home.title").to_string()),
-                            )
-                            .child(
-                                div()
-                                    .max_w(px(430.0))
-                                    .text_size(px(12.0))
-                                    .text_color(white().opacity(0.72))
-                                    .child(t!("user.home.subtitle").to_string()),
-                            ),
-                    ),
-            )
+            .child(hero)
             .child(
                 div()
                     .flex()
@@ -1222,9 +1277,14 @@ impl Workspace {
                 "users",
             ));
         }
+        let sites_count_label = if sites_count == 1 {
+            t!("user.infos.field.sites_count.one").to_string()
+        } else {
+            t!("user.infos.field.sites_count.many", count = sites_count).to_string()
+        };
         scope_body = scope_body.child(field(
             t!("user.infos.field.sites_available", count = sites_count).to_string(),
-            t!("user.infos.field.sites_count", count = sites_count).to_string(),
+            sites_count_label,
             "globe",
         ));
 
@@ -1488,6 +1548,7 @@ impl Workspace {
     pub(super) fn render_user_home(
         &self,
         is_maximized: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let account = self.app_config.account.clone().unwrap_or_default();
@@ -1496,6 +1557,10 @@ impl Workspace {
         let primary_role = primary_user_role(&role_tokens)
             .filter(|role| *role != "user")
             .map(user_role_label);
+        let compact_user_home = user_home_uses_compact_flow(
+            window.viewport_size().width.to_f64() as f32,
+            self.ui_font_size,
+        );
 
         // Preferred area buttons for each site row (subset of the directory).
         let preferred = [
@@ -1512,25 +1577,31 @@ impl Workspace {
             .collect();
 
         // Header card.
-        let header = div()
+        let mut header = div()
             .flex()
-            .items_center()
-            .justify_between()
             .gap(px(12.0))
             .p(px(16.0))
             .m(px(16.0))
             .rounded(px(12.0))
             .border_1()
             .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_sidebar())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.0))
+            .bg(ShellDeckColors::bg_sidebar());
+        if compact_user_home {
+            header = header.flex_col();
+        } else {
+            header = header.items_center().justify_between();
+        }
+        let header = header
+            .child({
+                let mut identity_group = div().flex().items_center().gap(px(12.0));
+                if compact_user_home {
+                    identity_group = identity_group.w_full();
+                }
+                identity_group
                     .child(
                         div()
                             .size(px(40.0))
+                            .flex_shrink_0()
                             .rounded_full()
                             .bg(ShellDeckColors::primary().opacity(0.20))
                             .flex()
@@ -1581,13 +1652,14 @@ impl Workspace {
                             );
                         }
                         identity
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
+                    })
+            })
+            .child({
+                let mut actions = div().flex().items_center().flex_shrink_0().gap(px(8.0));
+                if compact_user_home {
+                    actions = actions.w_full().flex_wrap().justify_end();
+                }
+                actions
                     .child(
                         div()
                             .id("uh-open-manage")
@@ -1638,8 +1710,8 @@ impl Workspace {
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.cloud_sync_now(cx);
                             })),
-                    ),
-            );
+                    )
+            });
 
         // Sites: filter by search, sort (conn-bearing first, then alpha),
         // split into (active-card, others-for-virt-list). Recomputed inside
@@ -1771,19 +1843,25 @@ impl Workspace {
         if others_count > 0 {
             const MAX_LIST_H: f32 = 600.0;
             const MIN_LIST_H: f32 = 120.0;
-            let visible_h = (others_count as f32 * SITE_ROW_H).clamp(MIN_LIST_H, MAX_LIST_H);
+            let site_row_h = if compact_user_home {
+                SITE_ROW_H_COMPACT
+            } else {
+                SITE_ROW_H
+            };
+            let visible_h = (others_count as f32 * site_row_h).clamp(MIN_LIST_H, MAX_LIST_H);
             list = list.child(
                 div().w_full().h(px(visible_h)).child(
                     uniform_list(
                         "user-home-sites-virt",
                         others_count,
-                        cx.processor(|this, range: Range<usize>, _window, cx| {
+                        cx.processor(move |this, range: Range<usize>, _window, cx| {
                             let (_, others) = this.partition_user_sites(cx);
                             let mut items: Vec<AnyElement> = Vec::new();
                             for i in range {
                                 if let Some(site) = others.get(i) {
                                     items.push(
-                                        this.render_compact_site_row(site, cx).into_any_element(),
+                                        this.render_compact_site_row(site, compact_user_home, cx)
+                                            .into_any_element(),
                                     );
                                 }
                             }
@@ -1816,7 +1894,7 @@ impl Workspace {
             .child(tab_bar);
         match tab {
             UserHomeTab::Home => {
-                body = body.child(self.render_user_overview(cx));
+                body = body.child(self.render_user_overview(compact_user_home, cx));
             }
             UserHomeTab::Sites => {
                 body = body
@@ -1879,7 +1957,7 @@ impl Workspace {
                     });
             }
             UserHomeTab::Requests => {
-                body = body.child(self.render_user_requests(cx));
+                body = body.child(self.render_user_requests(compact_user_home, cx));
             }
             UserHomeTab::Infos => {
                 body = body.child(self.render_user_infos_tab(cx));
@@ -1903,7 +1981,7 @@ impl Workspace {
 mod tests {
     use super::{
         humanize_custom_role, managed_site_public_url, nonempty_text, primary_user_role,
-        user_role_tokens, welcome_uses_compact_flow,
+        user_home_uses_compact_flow, user_role_tokens, welcome_uses_compact_flow,
     };
     use shelldeck_core::config::cloud_account::AccountInfo;
 
@@ -1914,6 +1992,17 @@ mod tests {
         assert!(!welcome_uses_compact_flow(560.0, 14.0));
         assert!(welcome_uses_compact_flow(1_119.0, 28.0));
         assert!(!welcome_uses_compact_flow(1_120.0, 28.0));
+    }
+
+    // SDTEST-1728 — SDUC-440. The account header and dashboard banner enter
+    // their compact compositions together, and the threshold follows scale.
+    #[test]
+    fn user_home_compact_breakpoint_tracks_ui_scale() {
+        assert!(user_home_uses_compact_flow(600.0, 14.0));
+        assert!(!user_home_uses_compact_flow(601.0, 14.0));
+        assert!(!user_home_uses_compact_flow(700.0, 14.0));
+        assert!(user_home_uses_compact_flow(1_200.0, 28.0));
+        assert!(!user_home_uses_compact_flow(1_201.0, 28.0));
     }
 
     // SDTEST-1716 — remote site metadata is allowed to omit the scheme, but

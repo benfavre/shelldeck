@@ -28,11 +28,161 @@ impl Workspace {
     pub(super) fn render_user_request_row(
         &self,
         iss: &Issue,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let id = iss.id.clone();
         let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
         let group_name = SharedString::from(format!("uiss-row-{}", iss.id));
+        let row_h = if compact {
+            USER_REQUEST_ROW_H_COMPACT
+        } else {
+            USER_REQUEST_ROW_H
+        };
+        let mut title = div()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .text_size(px(13.0))
+            .text_color(ShellDeckColors::text_primary());
+        title = if compact {
+            // GPUI paints the second `line_clamp` line without contributing
+            // it to flex height, so it overlaps the metadata row. The title
+            // still owns this entire first level; opening the row exposes the
+            // full value in the fixed detail heading.
+            title.w_full().whitespace_nowrap().truncate()
+        } else {
+            title.flex_1().whitespace_nowrap().truncate()
+        };
+        let title = title
+            .child(crate::external_content::external_title(&iss.title))
+            .into_any_element();
+
+        let mut metadata = div().flex().items_center().min_w(px(0.0)).overflow_hidden();
+        let mut metadata_has_item = compact;
+        if compact {
+            metadata = metadata.w_full().child(issue_status_badge(&iss.status));
+        } else {
+            metadata = metadata.flex_shrink_0();
+        }
+        if let Some(site_label) = iss
+            .site_label
+            .as_ref()
+            .filter(|label| !label.trim().is_empty())
+        {
+            let item_margin = if metadata_has_item { 8.0 } else { 0.0 };
+            metadata = metadata.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .ml(px(item_margin))
+                    .child(
+                        Badge::new(Self::ellipsize_badge_label(site_label, 17))
+                            .variant(BadgeVariant::Outline)
+                            .max_w(px(140.0))
+                            .overflow_hidden(),
+                    ),
+            );
+            metadata_has_item = true;
+        }
+        // Deux informations que la file Support affichait déjà et que le
+        // client, propriétaire de la demande, n'avait pas : depuis quand elle
+        // a bougé, et si quelqu'un y a répondu. Sans elles, on ne peut pas
+        // savoir que le support a écrit.
+        if iss.comment_count > 0 {
+            let item_margin = if metadata_has_item { 8.0 } else { 0.0 };
+            metadata = metadata.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .ml(px(item_margin))
+                    .flex_shrink_0()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    // `messages-square` : le lot Lucide embarqué ne contient
+                    // pas `message-square` au singulier, et un slug absent ne
+                    // dessine rien du tout (`.agents/icons.md`).
+                    .child(lucide_icon(
+                        "messages-square",
+                        11.0,
+                        ShellDeckColors::text_muted(),
+                    ))
+                    .child(iss.comment_count.to_string()),
+            );
+            metadata_has_item = true;
+        }
+        let item_margin = if metadata_has_item { 8.0 } else { 0.0 };
+        metadata = metadata.child(
+            div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .ml(px(item_margin))
+                .child(priority_badge(&iss.priority)),
+        );
+        metadata_has_item = true;
+        let updated = crate::i18n::rel_time(iss.updated_at);
+        if !updated.is_empty() {
+            let item_margin = if metadata_has_item { 8.0 } else { 0.0 };
+            metadata = metadata.child(
+                div()
+                    .flex_shrink_0()
+                    .ml(px(item_margin))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(updated),
+            );
+            metadata_has_item = true;
+        }
+        if let Some(g) = &iss.github {
+            let item_margin = if metadata_has_item { 8.0 } else { 0.0 };
+            metadata = metadata.child(
+                div()
+                    .flex_shrink_0()
+                    .ml(px(item_margin))
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("user.github_issue", number = g.number).to_string()),
+            );
+            metadata_has_item = true;
+        }
+        let del_id = iss.id.clone();
+        let mut delete = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "uiss-del-{}",
+                iss.id
+            ))))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(22.0))
+            .h(px(22.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .text_color(ShellDeckColors::error())
+            .opacity(0.0)
+            .group_hover(group_name.clone(), |el| el.opacity(1.0))
+            .hover(|el| el.bg(ShellDeckColors::error().opacity(0.15)))
+            .child(
+                svg()
+                    .path(lucide_path("trash-2"))
+                    .size(px(13.0))
+                    .text_color(ShellDeckColors::error()),
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                this.confirm_issue_delete = Some(del_id.clone());
+                cx.notify();
+            }));
+        if compact {
+            delete = delete.ml_auto();
+        } else if metadata_has_item {
+            delete = delete.ml(px(8.0));
+        }
+        metadata = metadata.child(delete);
+
         let mut row = div()
             .id(ElementId::from(SharedString::from(format!(
                 "uiss-{}",
@@ -40,9 +190,11 @@ impl Workspace {
             ))))
             .group(group_name.clone())
             .w_full()
+            // The virtualized wrapper reserves the final 4 px as the gap to
+            // the next card. Use its remaining height explicitly so internal
+            // top/bottom padding stays symmetrical.
+            .h(px(row_h - 4.0))
             .flex()
-            .items_center()
-            .gap(px(8.0))
             .px(px(10.0))
             .py(px(7.0))
             .rounded(px(8.0))
@@ -57,106 +209,16 @@ impl Workspace {
             .on_click({
                 let id = id.clone();
                 cx.listener(move |this, _: &ClickEvent, _, cx| this.select_issue(id.clone(), cx))
-            })
-            .child(issue_status_badge(&iss.status))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .truncate()
-                    .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(crate::external_content::external_title(&iss.title)),
-            );
-        if let Some(site_label) = iss
-            .site_label
-            .as_ref()
-            .filter(|label| !label.trim().is_empty())
-        {
-            row = row.child(
-                Badge::new(Self::ellipsize_badge_label(site_label, 17))
-                    .variant(BadgeVariant::Outline)
-                    .max_w(px(140.0))
-                    .overflow_hidden(),
-            );
+            });
+        if compact {
+            row = row.flex_col().justify_center().gap(px(5.0));
+            row.child(title).child(metadata)
+        } else {
+            row = row.items_center().gap(px(8.0));
+            row.child(issue_status_badge(&iss.status))
+                .child(title)
+                .child(metadata)
         }
-        // Deux informations que la file Support affichait déjà et que le
-        // client, propriétaire de la demande, n'avait pas : depuis quand elle
-        // a bougé, et si quelqu'un y a répondu. Sans elles, on ne peut pas
-        // savoir que le support a écrit.
-        if iss.comment_count > 0 {
-            row = row.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .flex_shrink_0()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    // `messages-square` : le lot Lucide embarqué ne contient
-                    // pas `message-square` au singulier, et un slug absent ne
-                    // dessine rien du tout (`.agents/icons.md`).
-                    .child(lucide_icon(
-                        "messages-square",
-                        11.0,
-                        ShellDeckColors::text_muted(),
-                    ))
-                    .child(iss.comment_count.to_string()),
-            );
-        }
-        row = row.child(priority_badge(&iss.priority));
-        let updated = crate::i18n::rel_time(iss.updated_at);
-        if !updated.is_empty() {
-            row = row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(updated),
-            );
-        }
-        if let Some(g) = &iss.github {
-            row = row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("user.github_issue", number = g.number).to_string()),
-            );
-        }
-        let del_id = iss.id.clone();
-        row.child(
-            div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "uiss-del-{}",
-                    iss.id
-                ))))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(22.0))
-                .h(px(22.0))
-                .rounded(px(4.0))
-                .cursor_pointer()
-                .text_color(ShellDeckColors::error())
-                .opacity(0.0)
-                .group_hover(group_name.clone(), |el| el.opacity(1.0))
-                .hover(|el| el.bg(ShellDeckColors::error().opacity(0.15)))
-                .child(
-                    svg()
-                        .path(lucide_path("trash-2"))
-                        .size(px(13.0))
-                        .text_color(ShellDeckColors::error()),
-                )
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    this.confirm_issue_delete = Some(del_id.clone());
-                    cx.notify();
-                })),
-        )
     }
 
     /// User-mode "Mes demandes": a list of the tenant's requests. Selecting a
@@ -164,7 +226,11 @@ impl Workspace {
     /// button in the header opens the composer as another right-side sheet.
     /// Both live at the workspace root — they slide over the list without
     /// pushing it down (the pre-sheet layout used to append them inline).
-    pub(super) fn render_user_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_user_requests(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // User mode is the "as-a-normal-user" surface — even for a
         // super-admin viewing it, we only surface requests *they* filed.
         // (The server hands staff every in-scope request without a
@@ -189,7 +255,12 @@ impl Workspace {
         } else {
             const MAX_LIST_H: f32 = 600.0;
             const MIN_LIST_H: f32 = 120.0;
-            let visible_h = (mine_count as f32 * USER_REQUEST_ROW_H).clamp(MIN_LIST_H, MAX_LIST_H);
+            let request_row_h = if compact {
+                USER_REQUEST_ROW_H_COMPACT
+            } else {
+                USER_REQUEST_ROW_H
+            };
+            let visible_h = (mine_count as f32 * request_row_h).clamp(MIN_LIST_H, MAX_LIST_H);
             div()
                 .w_full()
                 .h(px(visible_h))
@@ -198,7 +269,7 @@ impl Workspace {
                     uniform_list(
                         "user-requests-virt",
                         mine_count,
-                        cx.processor(|this, range: Range<usize>, _window, cx| {
+                        cx.processor(move |this, range: Range<usize>, _window, cx| {
                             let mine_indices = this
                                 .issues_list
                                 .iter()
@@ -212,8 +283,15 @@ impl Workspace {
                                 .map(|issue| {
                                     div()
                                         .w_full()
+                                        // `uniform_list` positions slots by
+                                        // the declared row height but does
+                                        // not impose that height on the
+                                        // element returned by the processor.
+                                        // Without it, compact rows stretch
+                                        // apart inside the reserved list.
+                                        .h(px(request_row_h))
                                         .pb(px(4.0))
-                                        .child(this.render_user_request_row(issue, cx))
+                                        .child(this.render_user_request_row(issue, compact, cx))
                                         .into_any_element()
                                 })
                                 .collect::<Vec<_>>()
@@ -295,14 +373,16 @@ impl Workspace {
         icon: Option<&'static str>,
         dismissing: bool,
         is_maximized: bool,
+        panel_width: f32,
+        full_width: bool,
         inner: C,
+        fixed_context: Option<AnyElement>,
         footer: Option<AnyElement>,
         body_scroll: Option<&ScrollHandle>,
         on_close: impl Fn(&mut Self, &mut Context<Self>) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use std::time::Duration;
-        const SHEET_WIDTH: f32 = 480.0;
         const ANIM_MS: u64 = SHEET_ANIM_MS;
 
         let close_bg = on_close.clone();
@@ -335,15 +415,20 @@ impl Workspace {
                     close_bg(this, cx);
                 }),
             )
-            .child(
-                div()
+            .child({
+                let mut panel = div()
                     .absolute()
                     .top_0()
                     .right_0()
                     .bottom_0()
                     .flex()
-                    .flex_col()
-                    .w(px(SHEET_WIDTH))
+                    .flex_col();
+                panel = if full_width {
+                    panel.left_0().w_full()
+                } else {
+                    panel.w(px(panel_width))
+                };
+                panel
                     .bg(ShellDeckColors::bg_surface())
                     .border_l_1()
                     .border_color(ShellDeckColors::border())
@@ -416,6 +501,11 @@ impl Workspace {
                                     ))
                             }),
                     )
+                    // Optional fixed context sits below the generic sheet
+                    // title. Detail sheets use it only in the compact flow so
+                    // the exact prototype heading stays visible while the
+                    // thread itself opens on the latest message.
+                    .children(fixed_context)
                     // Body — scrollable if the content overflows the sheet.
                     .child(body)
                     // Detail sheets keep their message composer outside the
@@ -423,7 +513,7 @@ impl Workspace {
                     // end of a long thread. Form sheets simply pass `None`.
                     .children(footer)
                     // Slide (300ms). On enter: ease_out_quint (very smooth
-                    // decel), from `right = -SHEET_WIDTH` to 0. On exit:
+                    // decel), from `right = -panel_width` to 0. On exit:
                     // ease_in_quint reversed. Encoding the direction in the
                     // id makes GPUI treat enter vs exit as distinct
                     // animations and restart cleanly on each flip.
@@ -441,14 +531,14 @@ impl Workspace {
                         move |el, delta| {
                             let d = delta.clamp(0.0, 1.0);
                             let offset = if dismissing {
-                                -SHEET_WIDTH * d
+                                -panel_width * d
                             } else {
-                                -SHEET_WIDTH * (1.0 - d)
+                                -panel_width * (1.0 - d)
                             };
                             el.right(gpui::px(offset))
                         },
-                    ),
-            )
+                    )
+            })
     }
 
     /// The "Nouvelle demande" composer rendered as a right-side sheet.
@@ -1481,7 +1571,10 @@ impl Workspace {
             Some("plus"),
             self.user_new_request_sheet_dismissing,
             is_maximized,
+            480.0,
+            false,
             inner,
+            None,
             None,
             None,
             |this, cx| this.close_new_request_sheet(cx),
@@ -1497,7 +1590,11 @@ impl Workspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let inner = self.render_user_issue_detail(&iss, window, cx);
+        let viewport_width = window.viewport_size().width.to_f64() as f32;
+        let compact =
+            super::user_home::user_home_uses_compact_flow(viewport_width, self.ui_font_size);
+        let fixed_context = compact.then(|| self.render_user_issue_heading(&iss, false, cx));
+        let inner = self.render_user_issue_detail(&iss, !compact, window, cx);
         let footer = self
             .render_user_issue_detail_footer(is_maximized, cx)
             .into_any_element();
@@ -1507,7 +1604,10 @@ impl Workspace {
             Some("tag"),
             self.user_issue_detail_dismissing,
             is_maximized,
+            if compact { viewport_width } else { 480.0 },
+            compact,
             inner,
+            fixed_context,
             Some(footer),
             Some(&self.user_issue_thread_scroll),
             |this, cx| this.close_user_issue_detail(cx),
@@ -1518,6 +1618,7 @@ impl Workspace {
     pub(super) fn render_user_issue_detail(
         &self,
         iss: &Issue,
+        include_heading: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1633,6 +1734,29 @@ impl Workspace {
             }
         }
 
+        let heading = include_heading.then(|| self.render_user_issue_heading(iss, true, cx));
+
+        // Match the validated prototype: title and metadata form one heading,
+        // followed by its single full-width separator and then the thread.
+        // In compact flow the same heading is mounted in the fixed sheet
+        // context instead, without changing its visual hierarchy.
+        div()
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .flex_shrink_0()
+            .justify_end()
+            .gap(px(8.0))
+            .children(heading)
+            .child(thread)
+    }
+
+    fn render_user_issue_heading(
+        &self,
+        iss: &Issue,
+        in_scrolling_body: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // Identification, state and destructive actions are three different
         // levels. Keeping all of them on one flex row made the title absorb
         // every bit of compression in the 550 px sheet (U-17).
@@ -1826,35 +1950,26 @@ impl Workspace {
                 )
             });
 
-        let heading = div()
+        let mut heading = div()
             .flex()
             .flex_col()
             .min_w(px(0.0))
-            .mx(px(-16.0))
-            .px(px(16.0))
             .pb(px(12.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .gap(px(9.0))
             .child(title_row)
             .child(metadata);
-
-        // Detail content flows directly inside the sheet chrome — no inner box
-        // (bg / border / rounded) so the sheet reads as a single surface. This
-        // direct flex child grows to the viewport when the thread is short and
-        // aligns its latest message against the fixed composer. With a long
-        // thread it keeps its intrinsic height and lets the tracked parent own
-        // the only scroll range (UX-023).
-        div()
-            .flex()
-            .flex_col()
-            .flex_grow()
-            .flex_shrink_0()
-            .justify_end()
-            .gap(px(8.0))
-            .mt(px(10.0))
-            .child(heading)
-            .child(thread)
+        heading = if in_scrolling_body {
+            // The body already owns 16 px of padding. Pull only the separator
+            // to its edges while retaining that same content inset.
+            heading.mx(px(-16.0)).px(px(16.0))
+        } else {
+            // Fixed compact context starts outside the padded scroll body, so
+            // reproduce the prototype's 16 px content inset explicitly.
+            heading.pt(px(16.0)).px(px(16.0))
+        };
+        heading.into_any_element()
     }
 
     /// Reply controls stay anchored below the independently scrollable thread.

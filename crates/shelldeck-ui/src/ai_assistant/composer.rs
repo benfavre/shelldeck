@@ -724,12 +724,16 @@ impl AiAssistantView {
 
     /// The `+` dropdown. Image entries are disabled — with the reason on the
     /// row — when the backend cannot carry an image.
-    pub(super) fn render_attach_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_attach_menu(
+        &self,
+        history_column_visible: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.attach_menu_open {
             return None;
         }
         let images_ok = self.backend_takes_images();
-        let (left, _right) = composer_panel_bounds(self.host, self.history_open);
+        let (left, _right) = composer_panel_bounds(self.host, history_column_visible);
         let mut menu = floating_panel("ai-attach-menu")
             .bottom(px(78.0))
             .left(px(left))
@@ -797,13 +801,17 @@ impl AiAssistantView {
     }
 
     /// The `@` picker, grouped by kind.
-    pub(super) fn render_mention_picker(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_mention_picker(
+        &self,
+        history_column_visible: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         self.mention_picker.as_ref()?;
         let matches = self.mention_matches();
         if matches.is_empty() {
             return None;
         }
-        let (left, right) = composer_panel_bounds(self.host, self.history_open);
+        let (left, right) = composer_panel_bounds(self.host, history_column_visible);
         let mut panel = floating_panel("ai-mention-picker")
             .bottom(px(78.0))
             .left(px(left))
