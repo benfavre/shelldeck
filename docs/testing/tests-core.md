@@ -488,6 +488,19 @@ Existing: **0 tests**.
 
 ---
 
+## 26. `config/workspace_catalog.rs` + `workspace_navigation.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1729 | `workspace_catalog.rs::project_catalog_round_trip_groups_portable_local_and_ssh_checkouts` | SDUC-488 | Green | One persistent project round-trips native `PathBuf` checkout roots for both a local device and an existing SSH connection ID; the durable payload has no credential field. |
+| SDTEST-1730 | `workspace_catalog.rs::one_launcher_validates_manual_and_prefilled_lifecycle_and_keeps_run_distinct` | SDUC-488, SDUC-489 | Green | Manual and issue/PR/task-prefilled intake use one catalog-gated launcher and round-trip their closed kinds; archive/resume preserves the record, an unknown checkout is refused, and external work-item plus internal run identities coexist without merging. |
+| SDTEST-1731 | `workspace_navigation.rs::keyed_switch_restores_exact_layout_focus_scrollback_drafts_and_hidden_terminals` | SDUC-489, SDUC-490 | Green | Switching A→B→A and archive/resume preserve both keyed surfaces byte-for-byte, including focus, scrollback offset, draft, and stable terminal binding; no hidden workspace is dropped. |
+| SDTEST-1732 | `workspace_navigation.rs::surface_validation_rejects_ambiguous_focus_tabs_splits_and_terminal_identity_reuse` | SDUC-490 | Green | The reducer boundary rejects reused live-terminal identities, invalid split ratios, and focus without a surface before valid retained state can be replaced. |
+| SDTEST-1733 | `workspace_navigation.rs::background_creation_progress_cancel_conflict_and_retry_ignore_stale_operations` | SDUC-491 | Green | One lifecycle advances through progress, cancellation, typed worktree conflict and retry; late completion from the prior operation is fenced and leaves the retry running. |
+| SDTEST-1734 | `workspace_navigation.rs::local_ssh_and_provider_bindings_share_a_surface_without_sharing_authority` | SDUC-488, SDUC-489, SDUC-490 | Green | Local terminal, SSH terminal, and provider-session tabs coexist in one pane while preserving three distinct typed bindings; platform identity never substitutes for checkout/connection authority. |
+
+---
+
 ## Retired tests
 
 *(none yet)*

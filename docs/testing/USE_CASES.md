@@ -2557,8 +2557,49 @@ session revision. Detach, lease loss, sign-out, directory disappearance, and
 late responses remove or ignore only the affected session state. Provider
 session authority never implies terminal, repository, or filesystem authority.
 
+### SDUC-488 — Projects group portable local and SSH checkouts without credentials
+
+The persistent project catalog groups one repository's checkouts under explicit
+local-device or existing ShellDeck SSH-connection hosts. Paths use the native
+path representation and the SSH form stores only the connection ID: passwords,
+private-key paths, and Automonique grants never enter this file. A workspace
+launcher selects an already-catalogued checkout instead of admitting an
+arbitrary path, so local and SSH workspaces share one model without widening
+host or filesystem authority.
+
+### SDUC-489 — Manual and external-task intake share one workspace lifecycle
+
+Manual creation and issue, pull-request, or task-prefilled creation enter the
+same validated launcher and produce the same resumable user-workspace record.
+Archive and resume change lifecycle without deleting the retained work surface.
+An external tracker item and an internal Automonique orchestration run remain
+separate typed identities and may both be visible; neither is inferred from the
+other and a provider-session binding grants no terminal or filesystem access.
+
+### SDUC-490 — Workspace switching preserves one exact retained work surface
+
+Navigation keys pane trees, tab order, active tabs, focus, editor and terminal
+drafts, terminal viewport positions, and stable live-terminal bindings by user
+workspace. Switching or archiving changes visibility only. Hidden workspace
+state stays retained, so resuming restores the exact coherent surface instead
+of opening disconnected Fleet and terminal views. Invalid split ratios,
+ambiguous focus, duplicate tabs, and reused terminal bindings are refused before
+they can replace a valid surface.
+
+### SDUC-491 — Background workspace creation has a typed cancellable lifecycle
+
+Create operations report monotonic phases and bounded step progress without
+blocking the UI. Cancellation, host/worktree/branch/catalog conflicts,
+classified failures, completion, and retry are distinct states. Every event is
+fenced by its operation ID; once retry starts, a late completion or failure from
+the earlier attempt is rejected and cannot overwrite the new operation.
+
 ## Change log
 
+- **2026-08-27** — Added SDUC-488..491 and SDTEST-1729..1734 for the persistent
+  local/SSH project catalog, shared manual/task launcher, distinct external and
+  internal run identities, exact keyed work-surface restoration, authority
+  separation, and cancellable stale-event-fenced background creation reducer.
 - **2026-08-27** — Added SDUC-487 and SDTEST-1726..1728 for the native retained
   transcript/composer, retention-gap replacement, exact revision fence, and
   no-replay receipt reconciliation contract.
