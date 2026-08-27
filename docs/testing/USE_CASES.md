@@ -2607,8 +2607,36 @@ Start cannot bypass retryability. Once retry starts, a late completion or
 failure from the earlier attempt is rejected and cannot overwrite the new
 operation.
 
+### SDUC-492 — Workspace review mutations remain previewed, scoped, and exactly once
+
+A workspace review combines staged, unstaged, untracked, and conflict state at
+one observed repository revision. Text and recognized bounded images may be
+previewed; HTML is escaped and displayed only as inert source, while oversized
+or unknown binary content is refused. Line comments persist against their exact
+file, side, line, and review revision, and only explicitly selected current
+comments form a send batch. Stage, approval, check, and delivery mutations are
+separately scoped: provider-session control cannot grant repository, CI, or
+pull-request authority. Every mutation carries the previewed review revision,
+actor, authority revision, and one idempotency key. An ambiguous write performs
+receipt lookup with that original key and is never replayed.
+
+### SDUC-493 — Agent attention always returns to its authoritative work context
+
+Needs You, Working, Blocked, Done, and Idle are typed observations with unread
+state and a nested-agent path. Each item names one local user workspace and
+pane; provider-session items additionally name the exact session in that pane.
+Older or conflicting same-revision observations are refused. Opening an item
+validates all coordinates against the retained workspace surface, focuses only
+that exact tab, and then marks it read. Delivery checks, review status, merge
+readiness, and delivery state carry their observed authority and freshness and
+cannot be overwritten by stale evidence.
+
 ## Change log
 
+- **2026-08-27** — Added SDUC-492/493 and SDTEST-1743..1748 for combined
+  workspace review state, inert previews, durable line comments, separately
+  scoped revision-bound mutations, exactly-once reconciliation, authoritative
+  attention deep links, nested-agent state, and stale-fenced delivery evidence.
 - **2026-08-27** — Added SDUC-488..491 and SDTEST-1729..1742 for the revisioned
   local/SSH project catalog, Platform v2 reconciliation mapping, portable path
   and authority admission, interprocess/Windows-safe persistence, canonical

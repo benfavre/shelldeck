@@ -506,6 +506,19 @@ Existing: **0 tests**.
 
 ---
 
+## 27. `workspace_review.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1743 | `workspace_review.rs::sdtest_1743_combined_review_preserves_sections_conflicts_and_inert_previews` | SDUC-492 | Green | One snapshot retains staged, unstaged, untracked, and conflict state; HTML is escaped source and unknown binary content is refused. |
+| SDTEST-1744 | `workspace_review.rs::sdtest_1744_line_comments_persist_and_batch_only_the_selected_exact_revision` | SDUC-492 | Green | Atomic durable drafts retain anchors, while batching excludes unselected and stale-revision notes. |
+| SDTEST-1745 | `workspace_review.rs::sdtest_1745_provider_control_never_grants_repository_or_delivery_mutations` | SDUC-492 | Green | A provider-session grant cannot stage hunks or merge a pull request. |
+| SDTEST-1746 | `workspace_review.rs::sdtest_1746_ambiguous_mutation_reconciles_the_original_attributed_receipt_once` | SDUC-492 | Green | Ambiguity returns the original key and actor for receipt lookup; an exact receipt completes once and cannot be replayed. |
+| SDTEST-1747 | `workspace_review.rs::sdtest_1747_attention_deep_link_opens_only_its_exact_workspace_pane_and_session` | SDUC-493 | Green | A Needs You item refuses the wrong workspace and resolves its exact retained provider-session tab. |
+| SDTEST-1748 | `workspace_review.rs::sdtest_1748_delivery_projection_refuses_stale_or_conflicting_authority_state` | SDUC-492, SDUC-493 | Green | Delivery authority, checks, review, readiness, and state are fenced against older and conflicting same-revision evidence. |
+
+---
+
 ## Retired tests
 
 *(none yet)*
