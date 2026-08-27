@@ -1,17 +1,19 @@
-//! Pure, keyed workspace navigation and background-creation state.
+//! Catalog-authorized, keyed workspace navigation and creation reducers.
 //!
-//! UI entities keep the terminal processes and grids alive. This reducer keeps
-//! their stable bindings in a surface snapshot per user workspace, so switching
-//! changes visibility without destroying a hidden terminal or conflating it
-//! with Automonique provider-session authority.
+//! This module retains presentation bindings only. Live GPUI entities remain
+//! owned by the UI, and provider authority remains owned by Platform v2.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::config::workspace_catalog::{CheckoutId, UserWorkspaceId};
+use crate::config::workspace_catalog::{
+    CatalogCheckoutId, CatalogWorkspaceId, CheckoutHost, ProjectCatalog, UserWorkspaceLifecycle,
+    WorkspaceCatalogError, WorkspaceRelativePath,
+};
+
+const MAX_BINDING_ID_BYTES: usize = 256;
 
 macro_rules! uuid_id {
     ($name:ident) => {
@@ -20,30 +22,25 @@ macro_rules! uuid_id {
         )]
         #[serde(transparent)]
         pub struct $name(Uuid);
-
         impl $name {
             #[must_use]
             pub fn new() -> Self {
                 Self(Uuid::new_v4())
             }
-
             #[must_use]
             pub const fn from_uuid(value: Uuid) -> Self {
                 Self(value)
             }
-
             #[must_use]
             pub const fn as_uuid(self) -> Uuid {
                 self.0
             }
         }
-
         impl Default for $name {
             fn default() -> Self {
                 Self::new()
             }
         }
-
         impl fmt::Display for $name {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 self.0.fmt(formatter)
@@ -61,28 +58,23 @@ uuid_id!(CreationOperationId);
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TerminalAuthority {
     Local {
-        checkout_id: CheckoutId,
+        checkout_id: CatalogCheckoutId,
     },
     Ssh {
-        checkout_id: CheckoutId,
+        checkout_id: CatalogCheckoutId,
         connection_id: Uuid,
     },
 }
 
-/// Stable identity of a live ShellDeck terminal entity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TerminalBinding {
     pub id: TerminalBindingId,
     pub authority: TerminalAuthority,
 }
 
-/// Opaque presentation binding to a provider session.
-///
-/// This type intentionally cannot be converted into [`TerminalAuthority`]. A
-/// platform session never authorizes a local path, SSH connection, or terminal.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderSessionBinding {
-    pub authority: String,
+    pub platform_user_workspace_id: String,
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
@@ -90,7 +82,6 @@ pub struct ProviderSessionBinding {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TerminalViewport {
-    /// Lines above the live bottom edge. The live grid owns the actual buffer.
     pub scrollback_offset_lines: usize,
     pub follow_output: bool,
 }
@@ -108,16 +99,16 @@ pub struct TerminalSurface {
 pub enum WorkspaceTabContent {
     Terminal(TerminalSurface),
     Editor {
-        checkout_id: CheckoutId,
-        relative_path: PathBuf,
+        checkout_id: CatalogCheckoutId,
+        relative_path: WorkspaceRelativePath,
         #[serde(default)]
         draft: String,
         cursor_line: usize,
         cursor_column: usize,
     },
     Files {
-        checkout_id: CheckoutId,
-        relative_root: PathBuf,
+        checkout_id: CatalogCheckoutId,
+        relative_root: WorkspaceRelativePath,
     },
     Browser {
         location: String,
@@ -154,7 +145,6 @@ pub enum PaneNode {
     Leaf(PaneLeaf),
     Split {
         axis: SplitAxis,
-        /// First-child size in basis points. Must be strictly inside 0..10000.
         ratio_basis_points: u16,
         first: Box<PaneNode>,
         second: Box<PaneNode>,
@@ -186,30 +176,48 @@ pub enum SurfaceValidationError {
     FocusWithoutSurface,
     UnknownFocusedPane(PaneId),
     UnknownFocusedTab { pane: PaneId, tab: WorkspaceTabId },
+    UnknownWorkspace,
+    CheckoutAuthorityMismatch(CatalogCheckoutId),
+    HostAuthorityMismatch,
+    PlatformMappingNotExact,
+    PlatformWorkspaceMismatch,
+    InvalidProviderBinding,
+    InvalidEditorPath,
 }
-
 impl fmt::Display for SurfaceValidationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidSplitRatio(ratio) => write!(formatter, "invalid pane split ratio {ratio}"),
-            Self::DuplicatePane(id) => write!(formatter, "duplicate pane {id}"),
-            Self::DuplicateTab(id) => write!(formatter, "duplicate tab {id}"),
-            Self::DuplicateTerminalBinding(id) => {
-                write!(formatter, "duplicate terminal binding {id}")
-            }
-            Self::MissingActiveTab(pane) => write!(formatter, "pane {pane} has no active tab"),
+            Self::InvalidSplitRatio(v) => write!(f, "invalid pane split ratio {v}"),
+            Self::DuplicatePane(id) => write!(f, "duplicate pane {id}"),
+            Self::DuplicateTab(id) => write!(f, "duplicate tab {id}"),
+            Self::DuplicateTerminalBinding(id) => write!(f, "duplicate terminal binding {id}"),
+            Self::MissingActiveTab(id) => write!(f, "pane {id} has no active tab"),
             Self::UnknownActiveTab { pane, tab } => {
-                write!(formatter, "pane {pane} has unknown active tab {tab}")
+                write!(f, "pane {pane} has unknown active tab {tab}")
             }
-            Self::FocusWithoutSurface => formatter.write_str("focus exists without a pane surface"),
-            Self::UnknownFocusedPane(pane) => write!(formatter, "unknown focused pane {pane}"),
+            Self::FocusWithoutSurface => f.write_str("focus exists without a pane surface"),
+            Self::UnknownFocusedPane(id) => write!(f, "unknown focused pane {id}"),
             Self::UnknownFocusedTab { pane, tab } => {
-                write!(formatter, "pane {pane} has no focused tab {tab}")
+                write!(f, "pane {pane} has no focused tab {tab}")
             }
+            Self::UnknownWorkspace => f.write_str("surface workspace is absent from the catalog"),
+            Self::CheckoutAuthorityMismatch(id) => {
+                write!(f, "tab checkout {id} is outside the workspace")
+            }
+            Self::HostAuthorityMismatch => {
+                f.write_str("terminal host authority differs from the catalog checkout")
+            }
+            Self::PlatformMappingNotExact => {
+                f.write_str("provider session requires an exact Platform v2 mapping")
+            }
+            Self::PlatformWorkspaceMismatch => {
+                f.write_str("provider session belongs to a different Platform v2 workspace")
+            }
+            Self::InvalidProviderBinding => f.write_str("provider session binding is invalid"),
+            Self::InvalidEditorPath => f.write_str("editor path must name a file below checkout"),
         }
     }
 }
-
 impl std::error::Error for SurfaceValidationError {}
 
 impl WorkspaceSurfaceState {
@@ -221,12 +229,10 @@ impl WorkspaceSurfaceState {
                 Err(SurfaceValidationError::FocusWithoutSurface)
             };
         };
-
         let mut panes = BTreeMap::<PaneId, BTreeSet<WorkspaceTabId>>::new();
         let mut tabs = BTreeSet::new();
         let mut terminals = BTreeSet::new();
         validate_node(root, &mut panes, &mut tabs, &mut terminals)?;
-
         if let Some(focus) = self.focus {
             let pane_tabs = panes
                 .get(&focus.pane_id)
@@ -239,6 +245,118 @@ impl WorkspaceSurfaceState {
             }
         }
         Ok(())
+    }
+
+    pub fn validate_for(
+        &self,
+        catalog: &ProjectCatalog,
+        workspace_id: CatalogWorkspaceId,
+    ) -> Result<(), SurfaceValidationError> {
+        self.validate()?;
+        let workspace = catalog
+            .workspace(workspace_id)
+            .map_err(|_| SurfaceValidationError::UnknownWorkspace)?;
+        let checkout = catalog
+            .checkout_in_project(workspace.project_id(), workspace.checkout_id())
+            .map_err(|_| {
+                SurfaceValidationError::CheckoutAuthorityMismatch(workspace.checkout_id())
+            })?;
+        for tab in self.tabs() {
+            match &tab.content {
+                WorkspaceTabContent::Terminal(terminal) => {
+                    match (&terminal.binding.authority, checkout.host()) {
+                        (TerminalAuthority::Local { checkout_id }, CheckoutHost::Local { .. })
+                            if *checkout_id == workspace.checkout_id() => {}
+                        (
+                            TerminalAuthority::Ssh {
+                                checkout_id,
+                                connection_id,
+                            },
+                            CheckoutHost::Ssh {
+                                connection_id: expected,
+                                ..
+                            },
+                        ) if *checkout_id == workspace.checkout_id()
+                            && connection_id == expected => {}
+                        (TerminalAuthority::Local { checkout_id }, _)
+                        | (TerminalAuthority::Ssh { checkout_id, .. }, _)
+                            if *checkout_id != workspace.checkout_id() =>
+                        {
+                            return Err(SurfaceValidationError::CheckoutAuthorityMismatch(
+                                *checkout_id,
+                            ))
+                        }
+                        _ => return Err(SurfaceValidationError::HostAuthorityMismatch),
+                    }
+                }
+                WorkspaceTabContent::Editor {
+                    checkout_id,
+                    relative_path,
+                    ..
+                } => {
+                    if *checkout_id != workspace.checkout_id() {
+                        return Err(SurfaceValidationError::CheckoutAuthorityMismatch(
+                            *checkout_id,
+                        ));
+                    }
+                    if relative_path.as_str().is_empty() {
+                        return Err(SurfaceValidationError::InvalidEditorPath);
+                    }
+                }
+                WorkspaceTabContent::Files { checkout_id, .. }
+                    if *checkout_id != workspace.checkout_id() =>
+                {
+                    return Err(SurfaceValidationError::CheckoutAuthorityMismatch(
+                        *checkout_id,
+                    ));
+                }
+                WorkspaceTabContent::ProviderSession(binding) => {
+                    if binding.platform_user_workspace_id.trim().is_empty()
+                        || binding.platform_user_workspace_id.len() > MAX_BINDING_ID_BYTES
+                        || binding.session_id.trim().is_empty()
+                        || binding.session_id.len() > MAX_BINDING_ID_BYTES
+                    {
+                        return Err(SurfaceValidationError::InvalidProviderBinding);
+                    }
+                    let mapping = workspace
+                        .platform_mapping()
+                        .filter(|mapping| mapping.is_exact())
+                        .ok_or(SurfaceValidationError::PlatformMappingNotExact)?;
+                    if mapping.user_workspace.id != binding.platform_user_workspace_id {
+                        return Err(SurfaceValidationError::PlatformWorkspaceMismatch);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn tabs(&self) -> Vec<&WorkspaceTab> {
+        fn collect<'a>(node: &'a PaneNode, tabs: &mut Vec<&'a WorkspaceTab>) {
+            match node {
+                PaneNode::Leaf(leaf) => tabs.extend(&leaf.tabs),
+                PaneNode::Split { first, second, .. } => {
+                    collect(first, tabs);
+                    collect(second, tabs);
+                }
+            }
+        }
+        let mut tabs = Vec::new();
+        if let Some(root) = self.root.as_ref() {
+            collect(root, &mut tabs);
+        }
+        tabs
+    }
+
+    fn terminal_ids(&self) -> BTreeSet<TerminalBindingId> {
+        self.tabs()
+            .into_iter()
+            .filter_map(|tab| match &tab.content {
+                WorkspaceTabContent::Terminal(terminal) => Some(terminal.binding.id),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -288,7 +406,7 @@ fn validate_node(
                     return Err(SurfaceValidationError::UnknownActiveTab {
                         pane: leaf.id,
                         tab: active,
-                    });
+                    })
                 }
                 _ => {}
             }
@@ -305,7 +423,6 @@ pub struct GitDirtyState {
     pub untracked: usize,
     pub conflicted: usize,
 }
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceAgentState {
@@ -316,7 +433,6 @@ pub enum WorkspaceAgentState {
     Failed,
     Completed,
 }
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceFreshness {
@@ -327,7 +443,7 @@ pub enum WorkspaceFreshness {
     Offline,
 }
 
-/// Presentation facts for project/workspace cards. This contains no authority.
+/// Presentation-only facts. `source_revision` and observation time fence late polls.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceCardState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -337,146 +453,192 @@ pub struct WorkspaceCardState {
     pub unread: usize,
     pub attention: usize,
     pub freshness: WorkspaceFreshness,
+    pub source_revision: u64,
     pub observed_at_millis: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RetainedWorkspaceLifecycle {
-    Active,
-    Archived,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetainedWorkspaceState {
-    pub lifecycle: RetainedWorkspaceLifecycle,
     pub surface: WorkspaceSurfaceState,
     pub card: WorkspaceCardState,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WorkspaceNavigationState {
-    workspaces: BTreeMap<UserWorkspaceId, RetainedWorkspaceState>,
-    active: Option<UserWorkspaceId>,
+    workspaces: BTreeMap<CatalogWorkspaceId, RetainedWorkspaceState>,
+    active: Option<CatalogWorkspaceId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceNavigationAction {
     Retain {
-        id: UserWorkspaceId,
+        id: CatalogWorkspaceId,
         surface: WorkspaceSurfaceState,
         card: WorkspaceCardState,
     },
-    SwitchTo(UserWorkspaceId),
+    SwitchTo(CatalogWorkspaceId),
     UpdateSurface {
-        id: UserWorkspaceId,
+        id: CatalogWorkspaceId,
         surface: WorkspaceSurfaceState,
     },
     UpdateCard {
-        id: UserWorkspaceId,
+        id: CatalogWorkspaceId,
         card: WorkspaceCardState,
     },
-    Archive(UserWorkspaceId),
-    Resume(UserWorkspaceId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NavigationError {
-    DuplicateWorkspace(UserWorkspaceId),
-    UnknownWorkspace(UserWorkspaceId),
-    ArchivedWorkspace(UserWorkspaceId),
+    DuplicateWorkspace(CatalogWorkspaceId),
+    UnknownWorkspace(CatalogWorkspaceId),
+    ArchivedWorkspace(CatalogWorkspaceId),
     InvalidSurface(SurfaceValidationError),
+    TerminalOwnedByWorkspace {
+        terminal: TerminalBindingId,
+        owner: CatalogWorkspaceId,
+    },
+    StaleCard,
+    Catalog(WorkspaceCatalogError),
 }
-
 impl fmt::Display for NavigationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DuplicateWorkspace(id) => write!(formatter, "workspace {id} is already retained"),
-            Self::UnknownWorkspace(id) => write!(formatter, "workspace {id} is not retained"),
-            Self::ArchivedWorkspace(id) => write!(formatter, "workspace {id} is archived"),
-            Self::InvalidSurface(error) => error.fmt(formatter),
+            Self::DuplicateWorkspace(id) => write!(f, "workspace {id} is already retained"),
+            Self::UnknownWorkspace(id) => write!(f, "workspace {id} is not retained"),
+            Self::ArchivedWorkspace(id) => write!(f, "workspace {id} is archived"),
+            Self::InvalidSurface(error) => error.fmt(f),
+            Self::TerminalOwnedByWorkspace { terminal, owner } => write!(
+                f,
+                "terminal {terminal} is already owned by workspace {owner}"
+            ),
+            Self::StaleCard => f.write_str("workspace card observation is stale"),
+            Self::Catalog(error) => error.fmt(f),
         }
     }
 }
-
 impl std::error::Error for NavigationError {}
 
 impl WorkspaceNavigationState {
     #[must_use]
-    pub const fn active(&self) -> Option<UserWorkspaceId> {
+    pub const fn active(&self) -> Option<CatalogWorkspaceId> {
         self.active
     }
-
     #[must_use]
-    pub fn workspace(&self, id: UserWorkspaceId) -> Option<&RetainedWorkspaceState> {
+    pub fn workspace(&self, id: CatalogWorkspaceId) -> Option<&RetainedWorkspaceState> {
         self.workspaces.get(&id)
     }
-
     pub fn workspaces(
         &self,
-    ) -> impl ExactSizeIterator<Item = (UserWorkspaceId, &RetainedWorkspaceState)> {
-        self.workspaces
-            .iter()
-            .map(|(id, workspace)| (*id, workspace))
+    ) -> impl ExactSizeIterator<Item = (CatalogWorkspaceId, &RetainedWorkspaceState)> {
+        self.workspaces.iter().map(|(id, value)| (*id, value))
     }
 
-    pub fn reduce(&mut self, action: WorkspaceNavigationAction) -> Result<(), NavigationError> {
+    /// Reconciles visibility after the catalog owner archives or removes a
+    /// workspace. Snapshots stay retained; only active visibility follows the
+    /// authoritative catalog lifecycle.
+    pub fn reconcile_catalog(&mut self, catalog: &ProjectCatalog) {
+        if self.active.is_some_and(|id| {
+            catalog.workspace(id).map_or(true, |workspace| {
+                workspace.lifecycle() == UserWorkspaceLifecycle::Archived
+            })
+        }) {
+            self.active = None;
+        }
+    }
+
+    pub fn reduce(
+        &mut self,
+        catalog: &ProjectCatalog,
+        action: WorkspaceNavigationAction,
+    ) -> Result<(), NavigationError> {
         match action {
             WorkspaceNavigationAction::Retain { id, surface, card } => {
+                catalog.workspace(id).map_err(NavigationError::Catalog)?;
                 surface
-                    .validate()
+                    .validate_for(catalog, id)
                     .map_err(NavigationError::InvalidSurface)?;
                 if self.workspaces.contains_key(&id) {
                     return Err(NavigationError::DuplicateWorkspace(id));
                 }
-                self.workspaces.insert(
-                    id,
-                    RetainedWorkspaceState {
-                        lifecycle: RetainedWorkspaceLifecycle::Active,
-                        surface,
-                        card,
-                    },
-                );
-                self.active.get_or_insert(id);
+                self.ensure_terminal_ownership(id, &surface)?;
+                self.workspaces
+                    .insert(id, RetainedWorkspaceState { surface, card });
+                if self.active.is_none()
+                    && catalog
+                        .workspace(id)
+                        .map_err(NavigationError::Catalog)?
+                        .lifecycle()
+                        == UserWorkspaceLifecycle::Active
+                {
+                    self.active = Some(id);
+                }
             }
             WorkspaceNavigationAction::SwitchTo(id) => {
-                let workspace = self
-                    .workspaces
-                    .get(&id)
-                    .ok_or(NavigationError::UnknownWorkspace(id))?;
-                if workspace.lifecycle == RetainedWorkspaceLifecycle::Archived {
+                if !self.workspaces.contains_key(&id) {
+                    return Err(NavigationError::UnknownWorkspace(id));
+                }
+                if catalog
+                    .workspace(id)
+                    .map_err(NavigationError::Catalog)?
+                    .lifecycle()
+                    == UserWorkspaceLifecycle::Archived
+                {
                     return Err(NavigationError::ArchivedWorkspace(id));
                 }
                 self.active = Some(id);
             }
             WorkspaceNavigationAction::UpdateSurface { id, surface } => {
+                if !self.workspaces.contains_key(&id) {
+                    return Err(NavigationError::UnknownWorkspace(id));
+                }
                 surface
-                    .validate()
+                    .validate_for(catalog, id)
                     .map_err(NavigationError::InvalidSurface)?;
-                self.workspace_mut(id)?.surface = surface;
+                self.ensure_terminal_ownership(id, &surface)?;
+                self.workspaces.get_mut(&id).expect("checked above").surface = surface;
             }
             WorkspaceNavigationAction::UpdateCard { id, card } => {
-                self.workspace_mut(id)?.card = card;
-            }
-            WorkspaceNavigationAction::Archive(id) => {
-                self.workspace_mut(id)?.lifecycle = RetainedWorkspaceLifecycle::Archived;
-                if self.active == Some(id) {
-                    self.active = None;
+                let workspace = self
+                    .workspaces
+                    .get_mut(&id)
+                    .ok_or(NavigationError::UnknownWorkspace(id))?;
+                if (card.source_revision, card.observed_at_millis)
+                    < (
+                        workspace.card.source_revision,
+                        workspace.card.observed_at_millis,
+                    )
+                {
+                    return Err(NavigationError::StaleCard);
                 }
-            }
-            WorkspaceNavigationAction::Resume(id) => {
-                self.workspace_mut(id)?.lifecycle = RetainedWorkspaceLifecycle::Active;
+                workspace.card = card;
             }
         }
         Ok(())
     }
 
-    fn workspace_mut(
-        &mut self,
-        id: UserWorkspaceId,
-    ) -> Result<&mut RetainedWorkspaceState, NavigationError> {
-        self.workspaces
-            .get_mut(&id)
-            .ok_or(NavigationError::UnknownWorkspace(id))
+    fn ensure_terminal_ownership(
+        &self,
+        target: CatalogWorkspaceId,
+        surface: &WorkspaceSurfaceState,
+    ) -> Result<(), NavigationError> {
+        let incoming = surface.terminal_ids();
+        for (owner, workspace) in &self.workspaces {
+            if *owner == target {
+                continue;
+            }
+            if let Some(terminal) = workspace
+                .surface
+                .terminal_ids()
+                .intersection(&incoming)
+                .next()
+            {
+                return Err(NavigationError::TerminalOwnedByWorkspace {
+                    terminal: *terminal,
+                    owner: *owner,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -488,6 +650,17 @@ pub enum WorkspaceCreatePhase {
     CreatingWorkspace,
     BindingRuntime,
 }
+impl WorkspaceCreatePhase {
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Queued => Some(Self::ResolvingHost),
+            Self::ResolvingHost => Some(Self::PreparingCheckout),
+            Self::PreparingCheckout => Some(Self::CreatingWorkspace),
+            Self::CreatingWorkspace => Some(Self::BindingRuntime),
+            Self::BindingRuntime => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceCreateProgress {
@@ -496,7 +669,6 @@ pub struct WorkspaceCreateProgress {
     pub total_steps: u32,
     pub detail: String,
 }
-
 impl Default for WorkspaceCreateProgress {
     fn default() -> Self {
         Self {
@@ -510,13 +682,12 @@ impl Default for WorkspaceCreateProgress {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceCreateConflict {
-    CheckoutAlreadyExists { root: PathBuf },
-    WorktreeLocked { root: PathBuf },
+    CheckoutAlreadyExists { root: String },
+    WorktreeLocked { root: String },
     BranchAlreadyCheckedOut { branch: String },
     HostUnavailable,
-    CatalogRevisionChanged,
+    CatalogRevisionChanged { expected: u64, actual: u64 },
 }
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceCreateFailureKind {
     Authorization,
@@ -525,7 +696,6 @@ pub enum WorkspaceCreateFailureKind {
     RuntimeUnavailable,
     Unknown,
 }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceCreateFailure {
     pub kind: WorkspaceCreateFailureKind,
@@ -537,37 +707,64 @@ pub struct WorkspaceCreateFailure {
 pub enum BackgroundWorkspaceCreateState {
     Running {
         operation: CreationOperationId,
+        catalog_revision: u64,
         progress: WorkspaceCreateProgress,
     },
     Cancelling {
         operation: CreationOperationId,
+        catalog_revision: u64,
         progress: WorkspaceCreateProgress,
     },
     Cancelled {
         operation: CreationOperationId,
+        catalog_revision: u64,
     },
     Conflict {
         operation: CreationOperationId,
+        catalog_revision: u64,
         conflict: WorkspaceCreateConflict,
     },
     Failed {
         operation: CreationOperationId,
+        catalog_revision: u64,
         failure: WorkspaceCreateFailure,
     },
     Completed {
         operation: CreationOperationId,
+        catalog_revision: u64,
     },
 }
-
 impl BackgroundWorkspaceCreateState {
     fn operation(&self) -> CreationOperationId {
         match self {
             Self::Running { operation, .. }
             | Self::Cancelling { operation, .. }
-            | Self::Cancelled { operation }
+            | Self::Cancelled { operation, .. }
             | Self::Conflict { operation, .. }
             | Self::Failed { operation, .. }
-            | Self::Completed { operation } => *operation,
+            | Self::Completed { operation, .. } => *operation,
+        }
+    }
+    fn catalog_revision(&self) -> u64 {
+        match self {
+            Self::Running {
+                catalog_revision, ..
+            }
+            | Self::Cancelling {
+                catalog_revision, ..
+            }
+            | Self::Cancelled {
+                catalog_revision, ..
+            }
+            | Self::Conflict {
+                catalog_revision, ..
+            }
+            | Self::Failed {
+                catalog_revision, ..
+            }
+            | Self::Completed {
+                catalog_revision, ..
+            } => *catalog_revision,
         }
     }
 }
@@ -575,38 +772,38 @@ impl BackgroundWorkspaceCreateState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceCreateEvent {
     Start {
-        workspace: UserWorkspaceId,
+        workspace: CatalogWorkspaceId,
         operation: CreationOperationId,
     },
     Progress {
-        workspace: UserWorkspaceId,
+        workspace: CatalogWorkspaceId,
         operation: CreationOperationId,
         progress: WorkspaceCreateProgress,
     },
     RequestCancel {
-        workspace: UserWorkspaceId,
+        workspace: CatalogWorkspaceId,
         operation: CreationOperationId,
     },
     Cancelled {
-        workspace: UserWorkspaceId,
+        workspace: CatalogWorkspaceId,
         operation: CreationOperationId,
     },
     Conflict {
-        workspace: UserWorkspaceId,
+        workspace: CatalogWorkspaceId,
         operation: CreationOperationId,
         conflict: WorkspaceCreateConflict,
     },
     Failed {
-        workspace: UserWorkspaceId,
+        workspace: CatalogWorkspaceId,
         operation: CreationOperationId,
         failure: WorkspaceCreateFailure,
     },
     Completed {
-        workspace: UserWorkspaceId,
+        workspace: CatalogWorkspaceId,
         operation: CreationOperationId,
     },
     Retry {
-        workspace: UserWorkspaceId,
+        workspace: CatalogWorkspaceId,
         prior_operation: CreationOperationId,
         operation: CreationOperationId,
     },
@@ -614,72 +811,68 @@ pub enum WorkspaceCreateEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceCreateError {
-    AlreadyRunning(UserWorkspaceId),
+    ExistingJob(CatalogWorkspaceId),
     ReusedOperation(CreationOperationId),
-    UnknownWorkspaceJob(UserWorkspaceId),
+    UnknownWorkspaceJob(CatalogWorkspaceId),
     StaleOperation {
         expected: CreationOperationId,
         received: CreationOperationId,
+    },
+    CatalogRevisionChanged {
+        expected: u64,
+        actual: u64,
     },
     InvalidTransition,
     InvalidProgress,
     ProgressRegressed,
 }
-
 impl fmt::Display for WorkspaceCreateError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AlreadyRunning(workspace) => {
-                write!(
-                    formatter,
-                    "workspace {workspace} already has a running create"
-                )
-            }
-            Self::ReusedOperation(operation) => {
-                write!(formatter, "create operation {operation} was already used")
-            }
-            Self::UnknownWorkspaceJob(workspace) => {
-                write!(formatter, "workspace {workspace} has no create job")
-            }
+            Self::ExistingJob(id) => write!(f, "workspace {id} already has a create job"),
+            Self::ReusedOperation(id) => write!(f, "create operation {id} was already used"),
+            Self::UnknownWorkspaceJob(id) => write!(f, "workspace {id} has no create job"),
             Self::StaleOperation { expected, received } => write!(
-                formatter,
+                f,
                 "stale create operation {received}; current operation is {expected}"
             ),
-            Self::InvalidTransition => formatter.write_str("invalid workspace-create transition"),
-            Self::InvalidProgress => formatter.write_str("invalid workspace-create progress"),
+            Self::CatalogRevisionChanged { expected, actual } => {
+                write!(f, "catalog revision changed from {expected} to {actual}")
+            }
+            Self::InvalidTransition => f.write_str("invalid workspace-create transition"),
+            Self::InvalidProgress => f.write_str("invalid workspace-create progress"),
             Self::ProgressRegressed => {
-                formatter.write_str("workspace-create progress cannot move backwards")
+                f.write_str("workspace-create progress cannot move backwards")
             }
         }
     }
 }
-
 impl std::error::Error for WorkspaceCreateError {}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WorkspaceCreationReducer {
-    jobs: BTreeMap<UserWorkspaceId, BackgroundWorkspaceCreateState>,
+    jobs: BTreeMap<CatalogWorkspaceId, BackgroundWorkspaceCreateState>,
     seen_operations: BTreeSet<CreationOperationId>,
 }
 
 impl WorkspaceCreationReducer {
     #[must_use]
-    pub fn state(&self, workspace: UserWorkspaceId) -> Option<&BackgroundWorkspaceCreateState> {
+    pub fn state(&self, workspace: CatalogWorkspaceId) -> Option<&BackgroundWorkspaceCreateState> {
         self.jobs.get(&workspace)
     }
 
-    pub fn reduce(&mut self, event: WorkspaceCreateEvent) -> Result<(), WorkspaceCreateError> {
+    pub fn reduce(
+        &mut self,
+        catalog_revision: u64,
+        event: WorkspaceCreateEvent,
+    ) -> Result<(), WorkspaceCreateError> {
         match event {
             WorkspaceCreateEvent::Start {
                 workspace,
                 operation,
             } => {
-                if matches!(
-                    self.jobs.get(&workspace),
-                    Some(BackgroundWorkspaceCreateState::Running { .. })
-                        | Some(BackgroundWorkspaceCreateState::Cancelling { .. })
-                ) {
-                    return Err(WorkspaceCreateError::AlreadyRunning(workspace));
+                if self.jobs.contains_key(&workspace) {
+                    return Err(WorkspaceCreateError::ExistingJob(workspace));
                 }
                 if !self.seen_operations.insert(operation) {
                     return Err(WorkspaceCreateError::ReusedOperation(operation));
@@ -688,6 +881,7 @@ impl WorkspaceCreationReducer {
                     workspace,
                     BackgroundWorkspaceCreateState::Running {
                         operation,
+                        catalog_revision,
                         progress: WorkspaceCreateProgress::default(),
                     },
                 );
@@ -698,16 +892,22 @@ impl WorkspaceCreationReducer {
                 progress,
             } => {
                 validate_progress(&progress)?;
-                let state = self.matching_state_mut(workspace, operation)?;
+                let state =
+                    self.matching_state_mut(workspace, operation, catalog_revision, false)?;
                 let BackgroundWorkspaceCreateState::Running {
                     progress: previous, ..
                 } = state
                 else {
                     return Err(WorkspaceCreateError::InvalidTransition);
                 };
-                if progress.phase < previous.phase
-                    || (progress.phase == previous.phase
-                        && progress.completed_steps < previous.completed_steps)
+                if progress.phase == previous.phase {
+                    if progress.total_steps != previous.total_steps
+                        || progress.completed_steps < previous.completed_steps
+                    {
+                        return Err(WorkspaceCreateError::ProgressRegressed);
+                    }
+                } else if previous.phase.next() != Some(progress.phase)
+                    || previous.completed_steps != previous.total_steps
                 {
                     return Err(WorkspaceCreateError::ProgressRegressed);
                 }
@@ -717,13 +917,21 @@ impl WorkspaceCreationReducer {
                 workspace,
                 operation,
             } => {
-                let state = self.matching_state_mut(workspace, operation)?;
-                let BackgroundWorkspaceCreateState::Running { progress, .. } = state else {
+                let state =
+                    self.matching_state_mut(workspace, operation, catalog_revision, true)?;
+                let BackgroundWorkspaceCreateState::Running {
+                    catalog_revision,
+                    progress,
+                    ..
+                } = state
+                else {
                     return Err(WorkspaceCreateError::InvalidTransition);
                 };
+                let revision = *catalog_revision;
                 let progress = progress.clone();
                 *state = BackgroundWorkspaceCreateState::Cancelling {
                     operation,
+                    catalog_revision: revision,
                     progress,
                 };
             }
@@ -731,18 +939,37 @@ impl WorkspaceCreationReducer {
                 workspace,
                 operation,
             } => {
-                let state = self.matching_state_mut(workspace, operation)?;
-                if !matches!(state, BackgroundWorkspaceCreateState::Cancelling { .. }) {
+                let state =
+                    self.matching_state_mut(workspace, operation, catalog_revision, true)?;
+                let BackgroundWorkspaceCreateState::Cancelling {
+                    catalog_revision, ..
+                } = state
+                else {
                     return Err(WorkspaceCreateError::InvalidTransition);
-                }
-                *state = BackgroundWorkspaceCreateState::Cancelled { operation };
+                };
+                let revision = *catalog_revision;
+                *state = BackgroundWorkspaceCreateState::Cancelled {
+                    operation,
+                    catalog_revision: revision,
+                };
             }
             WorkspaceCreateEvent::Conflict {
                 workspace,
                 operation,
                 conflict,
             } => {
-                let state = self.matching_state_mut(workspace, operation)?;
+                let stored_revision = self
+                    .jobs
+                    .get(&workspace)
+                    .map(BackgroundWorkspaceCreateState::catalog_revision)
+                    .ok_or(WorkspaceCreateError::UnknownWorkspaceJob(workspace))?;
+                let allow_revision_change = matches!(conflict, WorkspaceCreateConflict::CatalogRevisionChanged { expected, actual } if expected == stored_revision && expected != actual && actual == catalog_revision);
+                let state = self.matching_state_mut(
+                    workspace,
+                    operation,
+                    catalog_revision,
+                    allow_revision_change,
+                )?;
                 if !matches!(
                     state,
                     BackgroundWorkspaceCreateState::Running { .. }
@@ -750,8 +977,10 @@ impl WorkspaceCreationReducer {
                 ) {
                     return Err(WorkspaceCreateError::InvalidTransition);
                 }
+                let revision = state.catalog_revision();
                 *state = BackgroundWorkspaceCreateState::Conflict {
                     operation,
+                    catalog_revision: revision,
                     conflict,
                 };
             }
@@ -760,7 +989,8 @@ impl WorkspaceCreationReducer {
                 operation,
                 failure,
             } => {
-                let state = self.matching_state_mut(workspace, operation)?;
+                let state =
+                    self.matching_state_mut(workspace, operation, catalog_revision, false)?;
                 if !matches!(
                     state,
                     BackgroundWorkspaceCreateState::Running { .. }
@@ -768,17 +998,30 @@ impl WorkspaceCreationReducer {
                 ) {
                     return Err(WorkspaceCreateError::InvalidTransition);
                 }
-                *state = BackgroundWorkspaceCreateState::Failed { operation, failure };
+                *state = BackgroundWorkspaceCreateState::Failed {
+                    operation,
+                    catalog_revision,
+                    failure,
+                };
             }
             WorkspaceCreateEvent::Completed {
                 workspace,
                 operation,
             } => {
-                let state = self.matching_state_mut(workspace, operation)?;
-                if !matches!(state, BackgroundWorkspaceCreateState::Running { .. }) {
+                let state =
+                    self.matching_state_mut(workspace, operation, catalog_revision, false)?;
+                let BackgroundWorkspaceCreateState::Running { progress, .. } = state else {
+                    return Err(WorkspaceCreateError::InvalidTransition);
+                };
+                if progress.phase != WorkspaceCreatePhase::BindingRuntime
+                    || progress.completed_steps != progress.total_steps
+                {
                     return Err(WorkspaceCreateError::InvalidTransition);
                 }
-                *state = BackgroundWorkspaceCreateState::Completed { operation };
+                *state = BackgroundWorkspaceCreateState::Completed {
+                    operation,
+                    catalog_revision,
+                };
             }
             WorkspaceCreateEvent::Retry {
                 workspace,
@@ -786,7 +1029,12 @@ impl WorkspaceCreationReducer {
                 operation,
             } => {
                 {
-                    let state = self.matching_state_mut(workspace, prior_operation)?;
+                    let state = self.matching_state_mut(
+                        workspace,
+                        prior_operation,
+                        catalog_revision,
+                        true,
+                    )?;
                     if !matches!(
                         state,
                         BackgroundWorkspaceCreateState::Cancelled { .. }
@@ -805,9 +1053,10 @@ impl WorkspaceCreationReducer {
                 if !self.seen_operations.insert(operation) {
                     return Err(WorkspaceCreateError::ReusedOperation(operation));
                 }
-                let state = self.matching_state_mut(workspace, prior_operation)?;
+                let state = self.jobs.get_mut(&workspace).expect("checked above");
                 *state = BackgroundWorkspaceCreateState::Running {
                     operation,
+                    catalog_revision,
                     progress: WorkspaceCreateProgress::default(),
                 };
             }
@@ -817,18 +1066,27 @@ impl WorkspaceCreationReducer {
 
     fn matching_state_mut(
         &mut self,
-        workspace: UserWorkspaceId,
+        workspace: CatalogWorkspaceId,
         operation: CreationOperationId,
+        catalog_revision: u64,
+        allow_revision_change: bool,
     ) -> Result<&mut BackgroundWorkspaceCreateState, WorkspaceCreateError> {
         let state = self
             .jobs
             .get_mut(&workspace)
             .ok_or(WorkspaceCreateError::UnknownWorkspaceJob(workspace))?;
-        let expected = state.operation();
-        if expected != operation {
+        let expected_operation = state.operation();
+        if expected_operation != operation {
             return Err(WorkspaceCreateError::StaleOperation {
-                expected,
+                expected: expected_operation,
                 received: operation,
+            });
+        }
+        let expected_revision = state.catalog_revision();
+        if expected_revision != catalog_revision && !allow_revision_change {
+            return Err(WorkspaceCreateError::CatalogRevisionChanged {
+                expected: expected_revision,
+                actual: catalog_revision,
             });
         }
         Ok(state)
@@ -845,319 +1103,398 @@ fn validate_progress(progress: &WorkspaceCreateProgress) -> Result<(), Workspace
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::workspace_catalog::{
+        CatalogProjectId, CheckoutHost, PlatformContextRef, PlatformMappingReconciliation,
+        PlatformV2Mapping, ProjectCheckout, ProjectRecord, RepositoryIdentity,
+        WorkspaceLaunchIntake, WorkspaceLaunchRequest,
+    };
 
     fn uuid(value: u128) -> Uuid {
         Uuid::from_u128(value)
     }
-
-    fn workspace(value: u128) -> UserWorkspaceId {
-        UserWorkspaceId::from_uuid(uuid(value))
+    fn workspace(value: u128) -> CatalogWorkspaceId {
+        CatalogWorkspaceId::from_uuid(uuid(value))
     }
-
-    fn terminal_tab(
-        tab: u128,
-        binding: u128,
-        checkout: u128,
-        scrollback: usize,
-        draft: &str,
-    ) -> WorkspaceTab {
-        WorkspaceTab {
-            id: WorkspaceTabId::from_uuid(uuid(tab)),
-            title: "Terminal".into(),
-            content: WorkspaceTabContent::Terminal(TerminalSurface {
-                binding: TerminalBinding {
-                    id: TerminalBindingId::from_uuid(uuid(binding)),
-                    authority: TerminalAuthority::Local {
-                        checkout_id: CheckoutId::from_uuid(uuid(checkout)),
-                    },
-                },
-                viewport: TerminalViewport {
-                    scrollback_offset_lines: scrollback,
-                    follow_output: false,
-                },
-                draft: draft.into(),
-            }),
+    fn checkout(value: u128) -> CatalogCheckoutId {
+        CatalogCheckoutId::from_uuid(uuid(value))
+    }
+    fn catalog() -> ProjectCatalog {
+        let mut project = ProjectRecord::new(CatalogProjectId::from_uuid(uuid(1)), "ShellDeck");
+        project.add_checkout(ProjectCheckout::new(
+            checkout(2),
+            "Local",
+            CheckoutHost::Local {
+                device_label: "Local".into(),
+                root: std::env::temp_dir().join("shelldeck"),
+            },
+            RepositoryIdentity {
+                slug: "benfavre/shelldeck".into(),
+                canonical_url: None,
+            },
+        ));
+        project.add_checkout(ProjectCheckout::new(
+            checkout(3),
+            "SSH",
+            CheckoutHost::Ssh {
+                connection_id: uuid(4),
+                root: crate::config::workspace_catalog::RemotePosixPath::new("/srv/shelldeck")
+                    .unwrap(),
+            },
+            RepositoryIdentity {
+                slug: "benfavre/shelldeck".into(),
+                canonical_url: None,
+            },
+        ));
+        let mut catalog = ProjectCatalog::default();
+        catalog.insert_project(project).unwrap();
+        for (id, checkout_id) in [(10, checkout(2)), (11, checkout(2)), (12, checkout(3))] {
+            catalog
+                .create_workspace(WorkspaceLaunchRequest {
+                    id: workspace(id),
+                    project_id: CatalogProjectId::from_uuid(uuid(1)),
+                    checkout_id,
+                    name: format!("Workspace {id}"),
+                    intake: WorkspaceLaunchIntake::Manual,
+                })
+                .unwrap();
         }
+        catalog
     }
-
-    fn one_pane_surface(
-        pane: u128,
-        tab: u128,
+    fn terminal_surface(
         binding: u128,
-        checkout: u128,
-        scrollback: usize,
-        draft: &str,
+        checkout_id: CatalogCheckoutId,
+        ssh: Option<Uuid>,
     ) -> WorkspaceSurfaceState {
-        let pane_id = PaneId::from_uuid(uuid(pane));
-        let tab = terminal_tab(tab, binding, checkout, scrollback, draft);
-        let tab_id = tab.id;
+        let pane = PaneId::from_uuid(uuid(binding + 100));
+        let tab = WorkspaceTabId::from_uuid(uuid(binding + 200));
+        let authority = match ssh {
+            Some(connection_id) => TerminalAuthority::Ssh {
+                checkout_id,
+                connection_id,
+            },
+            None => TerminalAuthority::Local { checkout_id },
+        };
         WorkspaceSurfaceState {
             root: Some(PaneNode::Leaf(PaneLeaf {
-                id: pane_id,
-                tabs: vec![tab],
-                active_tab: Some(tab_id),
+                id: pane,
+                tabs: vec![WorkspaceTab {
+                    id: tab,
+                    title: "Terminal".into(),
+                    content: WorkspaceTabContent::Terminal(TerminalSurface {
+                        binding: TerminalBinding {
+                            id: TerminalBindingId::from_uuid(uuid(binding)),
+                            authority,
+                        },
+                        viewport: TerminalViewport::default(),
+                        draft: "draft".into(),
+                    }),
+                }],
+                active_tab: Some(tab),
             })),
-            focus: Some(WorkspaceFocus { pane_id, tab_id }),
+            focus: Some(WorkspaceFocus {
+                pane_id: pane,
+                tab_id: tab,
+            }),
         }
     }
 
     // SDTEST-1731
     #[test]
-    fn keyed_switch_restores_exact_layout_focus_scrollback_drafts_and_hidden_terminals() {
-        let first_id = workspace(1);
-        let second_id = workspace(2);
-        let first_surface = one_pane_surface(10, 11, 12, 13, 240, "cargo test");
-        let second_surface = one_pane_surface(20, 21, 22, 23, 9, "git status");
-        let mut state = WorkspaceNavigationState::default();
-
-        state
-            .reduce(WorkspaceNavigationAction::Retain {
-                id: first_id,
-                surface: first_surface.clone(),
-                card: WorkspaceCardState::default(),
-            })
-            .expect("retain first");
-        state
-            .reduce(WorkspaceNavigationAction::Retain {
-                id: second_id,
-                surface: second_surface.clone(),
-                card: WorkspaceCardState::default(),
-            })
-            .expect("retain second");
-        state
-            .reduce(WorkspaceNavigationAction::SwitchTo(second_id))
-            .expect("switch second");
-        state
-            .reduce(WorkspaceNavigationAction::SwitchTo(first_id))
-            .expect("switch first");
-
-        assert_eq!(state.active(), Some(first_id));
-        assert_eq!(state.workspaces().len(), 2);
-        assert_eq!(state.workspace(first_id).unwrap().surface, first_surface);
-        assert_eq!(state.workspace(second_id).unwrap().surface, second_surface);
-
-        state
-            .reduce(WorkspaceNavigationAction::Archive(first_id))
-            .expect("archive");
-        assert_eq!(state.active(), None);
-        assert_eq!(state.workspace(first_id).unwrap().surface, first_surface);
-        state
-            .reduce(WorkspaceNavigationAction::Resume(first_id))
-            .expect("resume");
-        state
-            .reduce(WorkspaceNavigationAction::SwitchTo(first_id))
-            .expect("switch resumed");
-        assert_eq!(state.workspace(first_id).unwrap().surface, first_surface);
+    fn navigation_rejects_cross_workspace_terminal_reuse_and_stale_card_observations() {
+        let mut catalog = catalog();
+        let mut navigation = WorkspaceNavigationState::default();
+        let first = terminal_surface(20, checkout(2), None);
+        navigation
+            .reduce(
+                &catalog,
+                WorkspaceNavigationAction::Retain {
+                    id: workspace(10),
+                    surface: first.clone(),
+                    card: WorkspaceCardState {
+                        source_revision: 5,
+                        observed_at_millis: 50,
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        let error = navigation
+            .reduce(
+                &catalog,
+                WorkspaceNavigationAction::Retain {
+                    id: workspace(11),
+                    surface: first,
+                    card: WorkspaceCardState::default(),
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, NavigationError::TerminalOwnedByWorkspace { owner, .. } if owner == workspace(10))
+        );
+        assert_eq!(
+            navigation.reduce(
+                &catalog,
+                WorkspaceNavigationAction::UpdateCard {
+                    id: workspace(10),
+                    card: WorkspaceCardState {
+                        source_revision: 4,
+                        observed_at_millis: 100,
+                        ..Default::default()
+                    }
+                }
+            ),
+            Err(NavigationError::StaleCard)
+        );
+        let second = terminal_surface(21, checkout(2), None);
+        navigation
+            .reduce(
+                &catalog,
+                WorkspaceNavigationAction::Retain {
+                    id: workspace(11),
+                    surface: second,
+                    card: WorkspaceCardState::default(),
+                },
+            )
+            .unwrap();
+        navigation
+            .reduce(&catalog, WorkspaceNavigationAction::SwitchTo(workspace(11)))
+            .unwrap();
+        navigation
+            .reduce(&catalog, WorkspaceNavigationAction::SwitchTo(workspace(10)))
+            .unwrap();
+        assert_eq!(navigation.active(), Some(workspace(10)));
+        assert_eq!(
+            navigation
+                .workspace(workspace(10))
+                .expect("retained first")
+                .surface,
+            terminal_surface(20, checkout(2), None)
+        );
+        catalog.archive_workspace(workspace(10)).unwrap();
+        navigation.reconcile_catalog(&catalog);
+        assert_eq!(navigation.active(), None);
     }
 
     // SDTEST-1732
     #[test]
-    fn surface_validation_rejects_ambiguous_focus_tabs_splits_and_terminal_identity_reuse() {
-        let shared_binding = TerminalBindingId::from_uuid(uuid(90));
-        let first_tab = terminal_tab(31, 90, 33, 0, "");
-        let mut second_tab = terminal_tab(41, 91, 43, 0, "");
-        if let WorkspaceTabContent::Terminal(terminal) = &mut second_tab.content {
-            terminal.binding.id = shared_binding;
-        }
-        let invalid = WorkspaceSurfaceState {
-            root: Some(PaneNode::Split {
-                axis: SplitAxis::Horizontal,
-                ratio_basis_points: 5_000,
-                first: Box::new(PaneNode::Leaf(PaneLeaf {
-                    id: PaneId::from_uuid(uuid(30)),
-                    active_tab: Some(first_tab.id),
-                    tabs: vec![first_tab],
-                })),
-                second: Box::new(PaneNode::Leaf(PaneLeaf {
-                    id: PaneId::from_uuid(uuid(40)),
-                    active_tab: Some(second_tab.id),
-                    tabs: vec![second_tab],
-                })),
-            }),
-            focus: None,
-        };
+    fn catalog_context_rejects_checkout_and_ssh_connection_authority_mismatches() {
+        let catalog = catalog();
+        assert!(matches!(
+            terminal_surface(30, checkout(3), None).validate_for(&catalog, workspace(10)),
+            Err(SurfaceValidationError::CheckoutAuthorityMismatch(_))
+        ));
         assert_eq!(
-            invalid.validate(),
-            Err(SurfaceValidationError::DuplicateTerminalBinding(
-                shared_binding
-            ))
+            terminal_surface(31, checkout(3), Some(uuid(99))).validate_for(&catalog, workspace(12)),
+            Err(SurfaceValidationError::HostAuthorityMismatch)
         );
-
-        let bad_ratio = WorkspaceSurfaceState {
-            root: Some(PaneNode::Split {
-                axis: SplitAxis::Vertical,
-                ratio_basis_points: 10_000,
-                first: Box::new(PaneNode::Leaf(PaneLeaf {
-                    id: PaneId::from_uuid(uuid(50)),
-                    tabs: Vec::new(),
-                    active_tab: None,
-                })),
-                second: Box::new(PaneNode::Leaf(PaneLeaf {
-                    id: PaneId::from_uuid(uuid(51)),
-                    tabs: Vec::new(),
-                    active_tab: None,
-                })),
-            }),
-            focus: None,
-        };
-        assert_eq!(
-            bad_ratio.validate(),
-            Err(SurfaceValidationError::InvalidSplitRatio(10_000))
-        );
-
-        let bad_focus = WorkspaceSurfaceState {
-            root: None,
-            focus: Some(WorkspaceFocus {
-                pane_id: PaneId::from_uuid(uuid(60)),
-                tab_id: WorkspaceTabId::from_uuid(uuid(61)),
-            }),
-        };
-        assert_eq!(
-            bad_focus.validate(),
-            Err(SurfaceValidationError::FocusWithoutSurface)
-        );
+        terminal_surface(32, checkout(3), Some(uuid(4)))
+            .validate_for(&catalog, workspace(12))
+            .expect("exact SSH authority");
     }
 
     // SDTEST-1733
     #[test]
-    fn background_creation_progress_cancel_conflict_and_retry_ignore_stale_operations() {
-        let workspace = workspace(70);
-        let first = CreationOperationId::from_uuid(uuid(71));
-        let retry = CreationOperationId::from_uuid(uuid(72));
+    fn creation_requires_strict_progress_retry_and_catalog_revision_fences() {
+        let id = workspace(10);
+        let operation = CreationOperationId::from_uuid(uuid(40));
+        let retry = CreationOperationId::from_uuid(uuid(41));
         let mut reducer = WorkspaceCreationReducer::default();
-
         reducer
-            .reduce(WorkspaceCreateEvent::Start {
-                workspace,
-                operation: first,
-            })
-            .expect("start");
-        reducer
-            .reduce(WorkspaceCreateEvent::Progress {
-                workspace,
-                operation: first,
-                progress: WorkspaceCreateProgress {
-                    phase: WorkspaceCreatePhase::PreparingCheckout,
-                    completed_steps: 2,
-                    total_steps: 5,
-                    detail: "Preparing worktree".into(),
+            .reduce(
+                7,
+                WorkspaceCreateEvent::Start {
+                    workspace: id,
+                    operation,
                 },
-            })
-            .expect("progress");
-        reducer
-            .reduce(WorkspaceCreateEvent::RequestCancel {
-                workspace,
-                operation: first,
-            })
-            .expect("request cancel");
-        reducer
-            .reduce(WorkspaceCreateEvent::Conflict {
-                workspace,
-                operation: first,
-                conflict: WorkspaceCreateConflict::WorktreeLocked {
-                    root: PathBuf::from("workspaces").join("issue-127"),
-                },
-            })
-            .expect("typed conflict while cancelling");
+            )
+            .unwrap();
         assert_eq!(
-            reducer.reduce(WorkspaceCreateEvent::Retry {
-                workspace,
-                prior_operation: first,
-                operation: first,
-            }),
-            Err(WorkspaceCreateError::ReusedOperation(first))
-        );
-        reducer
-            .reduce(WorkspaceCreateEvent::Retry {
-                workspace,
-                prior_operation: first,
-                operation: retry,
-            })
-            .expect("retry");
-
-        let stale = reducer.reduce(WorkspaceCreateEvent::Completed {
-            workspace,
-            operation: first,
-        });
-        assert_eq!(
-            stale,
-            Err(WorkspaceCreateError::StaleOperation {
-                expected: retry,
-                received: first,
-            })
-        );
-        assert!(matches!(
-            reducer.state(workspace),
-            Some(BackgroundWorkspaceCreateState::Running {
-                operation,
-                progress: WorkspaceCreateProgress {
-                    phase: WorkspaceCreatePhase::Queued,
-                    ..
+            reducer.reduce(
+                7,
+                WorkspaceCreateEvent::Completed {
+                    workspace: id,
+                    operation
                 }
-            }) if *operation == retry
-        ));
+            ),
+            Err(WorkspaceCreateError::InvalidTransition)
+        );
+        reducer
+            .reduce(
+                7,
+                WorkspaceCreateEvent::Progress {
+                    workspace: id,
+                    operation,
+                    progress: WorkspaceCreateProgress {
+                        phase: WorkspaceCreatePhase::Queued,
+                        completed_steps: 1,
+                        total_steps: 1,
+                        detail: "Queued".into(),
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            reducer.reduce(
+                7,
+                WorkspaceCreateEvent::Progress {
+                    workspace: id,
+                    operation,
+                    progress: WorkspaceCreateProgress {
+                        phase: WorkspaceCreatePhase::Queued,
+                        completed_steps: 1,
+                        total_steps: 2,
+                        detail: "Regressed fraction".into(),
+                    },
+                }
+            ),
+            Err(WorkspaceCreateError::ProgressRegressed)
+        );
+        assert_eq!(
+            reducer.reduce(
+                8,
+                WorkspaceCreateEvent::Progress {
+                    workspace: id,
+                    operation,
+                    progress: WorkspaceCreateProgress {
+                        phase: WorkspaceCreatePhase::Queued,
+                        completed_steps: 1,
+                        total_steps: 1,
+                        detail: String::new()
+                    }
+                }
+            ),
+            Err(WorkspaceCreateError::CatalogRevisionChanged {
+                expected: 7,
+                actual: 8
+            })
+        );
+        reducer
+            .reduce(
+                8,
+                WorkspaceCreateEvent::Conflict {
+                    workspace: id,
+                    operation,
+                    conflict: WorkspaceCreateConflict::CatalogRevisionChanged {
+                        expected: 7,
+                        actual: 8,
+                    },
+                },
+            )
+            .unwrap();
+        reducer
+            .reduce(
+                8,
+                WorkspaceCreateEvent::Retry {
+                    workspace: id,
+                    prior_operation: operation,
+                    operation: retry,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            reducer.reduce(
+                8,
+                WorkspaceCreateEvent::Start {
+                    workspace: id,
+                    operation: CreationOperationId::from_uuid(uuid(42))
+                }
+            ),
+            Err(WorkspaceCreateError::ExistingJob(id))
+        );
+
+        let non_retryable_workspace = workspace(11);
+        let failed_operation = CreationOperationId::from_uuid(uuid(43));
+        reducer
+            .reduce(
+                8,
+                WorkspaceCreateEvent::Start {
+                    workspace: non_retryable_workspace,
+                    operation: failed_operation,
+                },
+            )
+            .unwrap();
+        reducer
+            .reduce(
+                8,
+                WorkspaceCreateEvent::Failed {
+                    workspace: non_retryable_workspace,
+                    operation: failed_operation,
+                    failure: WorkspaceCreateFailure {
+                        kind: WorkspaceCreateFailureKind::Authorization,
+                        message: "Denied".into(),
+                        retryable: false,
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            reducer.reduce(
+                8,
+                WorkspaceCreateEvent::Retry {
+                    workspace: non_retryable_workspace,
+                    prior_operation: failed_operation,
+                    operation: CreationOperationId::from_uuid(uuid(44)),
+                }
+            ),
+            Err(WorkspaceCreateError::InvalidTransition)
+        );
     }
 
     // SDTEST-1734
     #[test]
-    fn local_ssh_and_provider_bindings_share_a_surface_without_sharing_authority() {
-        let local = WorkspaceTab {
-            id: WorkspaceTabId::from_uuid(uuid(81)),
-            title: "Local".into(),
-            content: WorkspaceTabContent::Terminal(TerminalSurface {
-                binding: TerminalBinding {
-                    id: TerminalBindingId::from_uuid(uuid(82)),
-                    authority: TerminalAuthority::Local {
-                        checkout_id: CheckoutId::from_uuid(uuid(83)),
-                    },
-                },
-                viewport: TerminalViewport::default(),
-                draft: String::new(),
-            }),
-        };
-        let ssh = WorkspaceTab {
-            id: WorkspaceTabId::from_uuid(uuid(84)),
-            title: "SSH".into(),
-            content: WorkspaceTabContent::Terminal(TerminalSurface {
-                binding: TerminalBinding {
-                    id: TerminalBindingId::from_uuid(uuid(85)),
-                    authority: TerminalAuthority::Ssh {
-                        checkout_id: CheckoutId::from_uuid(uuid(86)),
-                        connection_id: uuid(87),
-                    },
-                },
-                viewport: TerminalViewport::default(),
-                draft: String::new(),
-            }),
-        };
-        let provider = WorkspaceTab {
-            id: WorkspaceTabId::from_uuid(uuid(88)),
-            title: "Agent".into(),
-            content: WorkspaceTabContent::ProviderSession(ProviderSessionBinding {
-                authority: "tenant/project/workspace".into(),
-                session_id: "provider-session".into(),
-                run_id: Some("provider-run".into()),
-            }),
-        };
-        let pane = PaneId::from_uuid(uuid(89));
-        let surface = WorkspaceSurfaceState {
+    fn provider_session_requires_exact_matching_platform_workspace_mapping() {
+        let mut catalog = catalog();
+        let id = workspace(10);
+        let pane = PaneId::from_uuid(uuid(60));
+        let tab = WorkspaceTabId::from_uuid(uuid(61));
+        let surface = |platform_id: &str| WorkspaceSurfaceState {
             root: Some(PaneNode::Leaf(PaneLeaf {
                 id: pane,
-                active_tab: Some(local.id),
-                tabs: vec![local.clone(), ssh.clone(), provider.clone()],
+                tabs: vec![WorkspaceTab {
+                    id: tab,
+                    title: "Agent".into(),
+                    content: WorkspaceTabContent::ProviderSession(ProviderSessionBinding {
+                        platform_user_workspace_id: platform_id.into(),
+                        session_id: "session".into(),
+                        run_id: None,
+                    }),
+                }],
+                active_tab: Some(tab),
             })),
-            focus: Some(WorkspaceFocus {
-                pane_id: pane,
-                tab_id: provider.id,
-            }),
+            focus: None,
         };
-
-        surface.validate().expect("mixed surface is valid");
-        let PaneNode::Leaf(leaf) = surface.root.unwrap() else {
-            panic!("one leaf expected");
-        };
-        assert_eq!(leaf.tabs[0].content, local.content);
-        assert_eq!(leaf.tabs[1].content, ssh.content);
-        assert_eq!(leaf.tabs[2].content, provider.content);
+        assert_eq!(
+            surface("platform-workspace").validate_for(&catalog, id),
+            Err(SurfaceValidationError::PlatformMappingNotExact)
+        );
+        catalog
+            .set_platform_mapping(
+                id,
+                PlatformV2Mapping {
+                    project: PlatformContextRef {
+                        id: "project".into(),
+                        revision: 1,
+                    },
+                    checkout: PlatformContextRef {
+                        id: "checkout".into(),
+                        revision: 1,
+                    },
+                    user_workspace: PlatformContextRef {
+                        id: "platform-workspace".into(),
+                        revision: 1,
+                    },
+                    reconciliation: PlatformMappingReconciliation::Exact {
+                        reconciled_at_millis: 1,
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            surface("other").validate_for(&catalog, id),
+            Err(SurfaceValidationError::PlatformWorkspaceMismatch)
+        );
+        surface("platform-workspace")
+            .validate_for(&catalog, id)
+            .expect("exact provider mapping");
     }
 }

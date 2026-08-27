@@ -491,6 +491,16 @@ parallel `cargo test`.
 
 ---
 
+## 8g. Task-scoped workspace navigation — deferred integration coverage
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1736 | *to write* — keyed GPUI workspace entity retention | SDUC-490 | **Red / P0** | Switch A→B→A with live local and SSH terminals, editor/file/browser tabs, split panes, focus, drafts and scrollback. Prove the same terminal entities remain alive while hidden and that archive/resume restores one coherent surface. The pure reducer cannot prove entity lifetime. |
+| SDTEST-1737 | *to write* — non-blocking local and SSH workspace launcher lifecycle | SDUC-488, SDUC-489, SDUC-491 | **Red / P0** | Through fake local/SSH executors, exercise manual and issue/PR/task-prefilled create, progress, cancellation, typed conflicts, catalog-revision retry and archive/resume without blocking the GPUI thread. Compile and run the portable path fixtures on Linux, macOS and Windows. |
+| SDTEST-1738 | *to write* — workspace cards and external/internal identity presentation | SDUC-489, SDUC-490 | **Red / P0** | Render host, repository, branch, dirty state, linked external work item, distinct internal run, agent state, unread/attention and freshness from fenced facts; verify a provider session cannot appear under a differently mapped local workspace. |
+
+---
+
 ## 9. Cross-platform coverage (referenced from everywhere)
 
 CI matrix already runs `cargo check` on all three targets. The SDTEST
@@ -509,6 +519,9 @@ checklist:
 - SDTEST-1584 (`#[cfg(windows)]` Jcode executor spawn — **no CI target
   compiles or runs it today**; needs a windows-latest test or
   `cargo check --tests --target x86_64-pc-windows-msvc` job)
+- SDTEST-1729, SDTEST-1735, SDTEST-1739 (portable catalog schema/CAS/path and
+  atomic-file primitives; CI must run the core tests on all three release platforms)
+- SDTEST-1737 (Red / P0 launcher lifecycle and portable-path integration)
 
 The release-day rule: **all P0 cross-platform tests must be green on
 the matching CI runner before the tag goes out.** This maps directly

@@ -34,9 +34,10 @@ pub use store::ConnectionStore;
 pub use themes::TerminalTheme;
 pub use watcher::ConfigWatcher;
 pub use workspace_catalog::{
-    CheckoutHost, CheckoutId, ExternalWorkItem, ExternalWorkItemKind, OrchestrationRunRef,
-    ProjectCatalog, ProjectCheckout, ProjectId, ProjectRecord, RepositoryIdentity, UserWorkspaceId,
-    UserWorkspaceLifecycle, UserWorkspaceRecord, WorkspaceCatalogError, WorkspaceLaunchIntake,
-    WorkspaceLaunchRequest,
+    CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, CheckoutHost, ExternalWorkItem,
+    ExternalWorkItemKind, OrchestrationRunRef, PlatformContextRef, PlatformMappingReconciliation,
+    PlatformV2Mapping, ProjectCatalog, ProjectCheckout, ProjectRecord, RemotePosixPath,
+    RepositoryIdentity, UserWorkspaceLifecycle, UserWorkspaceRecord, WorkspaceCatalogError,
+    WorkspaceLaunchIntake, WorkspaceLaunchRequest, WorkspaceRelativePath,
 };
 pub use workspace_state::WorkspaceState;
