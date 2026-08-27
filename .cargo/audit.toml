@@ -3,6 +3,29 @@
 # every newly introduced RustSec advisory. Remove each entry as its dependency
 # chain is upgraded.
 ignore = [
+    # GPUI / Linux status-item stack. Track removal in
+    # docs/security-advisory-baseline.md instead of one bot issue per crate.
+    "RUSTSEC-2021-0139", # ansi_term through ksni -> dbus-codegen -> clap 2
+    "RUSTSEC-2021-0145", # atty unsound only with a custom Windows allocator
+    "RUSTSEC-2024-0370", # proc-macro-error through GTK3 macros
+    "RUSTSEC-2024-0375", # atty through ksni -> dbus-codegen -> clap 2
+    "RUSTSEC-2024-0384", # instant through GPUI's futures-lite 1 stack
+    "RUSTSEC-2024-0412", # GTK3 bindings required by the Linux tray
+    "RUSTSEC-2024-0413", # GTK3 bindings required by the Linux tray
+    "RUSTSEC-2024-0415", # GTK3 bindings required by the Linux tray
+    "RUSTSEC-2024-0416", # GTK3 bindings required by the Linux tray
+    "RUSTSEC-2024-0418", # GTK3 bindings required by the Linux tray
+    "RUSTSEC-2024-0419", # GTK3 bindings required by the Linux tray
+    "RUSTSEC-2024-0420", # GTK3 bindings required by the Linux tray
+    "RUSTSEC-2024-0429", # glib VariantStrIter path is unused by ShellDeck
+    "RUSTSEC-2024-0436", # paste through image codecs
+    "RUSTSEC-2025-0052", # async-std through GPUI's HTTP/tar stack
+    "RUSTSEC-2025-0134", # rustls-pemfile through zed-reqwest
+    "RUSTSEC-2026-0173", # proc-macro-error2 through GPUI's stacksafe
+    "RUSTSEC-2026-0192", # ttf-parser through cosmic-text/usvg/lopdf
+    "RUSTSEC-2026-0206", # rustybuzz through cosmic-text/usvg
+
+    # Existing protocol/backend constraints.
     "RUSTSEC-2023-0071", # rsa: no patched release; transitive through russh
     "RUSTSEC-2026-0194", # quick-xml 0.30: build dependency pinned by latest xcb
     "RUSTSEC-2026-0195", # quick-xml 0.30: build dependency pinned by latest xcb
