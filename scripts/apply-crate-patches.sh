@@ -62,10 +62,10 @@ portable_pty_patch_is_legacy_complete() {
 
 apply_portable_pty() {
     local patch="$ROOT/patches/diffs/portable-pty-SDPATCH-117.patch"
-    local legacy_patch="$ROOT/patches/diffs/portable-pty-SDPATCH-117-legacy.patch"
+    local cache_upgrade="$ROOT/patches/diffs/portable-pty-SDPATCH-117-cache-upgrade.patch"
     local dir source
 
-    if [[ ! -f "$patch" || ! -f "$legacy_patch" ]]; then
+    if [[ ! -f "$patch" || ! -f "$cache_upgrade" ]]; then
         echo "apply-crate-patches: missing portable-pty patch input" >&2
         exit 1
     fi
@@ -83,8 +83,7 @@ apply_portable_pty() {
             return 0
         fi
         if portable_pty_patch_is_legacy_complete "$source"; then
-            patch --batch --reverse -p0 -d "$dir" < "$legacy_patch"
-            patch --batch --forward -p0 -d "$dir" < "$patch"
+            patch --batch --forward -p0 -d "$dir" < "$cache_upgrade"
             if ! portable_pty_patch_is_complete "$source"; then
                 echo "apply-crate-patches: portable-pty SDPATCH-117 cache upgrade failed" >&2
                 exit 1
