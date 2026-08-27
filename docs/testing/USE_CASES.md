@@ -2612,31 +2612,39 @@ operation.
 A workspace review combines staged, unstaged, untracked, and conflict state at
 one observed repository revision. Text and recognized bounded images may be
 previewed; HTML is escaped and displayed only as inert source, while oversized
-or unknown binary content is refused. Line comments persist against their exact
+or unknown binary content is refused. The core draft ledger persists line
+comments against their exact
 file, side, line, and review revision, and only explicitly selected current
 comments form a send batch. Stage, approval, check, and delivery mutations are
 separately scoped: provider-session control cannot grant repository, CI, or
-pull-request authority. Every mutation carries the previewed review revision,
-actor, authority revision, and one idempotency key. An ambiguous write performs
-receipt lookup with that original key and is never replayed.
+pull-request authority. A crate-private grant can prepare only a workflow-owned
+capability. Durable submit rechecks expiry and the exact fresh local-review,
+provider-session/approval, or delivery target fence. Receipts echo the actor,
+authority revision, typed target and one idempotency key. An in-flight operation
+reloaded after restart becomes reconciliation-only work with that original key.
+Forced-process and real-adapter no-replay evidence remains a Red release gate.
 
 ### SDUC-493 — Agent attention always returns to its authoritative work context
 
 Needs You, Working, Blocked, Done, and Idle are typed observations with unread
 state and a nested-agent path. Each item names one local user workspace and
 pane; provider-session items additionally name the exact session in that pane.
-Older or conflicting same-revision observations are refused. Opening an item
-validates all coordinates against the retained workspace surface, focuses only
-that exact tab, and then marks it read. Delivery checks, review status, merge
+Older or conflicting same-revision observations are refused. Opening an item in
+the core validates all coordinates against a validated workspace surface,
+refuses duplicate pane/session coordinates, returns only that exact tab, and
+records local read state separately from the authoritative observation revision.
+Delivery checks, review status, merge
 readiness, and delivery state carry their observed authority and freshness and
 cannot be overwritten by stale evidence.
 
 ## Change log
 
 - **2026-08-27** — Added SDUC-492/493 and SDTEST-1743..1748 for combined
-  workspace review state, inert previews, durable line comments, separately
-  scoped revision-bound mutations, exactly-once reconciliation, authoritative
-  attention deep links, nested-agent state, and stale-fenced delivery evidence.
+  workspace review state, bounded inert previews, workspace-keyed draft CAS,
+  separately scoped typed revision fences, durable reconciliation obligations,
+  local-read-separated attention targets, nested-agent state, and stale-fenced
+  delivery evidence. Native process, adapter, decoder, and retained-GPUI proof
+  is explicitly tracked Red/Yellow rather than inferred from reducer tests.
 - **2026-08-27** — Added SDUC-488..491 and SDTEST-1729..1742 for the revisioned
   local/SSH project catalog, Platform v2 reconciliation mapping, portable path
   and authority admission, interprocess/Windows-safe persistence, canonical

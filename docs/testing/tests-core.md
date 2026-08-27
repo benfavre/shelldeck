@@ -510,12 +510,14 @@ Existing: **0 tests**.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1743 | `workspace_review.rs::sdtest_1743_combined_review_preserves_sections_conflicts_and_inert_previews` | SDUC-492 | Green | One snapshot retains staged, unstaged, untracked, and conflict state; HTML is escaped source and unknown binary content is refused. |
-| SDTEST-1744 | `workspace_review.rs::sdtest_1744_line_comments_persist_and_batch_only_the_selected_exact_revision` | SDUC-492 | Green | Atomic durable drafts retain anchors, while batching excludes unselected and stale-revision notes. |
-| SDTEST-1745 | `workspace_review.rs::sdtest_1745_provider_control_never_grants_repository_or_delivery_mutations` | SDUC-492 | Green | A provider-session grant cannot stage hunks or merge a pull request. |
-| SDTEST-1746 | `workspace_review.rs::sdtest_1746_ambiguous_mutation_reconciles_the_original_attributed_receipt_once` | SDUC-492 | Green | Ambiguity returns the original key and actor for receipt lookup; an exact receipt completes once and cannot be replayed. |
-| SDTEST-1747 | `workspace_review.rs::sdtest_1747_attention_deep_link_opens_only_its_exact_workspace_pane_and_session` | SDUC-493 | Green | A Needs You item refuses the wrong workspace and resolves its exact retained provider-session tab. |
-| SDTEST-1748 | `workspace_review.rs::sdtest_1748_delivery_projection_refuses_stale_or_conflicting_authority_state` | SDUC-492, SDUC-493 | Green | Delivery authority, checks, review, readiness, and state are fenced against older and conflicting same-revision evidence. |
+| SDTEST-1743 | `workspace_review_tests.rs::sdtest_1743_combined_review_preserves_sections_and_validates_inert_previews` | SDUC-492 | Green | The core retains review sections, escapes HTML, returns bounded image metadata without decoder bytes, and refuses malformed or excessive dimensions. Decoder/UI integration remains SDTEST-1750. |
+| SDTEST-1744 | `workspace_review_tests.rs::sdtest_1744_drafts_use_workspace_paths_monotone_cas_and_expected_identity` | SDUC-492 | Yellow | The core uses a workspace-keyed private-root path, expected-workspace admission, monotone disk revision and stale-writer CAS. A release-runner multiprocess/native-filesystem exercise remains required. |
+| SDTEST-1745 | `workspace_review_tests.rs::sdtest_1745_only_registered_unexpired_previews_can_submit` | SDUC-492 | Green | Provider authority cannot prepare repository work; a modified/deserialized preview and an expired registered preview cannot cross durable submit admission. Grant minting remains crate-private. |
+| SDTEST-1746 | `workspace_review_tests.rs::sdtest_1746_dispatched_ledger_recovers_only_by_original_receipt` | SDUC-492 | Yellow | Drop/reload turns a durably dispatched operation into reconciliation-only work with the original key and exact receipt fences. Forced process termination plus the real receipt adapter remains SDTEST-1750. |
+| SDTEST-1747 | `workspace_review_tests.rs::sdtest_1747_attention_read_state_replays_and_duplicate_coordinates_fail_closed` | SDUC-493 | Yellow | Core local-read state survives an unchanged authoritative replay and duplicate pane/session coordinates fail closed. Retained GPUI entity/deep-link integration remains SDTEST-1750. |
+| SDTEST-1748 | `workspace_review_tests.rs::sdtest_1748_delivery_mutations_require_exact_fresh_projection_revision` | SDUC-492, SDUC-493 | Green | Merge submission and its receipt require the exact fresh delivery projection, target and authority revision; advanced or stale evidence is refused. |
+| SDTEST-1749 | `workspace_review_tests.rs::sdtest_1749_approval_is_bound_to_pending_id_and_session_revision` | SDUC-492 | Green | Approval preparation requires the exact pending approval, actor, authority revision and fresh provider-session revision; advanced/removed approval evidence cannot submit. |
+| SDTEST-1750 | Release-runner + adapter + retained-GPUI integration | SDUC-492, SDUC-493 | Red | Exercise native multiprocess draft locking, forced termination between durable dispatch and response, real receipt lookup without replay, actual bounded image decoding, and exact retained-pane focus. |
 
 ---
 
