@@ -2539,8 +2539,29 @@ during local create, status-change, and delete updates until the next poll. The
 four visible filters use the same compact button plus secondary count badge as
 the neighboring Tickets queue.
 
+### SDUC-487 — Retained Automonique sessions continue through an exact native pane
+
+An attached Fleet session owns an independent sanitized-history cursor, command
+state, draft, and receipt obligation. A retention gap replaces only that exact
+transcript from a fresh bounded snapshot and preserves the draft. Messages,
+run/tool summaries, unknown projections, evidence class, truncation, freshness,
+and pending approvals remain typed and contain no raw provider payload.
+
+Observation remains available without control. A follow-up is enabled only for
+the exact attached session with its matching control client and a fresh session
+revision. ShellDeck prepares one durable idempotency key, uses the dedicated
+session follow-up method, and never replays text after an ambiguous response;
+it reconciles the original key until a receipt is known. An admitted receipt
+fences the next mutation until a later command-state read advances the exact
+session revision. Detach, lease loss, sign-out, directory disappearance, and
+late responses remove or ignore only the affected session state. Provider
+session authority never implies terminal, repository, or filesystem authority.
+
 ## Change log
 
+- **2026-08-27** — Added SDUC-487 and SDTEST-1726..1728 for the native retained
+  transcript/composer, retention-gap replacement, exact revision fence, and
+  no-replay receipt reconciliation contract.
 - **2026-08-26** — Added SDUC-486 and SDTEST-1725: Manage returns privacy-safe
   request status counts before the selected status slice, and Support renders
   them with the same pill/badge structure as Tickets.

@@ -290,6 +290,9 @@ Existing: **0 tests**.
 | SDTEST-1685 | `platform.rs::refresh_uses_cursors_per_surface_and_reconciles_pending_receipts` | SDUC-200, SDUC-201, SDUC-476 | Green | A canonical fake server proves steady-state refresh sends resource, directory and pane subscriptions—no snapshot—and reconciles an accepted receipt by ID. |
 | SDTEST-1686 | Automonique `platform_live.rs::platform_capabilities_snapshot_and_controller_are_live_and_durable` | SDUC-201, SDUC-476 | Green | The shared live socket fixture projects a pending approval, executes a revision-bound grant, returns a completed receipt, marks the resolved resource stale, and links a session to its controllable run. |
 | SDTEST-1706 | `platform.rs::sdtest_1706_ambiguous_execute_reconciles_with_the_retained_idempotency_key` | SDUC-201 | Green | When an execute response is lost after submission, ShellDeck queries the durable receipt with the exact key prepared before the mutation instead of issuing a new mutation identity. |
+| SDTEST-1726 | `platform.rs::sdtest_1726_follow_up_requires_exact_control_and_advancing_session_revision` | SDUC-201, SDUC-487 | Green | A dedicated follow-up carries the exact attached session, controller client, text, revision, and durable key; a second mutation remains fenced until command state advances beyond the admitted revision. |
+| SDTEST-1727 | `platform.rs::sdtest_1727_retention_gap_replaces_only_the_exact_transcript` | SDUC-487 | Green | An explicit retention-gap snapshot replaces the affected transcript and cursor without changing a sibling pane, while a cross-session late response is rejected. |
+| SDTEST-1728 | `platform.rs::sdtest_1728_ambiguous_follow_up_reconciles_without_replaying_text` | SDUC-201, SDUC-487 | Green | A lost dedicated follow-up response produces exactly one original-key receipt lookup with the same client and no second follow-up request. |
 
 ---
 

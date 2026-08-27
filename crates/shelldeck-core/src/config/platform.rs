@@ -10,16 +10,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use automonique_platform_client::{ActionResult, ControlClaimResult};
 use automonique_platform_client::{
-    BearerToken, HttpsTransport, PlatformClient, PlatformView, SessionListResult,
-    SubscriptionApply, SubscriptionResult,
+    BearerToken, HttpsTransport, PlatformClient, PlatformView, SessionCommandStateResult,
+    SessionHistoryResult, SessionListResult, SubscriptionApply, SubscriptionResult,
 };
 pub use automonique_protocol::platform::{
     ActionReceipt, Attachment, Capabilities, ClientId, ControlLease, ControlLeaseId,
     ExecuteRequest, FreshnessState, GetReceiptRequest, IdempotencyKey, PlatformAction,
-    PlatformCursor, PlatformMethod, PlatformText, PlatformTransport, ReceiptId, ReceiptOutcome,
-    ReleaseControlRequest, ResourceAuthority, ResourceCoordinate, ResourceKind, ResourceRecord,
-    SessionRecord,
+    PlatformCursor, PlatformMethod, PlatformParameter, PlatformText, PlatformTransport, ReceiptId,
+    ReceiptOutcome, ReleaseControlRequest, ResourceAuthority, ResourceCoordinate, ResourceKind,
+    ResourceRecord, SessionCommandState, SessionFollowUpRequest, SessionHistoryEvent,
+    SessionHistoryEvidence, SessionHistoryPage, SessionHistoryRole, SessionHistoryRunState,
+    SessionHistoryToolState, SessionHistoryUnknownSource, SessionRecord,
 };
+pub use automonique_protocol::primitives::Revision;
 use url::Url;
 
 use crate::error::{Result, ShellDeckError};
@@ -40,6 +43,56 @@ pub struct PlatformRefresh {
     pub attachments: Vec<AttachmentRefresh>,
     pub events: usize,
     pub resynchronized: bool,
+}
+
+const RETAINED_HISTORY_PAGE_LIMIT: u16 = 128;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetainedSessionRead {
+    pub session: ResourceCoordinate,
+    pub after: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetainedHistoryUpdate {
+    Replace {
+        page: SessionHistoryPage,
+        retention_gap: bool,
+    },
+    Append(SessionHistoryPage),
+    Refused {
+        outcome: ReceiptOutcome,
+        explanation: PlatformText,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetainedSessionUpdate {
+    pub session: ResourceCoordinate,
+    pub history: RetainedHistoryUpdate,
+    pub command_state: SessionCommandStateResult,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformFollowUp {
+    pub request: SessionFollowUpRequest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlatformFollowUpResult {
+    Receipt {
+        follow_up: PlatformFollowUp,
+        receipt: ActionReceipt,
+    },
+    Refused {
+        follow_up: PlatformFollowUp,
+        outcome: ReceiptOutcome,
+        explanation: PlatformText,
+    },
+    ReconciliationPending {
+        follow_up: PlatformFollowUp,
+        category: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,6 +151,14 @@ pub struct PlatformPaneState {
     pub stream: PaneStreamState,
     pub error_category: Option<String>,
     pub control_lost: bool,
+    pub retained_events: Vec<SessionHistoryEvent>,
+    pub retained_cursor: Option<u64>,
+    pub retained_has_more: bool,
+    pub retained_resynchronized: bool,
+    pub command_state: Option<SessionCommandState>,
+    pub mutation_fence: Option<Revision>,
+    pub pending_follow_up: Option<PlatformFollowUp>,
+    pub retained_refusal: Option<(ReceiptOutcome, PlatformText)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -129,6 +190,14 @@ impl PlatformCockpitState {
                 stream: PaneStreamState::Live,
                 error_category: None,
                 control_lost: false,
+                retained_events: Vec::new(),
+                retained_cursor: None,
+                retained_has_more: false,
+                retained_resynchronized: false,
+                command_state: None,
+                mutation_fence: None,
+                pending_follow_up: None,
+                retained_refusal: None,
             },
         );
         self.selected.get_or_insert(key);
@@ -168,6 +237,200 @@ impl PlatformCockpitState {
 
     pub fn panes(&self) -> impl ExactSizeIterator<Item = &PlatformPaneState> {
         self.panes.values()
+    }
+
+    pub fn retain_directory_sessions(&mut self, sessions: &[SessionRecord]) {
+        self.panes.retain(|_, pane| {
+            sessions
+                .iter()
+                .any(|record| record.session.resource == pane.attachment.session)
+        });
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|selected| !self.panes.contains_key(selected))
+        {
+            self.selected = self.panes.keys().next().cloned();
+        }
+    }
+
+    pub fn retained_reads(&self) -> Vec<RetainedSessionRead> {
+        self.panes
+            .values()
+            .map(|pane| RetainedSessionRead {
+                session: pane.attachment.session.clone(),
+                after: pane.retained_cursor,
+            })
+            .collect()
+    }
+
+    pub fn pending_follow_ups(&self) -> Vec<PlatformFollowUp> {
+        self.panes
+            .values()
+            .filter_map(|pane| pane.pending_follow_up.clone())
+            .collect()
+    }
+
+    pub fn prepare_follow_up(
+        &mut self,
+        session: &ResourceCoordinate,
+        text: impl Into<String>,
+    ) -> Result<PlatformFollowUp> {
+        if !self.online {
+            return Err(ShellDeckError::Connection(
+                "retained session is offline".to_string(),
+            ));
+        }
+        let pane = self
+            .panes
+            .get_mut(&resource_key(session))
+            .filter(|pane| pane.attachment.session == *session)
+            .ok_or_else(|| ShellDeckError::Connection("session is not attached".to_string()))?;
+        let lease = pane
+            .lease
+            .as_ref()
+            .filter(|lease| {
+                lease.session == *session
+                    && lease.client == pane.attachment.client
+                    && lease.expires_at.as_millis() > unix_millis()
+            })
+            .ok_or_else(|| {
+                ShellDeckError::Connection("session control is not authorized".to_string())
+            })?;
+        if pane.pending_follow_up.is_some() || pane.mutation_fence.is_some() {
+            return Err(ShellDeckError::Connection(
+                "session command is awaiting reconciliation or a newer revision".to_string(),
+            ));
+        }
+        let state = pane
+            .command_state
+            .as_ref()
+            .filter(|state| {
+                state.session.resource == *session
+                    && state.session.freshness.state == FreshnessState::Fresh
+            })
+            .ok_or_else(|| {
+                ShellDeckError::Connection("session command state is not fresh".to_string())
+            })?;
+        let request = SessionFollowUpRequest {
+            client: lease.client.clone(),
+            session: session.clone(),
+            expected_session_revision: state.session.freshness.revision,
+            idempotency_key: unique_key("follow-up"),
+            text: PlatformParameter::new(text.into())
+                .map_err(|_| ShellDeckError::Connection("follow-up text is invalid".to_string()))?,
+        };
+        let follow_up = PlatformFollowUp { request };
+        pane.pending_follow_up = Some(follow_up.clone());
+        Ok(follow_up)
+    }
+
+    pub fn apply_retained_update(&mut self, update: RetainedSessionUpdate) -> bool {
+        if matches!(
+            &update.command_state,
+            SessionCommandStateResult::State(state)
+                if state.session.resource != update.session
+        ) {
+            return false;
+        }
+        let Some(pane) = self.panes.get_mut(&resource_key(&update.session)) else {
+            return false;
+        };
+        if pane.attachment.session != update.session {
+            return false;
+        }
+        match update.history {
+            RetainedHistoryUpdate::Replace {
+                page,
+                retention_gap,
+            } => {
+                if page.session != update.session {
+                    return false;
+                }
+                pane.retained_events = page.events;
+                pane.retained_cursor = Some(page.terminal_cursor);
+                pane.retained_has_more = page.has_more;
+                pane.retained_resynchronized = retention_gap;
+                pane.retained_refusal = None;
+            }
+            RetainedHistoryUpdate::Append(page) => {
+                if page.session != update.session || pane.retained_cursor != Some(page.from_cursor)
+                {
+                    return false;
+                }
+                pane.retained_events.extend(page.events);
+                pane.retained_cursor = Some(page.terminal_cursor);
+                pane.retained_has_more = page.has_more;
+                pane.retained_resynchronized = false;
+                pane.retained_refusal = None;
+            }
+            RetainedHistoryUpdate::Refused {
+                outcome,
+                explanation,
+            } => pane.retained_refusal = Some((outcome, explanation)),
+        }
+        match update.command_state {
+            SessionCommandStateResult::State(state) if state.session.resource == update.session => {
+                if pane.mutation_fence.is_some_and(|fence| {
+                    state.session.freshness.state == FreshnessState::Fresh
+                        && state.session.freshness.revision > fence
+                }) {
+                    pane.mutation_fence = None;
+                }
+                pane.command_state = Some(state);
+            }
+            SessionCommandStateResult::Refused {
+                outcome,
+                explanation,
+            } => pane.retained_refusal = Some((outcome, explanation)),
+            SessionCommandStateResult::State(_) => return false,
+        }
+        true
+    }
+
+    pub fn apply_follow_up_result(&mut self, result: &PlatformFollowUpResult) -> bool {
+        let follow_up = match result {
+            PlatformFollowUpResult::Receipt { follow_up, .. }
+            | PlatformFollowUpResult::Refused { follow_up, .. }
+            | PlatformFollowUpResult::ReconciliationPending { follow_up, .. } => follow_up,
+        };
+        let Some(pane) = self
+            .panes
+            .get_mut(&resource_key(&follow_up.request.session))
+        else {
+            return false;
+        };
+        if pane.attachment.session != follow_up.request.session
+            || pane.pending_follow_up.as_ref() != Some(follow_up)
+        {
+            return false;
+        }
+        match result {
+            PlatformFollowUpResult::Receipt { receipt, .. } => {
+                pane.pending_follow_up = None;
+                pane.mutation_fence = matches!(
+                    receipt.outcome,
+                    ReceiptOutcome::Accepted | ReceiptOutcome::Completed
+                )
+                .then_some(follow_up.request.expected_session_revision);
+                pane.retained_refusal = None;
+            }
+            PlatformFollowUpResult::Refused {
+                outcome,
+                explanation,
+                ..
+            } if *outcome != ReceiptOutcome::Unknown => {
+                pane.pending_follow_up = None;
+                pane.retained_refusal = Some((*outcome, explanation.clone()));
+            }
+            PlatformFollowUpResult::Refused {
+                outcome,
+                explanation,
+                ..
+            } => pane.retained_refusal = Some((*outcome, explanation.clone())),
+            PlatformFollowUpResult::ReconciliationPending { .. } => {}
+        }
+        true
     }
 
     pub fn attachments(&self) -> impl ExactSizeIterator<Item = &Attachment> {
@@ -476,6 +739,183 @@ impl PlatformConnection {
         })
     }
 
+    /// Refresh retained transcript and command state with cursors independent
+    /// from resource, directory, and attachment subscriptions.
+    pub fn refresh_retained_sessions(
+        &self,
+        reads: &[RetainedSessionRead],
+    ) -> Result<Vec<RetainedSessionUpdate>> {
+        let mut client = self.client()?;
+        reads
+            .iter()
+            .map(|read| {
+                let (history, retention_gap) = match read.after {
+                    Some(after) => match client
+                        .session_history_page(
+                            read.session.clone(),
+                            after,
+                            RETAINED_HISTORY_PAGE_LIMIT,
+                        )
+                        .map_err(platform_error)?
+                    {
+                        SessionHistoryResult::Page(page) => {
+                            (RetainedHistoryUpdate::Append(page), false)
+                        }
+                        SessionHistoryResult::ReplaceWithSnapshot(_) => {
+                            let replacement = client
+                                .session_history_snapshot(
+                                    read.session.clone(),
+                                    RETAINED_HISTORY_PAGE_LIMIT,
+                                )
+                                .map_err(platform_error)?;
+                            match replacement {
+                                SessionHistoryResult::Page(page) => (
+                                    RetainedHistoryUpdate::Replace {
+                                        page,
+                                        retention_gap: true,
+                                    },
+                                    true,
+                                ),
+                                SessionHistoryResult::Refused {
+                                    outcome,
+                                    explanation,
+                                } => (
+                                    RetainedHistoryUpdate::Refused {
+                                        outcome,
+                                        explanation,
+                                    },
+                                    true,
+                                ),
+                                SessionHistoryResult::ReplaceWithSnapshot(_) => {
+                                    return Err(ShellDeckError::Connection(
+                                        "retained history replacement did not converge".to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                        SessionHistoryResult::Refused {
+                            outcome,
+                            explanation,
+                        } => (
+                            RetainedHistoryUpdate::Refused {
+                                outcome,
+                                explanation,
+                            },
+                            false,
+                        ),
+                    },
+                    None => match client
+                        .session_history_snapshot(read.session.clone(), RETAINED_HISTORY_PAGE_LIMIT)
+                        .map_err(platform_error)?
+                    {
+                        SessionHistoryResult::Page(page) => (
+                            RetainedHistoryUpdate::Replace {
+                                page,
+                                retention_gap: false,
+                            },
+                            false,
+                        ),
+                        SessionHistoryResult::Refused {
+                            outcome,
+                            explanation,
+                        } => (
+                            RetainedHistoryUpdate::Refused {
+                                outcome,
+                                explanation,
+                            },
+                            false,
+                        ),
+                        SessionHistoryResult::ReplaceWithSnapshot(_) => {
+                            return Err(ShellDeckError::Connection(
+                                "initial retained history requested a replacement".to_string(),
+                            ));
+                        }
+                    },
+                };
+                let _ = retention_gap;
+                let command_state = client
+                    .session_command_state_outcome(read.session.clone())
+                    .map_err(platform_error)?;
+                Ok(RetainedSessionUpdate {
+                    session: read.session.clone(),
+                    history,
+                    command_state,
+                })
+            })
+            .collect()
+    }
+
+    /// Send one already-prepared follow-up exactly once. Any uncertain result
+    /// becomes a receipt lookup obligation; this method never replays text.
+    pub fn follow_up_reconciled(&self, follow_up: PlatformFollowUp) -> PlatformFollowUpResult {
+        let request = follow_up.request.clone();
+        let mut client = match self.client() {
+            Ok(client) => client,
+            Err(error) => {
+                return PlatformFollowUpResult::ReconciliationPending {
+                    follow_up,
+                    category: error.to_string(),
+                };
+            }
+        };
+        match client.session_follow_up_outcome(request.clone()) {
+            Ok(ActionResult::Receipt(receipt)) => {
+                PlatformFollowUpResult::Receipt { follow_up, receipt }
+            }
+            Ok(ActionResult::Refused {
+                outcome,
+                explanation,
+            }) if outcome != ReceiptOutcome::Unknown => PlatformFollowUpResult::Refused {
+                follow_up,
+                outcome,
+                explanation,
+            },
+            ambiguous => match client.reconcile_receipt_by_idempotency_key(
+                request.client,
+                request.idempotency_key,
+                PlatformAction::FollowUp,
+                request.session,
+            ) {
+                Ok(receipt) => PlatformFollowUpResult::Receipt { follow_up, receipt },
+                Err(error) => match ambiguous {
+                    Ok(ActionResult::Refused {
+                        outcome,
+                        explanation,
+                    }) => PlatformFollowUpResult::Refused {
+                        follow_up,
+                        outcome,
+                        explanation,
+                    },
+                    _ => PlatformFollowUpResult::ReconciliationPending {
+                        follow_up,
+                        category: error.category().to_string(),
+                    },
+                },
+            },
+        }
+    }
+
+    /// Reconcile an unresolved follow-up by its original key only.
+    pub fn reconcile_follow_up(&self, follow_up: PlatformFollowUp) -> PlatformFollowUpResult {
+        let request = follow_up.request.clone();
+        match self.client().and_then(|mut client| {
+            client
+                .reconcile_receipt_by_idempotency_key(
+                    request.client,
+                    request.idempotency_key,
+                    PlatformAction::FollowUp,
+                    request.session,
+                )
+                .map_err(platform_error)
+        }) {
+            Ok(receipt) => PlatformFollowUpResult::Receipt { follow_up, receipt },
+            Err(error) => PlatformFollowUpResult::ReconciliationPending {
+                follow_up,
+                category: error.to_string(),
+            },
+        }
+    }
+
     pub fn attach(&self, session: ResourceCoordinate, client: ClientId) -> Result<Attachment> {
         self.client()?
             .attach(session, client)
@@ -681,6 +1121,15 @@ fn unique_key(operation: &str) -> IdempotencyKey {
         .expect("bounded generated platform idempotency key")
 }
 
+fn unix_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX)
+}
+
 fn platform_error(error: automonique_platform_client::ClientError) -> ShellDeckError {
     ShellDeckError::Connection(format!("platform request refused: {}", error.category()))
 }
@@ -694,7 +1143,8 @@ mod tests {
 
     use automonique_protocol::platform::{
         CursorTopic, Freshness, PlatformEvent, PlatformRequest, PlatformResponse, ResourceId,
-        SessionList, Snapshot, Subscription,
+        SessionHistoryEvidence, SessionHistoryRole, SessionHistoryText, SessionList, Snapshot,
+        Subscription,
     };
     use automonique_protocol::platform_api::{PlatformRequestMessage, PlatformResponseMessage};
     use automonique_protocol::primitives::{EpochMillis, Revision};
@@ -961,6 +1411,186 @@ mod tests {
         server.join().unwrap();
     }
 
+    // SDTEST-1726
+    #[test]
+    fn sdtest_1726_follow_up_requires_exact_control_and_advancing_session_revision() {
+        let target = session("session-a");
+        let mut cockpit = PlatformCockpitState::default();
+        cockpit.attach(attachment(target.clone(), 1));
+        cockpit.set_lease(ControlLease {
+            id: ControlLeaseId::new("lease-a").unwrap(),
+            session: target.clone(),
+            client: ClientId::new("shelldeck-test").unwrap(),
+            expires_at: EpochMillis::from_millis(unix_millis().saturating_add(30_000)),
+            revision: Revision::FIRST,
+        });
+        assert!(cockpit.apply_retained_update(retained_update(
+            target.clone(),
+            2,
+            RetainedHistoryUpdate::Replace {
+                page: history_page(target.clone(), 0, 1, "hello"),
+                retention_gap: false,
+            },
+        )));
+
+        let follow_up = cockpit
+            .prepare_follow_up(&target, "continue safely")
+            .unwrap();
+        assert_eq!(follow_up.request.session, target);
+        assert_eq!(follow_up.request.client.as_str(), "shelldeck-test");
+        assert_eq!(follow_up.request.expected_session_revision.get(), 2);
+        assert_eq!(follow_up.request.text.as_str(), "continue safely");
+        assert!(cockpit.prepare_follow_up(&target, "too soon").is_err());
+
+        let receipt = follow_up_receipt(target.clone(), ReceiptOutcome::Accepted, 2);
+        assert!(
+            cockpit.apply_follow_up_result(&PlatformFollowUpResult::Receipt { follow_up, receipt })
+        );
+        assert!(cockpit.prepare_follow_up(&target, "still fenced").is_err());
+        assert!(cockpit.apply_retained_update(retained_update(
+            target.clone(),
+            2,
+            RetainedHistoryUpdate::Append(empty_history_page(target.clone(), 1)),
+        )));
+        assert!(cockpit.prepare_follow_up(&target, "same revision").is_err());
+        let mut stale_update = retained_update(
+            target.clone(),
+            3,
+            RetainedHistoryUpdate::Append(empty_history_page(target.clone(), 1)),
+        );
+        let SessionCommandStateResult::State(state) = &mut stale_update.command_state else {
+            unreachable!();
+        };
+        state.session.freshness.state = FreshnessState::Stale;
+        assert!(cockpit.apply_retained_update(stale_update));
+        assert!(cockpit
+            .prepare_follow_up(&target, "stale revision")
+            .is_err());
+        assert!(cockpit.apply_retained_update(retained_update(
+            target.clone(),
+            3,
+            RetainedHistoryUpdate::Append(empty_history_page(target.clone(), 1)),
+        )));
+        assert!(cockpit
+            .prepare_follow_up(&target, "revision advanced")
+            .is_ok());
+    }
+
+    // SDTEST-1727
+    #[test]
+    fn sdtest_1727_retention_gap_replaces_only_the_exact_transcript() {
+        let target = session("session-a");
+        let other = session("session-b");
+        let mut cockpit = PlatformCockpitState::default();
+        cockpit.attach(attachment(target.clone(), 1));
+        cockpit.attach(attachment(other.clone(), 1));
+        assert!(cockpit.apply_retained_update(retained_update(
+            target.clone(),
+            1,
+            RetainedHistoryUpdate::Replace {
+                page: history_page(target.clone(), 0, 1, "old"),
+                retention_gap: false,
+            },
+        )));
+        assert!(cockpit.apply_retained_update(retained_update(
+            target.clone(),
+            5,
+            RetainedHistoryUpdate::Replace {
+                page: history_page(target.clone(), 4, 5, "replacement"),
+                retention_gap: true,
+            },
+        )));
+        let pane = cockpit.pane(&target).unwrap();
+        assert_eq!(pane.retained_events.len(), 1);
+        assert_eq!(pane.retained_events[0].cursor(), 5);
+        assert_eq!(pane.retained_cursor, Some(5));
+        assert!(pane.retained_resynchronized);
+        assert!(cockpit.pane(&other).unwrap().retained_events.is_empty());
+
+        let stale = RetainedSessionUpdate {
+            session: other,
+            history: RetainedHistoryUpdate::Replace {
+                page: history_page(target.clone(), 5, 6, "wrong identity"),
+                retention_gap: true,
+            },
+            command_state: SessionCommandStateResult::State(command_state(target.clone(), 6)),
+        };
+        assert!(!cockpit.apply_retained_update(stale));
+        cockpit.retain_directory_sessions(&[]);
+        assert!(cockpit.panes().len() == 0);
+        assert!(!cockpit.apply_retained_update(retained_update(
+            target,
+            7,
+            RetainedHistoryUpdate::Replace {
+                page: history_page(session("session-a"), 6, 7, "late"),
+                retention_gap: false,
+            },
+        )));
+    }
+
+    // SDTEST-1728
+    #[test]
+    fn sdtest_1728_ambiguous_follow_up_reconciles_without_replaying_text() {
+        let target = session("session-a");
+        let target_for_server = target.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut follow_up_stream, _) = listener.accept().unwrap();
+            let (_, body) = read_http_request(&mut follow_up_stream);
+            let message = PlatformRequestMessage::from_canonical_bytes(&body).unwrap();
+            let PlatformRequest::SessionFollowUp(request) = message.request() else {
+                panic!("expected dedicated session follow-up request");
+            };
+            assert_eq!(request.session, target_for_server);
+            assert_eq!(request.expected_session_revision.get(), 7);
+            assert_eq!(request.text.as_str(), "continue");
+            let key = request.idempotency_key.clone();
+            write!(
+                follow_up_stream,
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+
+            let (mut receipt_stream, _) = listener.accept().unwrap();
+            let (_, body) = read_http_request(&mut receipt_stream);
+            let message = PlatformRequestMessage::from_canonical_bytes(&body).unwrap();
+            let PlatformRequest::GetReceipt(request) = message.request() else {
+                panic!("expected receipt lookup, not a replay");
+            };
+            assert_eq!(request.idempotency_key.as_ref(), Some(&key));
+            assert_eq!(request.client.as_ref().unwrap().as_str(), "shelldeck-test");
+            write_http_response(
+                &mut receipt_stream,
+                message.request_id().clone(),
+                PlatformResponse::Receipt(follow_up_receipt(
+                    target_for_server,
+                    ReceiptOutcome::Completed,
+                    8,
+                )),
+            );
+        });
+
+        let connection =
+            PlatformConnection::new(&format!("http://{address}/dashboard"), "fixture-token")
+                .unwrap();
+        let follow_up = PlatformFollowUp {
+            request: SessionFollowUpRequest {
+                client: ClientId::new("shelldeck-test").unwrap(),
+                session: target,
+                expected_session_revision: Revision::new(7).unwrap(),
+                idempotency_key: IdempotencyKey::new("follow-up-key").unwrap(),
+                text: PlatformParameter::new("continue").unwrap(),
+            },
+        };
+        assert!(matches!(
+            connection.follow_up_reconciled(follow_up),
+            PlatformFollowUpResult::Receipt { receipt, .. }
+                if receipt.outcome == ReceiptOutcome::Completed
+        ));
+        server.join().unwrap();
+    }
+
     fn session(id: &str) -> ResourceCoordinate {
         ResourceCoordinate::new(
             ResourceAuthority::Automonique,
@@ -1014,6 +1644,72 @@ mod tests {
             revision: Revision::new(revision).unwrap(),
             recorded_at: EpochMillis::from_millis(revision as i64),
             explanation: None,
+        }
+    }
+
+    fn follow_up_receipt(
+        target: ResourceCoordinate,
+        outcome: ReceiptOutcome,
+        revision: u64,
+    ) -> ActionReceipt {
+        ActionReceipt {
+            id: ReceiptId::new("follow-up-receipt").unwrap(),
+            action: PlatformAction::FollowUp,
+            target,
+            outcome,
+            revision: Revision::new(revision).unwrap(),
+            recorded_at: EpochMillis::from_millis(revision as i64),
+            explanation: None,
+        }
+    }
+
+    fn history_page(
+        target: ResourceCoordinate,
+        from: u64,
+        cursor: u64,
+        text: &str,
+    ) -> SessionHistoryPage {
+        SessionHistoryPage::new(
+            target,
+            128,
+            128,
+            from,
+            cursor,
+            false,
+            vec![SessionHistoryEvent::Message {
+                cursor,
+                at: EpochMillis::from_millis(cursor as i64),
+                evidence: SessionHistoryEvidence::Authoritative,
+                role: SessionHistoryRole::Assistant,
+                text: SessionHistoryText::new(text).unwrap(),
+                truncated: false,
+            }],
+        )
+        .unwrap()
+    }
+
+    fn empty_history_page(target: ResourceCoordinate, cursor: u64) -> SessionHistoryPage {
+        SessionHistoryPage::new(target, 128, 128, cursor, cursor, false, Vec::new()).unwrap()
+    }
+
+    fn command_state(target: ResourceCoordinate, revision: u64) -> SessionCommandState {
+        SessionCommandState::new(
+            record(target, revision, "retained session"),
+            None,
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn retained_update(
+        target: ResourceCoordinate,
+        revision: u64,
+        history: RetainedHistoryUpdate,
+    ) -> RetainedSessionUpdate {
+        RetainedSessionUpdate {
+            session: target.clone(),
+            history,
+            command_state: SessionCommandStateResult::State(command_state(target, revision)),
         }
     }
 
