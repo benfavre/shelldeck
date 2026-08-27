@@ -2,6 +2,8 @@
 
 use shelldeck_core::config::app_config::UiLanguage;
 
+use chrono::{DateTime, Local, TimeZone};
+
 /// Apply the persisted UI language to the global rust-i18n locale.
 pub fn apply_ui_language(preference: &UiLanguage) {
     rust_i18n::set_locale(resolve_locale(preference));
@@ -41,6 +43,38 @@ pub fn rel_time(at_ms: f64) -> String {
         crate::t!("time.ago_hours", count = (secs / 3600.0) as i64).to_string()
     } else {
         crate::t!("time.ago_days", count = (secs / 86400.0) as i64).to_string()
+    }
+}
+
+/// Render an RFC 3339 timestamp as a short, local, customer-facing date.
+///
+/// Manage returns wire timestamps such as `2026-08-27T08:34:49.305Z`. They
+/// remain useful in logs, but should never be shown verbatim in the UI.
+pub fn local_timestamp(value: &str) -> String {
+    let value = value.trim();
+    let Ok(parsed) = DateTime::parse_from_rfc3339(value) else {
+        return value.to_string();
+    };
+    friendly_datetime(parsed.with_timezone(&Local), Local::now())
+}
+
+fn friendly_datetime<Tz>(value: DateTime<Tz>, now: DateTime<Tz>) -> String
+where
+    Tz: TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    let time = value.format("%H:%M").to_string();
+    if value.date_naive() == now.date_naive() {
+        crate::t!("time.today_at", time = time).to_string()
+    } else if Some(value.date_naive()) == now.date_naive().pred_opt() {
+        crate::t!("time.yesterday_at", time = time).to_string()
+    } else {
+        let date = if rust_i18n::locale().starts_with("fr") {
+            value.format("%d/%m/%Y").to_string()
+        } else {
+            value.format("%m/%d/%Y").to_string()
+        };
+        crate::t!("time.date_at", date = date, time = time).to_string()
     }
 }
 
@@ -194,6 +228,21 @@ mod tests {
         assert_eq!(crate::t!("sidebar.nav.recent"), crate::t!("recent.title"));
     }
 
+    /// SDTEST-1726 — appelé dans le scénario bilingue unique, car la locale
+    /// rust-i18n est globale au processus.
+    fn assert_account_timestamps_are_customer_facing(today: &str, yesterday: &str, older: &str) {
+        let offset = chrono::FixedOffset::east_opt(2 * 60 * 60).unwrap();
+        let now = offset.with_ymd_and_hms(2026, 8, 27, 12, 0, 0).unwrap();
+        let same_day = offset.with_ymd_and_hms(2026, 8, 27, 10, 34, 49).unwrap();
+        let previous_day = offset.with_ymd_and_hms(2026, 8, 26, 18, 5, 0).unwrap();
+        let previous_month = offset.with_ymd_and_hms(2026, 7, 9, 8, 7, 0).unwrap();
+
+        assert_eq!(friendly_datetime(same_day, now), today);
+        assert_eq!(friendly_datetime(previous_day, now), yesterday);
+        assert_eq!(friendly_datetime(previous_month, now), older);
+        assert_eq!(local_timestamp("valeur historique"), "valeur historique");
+    }
+
     /// Single test — `rust_i18n::set_locale` is process-global; parallel tests race.
     #[test]
     fn locale_fr_and_en() {
@@ -229,6 +278,11 @@ mod tests {
             "1 script en cours",
             "2 scripts en cours",
         );
+        assert_account_timestamps_are_customer_facing(
+            "Aujourd’hui à 10:34",
+            "Hier à 18:05",
+            "09/07/2026 à 08:07",
+        );
 
         apply_ui_language(&UiLanguage::En);
         assert_eq!(resolve_locale(&UiLanguage::En), "en");
@@ -258,6 +312,11 @@ mod tests {
             "2 active port forwards",
             "1 running script",
             "2 running scripts",
+        );
+        assert_account_timestamps_are_customer_facing(
+            "Today at 10:34",
+            "Yesterday at 18:05",
+            "07/09/2026 at 08:07",
         );
     }
 

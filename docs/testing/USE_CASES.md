@@ -1050,6 +1050,14 @@ latest message: a short thread grows downward until its last message meets the
 composer, while a longer thread scrolls to its bottom without moving the
 footer.
 
+The detail header gives the complete, non-ellipsized request title its own
+primary row and separates it from the thread with a border. The 22 px status
+and site chips (status dot, site icon and full customer-facing site name), the
+opening age and optional GitHub context wrap together below it. Deletion is
+absent from the default chrome and lives behind one round overflow button in a
+titled Actions popover. Choosing that menu item still opens the existing
+destructive confirmation before any request is deleted.
+
 ### SDUC-229 — Support "Requests" section
 
 `SupportView` gains a `Requests` tab distinct from Tickets, with a
@@ -2502,7 +2510,9 @@ User → Mes informations presents account, access, session and organisation dat
 in customer-facing language. The portal origin belongs only in the account card,
 not beside the e-mail in the persistent header. Optional whoami values such as
 device label, sign-in date and last activity render only when non-empty; an absent
-value never creates a dash-only row.
+value never creates a dash-only row. Dates returned by Manage use the machine's
+local timezone and a short localized presentation (today, yesterday, or a date);
+the RFC 3339 wire value is never exposed verbatim.
 
 The normalized CM role bag is the sole display source whenever it is present.
 Known roles receive localized labels and custom slugs receive a readable label.
