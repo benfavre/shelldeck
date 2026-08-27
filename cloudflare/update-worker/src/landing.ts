@@ -34,7 +34,7 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
   <meta name="description" content="Lancez Monique et vos agents, suivez chaque session, approuvez les actions sensibles et intervenez sans quitter ShellDeck.">
   <meta property="og:title" content="ShellDeck — Le poste de contrôle de vos agents IA">
   <meta property="og:description" content="Un cockpit natif pour déléguer, superviser et reprendre la main, du ticket jusqu’au terminal.">
-  <meta property="og:image" content="https://shelldeck.1clic.pro/campaign/roles-v1/hero-desktop-poster.webp">
+  <meta property="og:image" content="https://shelldeck.1clic.pro/campaign/roles-v1/user-support-promo-desktop-poster.webp">
   <meta property="og:type" content="website">
   <style>
     @font-face{font-family:Inter;src:url('/campaign/roles-v1/inter-regular.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}
@@ -76,7 +76,7 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
     .button-white{background:#fff;color:var(--blue-dark)}
     .text-link{display:inline-flex;align-items:center;gap:7px;padding:8px 0;border-bottom:1px solid #aab4c1;font-size:14px;font-weight:600}.text-link span{transition:transform .18s ease}.text-link:hover span{transform:translateX(4px)}
     .availability{margin:19px 0 0;color:#89919c;font-size:12px}
-    .hero-stage{--rx:0deg;--ry:0deg;width:min(1180px,calc(100% - 48px));aspect-ratio:16/10;position:relative;margin:42px auto 72px;overflow:hidden;border:1px solid rgba(20,63,121,.12);border-radius:28px;background:#f7fbff url('/campaign/roles-v1/hero-desktop-poster.webp') center/cover;box-shadow:0 28px 65px rgba(24,65,112,.13);transform:perspective(1500px) rotateX(var(--rx)) rotateY(var(--ry));transition:transform .25s ease,box-shadow .25s ease;will-change:transform}
+    .hero-stage{--rx:0deg;--ry:0deg;width:min(1180px,calc(100% - 48px));aspect-ratio:16/9;position:relative;margin:42px auto 72px;overflow:hidden;border:1px solid rgba(20,63,121,.12);border-radius:28px;background:#f7fbff url('/campaign/roles-v1/user-support-promo-desktop-poster.webp') center/cover;box-shadow:0 28px 65px rgba(24,65,112,.13);transform:perspective(1500px) rotateX(var(--rx)) rotateY(var(--ry));transition:transform .25s ease,box-shadow .25s ease;will-change:transform}
     .hero-stage:hover{box-shadow:0 38px 80px rgba(24,65,112,.19)}
     .hero-motion{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
     .mode-strip{border-block:1px solid var(--line);background:#fff}
@@ -172,7 +172,7 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
     .motion-ready .mode-list button.in-view:hover{transform:translateY(-3px)}.motion-ready .layer.in-view:hover{transform:translateY(-8px)}.motion-ready .tool-grid article.in-view:hover{transform:translateY(-7px)}.motion-ready .flow-step.in-view:hover{transform:translateX(6px)}.motion-ready .download-card.in-view:hover{transform:translateY(-6px)}
     @media(max-width:900px){
       .shell{width:min(100% - 28px,720px)}.nav{grid-template-columns:1fr auto}.nav-links{display:none}
-      .hero{padding-top:54px}.hero-intro{font-size:16px}.hero-stage{width:calc(100% - 28px);aspect-ratio:4/5;margin:36px auto 48px;border-radius:22px;background-image:url('/campaign/roles-v1/hero-mobile-poster.webp')}
+      .hero{padding-top:54px}.hero-intro{font-size:16px}.hero-stage{width:calc(100% - 28px);aspect-ratio:4/5;margin:36px auto 48px;border-radius:22px;background-image:url('/campaign/roles-v1/user-support-promo-mobile-poster.webp')}
       .modes{grid-template-columns:1fr;padding:28px 0}.modes>p{width:auto;margin:0}.mode-list{width:100%;grid-template-columns:1fr 1fr;gap:18px}.mode-detail{grid-column:1;grid-template-columns:auto 1fr}.mode-detail p{grid-column:1/-1}.mode-status{justify-self:end}
       .ecosystem{padding-block:85px}.ecosystem-head{display:block}.ecosystem-head h2{margin-bottom:24px;font-size:42px}.layer-grid{grid-template-columns:1fr}.layer{min-height:220px}.layer-detail{grid-template-columns:1fr;gap:7px}.proof-strip{grid-template-columns:1fr 1fr}.proof-strip span:nth-child(2){border-right:0}.proof-strip span:nth-child(-n+2){border-bottom:1px solid #303743}
       .story{padding-block:90px}.section-head{display:block}.section-head h2{margin-bottom:24px;font-size:42px}.scene{height:auto;flex-direction:column;margin-bottom:80px}.scene-copy{width:100%;padding:0 12px 24px}.scene-user .scene-copy,.scene-support .scene-copy{margin:0}.scene-window{position:relative!important;width:100%!important;left:auto!important;right:auto!important}.scene-number,.journey-line{display:none}
@@ -187,8 +187,8 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
       .section-head h2,.dev-heading h2,.download-head h2,.ecosystem-head h2{font-size:38px}.scene h3{font-size:30px}.ai-copy h2,.inklura-copy h2{font-size:38px}.ai-window{width:620px;max-width:none}.ai-section{overflow:hidden}.inklura-panel{padding:28px 20px}.inklura-actions .button{width:100%}
       .install-box{grid-template-columns:auto 1fr}.install-box code{font-size:10px}.install-box .copy{grid-column:2;justify-self:end}.footer-links{flex-wrap:wrap}
     }
-    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.button,.site-header,.nav-cta,.nav-cta svg,.text-link span,.hero-stage,.mode-list button,.layer,.proof-strip span,.tool-grid article,.flow-step,.download-card{transition:none!important}.hero-copy>*,.hero-stage,.bubble,.journey-line path,.layer-detail.is-updating strong,.layer-detail.is-updating p,.mode-detail.is-updating strong,.mode-detail.is-updating p,.mode-detail.is-updating .mode-status{animation:none!important}.motion-ready [data-reveal]{opacity:1!important;transform:none!important;transition:none!important}.hero-stage{background-image:url('/campaign/roles-v1/hero-desktop-poster.webp');transform:none!important}.hero-motion{display:none!important}}
-    @media(max-width:900px) and (prefers-reduced-motion:reduce){.hero-stage{background-image:url('/campaign/roles-v1/hero-mobile-poster.webp')}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.button,.site-header,.nav-cta,.nav-cta svg,.text-link span,.hero-stage,.mode-list button,.layer,.proof-strip span,.tool-grid article,.flow-step,.download-card{transition:none!important}.hero-copy>*,.hero-stage,.bubble,.journey-line path,.layer-detail.is-updating strong,.layer-detail.is-updating p,.mode-detail.is-updating strong,.mode-detail.is-updating p,.mode-detail.is-updating .mode-status{animation:none!important}.motion-ready [data-reveal]{opacity:1!important;transform:none!important;transition:none!important}.hero-stage{background-image:url('/campaign/roles-v1/user-support-promo-desktop-poster.webp');transform:none!important}.hero-motion{display:none!important}}
+    @media(max-width:900px) and (prefers-reduced-motion:reduce){.hero-stage{background-image:url('/campaign/roles-v1/user-support-promo-mobile-poster.webp')}}
   </style>
 </head>
 <body>
@@ -216,8 +216,8 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
         </div>
         <p class="availability">Version ${v} · Gratuit et open source · Linux, macOS et Windows</p>
       </div>
-      <div class="hero-stage" aria-label="Démonstration animée : demande, suivi, travail de Monique et intervention technique">
-        <video class="hero-motion" autoplay muted loop playsinline preload="metadata" disablepictureinpicture poster="/campaign/roles-v1/hero-desktop-poster.webp" data-desktop-webm="/campaign/roles-v1/hero-desktop.webm" data-desktop-mp4="/campaign/roles-v1/hero-desktop.mp4" data-mobile-webm="/campaign/roles-v1/hero-mobile.webm" data-mobile-mp4="/campaign/roles-v1/hero-mobile.mp4" aria-hidden="true"></video>
+      <div class="hero-stage" aria-label="Démonstration animée : création d’une demande, passage du mode Utilisateur au mode Support et résolution assistée">
+        <video class="hero-motion" autoplay muted loop playsinline preload="metadata" disablepictureinpicture poster="/campaign/roles-v1/user-support-promo-desktop-poster.webp" data-desktop-webm="/campaign/roles-v1/user-support-promo-desktop.webm" data-desktop-mp4="/campaign/roles-v1/user-support-promo-desktop.mp4" data-mobile-webm="/campaign/roles-v1/user-support-promo-mobile.webm" data-mobile-mp4="/campaign/roles-v1/user-support-promo-mobile.mp4" aria-hidden="true"></video>
       </div>
     </section>
     <section class="mode-strip" aria-label="Le parcours ShellDeck">
@@ -288,7 +288,7 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
       if(!os&&/Android/.test(ua))os='linux';if(!os&&/iPhone|iPad/.test(ua))os='macos';
       var card=os&&document.querySelector('[data-platform="'+os+'"]');if(card)card.classList.add('detected');
       var reduced=window.matchMedia('(prefers-reduced-motion: reduce)');var compact=window.matchMedia('(max-width: 900px)');var heroVideo=document.querySelector('.hero-motion');
-      function syncMotion(){if(!heroVideo)return;if(reduced.matches){heroVideo.pause();heroVideo.removeAttribute('src');while(heroVideo.firstChild)heroVideo.removeChild(heroVideo.firstChild);heroVideo.load();return}var variant=compact.matches?'mobile':'desktop';if(heroVideo.dataset.variant===variant){heroVideo.play().catch(function(){});return}heroVideo.dataset.variant=variant;heroVideo.poster='/campaign/roles-v1/hero-'+variant+'-poster.webp';while(heroVideo.firstChild)heroVideo.removeChild(heroVideo.firstChild);[['Webm','video/webm'],['Mp4','video/mp4']].forEach(function(item){var source=document.createElement('source');source.src=heroVideo.dataset[variant+item[0]];source.type=item[1];heroVideo.appendChild(source)});heroVideo.load();heroVideo.play().catch(function(){})}
+      function syncMotion(){if(!heroVideo)return;if(reduced.matches){heroVideo.pause();heroVideo.removeAttribute('src');while(heroVideo.firstChild)heroVideo.removeChild(heroVideo.firstChild);heroVideo.load();return}var variant=compact.matches?'mobile':'desktop';if(heroVideo.dataset.variant===variant){heroVideo.play().catch(function(){});return}heroVideo.dataset.variant=variant;heroVideo.poster='/campaign/roles-v1/user-support-promo-'+variant+'-poster.webp';while(heroVideo.firstChild)heroVideo.removeChild(heroVideo.firstChild);[['Webm','video/webm'],['Mp4','video/mp4']].forEach(function(item){var source=document.createElement('source');source.src=heroVideo.dataset[variant+item[0]];source.type=item[1];heroVideo.appendChild(source)});heroVideo.load();heroVideo.play().catch(function(){})}
       if(reduced.addEventListener)reduced.addEventListener('change',syncMotion);if(compact.addEventListener)compact.addEventListener('change',syncMotion);syncMotion();
       var header=document.querySelector('.site-header');function syncHeader(){if(header)header.classList.toggle('scrolled',window.scrollY>16)}window.addEventListener('scroll',syncHeader,{passive:true});syncHeader();
       if('IntersectionObserver' in window&&!reduced.matches){
