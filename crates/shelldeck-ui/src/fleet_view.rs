@@ -11,11 +11,13 @@ use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use adabraka_ui::prelude::Alert;
 use gpui::prelude::*;
 use gpui::*;
+use std::collections::BTreeMap;
 
 use shelldeck_core::config::platform::{
     ActionResult, Attachment, ControlClaimResult, ControlLease, PaneStreamState, PlatformAction,
-    PlatformActionPreview, PlatformCockpitState, PlatformRefresh, PlatformSnapshot, PlatformText,
-    ResourceCoordinate, ResourceKind, ResourceRecord, SessionRecord,
+    PlatformActionPreview, PlatformCockpitState, PlatformFollowUp, PlatformFollowUpResult,
+    PlatformRefresh, PlatformSnapshot, PlatformText, ResourceCoordinate, ResourceKind,
+    ResourceRecord, RetainedSessionRead, RetainedSessionUpdate, SessionHistoryEvent, SessionRecord,
 };
 
 use crate::icons::lucide_icon;
@@ -31,6 +33,7 @@ pub enum FleetViewEvent {
     ClaimControl(ResourceCoordinate),
     ReleaseControl(ResourceCoordinate, ControlLease),
     Execute(PlatformActionPreview),
+    FollowUp(PlatformFollowUp),
 }
 
 impl EventEmitter<FleetViewEvent> for FleetView {}
@@ -40,6 +43,9 @@ pub struct FleetView {
     cockpit: PlatformCockpitState,
     search_state: Entity<InputState>,
     search_query: String,
+    composer_state: Entity<InputState>,
+    composer_value: String,
+    drafts: BTreeMap<String, String>,
     selected_session: Option<String>,
     pending_action: Option<PlatformActionPreview>,
     refusal: Option<(String, String)>,
@@ -55,6 +61,9 @@ impl FleetView {
             cockpit: PlatformCockpitState::default(),
             search_state: cx.new(InputState::new),
             search_query: String::new(),
+            composer_state: cx.new(InputState::new),
+            composer_value: String::new(),
+            drafts: BTreeMap::new(),
             selected_session: None,
             pending_action: None,
             refusal: None,
@@ -65,6 +74,7 @@ impl FleetView {
     }
 
     pub fn set_snapshot(&mut self, snapshot: PlatformSnapshot) {
+        self.cockpit.retain_directory_sessions(&snapshot.sessions);
         self.snapshot = Some(snapshot);
         self.cockpit.mark_online();
         self.loading = false;
@@ -76,6 +86,90 @@ impl FleetView {
             self.cockpit.apply_attachment_refresh(attachment);
         }
         self.set_snapshot(refresh.snapshot);
+    }
+
+    pub fn retained_reads(&self) -> Vec<RetainedSessionRead> {
+        self.cockpit.retained_reads()
+    }
+
+    pub fn pending_follow_ups(&self) -> Vec<PlatformFollowUp> {
+        self.cockpit.pending_follow_ups()
+    }
+
+    pub fn apply_retained_updates(&mut self, updates: Vec<RetainedSessionUpdate>) {
+        for update in updates {
+            self.cockpit.apply_retained_update(update);
+        }
+    }
+
+    pub fn set_follow_up_result(&mut self, result: PlatformFollowUpResult, cx: &mut Context<Self>) {
+        match &result {
+            PlatformFollowUpResult::Receipt { follow_up, receipt } => {
+                if let Some(snapshot) = self.snapshot.as_mut() {
+                    snapshot.view.apply_receipt(receipt.clone());
+                    snapshot.resources = snapshot.view.resources().cloned().collect();
+                }
+                if matches!(
+                    receipt.outcome,
+                    shelldeck_core::config::platform::ReceiptOutcome::Accepted
+                        | shelldeck_core::config::platform::ReceiptOutcome::Completed
+                ) {
+                    self.drafts.remove(follow_up.request.session.id.as_str());
+                    if self.selected_session.as_deref()
+                        == Some(follow_up.request.session.id.as_str())
+                    {
+                        self.composer_value.clear();
+                        self.composer_state.update(cx, |state, cx| state.reset(cx));
+                    }
+                }
+            }
+            PlatformFollowUpResult::Refused {
+                follow_up: _,
+                outcome,
+                explanation,
+            } => {
+                self.refusal = Some((outcome.as_str().to_owned(), explanation.as_str().to_owned()));
+            }
+            PlatformFollowUpResult::ReconciliationPending { .. } => {}
+        }
+        self.cockpit.apply_follow_up_result(&result);
+        self.operation_busy = false;
+        self.loading = false;
+    }
+
+    pub fn prepare_selected_follow_up(
+        &mut self,
+    ) -> shelldeck_core::error::Result<PlatformFollowUp> {
+        let session = self
+            .cockpit
+            .selected()
+            .map(|pane| pane.attachment.session.clone())
+            .ok_or_else(|| {
+                shelldeck_core::error::ShellDeckError::Connection(
+                    "no retained session is selected".to_string(),
+                )
+            })?;
+        self.cockpit
+            .prepare_follow_up(&session, self.composer_value.trim().to_owned())
+    }
+
+    fn select_session(&mut self, session: &ResourceCoordinate, cx: &mut Context<Self>) {
+        if let Some(current) = self.selected_session.as_ref() {
+            self.drafts
+                .insert(current.clone(), self.composer_value.clone());
+        }
+        self.selected_session = Some(session.id.as_str().to_owned());
+        self.cockpit.select(session);
+        self.composer_value = self
+            .drafts
+            .get(session.id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let value = self.composer_value.clone();
+        self.composer_state.update(cx, |state, cx| {
+            state.content = value.into();
+            cx.notify();
+        });
     }
 
     pub fn set_loading(&mut self, loading: bool) {
@@ -108,12 +202,13 @@ impl FleetView {
         !self.operation_busy
     }
 
-    pub fn set_attached(&mut self, attachment: Attachment) {
+    pub fn set_attached(&mut self, attachment: Attachment, cx: &mut Context<Self>) {
         if let Some(snapshot) = self.snapshot.as_mut() {
             snapshot.view.track_attachment(&attachment);
         }
-        self.selected_session = Some(attachment.session.id.as_str().to_owned());
+        let session = attachment.session.clone();
         self.cockpit.attach(attachment);
+        self.select_session(&session, cx);
         self.operation_busy = false;
         self.refusal = None;
         self.error = None;
@@ -198,6 +293,8 @@ impl FleetView {
         self.snapshot = None;
         self.cockpit = PlatformCockpitState::default();
         self.search_query.clear();
+        self.composer_value.clear();
+        self.drafts.clear();
         self.selected_session = None;
         self.pending_action = None;
         self.refusal = None;
@@ -624,8 +721,11 @@ impl FleetView {
             .cursor_pointer()
             .on_click(move |_, _, cx| {
                 entity.update(cx, |this, cx| {
-                    this.selected_session = Some(select_id.clone());
-                    this.cockpit.select(&session_coordinate);
+                    if attached {
+                        this.select_session(&session_coordinate, cx);
+                    } else {
+                        this.selected_session = Some(select_id.clone());
+                    }
                     cx.notify();
                 });
             })
@@ -895,8 +995,7 @@ impl FleetView {
             });
             tab = tab.on_click(move |_, _, cx| {
                 tab_entity.update(cx, |this, cx| {
-                    this.selected_session = Some(coordinate.id.as_str().to_owned());
-                    this.cockpit.select(&coordinate);
+                    this.select_session(&coordinate, cx);
                     cx.notify();
                 });
             });
@@ -905,11 +1004,144 @@ impl FleetView {
         tabs
     }
 
+    fn render_history_event(event: &SessionHistoryEvent) -> AnyElement {
+        let (title, detail, evidence, warning) = match event {
+            SessionHistoryEvent::Message {
+                evidence,
+                role,
+                text,
+                truncated,
+                ..
+            } => (
+                match role {
+                    shelldeck_core::config::platform::SessionHistoryRole::Assistant => {
+                        t!("fleet.history.role.assistant").to_string()
+                    }
+                    shelldeck_core::config::platform::SessionHistoryRole::User => {
+                        t!("fleet.history.role.user").to_string()
+                    }
+                },
+                text.as_str().to_owned(),
+                Some(match evidence {
+                    shelldeck_core::config::platform::SessionHistoryEvidence::Authoritative => {
+                        t!("fleet.history.evidence.authoritative").to_string()
+                    }
+                    shelldeck_core::config::platform::SessionHistoryEvidence::Synthetic => {
+                        t!("fleet.history.evidence.synthetic").to_string()
+                    }
+                }),
+                *truncated,
+            ),
+            SessionHistoryEvent::ToolState {
+                evidence,
+                state,
+                label,
+                truncated,
+                ..
+            } => (
+                t!("fleet.history.tool").to_string(),
+                t!(
+                    "fleet.history.tool_state",
+                    state = match state {
+                        shelldeck_core::config::platform::SessionHistoryToolState::Pending => t!("fleet.history.state.pending"),
+                        shelldeck_core::config::platform::SessionHistoryToolState::InProgress => t!("fleet.history.state.in_progress"),
+                        shelldeck_core::config::platform::SessionHistoryToolState::Completed => t!("fleet.history.state.completed"),
+                        shelldeck_core::config::platform::SessionHistoryToolState::Error => t!("fleet.history.state.error"),
+                    },
+                    label = label.as_ref().map_or("—", |label| label.as_str())
+                )
+                .to_string(),
+                Some(match evidence {
+                    shelldeck_core::config::platform::SessionHistoryEvidence::Authoritative => t!("fleet.history.evidence.authoritative").to_string(),
+                    shelldeck_core::config::platform::SessionHistoryEvidence::Synthetic => t!("fleet.history.evidence.synthetic").to_string(),
+                }),
+                *truncated,
+            ),
+            SessionHistoryEvent::RunState { state, .. } => (
+                t!("fleet.history.run").to_string(),
+                match state {
+                    shelldeck_core::config::platform::SessionHistoryRunState::Started => t!("fleet.history.run_state.started"),
+                    shelldeck_core::config::platform::SessionHistoryRunState::CancelRequested => t!("fleet.history.run_state.cancel_requested"),
+                    shelldeck_core::config::platform::SessionHistoryRunState::Completed => t!("fleet.history.run_state.completed"),
+                    shelldeck_core::config::platform::SessionHistoryRunState::Failed => t!("fleet.history.run_state.failed"),
+                    shelldeck_core::config::platform::SessionHistoryRunState::Cancelled => t!("fleet.history.run_state.cancelled"),
+                    shelldeck_core::config::platform::SessionHistoryRunState::TimedOut => t!("fleet.history.run_state.timed_out"),
+                }
+                .to_string(),
+                None,
+                false,
+            ),
+            SessionHistoryEvent::Unknown { source, .. } => (
+                t!("fleet.history.unknown_title").to_string(),
+                match source {
+                    shelldeck_core::config::platform::SessionHistoryUnknownSource::AdapterEvent => t!("fleet.history.unknown.adapter"),
+                    shelldeck_core::config::platform::SessionHistoryUnknownSource::SimulationEvent => t!("fleet.history.unknown.simulation"),
+                }
+                .to_string(),
+                None,
+                true,
+            ),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(5.0))
+            .p(px(10.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(if warning {
+                ShellDeckColors::warning()
+            } else {
+                ShellDeckColors::border()
+            })
+            .bg(ShellDeckColors::bg_surface())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(title),
+                    )
+                    .children(
+                        evidence
+                            .map(|evidence| Badge::new(evidence).variant(BadgeVariant::Outline)),
+                    )
+                    .children(warning.then(|| {
+                        Badge::new(t!("fleet.history.truncated").to_string())
+                            .variant(BadgeVariant::Warning)
+                    })),
+            )
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(detail),
+            )
+            .into_any_element()
+    }
+
     fn render_selected_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(pane) = self.cockpit.selected() else {
             return div().p(px(12.0));
         };
         let session = &pane.attachment.session;
+        if self.selected_session.as_deref() != Some(session.id.as_str()) {
+            return div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p(px(24.0))
+                .text_size(px(12.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(t!("fleet.pane.attach_to_read").to_string());
+        }
         let stream_label = match pane.stream {
             PaneStreamState::Live => t!("fleet.pane.live").to_string(),
             PaneStreamState::Resynchronized => t!("fleet.pane.resynchronized").to_string(),
@@ -954,6 +1186,65 @@ impl FleetView {
                             )),
                     ),
             );
+        if let Some(state) = pane.command_state.as_ref() {
+            let freshness = match state.session.freshness.state {
+                shelldeck_core::config::platform::FreshnessState::Fresh => {
+                    t!("fleet.command.fresh").to_string()
+                }
+                shelldeck_core::config::platform::FreshnessState::Stale => {
+                    t!("fleet.command.stale").to_string()
+                }
+                shelldeck_core::config::platform::FreshnessState::Unknown => {
+                    t!("fleet.command.unknown").to_string()
+                }
+            };
+            content = content.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        Badge::new(
+                            t!(
+                                "fleet.command.revision",
+                                revision = state.session.freshness.revision.get()
+                            )
+                            .to_string(),
+                        )
+                        .variant(BadgeVariant::Outline),
+                    )
+                    .child(Badge::new(freshness).variant(BadgeVariant::Secondary))
+                    .child(
+                        Badge::new(
+                            t!(
+                                "fleet.command.approvals",
+                                count = state.pending_approvals.len()
+                            )
+                            .to_string(),
+                        )
+                        .variant(if state.pending_approvals.is_empty() {
+                            BadgeVariant::Outline
+                        } else {
+                            BadgeVariant::Warning
+                        }),
+                    ),
+            );
+        }
+        if pane.mutation_fence.is_some() {
+            content = content.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::warning())
+                    .child(t!("fleet.command.awaiting_revision").to_string()),
+            );
+        } else if pane.pending_follow_up.is_some() {
+            content = content.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::warning())
+                    .child(t!("fleet.command.reconciling").to_string()),
+            );
+        }
         if let Some(lease) = pane.lease.as_ref() {
             content = content.child(
                 div()
@@ -1056,7 +1347,123 @@ impl FleetView {
                 );
             }
         }
-        content
+        let mut transcript = div()
+            .id("platform-retained-transcript")
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(12.0));
+        if pane.retained_events.is_empty() {
+            transcript = transcript.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("fleet.history.empty").to_string()),
+            );
+        } else {
+            transcript =
+                transcript.children(pane.retained_events.iter().map(Self::render_history_event));
+        }
+        if pane.retained_resynchronized {
+            transcript = transcript.child(
+                Alert::warning()
+                    .title(t!("fleet.history.resynchronized").to_string())
+                    .description(t!("fleet.history.resynchronized_detail").to_string()),
+            );
+        }
+        if let Some((outcome, explanation)) = pane.retained_refusal.as_ref() {
+            transcript = transcript.child(
+                Alert::error()
+                    .title(t!("fleet.action.refused", outcome = outcome.as_str()).to_string())
+                    .description(explanation.as_str().to_owned()),
+            );
+        }
+        let can_send = pane.lease.is_some()
+            && pane.command_state.as_ref().is_some_and(|state| {
+                state.session.freshness.state
+                    == shelldeck_core::config::platform::FreshnessState::Fresh
+            })
+            && pane.mutation_fence.is_none()
+            && pane.pending_follow_up.is_none()
+            && !self.composer_value.trim().is_empty()
+            && !self.operation_busy;
+        let send_entity = cx.entity();
+        let composer = div()
+            .flex()
+            .flex_col()
+            .gap(px(7.0))
+            .p(px(12.0))
+            .border_t_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_primary())
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("fleet.composer.authority_notice").to_string()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        Input::new(&self.composer_state)
+                            .size(InputSize::Md)
+                            .placeholder(t!("fleet.composer.placeholder").to_string())
+                            .disabled(pane.lease.is_none())
+                            .on_change({
+                                let entity = cx.entity();
+                                move |value, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.composer_value = value.to_string();
+                                        if let Some(session) = this.selected_session.as_ref() {
+                                            this.drafts.insert(session.clone(), value.to_string());
+                                        }
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("platform-follow-up", t!("fleet.composer.send").to_string())
+                            .variant(ButtonVariant::Default)
+                            .size(ButtonSize::Md)
+                            .disabled(!can_send)
+                            .loading(self.operation_busy)
+                            .on_click(move |_, _, cx| {
+                                send_entity.update(cx, |this, cx| {
+                                    if this.operation_busy {
+                                        return;
+                                    }
+                                    match this.prepare_selected_follow_up() {
+                                        Ok(follow_up) => {
+                                            this.operation_busy = true;
+                                            cx.emit(FleetViewEvent::FollowUp(follow_up));
+                                        }
+                                        Err(error) => this.set_operation_error(error.to_string()),
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    ),
+            );
+        div()
+            .flex_1()
+            .min_h(px(0.0))
+            .min_w(px(0.0))
+            .flex()
+            .flex_col()
+            .child(content)
+            .child(transcript)
+            .child(composer)
     }
 }
 
@@ -1102,11 +1509,13 @@ impl Render for FleetView {
             )
             .child(
                 div()
-                    .flex_1()
-                    .min_w(px(0.0))
+                    .w(px(340.0))
+                    .min_w(px(280.0))
                     .h_full()
                     .flex()
                     .flex_col()
+                    .border_r_1()
+                    .border_color(ShellDeckColors::border())
                     .child(Self::section_header(
                         t!("fleet.sessions.section").to_string(),
                         session_count,
@@ -1119,9 +1528,18 @@ impl Render for FleetView {
                             .border_color(ShellDeckColors::border())
                             .child(self.render_session_search(cx)),
                     )
-                    .child(self.render_pane_tabs(cx))
-                    .child(self.render_selected_pane(cx))
                     .child(self.render_sessions(cx)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(self.render_pane_tabs(cx))
+                    .child(self.render_selected_pane(cx)),
             );
         if let Some(error) = &self.error {
             content = content.child(

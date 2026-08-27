@@ -2,7 +2,8 @@ use super::*;
 
 use shelldeck_core::config::platform::{
     stable_client_id, ActionResult, Attachment, ControlClaimResult, PlatformConnection,
-    PlatformRefresh, PlatformSnapshot, ResourceCoordinate,
+    PlatformFollowUpResult, PlatformRefresh, PlatformSnapshot, ResourceCoordinate,
+    RetainedSessionUpdate,
 };
 
 enum PlatformActionResult {
@@ -11,11 +12,16 @@ enum PlatformActionResult {
     ControlClaimed(ControlClaimResult),
     ControlReleased(ResourceCoordinate),
     Executed(ActionResult),
+    FollowedUp(PlatformFollowUpResult),
 }
 
 enum PlatformLoadResult {
     Snapshot(PlatformSnapshot),
-    Refresh(PlatformRefresh),
+    Refresh {
+        refresh: PlatformRefresh,
+        retained: Vec<RetainedSessionUpdate>,
+        reconciled: Vec<PlatformFollowUpResult>,
+    },
 }
 
 impl Workspace {
@@ -80,14 +86,28 @@ impl Workspace {
         });
         let previous = self.fleet_snapshot.clone();
         let attachments = self.fleet_view.update(cx, |view, _cx| view.attachments());
+        let retained_reads = self
+            .fleet_view
+            .update(cx, |view, _cx| view.retained_reads());
+        let pending_follow_ups = self
+            .fleet_view
+            .update(cx, |view, _cx| view.pending_follow_ups());
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     if let Some(previous) = previous.as_ref() {
-                        connection
-                            .refresh(previous, &attachments)
-                            .map(PlatformLoadResult::Refresh)
+                        let refresh = connection.refresh(previous, &attachments)?;
+                        let retained = connection.refresh_retained_sessions(&retained_reads)?;
+                        let reconciled = pending_follow_ups
+                            .into_iter()
+                            .map(|follow_up| connection.reconcile_follow_up(follow_up))
+                            .collect();
+                        Ok(PlatformLoadResult::Refresh {
+                            refresh,
+                            retained,
+                            reconciled,
+                        })
                     } else {
                         connection.snapshot().map(PlatformLoadResult::Snapshot)
                     }
@@ -110,10 +130,18 @@ impl Workspace {
                         });
                         workspace.focus_pending_fleet_session(cx);
                     }
-                    Ok(PlatformLoadResult::Refresh(refresh)) => {
+                    Ok(PlatformLoadResult::Refresh {
+                        refresh,
+                        retained,
+                        reconciled,
+                    }) => {
                         workspace.fleet_snapshot = Some(refresh.snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.apply_refresh(refresh);
+                            for result in reconciled {
+                                view.set_follow_up_result(result, cx);
+                            }
+                            view.apply_retained_updates(retained);
                             cx.notify();
                         });
                         workspace.focus_pending_fleet_session(cx);
@@ -188,8 +216,9 @@ impl Workspace {
                 .update(cx, |view, _cx| view.attachment(session)),
             _ => None,
         };
+        let follow_up_already_started = matches!(event, FleetViewEvent::FollowUp(_));
         let started = self.fleet_view.update(cx, |view, cx| {
-            let started = view.begin_operation();
+            let started = follow_up_already_started || view.begin_operation();
             cx.notify();
             started
         });
@@ -218,6 +247,11 @@ impl Workspace {
                         FleetViewEvent::Execute(preview) => connection
                             .execute_reconciled(preview)
                             .map(PlatformActionResult::Executed),
+                        FleetViewEvent::FollowUp(follow_up) => {
+                            Ok(PlatformActionResult::FollowedUp(
+                                connection.follow_up_reconciled(follow_up),
+                            ))
+                        }
                     }
                 })
                 .await;
@@ -231,7 +265,7 @@ impl Workspace {
                             snapshot.view.track_attachment(&attachment);
                         }
                         workspace.fleet_view.update(cx, |view, cx| {
-                            view.set_attached(attachment);
+                            view.set_attached(attachment, cx);
                             view.set_loading(false);
                             cx.notify();
                         });
@@ -271,6 +305,18 @@ impl Workspace {
                         }
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.set_action_result(result);
+                            cx.notify();
+                        });
+                    }
+                    Ok(PlatformActionResult::FollowedUp(result)) => {
+                        if let PlatformFollowUpResult::Receipt { receipt, .. } = &result {
+                            if let Some(snapshot) = workspace.fleet_snapshot.as_mut() {
+                                snapshot.view.apply_receipt(receipt.clone());
+                                snapshot.resources = snapshot.view.resources().cloned().collect();
+                            }
+                        }
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.set_follow_up_result(result, cx);
                             cx.notify();
                         });
                     }

@@ -83,8 +83,8 @@ sha2 = "0.10"
 base64 = "0.22"
 ed25519-dalek = "2"
 criterion = "0.5"
-automonique-platform-client = { git = "https://github.com/bext-stack/automonique", rev = "d79b69fe596d61d68d859ff8d9efe68ec4d8fae2" }
-automonique-protocol = { git = "https://github.com/bext-stack/automonique", rev = "d79b69fe596d61d68d859ff8d9efe68ec4d8fae2" }
+automonique-platform-client = { git = "https://github.com/bext-stack/automonique", rev = "cd8007526f6b60674a3a7174a4cf17b8ffb2ba52" }
+automonique-protocol = { git = "https://github.com/bext-stack/automonique", rev = "cd8007526f6b60674a3a7174a4cf17b8ffb2ba52" }
 
 [patch.crates-io]
 adabraka-gpui = { path = "patches/adabraka-gpui" }
