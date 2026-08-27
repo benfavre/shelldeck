@@ -349,20 +349,52 @@ impl WorkspaceHubView {
                             ),
                     )
                     .child(
-                        Badge::new(
-                            if presentation.git_observed || presentation.provider_observed {
-                                freshness_label(presentation.freshness)
-                            } else {
-                                t!("workspaces.freshness.unknown").to_string()
-                            },
-                        )
-                        .variant(
-                            if presentation.git_observed || presentation.provider_observed {
-                                freshness_variant(presentation.freshness)
-                            } else {
-                                BadgeVariant::Outline
-                            },
-                        ),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                Badge::new(
+                                    t!(
+                                        "workspaces.freshness.git",
+                                        state = presentation
+                                            .git_freshness
+                                            .map(freshness_label)
+                                            .unwrap_or_else(
+                                                || t!("workspaces.freshness.unknown").to_string()
+                                            )
+                                            .as_str()
+                                    )
+                                    .to_string(),
+                                )
+                                .variant(
+                                    presentation
+                                        .git_freshness
+                                        .map(freshness_variant)
+                                        .unwrap_or(BadgeVariant::Outline),
+                                ),
+                            )
+                            .child(
+                                Badge::new(
+                                    t!(
+                                        "workspaces.freshness.provider",
+                                        state = presentation
+                                            .provider_freshness
+                                            .map(freshness_label)
+                                            .unwrap_or_else(
+                                                || t!("workspaces.freshness.unknown").to_string()
+                                            )
+                                            .as_str()
+                                    )
+                                    .to_string(),
+                                )
+                                .variant(
+                                    presentation
+                                        .provider_freshness
+                                        .map(freshness_variant)
+                                        .unwrap_or(BadgeVariant::Outline),
+                                ),
+                            ),
                     ),
             )
             .child(badges);
@@ -389,6 +421,8 @@ impl WorkspaceHubView {
                         conflicted = dirty.conflicted
                     )
                     .to_string()
+                } else if presentation.git_unavailable {
+                    t!("workspaces.card.git_unavailable").to_string()
                 } else {
                     t!("workspaces.card.awaiting_observation").to_string()
                 })

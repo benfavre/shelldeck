@@ -134,20 +134,24 @@ impl WorkspaceLaunchExecutor for ExistingFolderWorkspaceExecutor {
                 });
             }
             let phases = [
+                WorkspaceCreatePhase::Queued,
                 WorkspaceCreatePhase::ResolvingHost,
                 WorkspaceCreatePhase::PreparingCheckout,
                 WorkspaceCreatePhase::CreatingWorkspace,
                 WorkspaceCreatePhase::BindingRuntime,
             ];
-            for (index, phase) in phases.into_iter().enumerate() {
+            for phase in phases {
                 events
                     .send(WorkspaceCreateEvent::Progress {
                         workspace: request.workspace,
                         operation: request.operation,
                         progress: WorkspaceCreateProgress {
                             phase,
-                            completed_steps: (index + 1) as u32,
-                            total_steps: phases.len() as u32,
+                            // Le reducer mesure l'avancement à l'intérieur de
+                            // chaque phase; une nouvelle phase ne peut débuter
+                            // que lorsque la précédente est terminée.
+                            completed_steps: 1,
+                            total_steps: 1,
                             detail: request.name.clone(),
                         },
                     })
@@ -344,9 +348,11 @@ struct WorkspaceCardPresentation {
     agent: WorkspaceAgentState,
     unread: usize,
     attention: usize,
-    freshness: WorkspaceFreshness,
     git_observed: bool,
+    git_unavailable: bool,
+    git_freshness: Option<WorkspaceFreshness>,
     provider_observed: bool,
+    provider_freshness: Option<WorkspaceFreshness>,
     archived: bool,
     provider_bound: bool,
 }
@@ -489,16 +495,28 @@ fn workspace_card_presentation(
         repository: checkout.repository,
         host: checkout.host,
         host_kind: checkout.host_kind,
-        branch: card.branch.clone(),
+        branch: sources
+            .filter(|source| source.git.is_some() && !source.git_unavailable)
+            .and_then(|_| card.branch.clone()),
         dirty: card.dirty,
         external,
         orchestration,
         agent: card.agent,
         unread: card.unread,
         attention: card.attention,
-        freshness: card.freshness,
-        git_observed: sources.is_some_and(|source| source.git.is_some()),
+        git_observed: sources.is_some_and(|source| source.git.is_some() && !source.git_unavailable),
+        git_unavailable: sources.is_some_and(|source| source.git_unavailable),
+        git_freshness: sources.and_then(|source| {
+            if source.git_unavailable {
+                Some(WorkspaceFreshness::Stale)
+            } else {
+                source.git.as_ref().map(|_| WorkspaceFreshness::Fresh)
+            }
+        }),
         provider_observed: sources.is_some_and(|source| source.provider.is_some()),
+        provider_freshness: sources
+            .and_then(|source| source.provider.as_ref())
+            .map(|provider| provider.freshness),
         archived: workspace.lifecycle() == UserWorkspaceLifecycle::Archived,
         provider_bound: workspace.orchestration_run().is_some(),
     })
@@ -525,7 +543,7 @@ pub(super) struct WorkspaceTerminalConfig {
     pub menu_bar_visible: bool,
 }
 
-fn apply_terminal_config(
+pub(super) fn apply_terminal_config(
     terminal: &Entity<TerminalView>,
     config: &WorkspaceTerminalConfig,
     cx: &mut App,
@@ -1237,15 +1255,6 @@ impl WorkspaceHubView {
         if let Some(config) = self.terminal_config.as_ref() {
             apply_terminal_config(&terminal, config, cx);
         }
-        if let AuthorizedLaunchHost::Local { canonical_root } = &host {
-            if let Err(error) =
-                terminal.update(cx, |terminal, _| terminal.set_default_cwd(canonical_root))
-            {
-                self.error = Some(error);
-                cx.notify();
-                return;
-            }
-        }
         self.retained.insert(
             workspace,
             cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
@@ -1304,11 +1313,28 @@ impl WorkspaceHubView {
         let Some(request) = self.pending_requests.get(&workspace).cloned() else {
             return;
         };
-        let event = if matches!(event, WorkspaceCreateEvent::Completed { .. }) {
+        let event = if let WorkspaceCreateEvent::Completed {
+            workspace: event_workspace,
+            operation: event_operation,
+        } = event
+        {
+            let attachable = completion_can_attach(
+                workspace,
+                event_workspace,
+                event_operation,
+                &request,
+                self.creation.state(event_workspace),
+            );
+            if !attachable {
+                // Les événements retardés, prématurés ou reçus pendant une
+                // annulation ne doivent jamais atteindre le PTY. Le reducer
+                // conserve déjà l'état canonique; ignorer est donc sûr.
+                return;
+            }
             if self.catalog.revision() != request.catalog_revision {
                 WorkspaceCreateEvent::Conflict {
-                    workspace,
-                    operation: request.operation,
+                    workspace: event_workspace,
+                    operation: event_operation,
                     conflict: WorkspaceCreateConflict::CatalogRevisionChanged {
                         expected: request.catalog_revision,
                         actual: self.catalog.revision(),
@@ -1318,7 +1344,7 @@ impl WorkspaceHubView {
                 let attach = match &request.host {
                     AuthorizedLaunchHost::Local { canonical_root } => self
                         .retained
-                        .get(&workspace)
+                        .get(&event_workspace)
                         .ok_or_else(|| t!("workspaces.launcher.terminal_owner_missing").to_string())
                         .and_then(|surface| {
                             let terminal = surface.read(cx).terminal.clone();
@@ -1326,7 +1352,9 @@ impl WorkspaceHubView {
                                 .update(cx, |terminal, cx| {
                                     terminal.spawn_local_terminal_at(canonical_root, cx)
                                 })
-                                .map_err(|_| t!("workspaces.launcher.attach_failed").to_string())
+                                .map_err(|_| {
+                                    t!("workspaces.launcher.folder_unavailable").to_string()
+                                })
                         }),
                     AuthorizedLaunchHost::Ssh { .. } => {
                         Err(t!("workspaces.launcher.ssh_executor_unavailable").to_string())
@@ -1334,12 +1362,12 @@ impl WorkspaceHubView {
                 };
                 match attach {
                     Ok(_) => WorkspaceCreateEvent::Completed {
-                        workspace,
-                        operation: request.operation,
+                        workspace: event_workspace,
+                        operation: event_operation,
                     },
                     Err(message) => WorkspaceCreateEvent::Failed {
-                        workspace,
-                        operation: request.operation,
+                        workspace: event_workspace,
+                        operation: event_operation,
                         failure: WorkspaceCreateFailure {
                             kind: WorkspaceCreateFailureKind::Filesystem,
                             message,
@@ -1527,6 +1555,35 @@ impl WorkspaceHubView {
         }
         cx.notify();
     }
+}
+
+/// Barrière pure exécutée avant tout accès au terminal ou au système de
+/// fichiers. Les coordonnées du canal, de l'événement, de la requête et du
+/// reducer doivent désigner exactement la même opération arrivée au dernier
+/// jalon. Un événement rejeté ne peut donc pas être « corrigé » vers une
+/// requête plus récente.
+fn completion_can_attach(
+    delivery_workspace: CatalogWorkspaceId,
+    event_workspace: CatalogWorkspaceId,
+    event_operation: CreationOperationId,
+    request: &WorkspaceExecutionRequest,
+    state: Option<&BackgroundWorkspaceCreateState>,
+) -> bool {
+    delivery_workspace == event_workspace
+        && request.workspace == event_workspace
+        && request.operation == event_operation
+        && matches!(
+            state,
+            Some(BackgroundWorkspaceCreateState::Running {
+                operation,
+                catalog_revision,
+                progress,
+            }) if *operation == event_operation
+                && *catalog_revision == request.catalog_revision
+                && progress.phase == WorkspaceCreatePhase::BindingRuntime
+                && progress.total_steps > 0
+                && progress.completed_steps == progress.total_steps
+        )
 }
 
 #[path = "workspaces_render.rs"]

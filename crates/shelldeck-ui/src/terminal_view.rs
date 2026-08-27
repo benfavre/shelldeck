@@ -486,6 +486,19 @@ impl TerminalView {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn runtime_config_probe(&self) -> (f32, bool, f32, &str, Option<&str>, bool, usize) {
+        (
+            self.sidebar_width,
+            self.menu_bar_visible,
+            self.font_size,
+            &self.font_family,
+            self.default_shell.as_deref(),
+            self.cursor_blink_enabled,
+            self.configured_scrollback,
+        )
+    }
+
     fn spawn_configured_local(
         &self,
         rows: u16,

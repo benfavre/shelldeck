@@ -708,6 +708,9 @@ pub struct Workspace {
     /// Same idea for a previewed terminal color theme: the terminal theme name
     /// to restore if the palette is dismissed without committing.
     terminal_theme_before_preview: Option<String>,
+    /// Aperçu terminal actuellement affiché. Il doit suivre un terminal
+    /// retenu lorsqu'un changement de workspace intervient pendant l'aperçu.
+    terminal_theme_preview: Option<String>,
     /// Optional publisher into the system-tray state channel. Set once
     /// at startup by `main.rs` after `TrayService::new` returns; `None`
     /// when the tray failed to come up (Flatpak sandbox, missing GTK,
@@ -1153,8 +1156,7 @@ impl Workspace {
                     cx.subscribe(terminal, |this, _terminal, event: &TerminalEvent, cx| {
                         this.handle_terminal_event(event, cx);
                     });
-                this.sync_scripts_to_terminal_toolbar(cx);
-                this.sync_ai_affordances(cx);
+                this.hydrate_active_terminal_runtime(cx);
                 cx.notify();
             },
         );
@@ -1462,6 +1464,7 @@ impl Workspace {
             _bext_poll: None,
             theme_before_preview: None,
             terminal_theme_before_preview: None,
+            terminal_theme_preview: None,
             tray_state_publisher: None,
             tray_notifier: None,
             companion_config_publisher: None,

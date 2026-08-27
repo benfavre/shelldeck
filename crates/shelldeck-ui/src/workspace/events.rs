@@ -704,6 +704,7 @@ impl Workspace {
         if self.terminal_theme_before_preview.is_none() {
             self.terminal_theme_before_preview = Some(self.app_config.terminal.theme.clone());
         }
+        self.terminal_theme_preview = Some(name.to_owned());
         let theme = TerminalTheme::by_name(name);
         self.terminal.update(cx, |terminal, cx| {
             terminal.set_terminal_theme(&theme);
@@ -713,6 +714,7 @@ impl Workspace {
 
     /// Restore the terminal theme captured before previewing, if active.
     pub(super) fn revert_terminal_theme_preview(&mut self, cx: &mut Context<Self>) {
+        self.terminal_theme_preview = None;
         if let Some(name) = self.terminal_theme_before_preview.take() {
             let theme = TerminalTheme::by_name(&name);
             self.terminal.update(cx, |terminal, cx| {

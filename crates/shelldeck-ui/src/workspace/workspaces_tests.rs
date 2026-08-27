@@ -7,9 +7,12 @@ mod tests {
         ExistingFolderWorkspaceExecutor, LauncherIntakeKind, ProviderCardObservation,
         WorkspaceCardAggregator, WorkspaceExecutionRequest, WorkspaceHubView,
         WorkspaceLaunchExecutor, WorkspaceLaunchMode, WorkspaceLauncherDraft,
+        WorkspaceTerminalConfig,
     };
+    use crate::t;
     use crate::terminal_view::TerminalView;
     use gpui::{AppContext, TestAppContext};
+    use shelldeck_core::config::themes::TerminalTheme;
     use shelldeck_core::config::workspace_catalog::{
         CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, CheckoutHost, ExternalWorkItem,
         ExternalWorkItemKind, PlatformContextRef, PlatformMappingReconciliation, PlatformV2Mapping,
@@ -18,7 +21,8 @@ mod tests {
     };
     use shelldeck_core::workspace_navigation::{
         BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState, WorkspaceAgentState,
-        WorkspaceCardState, WorkspaceCreateConflict, WorkspaceCreateEvent, WorkspaceCreatePhase,
+        WorkspaceCardState, WorkspaceCreateConflict, WorkspaceCreateEvent, WorkspaceCreateFailure,
+        WorkspaceCreateFailureKind, WorkspaceCreatePhase, WorkspaceCreateProgress,
         WorkspaceFreshness,
     };
     use std::collections::HashMap;
@@ -93,6 +97,37 @@ mod tests {
         )
     }
 
+    fn advance_creation_to_binding(
+        hub: &mut WorkspaceHubView,
+        revision: u64,
+        workspace: CatalogWorkspaceId,
+        operation: CreationOperationId,
+    ) {
+        for phase in [
+            WorkspaceCreatePhase::Queued,
+            WorkspaceCreatePhase::ResolvingHost,
+            WorkspaceCreatePhase::PreparingCheckout,
+            WorkspaceCreatePhase::CreatingWorkspace,
+            WorkspaceCreatePhase::BindingRuntime,
+        ] {
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Progress {
+                        workspace,
+                        operation,
+                        progress: WorkspaceCreateProgress {
+                            phase,
+                            completed_steps: 1,
+                            total_steps: 1,
+                            detail: "Attach".into(),
+                        },
+                    },
+                )
+                .unwrap();
+        }
+    }
+
     // SDTEST-1736 — SDUC-490 — YELLOW: native terminal identity is proven;
     // editor/files/browser ownership remains explicitly unsupported.
     #[test]
@@ -123,6 +158,56 @@ mod tests {
                 native_terminal_before
             );
             assert!(surface.read(cx).native_snapshot.is_some());
+        });
+    }
+
+    #[test]
+    fn retained_terminal_activation_keeps_the_complete_runtime_config() {
+        let mut cx = TestAppContext::single();
+        let (catalog, workspace_a, workspace_b, ..) = fixture_catalog();
+        let initial_terminal = cx.update(|cx| cx.new(TerminalView::new));
+        let hub = cx.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], initial_terminal, cx))
+        });
+        hub.update(&mut cx, |hub, cx| {
+            hub.configure_terminals(
+                WorkspaceTerminalConfig {
+                    theme: TerminalTheme::default(),
+                    font_size: 17.0,
+                    font_family: "Runtime Font".into(),
+                    default_shell: Some("/bin/sh".into()),
+                    cursor_style: "bar".into(),
+                    cursor_blink: false,
+                    scrollback_lines: 4321,
+                    // Valeur calculée après repli du panneau latéral.
+                    sidebar_width: crate::sidebar::RAIL_WIDTH,
+                    menu_bar_visible: false,
+                },
+                cx,
+            );
+            hub.switch_to(workspace_a, cx);
+            hub.switch_to(workspace_b, cx);
+            hub.switch_to(workspace_a, cx);
+
+            let terminal = hub
+                .retained
+                .get(&workspace_a)
+                .unwrap()
+                .read(cx)
+                .terminal
+                .clone();
+            assert_eq!(
+                terminal.read(cx).runtime_config_probe(),
+                (
+                    crate::sidebar::RAIL_WIDTH,
+                    false,
+                    17.0,
+                    "Runtime Font",
+                    Some("/bin/sh"),
+                    false,
+                    4321,
+                )
+            );
         });
     }
 
@@ -220,10 +305,7 @@ mod tests {
         );
         assert_eq!(external.orchestration, None);
         assert!(!external.provider_bound);
-        assert_eq!(
-            external.branch.as_deref(),
-            Some("fix/workspace-navigation-ui-127")
-        );
+        assert_eq!(external.branch, None);
         assert_eq!(external.dirty.modified, 2);
         assert_eq!(external.agent, WorkspaceAgentState::WaitingForInput);
         assert_eq!((external.unread, external.attention), (4, 2));
@@ -363,6 +445,7 @@ mod tests {
         assert_eq!(
             phases,
             vec![
+                WorkspaceCreatePhase::Queued,
                 WorkspaceCreatePhase::ResolvingHost,
                 WorkspaceCreatePhase::PreparingCheckout,
                 WorkspaceCreatePhase::CreatingWorkspace,
@@ -381,7 +464,7 @@ mod tests {
                 agent: WorkspaceAgentState::WaitingForInput,
                 unread: 8,
                 attention: 3,
-                freshness: WorkspaceFreshness::Aging,
+                freshness: WorkspaceFreshness::Fresh,
                 observed_at: 20,
             },
         );
@@ -413,6 +496,70 @@ mod tests {
         assert_eq!((unavailable.unread, unavailable.attention), (8, 3));
         assert_eq!(unavailable.dirty.conflicted, 5);
         assert_eq!(unavailable.observed_at_millis, 0);
+        assert_eq!(unavailable.freshness, WorkspaceFreshness::Fresh);
+
+        let (catalog, workspace_a, ..) = fixture_catalog();
+        let presentation = workspace_card_presentation(
+            &catalog,
+            catalog.workspace(workspace_a).unwrap(),
+            &unavailable,
+            &HashMap::new(),
+            owner.sources.get(&workspace),
+        )
+        .unwrap();
+        assert!(!presentation.git_observed);
+        assert!(presentation.git_unavailable);
+        assert_eq!(presentation.git_freshness, Some(WorkspaceFreshness::Stale));
+        assert_eq!(presentation.branch, None);
+        assert!(presentation.provider_observed);
+        assert_eq!(
+            presentation.provider_freshness,
+            Some(WorkspaceFreshness::Fresh)
+        );
+    }
+
+    #[test]
+    fn provider_only_observation_never_presents_retained_git_as_current() {
+        let (catalog, workspace, ..) = fixture_catalog();
+        let mut owner = WorkspaceCardAggregator::default();
+        owner.observe_provider(
+            workspace,
+            ProviderCardObservation {
+                agent: WorkspaceAgentState::Running,
+                unread: 2,
+                attention: 1,
+                freshness: WorkspaceFreshness::Fresh,
+                observed_at: 50,
+            },
+        );
+        let retained = WorkspaceCardState {
+            branch: Some("retained".into()),
+            dirty: GitDirtyState {
+                modified: 9,
+                ..GitDirtyState::default()
+            },
+            ..WorkspaceCardState::default()
+        };
+        let card = owner.aggregate(workspace, &retained);
+        let presentation = workspace_card_presentation(
+            &catalog,
+            catalog.workspace(workspace).unwrap(),
+            &card,
+            &HashMap::new(),
+            owner.sources.get(&workspace),
+        )
+        .unwrap();
+        assert!(!presentation.git_observed);
+        assert!(!presentation.git_unavailable);
+        assert_eq!(presentation.git_freshness, None);
+        assert_eq!(presentation.branch, None);
+        assert!(presentation.provider_observed);
+        assert_eq!(presentation.agent, WorkspaceAgentState::Running);
+        assert_eq!((presentation.unread, presentation.attention), (2, 1));
+        assert_eq!(
+            presentation.provider_freshness,
+            Some(WorkspaceFreshness::Fresh)
+        );
     }
 
     #[test]
@@ -436,6 +583,7 @@ mod tests {
                     },
                 )
                 .unwrap();
+            advance_creation_to_binding(hub, starting_revision, workspace, operation);
             hub.pending_requests.insert(
                 workspace,
                 WorkspaceExecutionRequest {
@@ -468,6 +616,267 @@ mod tests {
                 })
             ));
             assert_eq!(terminal.read(cx).tab_count(), 0);
+            assert!(hub.pending_requests.contains_key(&workspace));
+        });
+    }
+
+    #[test]
+    fn folder_disappearing_before_attach_reports_only_localized_unavailability() {
+        let mut app = TestAppContext::single();
+        let (catalog, workspace, _, checkout, ..) = fixture_catalog();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal.clone(), cx))
+        });
+        let root = tempfile::tempdir().unwrap();
+        let vanished = root.path().to_path_buf();
+        root.close().unwrap();
+        hub.update(&mut app, |hub, cx| {
+            let operation = CreationOperationId::new();
+            let revision = hub.catalog.revision();
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Start {
+                        workspace,
+                        operation,
+                    },
+                )
+                .unwrap();
+            advance_creation_to_binding(hub, revision, workspace, operation);
+            hub.pending_requests.insert(
+                workspace,
+                WorkspaceExecutionRequest {
+                    workspace,
+                    checkout,
+                    operation,
+                    catalog_revision: revision,
+                    name: "Vanished".into(),
+                    intake: WorkspaceLaunchIntake::Manual,
+                    host: AuthorizedLaunchHost::Local {
+                        canonical_root: vanished,
+                    },
+                    mode: WorkspaceLaunchMode::ExistingFolder,
+                },
+            );
+            hub.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Completed {
+                    workspace,
+                    operation,
+                },
+                cx,
+            );
+            assert_eq!(terminal.read(cx).tab_count(), 0);
+            assert!(matches!(
+                hub.creation.state(workspace),
+                Some(BackgroundWorkspaceCreateState::Failed {
+                    failure: WorkspaceCreateFailure {
+                        message,
+                        retryable: true,
+                        ..
+                    },
+                    ..
+                }) if message == &t!("workspaces.launcher.folder_unavailable").to_string()
+            ));
+            assert!(hub.pending_requests.contains_key(&workspace));
+        });
+    }
+
+    #[test]
+    fn late_completion_from_prior_retry_has_no_terminal_side_effect() {
+        let mut app = TestAppContext::single();
+        let (catalog, workspace, _, checkout, ..) = fixture_catalog();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal.clone(), cx))
+        });
+        let root = tempfile::tempdir().unwrap();
+        hub.update(&mut app, |hub, cx| {
+            let operation_a = CreationOperationId::new();
+            let operation_b = CreationOperationId::new();
+            let revision = hub.catalog.revision();
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Start {
+                        workspace,
+                        operation: operation_a,
+                    },
+                )
+                .unwrap();
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Failed {
+                        workspace,
+                        operation: operation_a,
+                        failure: WorkspaceCreateFailure {
+                            kind: WorkspaceCreateFailureKind::Filesystem,
+                            message: "fixture".into(),
+                            retryable: true,
+                        },
+                    },
+                )
+                .unwrap();
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Retry {
+                        workspace,
+                        prior_operation: operation_a,
+                        operation: operation_b,
+                    },
+                )
+                .unwrap();
+            hub.pending_requests.insert(
+                workspace,
+                WorkspaceExecutionRequest {
+                    workspace,
+                    checkout,
+                    operation: operation_b,
+                    catalog_revision: revision,
+                    name: "Retry".into(),
+                    intake: WorkspaceLaunchIntake::Manual,
+                    host: AuthorizedLaunchHost::Local {
+                        canonical_root: root.path().to_path_buf(),
+                    },
+                    mode: WorkspaceLaunchMode::ExistingFolder,
+                },
+            );
+
+            hub.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Completed {
+                    workspace,
+                    operation: operation_a,
+                },
+                cx,
+            );
+
+            assert_eq!(terminal.read(cx).tab_count(), 0);
+            assert!(matches!(
+                hub.creation.state(workspace),
+                Some(BackgroundWorkspaceCreateState::Running { operation, .. })
+                    if *operation == operation_b
+            ));
+            assert_eq!(hub.pending_requests[&workspace].operation, operation_b);
+        });
+    }
+
+    #[test]
+    fn completion_during_cancellation_has_no_terminal_side_effect() {
+        let mut app = TestAppContext::single();
+        let (catalog, workspace, _, checkout, ..) = fixture_catalog();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal.clone(), cx))
+        });
+        let root = tempfile::tempdir().unwrap();
+        hub.update(&mut app, |hub, cx| {
+            let operation = CreationOperationId::new();
+            let revision = hub.catalog.revision();
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Start {
+                        workspace,
+                        operation,
+                    },
+                )
+                .unwrap();
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::RequestCancel {
+                        workspace,
+                        operation,
+                    },
+                )
+                .unwrap();
+            hub.pending_requests.insert(
+                workspace,
+                WorkspaceExecutionRequest {
+                    workspace,
+                    checkout,
+                    operation,
+                    catalog_revision: revision,
+                    name: "Cancel".into(),
+                    intake: WorkspaceLaunchIntake::Manual,
+                    host: AuthorizedLaunchHost::Local {
+                        canonical_root: root.path().to_path_buf(),
+                    },
+                    mode: WorkspaceLaunchMode::ExistingFolder,
+                },
+            );
+            hub.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Completed {
+                    workspace,
+                    operation,
+                },
+                cx,
+            );
+            assert_eq!(terminal.read(cx).tab_count(), 0);
+            assert!(matches!(
+                hub.creation.state(workspace),
+                Some(BackgroundWorkspaceCreateState::Cancelling { .. })
+            ));
+            assert!(hub.pending_requests.contains_key(&workspace));
+        });
+    }
+
+    #[test]
+    fn premature_completion_has_no_terminal_side_effect() {
+        let mut app = TestAppContext::single();
+        let (catalog, workspace, _, checkout, ..) = fixture_catalog();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal.clone(), cx))
+        });
+        let root = tempfile::tempdir().unwrap();
+        hub.update(&mut app, |hub, cx| {
+            let operation = CreationOperationId::new();
+            let revision = hub.catalog.revision();
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Start {
+                        workspace,
+                        operation,
+                    },
+                )
+                .unwrap();
+            hub.pending_requests.insert(
+                workspace,
+                WorkspaceExecutionRequest {
+                    workspace,
+                    checkout,
+                    operation,
+                    catalog_revision: revision,
+                    name: "Too soon".into(),
+                    intake: WorkspaceLaunchIntake::Manual,
+                    host: AuthorizedLaunchHost::Local {
+                        canonical_root: root.path().to_path_buf(),
+                    },
+                    mode: WorkspaceLaunchMode::ExistingFolder,
+                },
+            );
+            hub.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Completed {
+                    workspace,
+                    operation,
+                },
+                cx,
+            );
+            assert_eq!(terminal.read(cx).tab_count(), 0);
+            assert!(matches!(
+                hub.creation.state(workspace),
+                Some(BackgroundWorkspaceCreateState::Running { progress, .. })
+                    if progress.phase == WorkspaceCreatePhase::Queued
+                        && progress.completed_steps == 0
+            ));
             assert!(hub.pending_requests.contains_key(&workspace));
         });
     }
