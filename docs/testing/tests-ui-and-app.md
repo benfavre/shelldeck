@@ -524,8 +524,10 @@ checklist:
   executor/PTY path-admission primitives; the `platform-core-tests` CI matrix
   runs the core tests plus SDTEST-1743 on macOS and Windows in addition to the
   Linux check job)
-- SDTEST-1744 (Yellow — the Windows runner compile-checks the patched
-  `portable-pty` tests, but no live CreateProcessW race is executed)
+- SDTEST-1744 (Yellow — the Windows runner runs the patched `portable-pty`
+  unit, but no live CreateProcessW race is executed)
+- SDTEST-1745 (Yellow — Linux and macOS run the patched Unix command-builder
+  unit, but no live native process-creation race is executed)
 - SDTEST-1737 (Red / P0 launcher lifecycle and portable-path integration)
 
 The release-day rule: **all P0 cross-platform tests must be green on

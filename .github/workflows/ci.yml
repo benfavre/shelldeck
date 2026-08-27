@@ -63,6 +63,18 @@ jobs:
       - name: Apply crate patches
         run: ./scripts/apply-crate-patches.sh
 
+      # Dependency tests are not part of `cargo test --workspace`. Exercise
+      # SDTEST-1745 directly after refreshing only portable-pty's published
+      # standalone lockfile; ShellDeck's Cargo.lock remains untouched.
+      - name: Test portable-pty Unix cwd authority regression
+        shell: bash
+        run: |
+          crate_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name 'portable-pty-0.8.1' | head -1)"
+          test -n "$crate_dir"
+          grep -F -q '// SDTEST-1745' "$crate_dir/src/cmdbuilder.rs"
+          cargo update --manifest-path "$crate_dir/Cargo.toml"
+          cargo test --manifest-path "$crate_dir/Cargo.toml" explicit_missing_unix_cwd_is_forwarded_instead_of_falling_back_home
+
       - name: cargo check
         run: cargo check --workspace
 
@@ -120,6 +132,16 @@ jobs:
       # every supported OS before any native PTY or process side effect.
       - name: Test terminal cwd authority boundary
         run: cargo test -p shelldeck-terminal --lib missing_cwd_is_rejected_at_the_pty_boundary
+
+      - name: Test portable-pty Unix cwd authority regression
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          crate_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name 'portable-pty-0.8.1' | head -1)"
+          test -n "$crate_dir"
+          grep -F -q '// SDTEST-1745' "$crate_dir/src/cmdbuilder.rs"
+          cargo update --manifest-path "$crate_dir/Cargo.toml"
+          cargo test --manifest-path "$crate_dir/Cargo.toml" explicit_missing_unix_cwd_is_forwarded_instead_of_falling_back_home
 
       # SDPATCH-117 changes a cfg(windows) dependency branch. Run the patched
       # crate's focused unit directly because dependency tests are not part of

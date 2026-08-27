@@ -40,9 +40,11 @@ portable_pty_patch_is_complete() {
     local marker_count
 
     marker_count="$(grep -F -c 'ShellDeck patch: SDPATCH-117' "$source" || true)"
-    [[ "$marker_count" == "2" ]] \
+    [[ "$marker_count" == "4" ]] \
+        && grep -F -q 'let dir: &OsStr = self.cwd.as_deref().unwrap_or(home.as_ref());' "$source" \
         && grep -F -q 'let dir: Option<&OsStr> = self.cwd.as_deref().or(home);' "$source" \
         && ! grep -F -q 'let cwd: Option<&OsStr> = self.cwd.as_deref().filter' "$source" \
+        && grep -F -q '// SDTEST-1745' "$source" \
         && grep -F -q '// SDTEST-1744' "$source"
 }
 
