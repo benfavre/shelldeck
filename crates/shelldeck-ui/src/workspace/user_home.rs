@@ -1173,14 +1173,14 @@ impl Workspace {
         if let Some(created_at) = whoami.created_at.as_deref().and_then(nonempty_text) {
             session_body = session_body.child(field(
                 t!("user.infos.field.since").to_string(),
-                created_at,
+                crate::i18n::local_timestamp(&created_at),
                 "calendar",
             ));
         }
         if let Some(last_seen_at) = whoami.last_seen_at.as_deref().and_then(nonempty_text) {
             session_body = session_body.child(field(
                 t!("user.infos.field.last_seen").to_string(),
-                last_seen_at,
+                crate::i18n::local_timestamp(&last_seen_at),
                 "clock",
             ));
         }

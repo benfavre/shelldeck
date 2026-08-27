@@ -1,7 +1,8 @@
 use super::*;
 use crate::overlay::window_backdrop;
 use adabraka_ui::components::input::InputVariant;
-use adabraka_ui::prelude::{Composer, ComposerCommit};
+use adabraka_ui::overlays::popover::PopoverContent;
+use adabraka_ui::prelude::{Composer, ComposerCommit, Popover};
 use shelldeck_core::ai::AiBackend;
 
 impl Workspace {
@@ -1632,41 +1633,81 @@ impl Workspace {
             }
         }
 
-        let mut heading = div()
+        // Identification, state and destructive actions are three different
+        // levels. Keeping all of them on one flex row made the title absorb
+        // every bit of compression in the 550 px sheet (U-17).
+        let status_color = match iss.status.as_str() {
+            "blocked" => ShellDeckColors::error(),
+            "done" | "closed" => ShellDeckColors::success(),
+            "triaging" => ShellDeckColors::text_muted(),
+            _ => ShellDeckColors::primary(),
+        };
+        let status_label = crate::support_view::issue_status_label(&iss.status);
+        let status_label = status_label
+            .chars()
+            .next()
+            .map(|first| {
+                first.to_uppercase().collect::<String>() + &status_label[first.len_utf8()..]
+            })
+            .unwrap_or(status_label);
+        let opened_age = crate::i18n::rel_time(iss.created_at);
+        let metadata = div()
             .flex()
             .w_full()
-            .items_start()
-            .gap(px(8.0))
+            .items_center()
+            .flex_wrap()
+            .gap(px(6.0))
             .min_w(px(0.0))
-            .overflow_hidden()
-            .child(div().flex_shrink_0().child(issue_status_badge(&iss.status)))
             .child(
                 div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .line_clamp(3)
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .min_h(px(22.0))
+                    .px(px(8.0))
+                    .rounded_full()
+                    .bg(ShellDeckColors::badge_bg())
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .text_size(px(10.5))
                     .text_color(ShellDeckColors::text_primary())
-                    .child(crate::external_content::external_title(&iss.title)),
+                    .child(div().size(px(6.0)).rounded_full().bg(status_color))
+                    .child(status_label),
             )
             .children(
                 iss.site_label
                     .as_ref()
                     .filter(|label| !label.trim().is_empty())
                     .map(|label| {
-                        Badge::new(Self::ellipsize_badge_label(label, 13))
-                            .variant(BadgeVariant::Outline)
-                            .max_w(px(120.0))
+                        // The API label may append a technical site alias and
+                        // host after an em dash. The customer header names the
+                        // site; it does not clip that implementation detail
+                        // into a visually meaningless ellipsis (U-17).
+                        let display_label = label
+                            .split_once(" — ")
+                            .map(|(name, _)| name.trim())
+                            .unwrap_or_else(|| label.trim());
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .min_h(px(22.0))
+                            .px(px(8.0))
+                            .rounded_full()
+                            .bg(ShellDeckColors::badge_bg())
                             .flex_shrink_0()
-                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(10.5))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(lucide_icon("server", 11.0, ShellDeckColors::text_muted()))
+                            .child(display_label.to_string())
                     }),
             )
             .children(iss.github.as_ref().map(|g| {
                 div()
                     .id("uiss-gh")
                     .flex_shrink_0()
-                    .text_size(px(11.0))
+                    .text_size(px(10.5))
                     .text_color(ShellDeckColors::primary())
                     .cursor_pointer()
                     .child(t!("user.github_issue", number = g.number).to_string())
@@ -1676,24 +1717,127 @@ impl Workspace {
                             let _ = cloud_account::open_in_browser(&url);
                         })
                     })
+            }))
+            .children((!opened_age.is_empty()).then(|| {
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("user.requests.opened", age = opened_age).to_string())
             }));
 
-        if self.is_user_visible_issue(iss) {
-            heading = heading.child(
-                Button::new("uiss-detail-delete", "")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Sm)
-                    .icon(IconSource::from("trash-2"))
-                    .tooltip(t!("support.menu.delete").to_string())
-                    .on_click({
-                        let id = iss.id.clone();
-                        cx.listener(move |this, _, _, cx| {
-                            this.confirm_issue_delete = Some(id.clone());
-                            cx.notify();
-                        })
-                    }),
-            );
-        }
+        let can_delete = self.is_user_visible_issue(iss);
+        let title_row = div()
+            .flex()
+            .w_full()
+            .items_start()
+            .gap(px(10.0))
+            .min_w(px(0.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_size(px(15.0))
+                    .line_height(relative(1.4))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(crate::external_content::external_title(&iss.title)),
+            )
+            .when(can_delete, |row| {
+                let workspace = cx.entity();
+                let issue_id = iss.id.clone();
+                row.child(
+                    Popover::new("user-issue-detail-actions-popover")
+                        .anchor(Corner::TopRight)
+                        .trigger(
+                            IconButton::new("ellipsis")
+                                .variant(ButtonVariant::Outline)
+                                .size(gpui::px(28.0))
+                                .icon_size(gpui::px(14.0))
+                                .rounded_full(),
+                        )
+                        .content(move |window, cx| {
+                            let workspace = workspace.clone();
+                            let issue_id = issue_id.clone();
+                            cx.new(move |content_cx| {
+                                PopoverContent::new(window, content_cx, move |_window, cx| {
+                                    let workspace = workspace.clone();
+                                    let issue_id = issue_id.clone();
+                                    div()
+                                        .mx(px(-6.0))
+                                        .my(px(-4.0))
+                                        .flex()
+                                        .flex_col()
+                                        .min_w(px(184.0))
+                                        .gap(px(2.0))
+                                        .child(
+                                            div()
+                                                .px(px(9.0))
+                                                .pt(px(2.0))
+                                                .pb(px(3.0))
+                                                .text_size(px(9.5))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(ShellDeckColors::text_muted())
+                                                .child(
+                                                    t!("user.requests.actions")
+                                                        .to_string()
+                                                        .to_uppercase(),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("user-issue-detail-delete-action")
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.0))
+                                                .px(px(9.0))
+                                                .py(px(7.0))
+                                                .rounded(px(6.0))
+                                                .cursor_pointer()
+                                                .text_size(px(11.5))
+                                                .text_color(ShellDeckColors::error())
+                                                .hover(|style| {
+                                                    style.bg(ShellDeckColors::error().opacity(0.10))
+                                                })
+                                                .child(lucide_icon(
+                                                    "trash-2",
+                                                    13.0,
+                                                    ShellDeckColors::error(),
+                                                ))
+                                                .child(
+                                                    t!("user.requests.delete_action").to_string(),
+                                                )
+                                                .on_click(cx.listener(
+                                                    move |_content, _: &ClickEvent, _, cx| {
+                                                        workspace.update(cx, |this, cx| {
+                                                            this.confirm_issue_delete =
+                                                                Some(issue_id.clone());
+                                                            cx.notify();
+                                                        });
+                                                        cx.emit(DismissEvent);
+                                                    },
+                                                )),
+                                        )
+                                        .into_any_element()
+                                })
+                            })
+                        }),
+                )
+            });
+
+        let heading = div()
+            .flex()
+            .flex_col()
+            .min_w(px(0.0))
+            .mx(px(-16.0))
+            .px(px(16.0))
+            .pb(px(12.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .gap(px(9.0))
+            .child(title_row)
+            .child(metadata);
 
         // Detail content flows directly inside the sheet chrome — no inner box
         // (bg / border / rounded) so the sheet reads as a single surface. This
