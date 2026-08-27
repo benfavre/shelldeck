@@ -2003,8 +2003,10 @@ the identity; above that breakpoint the original horizontal composition is
 preserved. The breakpoint follows UI scale, and neither the display name nor
 the role badge may collapse into vertical glyphs while flex space is resolved.
 The same breakpoint gives compact site and request rows two explicit levels:
-the site identity or complete request title remains above, while actions or
-metadata move below. Their virtualized slots preserve a fixed 4 px interval,
+the site identity or request title remains above, while actions or metadata
+move below. A title that still exceeds its full row uses an ellipsis only
+because opening it exposes the complete value in the fixed detail heading.
+Their virtualized slots preserve a fixed 4 px interval,
 and request badges, counters, and relative dates retain an explicit 8 px
 separation instead of depending on component-internal padding. Above the
 breakpoint, the original single-line rows remain unchanged.

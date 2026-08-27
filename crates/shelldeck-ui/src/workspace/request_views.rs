@@ -45,11 +45,17 @@ impl Workspace {
             .text_size(px(13.0))
             .text_color(ShellDeckColors::text_primary());
         title = if compact {
-            title.w_full().line_clamp(2)
+            // GPUI paints the second `line_clamp` line without contributing
+            // it to flex height, so it overlaps the metadata row. The title
+            // still owns this entire first level; opening the row exposes the
+            // full value in the fixed detail heading.
+            title.w_full().whitespace_nowrap().truncate()
         } else {
             title.flex_1().whitespace_nowrap().truncate()
         };
-        let title = title.child(crate::external_content::external_title(&iss.title));
+        let title = title
+            .child(crate::external_content::external_title(&iss.title))
+            .into_any_element();
 
         let mut metadata = div().flex().items_center().min_w(px(0.0)).overflow_hidden();
         let mut metadata_has_item = compact;
@@ -367,14 +373,16 @@ impl Workspace {
         icon: Option<&'static str>,
         dismissing: bool,
         is_maximized: bool,
+        panel_width: f32,
+        full_width: bool,
         inner: C,
+        fixed_context: Option<AnyElement>,
         footer: Option<AnyElement>,
         body_scroll: Option<&ScrollHandle>,
         on_close: impl Fn(&mut Self, &mut Context<Self>) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use std::time::Duration;
-        const SHEET_WIDTH: f32 = 480.0;
         const ANIM_MS: u64 = SHEET_ANIM_MS;
 
         let close_bg = on_close.clone();
@@ -407,15 +415,20 @@ impl Workspace {
                     close_bg(this, cx);
                 }),
             )
-            .child(
-                div()
+            .child({
+                let mut panel = div()
                     .absolute()
                     .top_0()
                     .right_0()
                     .bottom_0()
                     .flex()
-                    .flex_col()
-                    .w(px(SHEET_WIDTH))
+                    .flex_col();
+                panel = if full_width {
+                    panel.left_0().w_full()
+                } else {
+                    panel.w(px(panel_width))
+                };
+                panel
                     .bg(ShellDeckColors::bg_surface())
                     .border_l_1()
                     .border_color(ShellDeckColors::border())
@@ -488,6 +501,11 @@ impl Workspace {
                                     ))
                             }),
                     )
+                    // Optional fixed context sits below the generic sheet
+                    // title. Detail sheets use it only in the compact flow so
+                    // the exact prototype heading stays visible while the
+                    // thread itself opens on the latest message.
+                    .children(fixed_context)
                     // Body — scrollable if the content overflows the sheet.
                     .child(body)
                     // Detail sheets keep their message composer outside the
@@ -495,7 +513,7 @@ impl Workspace {
                     // end of a long thread. Form sheets simply pass `None`.
                     .children(footer)
                     // Slide (300ms). On enter: ease_out_quint (very smooth
-                    // decel), from `right = -SHEET_WIDTH` to 0. On exit:
+                    // decel), from `right = -panel_width` to 0. On exit:
                     // ease_in_quint reversed. Encoding the direction in the
                     // id makes GPUI treat enter vs exit as distinct
                     // animations and restart cleanly on each flip.
@@ -513,14 +531,14 @@ impl Workspace {
                         move |el, delta| {
                             let d = delta.clamp(0.0, 1.0);
                             let offset = if dismissing {
-                                -SHEET_WIDTH * d
+                                -panel_width * d
                             } else {
-                                -SHEET_WIDTH * (1.0 - d)
+                                -panel_width * (1.0 - d)
                             };
                             el.right(gpui::px(offset))
                         },
-                    ),
-            )
+                    )
+            })
     }
 
     /// The "Nouvelle demande" composer rendered as a right-side sheet.
@@ -1553,7 +1571,10 @@ impl Workspace {
             Some("plus"),
             self.user_new_request_sheet_dismissing,
             is_maximized,
+            480.0,
+            false,
             inner,
+            None,
             None,
             None,
             |this, cx| this.close_new_request_sheet(cx),
@@ -1569,7 +1590,11 @@ impl Workspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let inner = self.render_user_issue_detail(&iss, window, cx);
+        let viewport_width = window.viewport_size().width.to_f64() as f32;
+        let compact =
+            super::user_home::user_home_uses_compact_flow(viewport_width, self.ui_font_size);
+        let fixed_context = compact.then(|| self.render_user_issue_heading(&iss, false, cx));
+        let inner = self.render_user_issue_detail(&iss, !compact, window, cx);
         let footer = self
             .render_user_issue_detail_footer(is_maximized, cx)
             .into_any_element();
@@ -1579,7 +1604,10 @@ impl Workspace {
             Some("tag"),
             self.user_issue_detail_dismissing,
             is_maximized,
+            if compact { viewport_width } else { 480.0 },
+            compact,
             inner,
+            fixed_context,
             Some(footer),
             Some(&self.user_issue_thread_scroll),
             |this, cx| this.close_user_issue_detail(cx),
@@ -1590,6 +1618,7 @@ impl Workspace {
     pub(super) fn render_user_issue_detail(
         &self,
         iss: &Issue,
+        include_heading: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1705,6 +1734,29 @@ impl Workspace {
             }
         }
 
+        let heading = include_heading.then(|| self.render_user_issue_heading(iss, true, cx));
+
+        // Match the validated prototype: title and metadata form one heading,
+        // followed by its single full-width separator and then the thread.
+        // In compact flow the same heading is mounted in the fixed sheet
+        // context instead, without changing its visual hierarchy.
+        div()
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .flex_shrink_0()
+            .justify_end()
+            .gap(px(8.0))
+            .children(heading)
+            .child(thread)
+    }
+
+    fn render_user_issue_heading(
+        &self,
+        iss: &Issue,
+        in_scrolling_body: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // Identification, state and destructive actions are three different
         // levels. Keeping all of them on one flex row made the title absorb
         // every bit of compression in the 550 px sheet (U-17).
@@ -1898,35 +1950,26 @@ impl Workspace {
                 )
             });
 
-        let heading = div()
+        let mut heading = div()
             .flex()
             .flex_col()
             .min_w(px(0.0))
-            .mx(px(-16.0))
-            .px(px(16.0))
             .pb(px(12.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .gap(px(9.0))
             .child(title_row)
             .child(metadata);
-
-        // Detail content flows directly inside the sheet chrome — no inner box
-        // (bg / border / rounded) so the sheet reads as a single surface. This
-        // direct flex child grows to the viewport when the thread is short and
-        // aligns its latest message against the fixed composer. With a long
-        // thread it keeps its intrinsic height and lets the tracked parent own
-        // the only scroll range (UX-023).
-        div()
-            .flex()
-            .flex_col()
-            .flex_grow()
-            .flex_shrink_0()
-            .justify_end()
-            .gap(px(8.0))
-            .mt(px(10.0))
-            .child(heading)
-            .child(thread)
+        heading = if in_scrolling_body {
+            // The body already owns 16 px of padding. Pull only the separator
+            // to its edges while retaining that same content inset.
+            heading.mx(px(-16.0)).px(px(16.0))
+        } else {
+            // Fixed compact context starts outside the padded scroll body, so
+            // reproduce the prototype's 16 px content inset explicitly.
+            heading.pt(px(16.0)).px(px(16.0))
+        };
+        heading.into_any_element()
     }
 
     /// Reply controls stay anchored below the independently scrollable thread.

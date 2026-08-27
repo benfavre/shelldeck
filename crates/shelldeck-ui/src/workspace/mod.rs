@@ -1445,10 +1445,10 @@ const SITE_ROW_H_COMPACT: f32 = 88.0;
 
 /// Uniform slots for User-mode request rows. Each inner row explicitly uses
 /// `slot - 4px`; the remainder is the visual gap while GPUI renders only the
-/// visible range. Compact rows reserve enough height for a two-line title and
-/// one metadata line without making their internal padding asymmetric.
+/// visible range. Compact rows reserve enough height for one title line, its
+/// gap, and the full badge line without clipping either edge after scaling.
 const USER_REQUEST_ROW_H: f32 = 42.0;
-const USER_REQUEST_ROW_H_COMPACT: f32 = 76.0;
+const USER_REQUEST_ROW_H_COMPACT: f32 = 70.0;
 
 /// Lucide slug for a Manage area key. Kept in one place so the User-home
 /// site cards and any future palette entries share the same visual vocab.
