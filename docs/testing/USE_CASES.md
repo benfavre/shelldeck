@@ -1595,10 +1595,13 @@ Assistant responses remain unframed prose, and both roles use compact
 conversation block spacing without a document-style trailing margin. Compact
 headings use a body-relative H1–H6 ramp (1.44× down to 1×) suited to the 480 px
 Dock instead of the fixed 32–16 px document typography; ordinary Markdown keeps
-that document ramp unchanged. In the Sheet, opening the 240 px history column
-reduces that definite bubble measure before Markdown shaping, so long turns
-remain wholly inside the conversation viewport instead of extending beneath
-history. In the main window, the
+that document ramp unchanged. At the Sheet's full 780 px design width, opening
+the 240 px history column reduces that definite bubble measure before Markdown
+shaping, so long turns remain wholly inside the conversation viewport instead
+of extending beneath history. Below that scale-aware breakpoint, history and
+conversation are exclusive full-width panels selected by the header button:
+the compact conversation never keeps a clipped or unusable history rail. In
+the main window, the
 right-side Assistant Sheet preserves the floating window's top-right and
 bottom-right 12 px `radius_xl`; the complete overlay is clipped once at the
 host boundary so no dim-backdrop wedge appears between the panel and those
@@ -2546,6 +2549,10 @@ merged into a non-empty bag. Both the header badge and the information card cons
 this same presentation, so a malformed or transitional payload cannot display two
 different access levels.
 
+The organisation card uses localized singular/plural site counts: `1 site`
+and `N sites` in both languages. Development notation such as `site(s)` never
+appears in the customer-facing surface.
+
 ### SDUC-485 — Shortcut references are one platform-aware catalogue
 
 Every in-app shortcut reference consumes one ordered catalogue and one shared,
@@ -2575,6 +2582,10 @@ the neighboring Tickets queue.
 
 ## Change log
 
+- **2026-08-27** — Amended SDUC-414 and SDTEST-1600: below the Assistant
+  Sheet's two-column breakpoint, history now swaps with the conversation as a
+  full panel instead of collapsing into a clipped 94 px rail that steals width
+  from messages and the Composer.
 - **2026-08-27** — Amended SDUC-440 and SDTEST-1728: compact User site and
   request rows now place identity above actions or metadata, with explicit
   inter-item and inter-row spacing; the wide rows keep their original layout.

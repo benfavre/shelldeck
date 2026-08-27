@@ -872,6 +872,23 @@ carries no marker of its own — see its entry).
   panels. The regular trigger remains the default.
 - **Upstream status**: not filed yet.
 
+### SDPATCH-042 — Sheets stay inside compact host windows
+
+- **Files / symbols**:
+  - `src/overlays/sheet.rs` — `Sheet::render`
+- **Markers** (2):
+  - `src/overlays/sheet.rs` — `// ShellDeck patch: SDPATCH-042 — a fixed side Sheet may be wider or`
+  - `src/overlays/sheet.rs` — `// ShellDeck patch: SDPATCH-042 — when bounding makes the`
+- **Why**: a Sheet may request a desktop-sized fixed width while its native
+  host window is later resized below that width. Keeping the fixed size and
+  anchoring only the near edge paints the opposite edge and the beginning of
+  every child outside the viewport. Bounding horizontal Sheets to viewport
+  width (and vertical Sheets to viewport height) preserves the requested size
+  on large windows and turns compact Sheets into valid full-window panels.
+  An Assistant panel that now fills that axis also owns all four window curves,
+  so its opaque background cannot square off the opposite compact corners.
+- **Upstream status**: not filed yet.
+
 ## Sync log
 
 - **2026-07-07** — initial inventory. Marker count 13 = 1+1+1+3+1+4+2
@@ -993,6 +1010,11 @@ carries no marker of its own — see its entry).
 - **2026-08-25** — added SDPATCH-041: opt-in two-line, borderless Select
   triggers for divided context panels. 4 new markers; current marker count is
   152.
+- **2026-08-27** — added SDPATCH-042: fixed-size Sheets are bounded to the
+  current host axis so resizing below their requested dimensions cannot paint
+  content outside the viewport; full-host Assistant panels own all four curves.
+  2 new markers; the preceding ledger total was one behind the live tree
+  (153, not 152), so the current marker count is 155.
 
 ## Retired patches
 

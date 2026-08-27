@@ -1277,9 +1277,14 @@ impl Workspace {
                 "users",
             ));
         }
+        let sites_count_label = if sites_count == 1 {
+            t!("user.infos.field.sites_count.one").to_string()
+        } else {
+            t!("user.infos.field.sites_count.many", count = sites_count).to_string()
+        };
         scope_body = scope_body.child(field(
             t!("user.infos.field.sites_available", count = sites_count).to_string(),
-            t!("user.infos.field.sites_count", count = sites_count).to_string(),
+            sites_count_label,
             "globe",
         ));
 
