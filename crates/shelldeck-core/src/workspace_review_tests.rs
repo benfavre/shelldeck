@@ -4,7 +4,10 @@ use crate::config::workspace_catalog::{
     PlatformV2Mapping, ProjectCheckout, ProjectRecord, RepositoryIdentity, WorkspaceLaunchIntake,
     WorkspaceLaunchRequest,
 };
-use crate::workspace_navigation::{PaneLeaf, ProviderSessionBinding, WorkspaceTab, WorkspaceTabId};
+use crate::workspace_navigation::{
+    PaneLeaf, ProviderSessionBinding, WorkspaceCardAggregate, WorkspaceNavigationAction,
+    WorkspaceNavigationState, WorkspaceTab, WorkspaceTabId,
+};
 
 fn uuid(value: u128) -> Uuid {
     Uuid::from_u128(value)
@@ -160,9 +163,51 @@ fn catalog_for(workspace_id: CatalogWorkspaceId, platform_workspace: &str) -> Pr
     catalog
 }
 
+fn add_workspace(
+    catalog: &mut ProjectCatalog,
+    workspace_id: CatalogWorkspaceId,
+    platform_workspace: &str,
+) {
+    catalog
+        .create_workspace(WorkspaceLaunchRequest {
+            id: workspace_id,
+            project_id: project(30),
+            checkout_id: checkout(2),
+            name: "Review".into(),
+            intake: WorkspaceLaunchIntake::Manual,
+        })
+        .unwrap();
+    catalog
+        .set_platform_mapping(
+            workspace_id,
+            None,
+            PlatformV2Mapping {
+                reconciliation_revision: 1,
+                project: PlatformContextRef {
+                    id: "platform-project".into(),
+                    revision: 1,
+                },
+                checkout: PlatformContextRef {
+                    id: "platform-checkout".into(),
+                    revision: 1,
+                },
+                user_workspace: PlatformContextRef {
+                    id: platform_workspace.into(),
+                    revision: 1,
+                },
+                reconciliation: PlatformMappingReconciliation::Exact {
+                    reconciled_at_millis: 1,
+                },
+            },
+        )
+        .unwrap();
+}
+
 fn provider_projection(revision: u64) -> ProviderSessionProjection {
     ProviderSessionProjection {
         workspace: workspace(1),
+        platform_user_workspace_id: "platform-workspace".into(),
+        mapping_reconciliation_revision: 1,
         session_id: "session-1".into(),
         revision,
         authority_revision: 8,
@@ -444,6 +489,8 @@ fn sdtest_1753_only_registered_unexpired_previews_can_submit() {
         8,
         100,
         "session-1".into(),
+        "platform-workspace".into(),
+        1,
         true,
         true,
     );
@@ -559,7 +606,7 @@ fn sdtest_1753_only_registered_unexpired_previews_can_submit() {
 fn sdtest_1760_comment_batches_require_exact_workspace_surface_and_unique_anchors() {
     let root = temp_root("comment-workspace");
     let review = snapshot();
-    let catalog = catalog_for(workspace(1), "platform-workspace");
+    let mut catalog = catalog_for(workspace(1), "platform-workspace");
     let surface = provider_surface("platform-workspace");
     let grant = AuthorityGrant::provider_session(
         workspace(1),
@@ -567,6 +614,8 @@ fn sdtest_1760_comment_batches_require_exact_workspace_surface_and_unique_anchor
         8,
         1_000,
         "session-1".into(),
+        "platform-workspace".into(),
+        1,
         true,
         false,
     );
@@ -613,6 +662,8 @@ fn sdtest_1760_comment_batches_require_exact_workspace_surface_and_unique_anchor
         8,
         1_000,
         "session-1".into(),
+        "platform-workspace".into(),
+        1,
         true,
         false,
     );
@@ -667,17 +718,104 @@ fn sdtest_1760_comment_batches_require_exact_workspace_surface_and_unique_anchor
         ),
         Err(ReviewWorkflowError::CurrentTargetMismatch)
     );
+    assert!(matches!(
+        preview.target(),
+        MutationTargetFence::ReviewAndProviderSession {
+            platform_user_workspace_id,
+            mapping_reconciliation_revision: 1,
+            ..
+        } if platform_user_workspace_id == "platform-workspace"
+    ));
+    catalog
+        .set_platform_mapping(
+            workspace(1),
+            Some(1),
+            PlatformV2Mapping {
+                reconciliation_revision: 2,
+                project: PlatformContextRef {
+                    id: "platform-project".into(),
+                    revision: 1,
+                },
+                checkout: PlatformContextRef {
+                    id: "platform-checkout".into(),
+                    revision: 1,
+                },
+                user_workspace: PlatformContextRef {
+                    id: "platform-workspace".into(),
+                    revision: 1,
+                },
+                reconciliation: PlatformMappingReconciliation::Diverged {
+                    observed_at_millis: 2,
+                },
+            },
+        )
+        .unwrap();
+    catalog
+        .set_platform_mapping(
+            workspace(1),
+            Some(2),
+            PlatformV2Mapping {
+                reconciliation_revision: 3,
+                project: PlatformContextRef {
+                    id: "platform-project".into(),
+                    revision: 1,
+                },
+                checkout: PlatformContextRef {
+                    id: "platform-checkout".into(),
+                    revision: 1,
+                },
+                user_workspace: PlatformContextRef {
+                    id: "remapped-platform-workspace".into(),
+                    revision: 2,
+                },
+                reconciliation: PlatformMappingReconciliation::Exact {
+                    reconciled_at_millis: 3,
+                },
+            },
+        )
+        .unwrap();
+    let remapped_surface = provider_surface("remapped-platform-workspace");
+    let mut remapped_session = provider_projection(5);
+    remapped_session.platform_user_workspace_id = "remapped-platform-workspace".into();
+    remapped_session.mapping_reconciliation_revision = 3;
+    let remapped_grant = AuthorityGrant::provider_session(
+        workspace(1),
+        actor(),
+        8,
+        1_000,
+        "session-1".into(),
+        "remapped-platform-workspace".into(),
+        3,
+        true,
+        false,
+    );
+    assert_eq!(
+        workflow.submit(
+            &preview,
+            current(
+                MutationTargetEvidence::ReviewAndProviderSession {
+                    review: &review,
+                    session: &remapped_session,
+                    catalog: &catalog,
+                    surface: &remapped_surface,
+                },
+                &remapped_grant,
+            ),
+            11,
+        ),
+        Err(ReviewWorkflowError::CurrentTargetMismatch)
+    );
 
     let duplicate = review_comment(51);
     assert_eq!(
         workflow.prepare(
             MutationTargetEvidence::ReviewAndProviderSession {
                 review: &review,
-                session: &provider_projection(5),
+                session: &remapped_session,
                 catalog: &catalog,
-                surface: &surface,
+                surface: &remapped_surface,
             },
-            &grant,
+            &remapped_grant,
             ReviewMutationKind::SendComments {
                 session_id: "session-1".into(),
                 comments: vec![duplicate.clone(), duplicate],
@@ -904,7 +1042,7 @@ fn sdtest_1762_reconciliation_not_found_terminates_without_redispatch() {
 // SDTEST-1755
 #[test]
 fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_closed() {
-    let catalog = catalog_for(workspace(1), "platform-workspace");
+    let mut catalog = catalog_for(workspace(1), "platform-workspace");
     let pane = PaneId::from_uuid(uuid(20));
     let tab = WorkspaceTabId::from_uuid(uuid(21));
     let provider_tab = |id, session: &str| WorkspaceTab {
@@ -941,36 +1079,27 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
     };
     let mut board = AttentionBoard::new(workspace(1));
     board.apply(item.clone()).unwrap();
+    let mut navigation = WorkspaceNavigationState::default();
+    navigation
+        .reduce(
+            &catalog,
+            WorkspaceNavigationAction::Retain {
+                id: workspace(1),
+                surface,
+                card: WorkspaceCardAggregate::default(),
+            },
+        )
+        .unwrap();
     assert_eq!(
-        board.open_target(id, workspace(2), &catalog, &surface),
+        board.open_target(id, workspace(2), &catalog, &navigation),
         Err(AttentionError::WrongWorkspace)
     );
     board
-        .open_target(id, workspace(1), &catalog, &surface)
+        .open_target(id, workspace(1), &catalog, &navigation)
         .unwrap();
     assert!(!board.is_unread(id));
     assert!(!board.apply(item).unwrap());
     assert!(!board.is_unread(id));
-    let foreign_surface = WorkspaceSurfaceState {
-        root: Some(PaneNode::Leaf(PaneLeaf {
-            id: pane,
-            tabs: vec![WorkspaceTab {
-                id: tab,
-                title: "Agent".into(),
-                content: WorkspaceTabContent::ProviderSession(ProviderSessionBinding {
-                    platform_user_workspace_id: "foreign-platform-workspace".into(),
-                    session_id: "session-1".into(),
-                    run_id: None,
-                }),
-            }],
-            active_tab: Some(tab),
-        })),
-        focus: None,
-    };
-    assert_eq!(
-        board.open_target(id, workspace(1), &catalog, &foreign_surface),
-        Err(AttentionError::InvalidSurface)
-    );
     let duplicate_surface = WorkspaceSurfaceState {
         root: Some(PaneNode::Leaf(PaneLeaf {
             id: pane,
@@ -979,9 +1108,88 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
         })),
         focus: None,
     };
+    navigation
+        .reduce(
+            &catalog,
+            WorkspaceNavigationAction::UpdateSurface {
+                id: workspace(1),
+                surface: duplicate_surface,
+            },
+        )
+        .unwrap();
     assert_eq!(
-        board.open_target(id, workspace(1), &catalog, &duplicate_surface),
+        board.open_target(id, workspace(1), &catalog, &navigation),
         Err(AttentionError::DuplicateSessionCoordinate)
+    );
+
+    add_workspace(&mut catalog, workspace(2), "foreign-platform-workspace");
+    let browser_pane = PaneId::from_uuid(uuid(25));
+    let local_browser_tab = WorkspaceTabId::from_uuid(uuid(26));
+    let foreign_browser_tab = WorkspaceTabId::from_uuid(uuid(27));
+    let browser_surface = |tab_id| WorkspaceSurfaceState {
+        root: Some(PaneNode::Leaf(PaneLeaf {
+            id: browser_pane,
+            tabs: vec![WorkspaceTab {
+                id: tab_id,
+                title: "Browser".into(),
+                content: WorkspaceTabContent::Browser {
+                    location: "https://example.invalid".into(),
+                },
+            }],
+            active_tab: Some(tab_id),
+        })),
+        focus: None,
+    };
+    let mut keyed_navigation = WorkspaceNavigationState::default();
+    keyed_navigation
+        .reduce(
+            &catalog,
+            WorkspaceNavigationAction::Retain {
+                id: workspace(2),
+                surface: browser_surface(foreign_browser_tab),
+                card: WorkspaceCardAggregate::default(),
+            },
+        )
+        .unwrap();
+    let browser_id = AttentionItemId::from_uuid(uuid(28));
+    board
+        .apply(AttentionItem {
+            id: browser_id,
+            revision: 1,
+            observed_at_millis: 60,
+            target: AttentionTarget {
+                workspace: workspace(1),
+                pane: browser_pane,
+                session_id: None,
+            },
+            state: AttentionState::NeedsYou,
+            title: "Review browser result".into(),
+            unread: true,
+            agent_path: vec!["root".into()],
+        })
+        .unwrap();
+    assert_eq!(
+        board.open_target(browser_id, workspace(1), &catalog, &keyed_navigation),
+        Err(AttentionError::InvalidSurface)
+    );
+    keyed_navigation
+        .reduce(
+            &catalog,
+            WorkspaceNavigationAction::Retain {
+                id: workspace(1),
+                surface: browser_surface(local_browser_tab),
+                card: WorkspaceCardAggregate::default(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        board
+            .open_target(browser_id, workspace(1), &catalog, &keyed_navigation)
+            .unwrap(),
+        WorkspaceFocus {
+            pane_id: browser_pane,
+            tab_id: local_browser_tab,
+        }
     );
 }
 
@@ -1090,6 +1298,8 @@ fn sdtest_1757_approval_is_bound_to_pending_id_and_session_revision() {
         8,
         1_000,
         "session-1".into(),
+        "platform-workspace".into(),
+        1,
         true,
         true,
     );

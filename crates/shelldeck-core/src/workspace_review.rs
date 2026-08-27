@@ -16,7 +16,8 @@ use crate::config::workspace_catalog::{
     CatalogCheckoutId, CatalogWorkspaceId, ProjectCatalog, WorkspaceRelativePath,
 };
 use crate::workspace_navigation::{
-    PaneId, PaneNode, WorkspaceFocus, WorkspaceSurfaceState, WorkspaceTabContent,
+    PaneId, PaneNode, WorkspaceFocus, WorkspaceNavigationState, WorkspaceSurfaceState,
+    WorkspaceTabContent,
 };
 
 #[path = "workspace_review_preview.rs"]
@@ -25,8 +26,8 @@ use preview_image::{looks_like_image, validated_image_metadata};
 #[path = "workspace_review_validation.rs"]
 mod validation;
 use validation::{
-    validate_delivery_evidence, validate_fresh_review, validate_pending_record,
-    validate_preview_bounds, validate_provider_evidence,
+    count_provider_session, validate_delivery_evidence, validate_fresh_review,
+    validate_pending_record, validate_preview_bounds, validate_provider_evidence,
 };
 #[path = "workspace_review_storage.rs"]
 mod storage;
@@ -37,7 +38,7 @@ use storage::{
 };
 
 const REVIEW_DRAFT_SCHEMA: u16 = 2;
-const REVIEW_WORKFLOW_SCHEMA: u16 = 2;
+const REVIEW_WORKFLOW_SCHEMA: u16 = 3;
 const MAX_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_CHARS: usize = 250_000;
 const MAX_DRAFT_FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -588,6 +589,8 @@ enum AuthorityScope {
     },
     ProviderSession {
         session_id: String,
+        platform_user_workspace_id: String,
+        mapping_reconciliation_revision: u64,
         send_comments: bool,
         decide_approval: bool,
     },
@@ -639,6 +642,8 @@ impl AuthorityGrant {
         revision: u64,
         expires_at_millis: u64,
         session_id: String,
+        platform_user_workspace_id: String,
+        mapping_reconciliation_revision: u64,
         send_comments: bool,
         decide_approval: bool,
     ) -> Self {
@@ -649,6 +654,8 @@ impl AuthorityGrant {
             expires_at_millis,
             scope: AuthorityScope::ProviderSession {
                 session_id,
+                platform_user_workspace_id,
+                mapping_reconciliation_revision,
                 send_comments,
                 decide_approval,
             },
@@ -726,10 +733,14 @@ pub enum MutationTargetFence {
     ReviewAndProviderSession {
         checkout: CatalogCheckoutId,
         review_revision: u64,
+        platform_user_workspace_id: String,
+        mapping_reconciliation_revision: u64,
         session_id: String,
         session_revision: u64,
     },
     ProviderApproval {
+        platform_user_workspace_id: String,
+        mapping_reconciliation_revision: u64,
         session_id: String,
         session_revision: u64,
         approval_id: String,
@@ -1383,13 +1394,18 @@ fn prepare_target(
             surface
                 .validate_for(catalog, review.workspace)
                 .map_err(|_| ReviewWorkflowError::CurrentTargetMismatch)?;
-            let platform_workspace = catalog
+            let mapping = catalog
                 .workspace(review.workspace)
                 .ok()
                 .and_then(|workspace| workspace.platform_mapping())
                 .filter(|mapping| mapping.is_exact())
-                .map(|mapping| mapping.user_workspace.id.as_str())
                 .ok_or(ReviewWorkflowError::CurrentTargetMismatch)?;
+            let platform_workspace = mapping.user_workspace.id.as_str();
+            if session.platform_user_workspace_id != platform_workspace
+                || session.mapping_reconciliation_revision != mapping.reconciliation_revision
+            {
+                return Err(ReviewWorkflowError::CurrentTargetMismatch);
+            }
             if count_provider_session(
                 surface.root.as_ref(),
                 platform_workspace,
@@ -1419,6 +1435,8 @@ fn prepare_target(
             Ok(MutationTargetFence::ReviewAndProviderSession {
                 checkout: review.checkout,
                 review_revision: review.revision,
+                platform_user_workspace_id: session.platform_user_workspace_id.clone(),
+                mapping_reconciliation_revision: session.mapping_reconciliation_revision,
                 session_id: session.session_id.clone(),
                 session_revision: session.revision,
             })
@@ -1438,6 +1456,8 @@ fn prepare_target(
         ) if session_id == granted && session_id == &session.session_id => {
             validate_provider_evidence(session, grant, false, Some(approval_id))?;
             Ok(MutationTargetFence::ProviderApproval {
+                platform_user_workspace_id: session.platform_user_workspace_id.clone(),
+                mapping_reconciliation_revision: session.mapping_reconciliation_revision,
                 session_id: session.session_id.clone(),
                 session_revision: session.revision,
                 approval_id: approval_id.clone(),
@@ -1548,92 +1568,6 @@ fn validate_current_target(
     Ok(())
 }
 
-fn count_provider_session(
-    root: Option<&PaneNode>,
-    platform_workspace: &str,
-    session_id: &str,
-) -> usize {
-    match root {
-        None => 0,
-        Some(PaneNode::Leaf(leaf)) => leaf
-            .tabs
-            .iter()
-            .filter(|tab| {
-                matches!(
-                    &tab.content,
-                    WorkspaceTabContent::ProviderSession(binding)
-                        if binding.platform_user_workspace_id == platform_workspace
-                            && binding.session_id == session_id
-                )
-            })
-            .count(),
-        Some(PaneNode::Split { first, second, .. }) => {
-            count_provider_session(Some(first), platform_workspace, session_id)
-                + count_provider_session(Some(second), platform_workspace, session_id)
-        }
-    }
-}
-
-fn authority_scope_admits_preview(preview: &ReviewMutationPreview) -> bool {
-    match (&preview.kind, &preview.target, &preview.authority_scope) {
-        (
-            ReviewMutationKind::StageHunks { .. } | ReviewMutationKind::UnstageHunks { .. },
-            MutationTargetFence::LocalReview { checkout, .. },
-            AuthorityScope::Repository {
-                checkout: granted_checkout,
-                stage_hunks: true,
-            },
-        ) => checkout == granted_checkout,
-        (
-            ReviewMutationKind::SendComments { session_id, .. },
-            MutationTargetFence::ReviewAndProviderSession { .. },
-            AuthorityScope::ProviderSession {
-                session_id: granted_session,
-                send_comments: true,
-                ..
-            },
-        ) => session_id == granted_session,
-        (
-            ReviewMutationKind::DecideApproval { session_id, .. },
-            MutationTargetFence::ProviderApproval { .. },
-            AuthorityScope::ProviderSession {
-                session_id: granted_session,
-                decide_approval: true,
-                ..
-            },
-        ) => session_id == granted_session,
-        (
-            ReviewMutationKind::RetryCheck {
-                provider,
-                repository,
-                ..
-            },
-            MutationTargetFence::DeliveryCheck { .. },
-            AuthorityScope::Delivery {
-                provider: granted_provider,
-                repository: granted_repository,
-                retry_checks: true,
-                ..
-            },
-        ) => provider == granted_provider && repository == granted_repository,
-        (
-            ReviewMutationKind::MergePullRequest {
-                provider,
-                repository,
-                ..
-            },
-            MutationTargetFence::DeliveryPullRequest { .. },
-            AuthorityScope::Delivery {
-                provider: granted_provider,
-                repository: granted_repository,
-                merge_pull_request: true,
-                ..
-            },
-        ) => provider == granted_provider && repository == granted_repository,
-        _ => false,
-    }
-}
-
 fn validate_hunks(
     snapshot: &ReviewSnapshot,
     hunks: &[ReviewHunkId],
@@ -1677,6 +1611,8 @@ fn validate_receipt(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderSessionProjection {
     pub workspace: CatalogWorkspaceId,
+    pub platform_user_workspace_id: String,
+    pub mapping_reconciliation_revision: u64,
     pub session_id: String,
     pub revision: u64,
     pub authority_revision: u64,
@@ -1929,12 +1865,16 @@ impl AttentionBoard {
         id: AttentionItemId,
         workspace: CatalogWorkspaceId,
         catalog: &ProjectCatalog,
-        surface: &WorkspaceSurfaceState,
+        navigation: &WorkspaceNavigationState,
     ) -> Result<WorkspaceFocus, AttentionError> {
         let item = self.items.get_mut(&id).ok_or(AttentionError::InvalidItem)?;
         if self.workspace != workspace || item.target.workspace != workspace {
             return Err(AttentionError::WrongWorkspace);
         }
+        let surface = &navigation
+            .workspace(workspace)
+            .ok_or(AttentionError::InvalidSurface)?
+            .surface;
         surface
             .validate_for(catalog, workspace)
             .map_err(|_| AttentionError::InvalidSurface)?;

@@ -2621,8 +2621,9 @@ separately scoped: provider-session control cannot grant repository, CI, or
 pull-request authority. A crate-private grant can prepare only a workflow-owned
 capability. Durable submit rechecks the current grant (including revocation,
 supersession, actor and scope) and the exact fresh local-review,
-provider-session/approval, catalog-validated workspace surface, or delivery
-target fence. Receipts echo the actor,
+provider-session/approval, Platform user-workspace identity plus reconciliation
+revision, catalog-validated workspace surface, or delivery target fence.
+Receipts echo the actor,
 authority revision, typed target and one idempotency key. An in-flight operation
 reloaded after restart becomes reconciliation-only work with that original key.
 Prepared and terminal records remain enumerable after operation-ID loss; only
@@ -2635,7 +2636,8 @@ Needs You, Working, Blocked, Done, and Idle are typed observations with unread
 state and a nested-agent path. Each item names one local user workspace and
 pane; provider-session items additionally name the exact session in that pane.
 Older or conflicting same-revision observations are refused. Opening an item in
-the core validates all coordinates against a validated workspace surface,
+the core resolves only through retained state keyed by the authoritative local
+workspace and validates all coordinates against that workspace surface,
 refuses duplicate pane/session coordinates, returns only that exact tab, and
 records local read state separately from the authoritative observation revision.
 Delivery checks, review status, merge readiness, and delivery state carry their
@@ -2644,6 +2646,9 @@ Stale or Unknown projection even if that projection claims a higher revision.
 
 ## Change log
 
+- **2026-08-27** — Bound comment/approval receipts to exact Platform mapping
+  identity/revision and made attention resolve through workspace-keyed retained
+  navigation, including same-checkout Browser isolation.
 - **2026-08-27** — Hardened SDUC-492/493 and added SDTEST-1759..1762 with
   section/hunk-bound anchors,
   current-grant and exact-workspace revalidation, recoverable terminal ledger

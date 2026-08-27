@@ -1,4 +1,111 @@
 use super::*;
+
+pub(super) fn count_provider_session(
+    root: Option<&PaneNode>,
+    platform_workspace: &str,
+    session_id: &str,
+) -> usize {
+    match root {
+        None => 0,
+        Some(PaneNode::Leaf(leaf)) => leaf
+            .tabs
+            .iter()
+            .filter(|tab| {
+                matches!(
+                    &tab.content,
+                    WorkspaceTabContent::ProviderSession(binding)
+                        if binding.platform_user_workspace_id == platform_workspace
+                            && binding.session_id == session_id
+                )
+            })
+            .count(),
+        Some(PaneNode::Split { first, second, .. }) => {
+            count_provider_session(Some(first), platform_workspace, session_id)
+                + count_provider_session(Some(second), platform_workspace, session_id)
+        }
+    }
+}
+
+fn authority_scope_admits_preview(preview: &ReviewMutationPreview) -> bool {
+    match (&preview.kind, &preview.target, &preview.authority_scope) {
+        (
+            ReviewMutationKind::StageHunks { .. } | ReviewMutationKind::UnstageHunks { .. },
+            MutationTargetFence::LocalReview { checkout, .. },
+            AuthorityScope::Repository {
+                checkout: granted_checkout,
+                stage_hunks: true,
+            },
+        ) => checkout == granted_checkout,
+        (
+            ReviewMutationKind::SendComments { session_id, .. },
+            MutationTargetFence::ReviewAndProviderSession {
+                platform_user_workspace_id,
+                mapping_reconciliation_revision,
+                ..
+            },
+            AuthorityScope::ProviderSession {
+                session_id: granted_session,
+                platform_user_workspace_id: granted_platform_workspace,
+                mapping_reconciliation_revision: granted_mapping_revision,
+                send_comments: true,
+                ..
+            },
+        ) => {
+            session_id == granted_session
+                && platform_user_workspace_id == granted_platform_workspace
+                && mapping_reconciliation_revision == granted_mapping_revision
+        }
+        (
+            ReviewMutationKind::DecideApproval { session_id, .. },
+            MutationTargetFence::ProviderApproval {
+                platform_user_workspace_id,
+                mapping_reconciliation_revision,
+                ..
+            },
+            AuthorityScope::ProviderSession {
+                session_id: granted_session,
+                platform_user_workspace_id: granted_platform_workspace,
+                mapping_reconciliation_revision: granted_mapping_revision,
+                decide_approval: true,
+                ..
+            },
+        ) => {
+            session_id == granted_session
+                && platform_user_workspace_id == granted_platform_workspace
+                && mapping_reconciliation_revision == granted_mapping_revision
+        }
+        (
+            ReviewMutationKind::RetryCheck {
+                provider,
+                repository,
+                ..
+            },
+            MutationTargetFence::DeliveryCheck { .. },
+            AuthorityScope::Delivery {
+                provider: granted_provider,
+                repository: granted_repository,
+                retry_checks: true,
+                ..
+            },
+        ) => provider == granted_provider && repository == granted_repository,
+        (
+            ReviewMutationKind::MergePullRequest {
+                provider,
+                repository,
+                ..
+            },
+            MutationTargetFence::DeliveryPullRequest { .. },
+            AuthorityScope::Delivery {
+                provider: granted_provider,
+                repository: granted_repository,
+                merge_pull_request: true,
+                ..
+            },
+        ) => provider == granted_provider && repository == granted_repository,
+        _ => false,
+    }
+}
+
 pub(super) fn validate_fresh_review(snapshot: &ReviewSnapshot) -> Result<(), ReviewWorkflowError> {
     if snapshot.freshness != ObservationFreshness::Fresh {
         return Err(ReviewWorkflowError::StaleReview);
@@ -60,7 +167,19 @@ pub(super) fn validate_provider_evidence(
     sending_comments: bool,
     approval: Option<&String>,
 ) -> Result<(), ReviewWorkflowError> {
+    let AuthorityScope::ProviderSession {
+        platform_user_workspace_id,
+        mapping_reconciliation_revision,
+        ..
+    } = &grant.scope
+    else {
+        return Err(ReviewWorkflowError::WrongAuthority);
+    };
     if session.workspace != grant.workspace
+        || session.platform_user_workspace_id != *platform_user_workspace_id
+        || session.mapping_reconciliation_revision != *mapping_reconciliation_revision
+        || !bounded_nonempty(&session.platform_user_workspace_id, MAX_ID_BYTES)
+        || session.mapping_reconciliation_revision == 0
         || session.freshness != ObservationFreshness::Fresh
         || session.authority_revision != grant.revision
         || session.observed_actor.as_ref() != Some(&grant.actor)
@@ -143,12 +262,16 @@ pub(super) fn validate_preview_bounds(
                 comments,
             },
             MutationTargetFence::ReviewAndProviderSession {
+                platform_user_workspace_id,
+                mapping_reconciliation_revision,
                 session_id: target_session,
                 ..
             },
         ) => {
             let mut ids = BTreeSet::new();
             bounded_nonempty(session_id, MAX_ID_BYTES)
+                && bounded_nonempty(platform_user_workspace_id, MAX_ID_BYTES)
+                && *mapping_reconciliation_revision != 0
                 && session_id == target_session
                 && !comments.is_empty()
                 && comments.len() <= MAX_MUTATION_ITEMS
@@ -163,12 +286,16 @@ pub(super) fn validate_preview_bounds(
                 ..
             },
             MutationTargetFence::ProviderApproval {
+                platform_user_workspace_id,
+                mapping_reconciliation_revision,
                 session_id: target_session,
                 approval_id: target_approval,
                 ..
             },
         ) => {
             bounded_nonempty(session_id, MAX_ID_BYTES)
+                && bounded_nonempty(platform_user_workspace_id, MAX_ID_BYTES)
+                && *mapping_reconciliation_revision != 0
                 && bounded_nonempty(approval_id, MAX_ID_BYTES)
                 && session_id == target_session
                 && approval_id == target_approval
