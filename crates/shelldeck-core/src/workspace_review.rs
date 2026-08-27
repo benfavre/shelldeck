@@ -1008,6 +1008,7 @@ impl ReviewWorkflow {
         }
         let mut pending = BTreeMap::new();
         let mut keys = BTreeSet::new();
+        let mut recovered_dispatch = false;
         for mut mutation in disk.pending {
             validate_pending_record(&mutation)?;
             if !keys.insert(mutation.preview.idempotency_key)
@@ -1020,6 +1021,7 @@ impl ReviewWorkflow {
                 ));
             }
             if matches!(mutation.state, PendingMutationState::Submitting) {
+                recovered_dispatch = true;
                 mutation.state = PendingMutationState::Reconciling {
                     category: "process_restarted_after_dispatch".into(),
                 };
@@ -1032,13 +1034,7 @@ impl ReviewWorkflow {
             pending,
             path,
         };
-        if workflow.pending.values().any(|mutation| {
-            matches!(
-                mutation.state,
-                PendingMutationState::Reconciling { ref category }
-                    if category == "process_restarted_after_dispatch"
-            )
-        }) {
+        if recovered_dispatch {
             workflow.persist()?;
         }
         Ok(workflow)
@@ -1202,6 +1198,34 @@ impl ReviewWorkflow {
                 .get_mut(&operation)
                 .ok_or(ReviewWorkflowError::UnknownMutation)?
                 .state = PendingMutationState::Completed(receipt);
+            Ok(())
+        })
+    }
+
+    /// Record an authoritative receipt-lookup refusal/not-found result. This
+    /// terminates reconciliation without ever dispatching the mutation again.
+    pub fn apply_reconciliation_refusal(
+        &mut self,
+        operation: ReviewMutationId,
+        category: String,
+    ) -> Result<(), ReviewWorkflowError> {
+        if !bounded_nonempty(&category, MAX_TITLE_BYTES) {
+            return Err(ReviewWorkflowError::BoundsExceeded(
+                "reconciliation category exceeds its bound",
+            ));
+        }
+        let pending = self
+            .pending
+            .get(&operation)
+            .ok_or(ReviewWorkflowError::UnknownMutation)?;
+        if !matches!(pending.state, PendingMutationState::Reconciling { .. }) {
+            return Err(ReviewWorkflowError::MutationAlreadyPending);
+        }
+        self.transact(|pending| {
+            pending
+                .get_mut(&operation)
+                .ok_or(ReviewWorkflowError::UnknownMutation)?
+                .state = PendingMutationState::Refused { category };
             Ok(())
         })
     }

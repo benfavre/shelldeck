@@ -320,10 +320,14 @@ fn sdtest_1754_dispatched_ledger_recovers_only_by_original_receipt() {
         )
         .unwrap();
     drop(workflow);
-    let mut recovered = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    let recovered = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    let recovered_revision = recovered.revision();
     let lookups = recovered.reconciliation_lookups();
     assert_eq!(lookups.len(), 1);
     assert_eq!(lookups[0].idempotency_key, preview.idempotency_key());
+    drop(recovered);
+    let mut recovered = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    assert_eq!(recovered.revision(), recovered_revision);
     assert_eq!(
         recovered.submit(
             &preview,
@@ -347,6 +351,47 @@ fn sdtest_1754_dispatched_ledger_recovers_only_by_original_receipt() {
         completed.mutation(preview.operation()).unwrap().state(),
         PendingMutationState::Completed(_)
     ));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn reconciliation_not_found_terminates_without_redispatch() {
+    let root = temp_root("ledger-not-found");
+    let mut workflow = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    let preview = workflow
+        .prepare(
+            MutationTargetEvidence::LocalReview(&snapshot()),
+            &repository_grant(1_000),
+            ReviewMutationKind::StageHunks {
+                hunks: vec![ReviewHunkId::from_uuid(uuid(3))],
+            },
+            10,
+        )
+        .unwrap();
+    workflow
+        .submit(
+            &preview,
+            MutationTargetEvidence::LocalReview(&snapshot()),
+            11,
+        )
+        .unwrap();
+    drop(workflow);
+    let mut recovered = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
+    recovered
+        .apply_reconciliation_refusal(preview.operation(), "receipt_not_found".into())
+        .unwrap();
+    assert!(matches!(
+        recovered.mutation(preview.operation()).unwrap().state(),
+        PendingMutationState::Refused { category } if category == "receipt_not_found"
+    ));
+    assert_eq!(
+        recovered.submit(
+            &preview,
+            MutationTargetEvidence::LocalReview(&snapshot()),
+            12,
+        ),
+        Err(ReviewWorkflowError::MutationAlreadyPending)
+    );
     std::fs::remove_dir_all(root).ok();
 }
 
