@@ -499,6 +499,7 @@ pub struct Workspace {
     active_agent_runs: HashMap<Uuid, agents::ActiveAgentRun>,
     // Keep subscriptions alive
     _sidebar_sub: Subscription,
+    _workspace_hub_sub: Subscription,
     _terminal_sub: Subscription,
     _agent_console_sub: Subscription,
     _palette_sub: Subscription,
@@ -914,6 +915,7 @@ impl Workspace {
             d
         });
 
+        let terminal = cx.new(TerminalView::new);
         let workspace_connections = connections
             .iter()
             .map(|connection| (connection.id, connection.display_name().to_string()))
@@ -921,10 +923,13 @@ impl Workspace {
         let workspace_catalog = shelldeck_core::config::workspace_catalog::ProjectCatalog::load()
             .map_err(|error| error.to_string());
         let workspace_hub = cx.new(|cx| {
-            workspaces::WorkspaceHubView::new(workspace_catalog, &workspace_connections, cx)
+            workspaces::WorkspaceHubView::new(
+                workspace_catalog,
+                &workspace_connections,
+                terminal.clone(),
+                cx,
+            )
         });
-
-        let terminal = cx.new(TerminalView::new);
         let agent_console = cx.new(|cx| {
             let mut view = AgentConsoleView::new(cx);
             view.set_connections(
@@ -1136,6 +1141,18 @@ impl Workspace {
         let terminal_sub = cx.subscribe(&terminal, |this, _terminal, event: &TerminalEvent, cx| {
             this.handle_terminal_event(event, cx);
         });
+        let workspace_hub_sub = cx.subscribe(
+            &workspace_hub,
+            |this, _hub, event: &workspaces::WorkspaceHubEvent, cx| {
+                let workspaces::WorkspaceHubEvent::ActiveTerminal(terminal) = event;
+                this.terminal = terminal.clone();
+                this._terminal_sub =
+                    cx.subscribe(terminal, |this, _terminal, event: &TerminalEvent, cx| {
+                        this.handle_terminal_event(event, cx);
+                    });
+                cx.notify();
+            },
+        );
         let agent_console_sub = cx.subscribe(
             &agent_console,
             |this, _view, event: &AgentConsoleEvent, cx| {
@@ -1332,6 +1349,7 @@ impl Workspace {
             active_scripts: HashMap::new(),
             active_agent_runs: HashMap::new(),
             _sidebar_sub: sidebar_sub,
+            _workspace_hub_sub: workspace_hub_sub,
             _terminal_sub: terminal_sub,
             _agent_console_sub: agent_console_sub,
             _palette_sub: palette_sub,

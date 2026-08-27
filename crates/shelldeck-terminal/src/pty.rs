@@ -238,6 +238,18 @@ impl LocalPty {
         rows: u16,
         cols: u16,
     ) -> crate::Result<(Self, Box<dyn Read + Send>)> {
+        let home =
+            shelldeck_core::util::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        Self::spawn_at(shell, rows, cols, &home)
+    }
+
+    /// Spawn a PTY rooted at a caller-authorized existing directory.
+    pub fn spawn_at(
+        shell: Option<&str>,
+        rows: u16,
+        cols: u16,
+        cwd: &std::path::Path,
+    ) -> crate::Result<(Self, Box<dyn Read + Send>)> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -251,12 +263,9 @@ impl LocalPty {
         let shell_path = resolve_shell(shell);
 
         let mut cmd = CommandBuilder::new(&shell_path);
-        // Start in the user's home directory; fall back to the process cwd
-        // (`.`) when it cannot be determined — never a hardcoded `/`, which
-        // is meaningless on Windows.
-        let home =
-            shelldeck_core::util::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        cmd.cwd(home);
+        // The caller resolved this working directory from its authority
+        // boundary; portable-path validation stays above the PTY layer.
+        cmd.cwd(cwd);
 
         // Set TERM so applications know what terminal features are available.
         cmd.env("TERM", "xterm-256color");

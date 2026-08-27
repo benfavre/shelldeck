@@ -59,6 +59,18 @@ impl TerminalSession {
 impl TerminalSession {
     /// Spawn a new local terminal session.
     pub fn spawn_local(shell: Option<&str>, rows: u16, cols: u16) -> crate::Result<Self> {
+        let home =
+            shelldeck_core::util::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        Self::spawn_local_at(shell, rows, cols, &home)
+    }
+
+    /// Spawn a local terminal in an existing caller-authorized directory.
+    pub fn spawn_local_at(
+        shell: Option<&str>,
+        rows: u16,
+        cols: u16,
+        cwd: &std::path::Path,
+    ) -> crate::Result<Self> {
         // Detect the flavor from the shell the PTY will actually spawn (same
         // resolution chain as `LocalPty::spawn`, incl. platform fallbacks).
         let shell_name = crate::pty::resolve_shell(shell).to_ascii_lowercase();
@@ -80,7 +92,7 @@ impl TerminalSession {
         let (response_tx, response_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         grid.lock().set_response_tx(response_tx);
 
-        let (pty, reader) = LocalPty::spawn(shell, rows, cols)?;
+        let (pty, reader) = LocalPty::spawn_at(shell, rows, cols, cwd)?;
 
         // Split PTY: writer goes to the writer thread, master stays for resize.
         let (mut writer, master) = pty.into_parts();

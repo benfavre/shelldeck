@@ -623,7 +623,12 @@ impl ProjectCatalog {
         Self::load_from(&Self::catalog_path())
     }
 
-    pub(crate) fn save_to(&mut self, path: &Path) -> Result<()> {
+    /// Persist this catalog at an explicitly authorized location.
+    ///
+    /// The desktop app normally uses [`Self::save`]. This variant exists for
+    /// recovery tooling and for production-path tests without redirecting the
+    /// process-wide configuration directory.
+    pub fn save_to(&mut self, path: &Path) -> Result<()> {
         // Keep the process mutex as a cheap thread-level admission gate, then
         // take a real OS file lock so revision check + replace is one
         // transaction even during simultaneous launches or recovery tools.
@@ -659,7 +664,8 @@ impl ProjectCatalog {
         Ok(())
     }
 
-    pub(crate) fn load_from(path: &Path) -> Result<Self> {
+    /// Load a catalog from an explicitly authorized location.
+    pub fn load_from(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -700,6 +706,35 @@ impl ProjectCatalog {
         let next_revision = self.next_revision()?;
         let mut candidate = self.clone();
         candidate.projects.push(project);
+        candidate.validate()?;
+        candidate.revision = next_revision;
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Add an authorized checkout to an existing project as one atomic
+    /// catalog mutation.
+    pub fn add_checkout(
+        &mut self,
+        project_id: CatalogProjectId,
+        checkout: ProjectCheckout,
+    ) -> std::result::Result<(), WorkspaceCatalogError> {
+        if self
+            .projects
+            .iter()
+            .flat_map(|project| project.checkouts.iter())
+            .any(|item| item.id == checkout.id)
+        {
+            return Err(WorkspaceCatalogError::DuplicateCheckout(checkout.id));
+        }
+        let next_revision = self.next_revision()?;
+        let mut candidate = self.clone();
+        let project = candidate
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .ok_or(WorkspaceCatalogError::UnknownProject(project_id))?;
+        project.checkouts.push(checkout);
         candidate.validate()?;
         candidate.revision = next_revision;
         *self = candidate;

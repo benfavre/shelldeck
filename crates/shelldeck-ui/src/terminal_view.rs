@@ -156,6 +156,41 @@ pub struct TerminalMentionRow {
     pub tail: String,
 }
 
+/// Native, non-owning workspace snapshot for a live [`TerminalView`].
+///
+/// It deliberately stores only state the terminal can apply without
+/// reconstructing a PTY. The entity remains the authority for sessions.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TerminalWorkspaceSnapshot {
+    pub tabs: Vec<Uuid>,
+    pub active_tab: Option<Uuid>,
+    layouts: HashMap<Uuid, TerminalPaneSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TerminalPaneSnapshot {
+    tree: TerminalPaneNodeSnapshot,
+    focused: TerminalPaneKey,
+    viewports: HashMap<Uuid, usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalPaneKey {
+    Primary,
+    Extra(Uuid),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum TerminalPaneNodeSnapshot {
+    Leaf(TerminalPaneKey),
+    Split {
+        horizontal: bool,
+        ratio: f32,
+        first: Box<TerminalPaneNodeSnapshot>,
+        second: Box<TerminalPaneNodeSnapshot>,
+    },
+}
+
 pub struct TerminalView {
     pub pane: TerminalPane,
     pub tabs: Vec<TerminalTab>,
@@ -701,6 +736,13 @@ impl TerminalView {
     }
 
     pub fn select_tab(&mut self, id: Uuid) {
+        if self
+            .tabs
+            .get(self.pane.active_index)
+            .is_some_and(|active| active.id == id)
+        {
+            return;
+        }
         // Save the current tab's pane layout before switching away.
         if let Some(current_tab) = self.tabs.get(self.pane.active_index) {
             let current_id = current_tab.id;
@@ -1008,6 +1050,85 @@ impl TerminalView {
         self.pane.active_index
     }
 
+    /// Capture tab order, active tab, native split ratios/focus and viewport
+    /// offsets without moving or cloning any live terminal session.
+    pub(crate) fn capture_workspace_snapshot(&self) -> TerminalWorkspaceSnapshot {
+        let mut layouts = HashMap::new();
+        for tab in &self.tabs {
+            let layout = if self
+                .tabs
+                .get(self.pane.active_index)
+                .is_some_and(|active| active.id == tab.id)
+            {
+                &self.layout
+            } else {
+                self.stored_layouts.get(&tab.id).unwrap_or(&self.layout)
+            };
+            let mut viewports = HashMap::new();
+            if let Some(session) = self.session_by_id(tab.id) {
+                viewports.insert(session.id, session.grid.lock().scroll_info().2);
+            }
+            for session in layout.extra.values() {
+                viewports.insert(session.id, session.grid.lock().scroll_info().2);
+            }
+            layouts.insert(
+                tab.id,
+                TerminalPaneSnapshot {
+                    tree: snapshot_pane_node(&layout.tree),
+                    focused: snapshot_pane_key(layout.focused),
+                    viewports,
+                },
+            );
+        }
+        TerminalWorkspaceSnapshot {
+            tabs: self.tabs.iter().map(|tab| tab.id).collect(),
+            active_tab: self.tabs.get(self.pane.active_index).map(|tab| tab.id),
+            layouts,
+        }
+    }
+
+    /// Reapply a snapshot to sessions still owned by this entity. Unknown or
+    /// closed tabs are ignored; no PTY is ever recreated as a side effect.
+    pub(crate) fn apply_workspace_snapshot(&mut self, snapshot: &TerminalWorkspaceSnapshot) {
+        if let Some(active) = snapshot
+            .active_tab
+            .filter(|id| self.tabs.iter().any(|tab| tab.id == *id))
+        {
+            self.select_tab(active);
+        }
+        for (tab_id, pane) in &snapshot.layouts {
+            let layout = if self
+                .tabs
+                .get(self.pane.active_index)
+                .is_some_and(|active| active.id == *tab_id)
+            {
+                Some(&mut self.layout)
+            } else {
+                self.stored_layouts.get_mut(tab_id)
+            };
+            let Some(layout) = layout else { continue };
+            apply_pane_node_snapshot(&mut layout.tree, &pane.tree);
+            let focused = restore_pane_key(pane.focused);
+            if layout.leaves().contains(&focused) {
+                layout.focused = focused;
+            }
+            for session in layout.extra.values() {
+                if let Some(offset) = pane.viewports.get(&session.id) {
+                    session.grid.lock().set_scroll_offset(*offset);
+                }
+            }
+        }
+        for session in &self.pane.sessions {
+            if let Some(offset) = snapshot
+                .layouts
+                .values()
+                .find_map(|pane| pane.viewports.get(&session.id))
+            {
+                session.grid.lock().set_scroll_offset(*offset);
+            }
+        }
+    }
+
     /// Return the last computed grid dimensions, or a default if unknown.
     pub fn grid_size(&self) -> (u16, u16) {
         if self.last_grid_rows > 0 {
@@ -1294,6 +1415,26 @@ impl TerminalView {
         }
 
         self.ensure_refresh_running(cx);
+    }
+
+    /// Attach a real local PTY at an existing, canonicalized checkout root.
+    pub(crate) fn spawn_local_terminal_at(
+        &mut self,
+        cwd: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> Result<Uuid, String> {
+        let (rows, cols) = if self.last_grid_rows > 0 {
+            (self.last_grid_rows, self.last_grid_cols)
+        } else {
+            (24, 80)
+        };
+        let session =
+            TerminalSession::spawn_local_at(self.default_shell.as_deref(), rows, cols, cwd)
+                .map_err(|error| error.to_string())?;
+        let id = session.id;
+        self.add_session(session);
+        self.ensure_refresh_running(cx);
+        Ok(id)
     }
 
     /// Run a local CLI in the active terminal, creating one when necessary.
@@ -4765,6 +4906,63 @@ impl TerminalView {
     }
 }
 
+fn snapshot_pane_key(id: PaneId) -> TerminalPaneKey {
+    match id {
+        PaneId::Primary => TerminalPaneKey::Primary,
+        PaneId::Extra(id) => TerminalPaneKey::Extra(id),
+    }
+}
+
+fn restore_pane_key(id: TerminalPaneKey) -> PaneId {
+    match id {
+        TerminalPaneKey::Primary => PaneId::Primary,
+        TerminalPaneKey::Extra(id) => PaneId::Extra(id),
+    }
+}
+
+fn snapshot_pane_node(node: &PaneNode) -> TerminalPaneNodeSnapshot {
+    match node {
+        PaneNode::Leaf(id) => TerminalPaneNodeSnapshot::Leaf(snapshot_pane_key(*id)),
+        PaneNode::Split {
+            direction,
+            ratio,
+            a,
+            b,
+        } => TerminalPaneNodeSnapshot::Split {
+            horizontal: matches!(direction, SplitDirection::Horizontal),
+            ratio: *ratio,
+            first: Box::new(snapshot_pane_node(a)),
+            second: Box::new(snapshot_pane_node(b)),
+        },
+    }
+}
+
+fn apply_pane_node_snapshot(node: &mut PaneNode, snapshot: &TerminalPaneNodeSnapshot) {
+    match (node, snapshot) {
+        (PaneNode::Leaf(current), TerminalPaneNodeSnapshot::Leaf(saved))
+            if snapshot_pane_key(*current) == *saved => {}
+        (
+            PaneNode::Split {
+                direction,
+                ratio,
+                a,
+                b,
+            },
+            TerminalPaneNodeSnapshot::Split {
+                horizontal,
+                ratio: saved_ratio,
+                first,
+                second,
+            },
+        ) if matches!(direction, SplitDirection::Horizontal) == *horizontal => {
+            *ratio = saved_ratio.clamp(0.1, 0.9);
+            apply_pane_node_snapshot(a, first);
+            apply_pane_node_snapshot(b, second);
+        }
+        _ => {}
+    }
+}
+
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut container = div().relative().flex().flex_col().size_full();
@@ -5016,7 +5214,8 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_ai_command;
+    use super::{validate_ai_command, PaneNode, TerminalView};
+    use gpui::{AppContext, TestAppContext};
 
     // SDTEST-1333 / SDTEST-1334 retired 2026-08-06: command_available now
     // delegates to shelldeck_core::util::executable_on_path, whose contracts
@@ -5031,5 +5230,31 @@ mod tests {
             validate_ai_command("echo first\necho second"),
             Err("multiline")
         );
+    }
+
+    #[test]
+    fn native_workspace_snapshot_reapplies_split_focus_and_ratio() {
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let captured = terminal.update(&mut app, |terminal, cx| {
+            terminal.spawn_local_terminal(cx);
+            terminal.split_horizontal(cx);
+            terminal.toggle_split_focus();
+            let PaneNode::Split { ratio, .. } = &mut terminal.layout.tree else {
+                panic!("local split must create a native split tree");
+            };
+            *ratio = 0.63;
+            terminal.capture_workspace_snapshot()
+        });
+        terminal.update(&mut app, |terminal, _| {
+            terminal.toggle_split_focus();
+            let PaneNode::Split { ratio, .. } = &mut terminal.layout.tree else {
+                panic!("split must remain live");
+            };
+            *ratio = 0.25;
+            terminal.apply_workspace_snapshot(&captured);
+            assert_eq!(terminal.capture_workspace_snapshot(), captured);
+            terminal.close_all_sessions();
+        });
     }
 }
