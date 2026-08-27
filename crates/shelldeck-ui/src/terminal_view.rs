@@ -486,6 +486,16 @@ impl TerminalView {
         Ok(())
     }
 
+    /// Installe une racine déjà canonique et autorisée sans relire le système
+    /// de fichiers. Le lanceur s'en sert avant d'exposer une nouvelle surface:
+    /// les actions utilisateur ne peuvent ainsi jamais retomber sur le cwd du
+    /// processus. Si le dossier disparaît ensuite, la création du PTY échoue
+    /// fermée avec cette racine au lieu d'utiliser un autre répertoire.
+    pub(crate) fn install_authorized_default_cwd(&mut self, canonical_cwd: &std::path::Path) {
+        debug_assert!(canonical_cwd.is_absolute());
+        self.default_cwd = Some(canonical_cwd.to_path_buf());
+    }
+
     #[cfg(test)]
     pub(crate) fn runtime_config_probe(&self) -> (f32, bool, f32, &str, Option<&str>, bool, usize) {
         (
@@ -505,6 +515,14 @@ impl TerminalView {
         cols: u16,
     ) -> shelldeck_terminal::Result<TerminalSession> {
         if let Some(cwd) = self.default_cwd.as_deref() {
+            // `portable-pty` peut retomber silencieusement sur le répertoire
+            // du processus lorsque `cwd` disparaît. Refuser ici ferme cette
+            // course pour tous les onglets, splits et lanceurs CLI.
+            if !cwd.is_dir() {
+                return Err(shelldeck_terminal::TerminalError::Pty(
+                    "authorized terminal working directory is unavailable".into(),
+                ));
+            }
             TerminalSession::spawn_local_at(self.default_shell.as_deref(), rows, cols, cwd)
         } else {
             TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols)

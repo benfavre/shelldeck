@@ -643,7 +643,6 @@ mod tests {
                     },
                 )
                 .unwrap();
-            advance_creation_to_binding(hub, revision, workspace, operation);
             hub.pending_requests.insert(
                 workspace,
                 WorkspaceExecutionRequest {
@@ -654,11 +653,19 @@ mod tests {
                     name: "Vanished".into(),
                     intake: WorkspaceLaunchIntake::Manual,
                     host: AuthorizedLaunchHost::Local {
-                        canonical_root: vanished,
+                        canonical_root: vanished.clone(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
                 },
             );
+            terminal.update(cx, |terminal, cx| {
+                terminal.install_authorized_default_cwd(&vanished);
+                terminal.spawn_local_terminal(cx);
+            });
+            // L'action interactive précédant la complétion échoue fermée:
+            // aucun PTY n'est créé dans le cwd du processus ou le HOME.
+            assert_eq!(terminal.read(cx).tab_count(), 0);
+            advance_creation_to_binding(hub, revision, workspace, operation);
             hub.apply_executor_event(
                 workspace,
                 WorkspaceCreateEvent::Completed {
@@ -680,6 +687,86 @@ mod tests {
                 }) if message == &t!("workspaces.launcher.folder_unavailable").to_string()
             ));
             assert!(hub.pending_requests.contains_key(&workspace));
+        });
+    }
+
+    #[test]
+    fn pending_interaction_and_completion_use_only_the_authorized_checkout_cwd() {
+        let mut app = TestAppContext::single();
+        let (catalog, workspace, _, checkout, ..) = fixture_catalog();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal.clone(), cx))
+        });
+        let root = tempfile::tempdir().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+        hub.update(&mut app, |hub, cx| {
+            let operation = CreationOperationId::new();
+            let revision = hub.catalog.revision();
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Start {
+                        workspace,
+                        operation,
+                    },
+                )
+                .unwrap();
+            hub.pending_requests.insert(
+                workspace,
+                WorkspaceExecutionRequest {
+                    workspace,
+                    checkout,
+                    operation,
+                    catalog_revision: revision,
+                    name: "Authorized".into(),
+                    intake: WorkspaceLaunchIntake::Manual,
+                    host: AuthorizedLaunchHost::Local {
+                        canonical_root: canonical_root.clone(),
+                    },
+                    mode: WorkspaceLaunchMode::ExistingFolder,
+                },
+            );
+            terminal.update(cx, |terminal, cx| {
+                terminal.install_authorized_default_cwd(&canonical_root);
+                terminal.spawn_local_terminal(cx);
+            });
+            assert_eq!(terminal.read(cx).tab_count(), 1);
+            assert_eq!(
+                terminal
+                    .read(cx)
+                    .active_session()
+                    .and_then(|session| session.initial_cwd()),
+                Some(canonical_root.as_path())
+            );
+            assert!(hub.pending_requests.contains_key(&workspace));
+            assert!(matches!(
+                hub.creation.state(workspace),
+                Some(BackgroundWorkspaceCreateState::Running { .. })
+            ));
+
+            advance_creation_to_binding(hub, revision, workspace, operation);
+            hub.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Completed {
+                    workspace,
+                    operation,
+                },
+                cx,
+            );
+            assert_eq!(terminal.read(cx).tab_count(), 2);
+            assert_eq!(
+                terminal
+                    .read(cx)
+                    .active_session()
+                    .and_then(|session| session.initial_cwd()),
+                Some(canonical_root.as_path())
+            );
+            assert!(matches!(
+                hub.creation.state(workspace),
+                Some(BackgroundWorkspaceCreateState::Completed { .. })
+            ));
+            assert!(!hub.pending_requests.contains_key(&workspace));
         });
     }
 

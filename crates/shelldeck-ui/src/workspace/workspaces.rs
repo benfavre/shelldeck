@@ -1255,6 +1255,14 @@ impl WorkspaceHubView {
         if let Some(config) = self.terminal_config.as_ref() {
             apply_terminal_config(&terminal, config, cx);
         }
+        if let AuthorizedLaunchHost::Local { canonical_root } = &host {
+            // `host` a été canonisé et autorisé avant la mutation du
+            // catalogue. Cette installation ne touche pas au disque et doit
+            // précéder l'exposition de la surface interactive.
+            terminal.update(cx, |terminal, _| {
+                terminal.install_authorized_default_cwd(canonical_root)
+            });
+        }
         self.retained.insert(
             workspace,
             cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
