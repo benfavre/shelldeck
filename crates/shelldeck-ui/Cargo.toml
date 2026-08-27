@@ -44,6 +44,7 @@ tree-sitter-md = "0.5"
 lopdf = "0.42"
 
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 toml = { workspace = true }
 
 [package.metadata.i18n]

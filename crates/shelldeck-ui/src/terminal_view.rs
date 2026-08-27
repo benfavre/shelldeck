@@ -156,6 +156,53 @@ pub struct TerminalMentionRow {
     pub tail: String,
 }
 
+/// Native, non-owning workspace snapshot for a live [`TerminalView`].
+///
+/// It deliberately stores only state the terminal can apply without
+/// reconstructing a PTY. The entity remains the authority for sessions.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TerminalWorkspaceSnapshot {
+    pub tabs: Vec<Uuid>,
+    pub active_tab: Option<Uuid>,
+    layouts: HashMap<Uuid, TerminalPaneSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TerminalPaneSnapshot {
+    tree: TerminalPaneNodeSnapshot,
+    focused: TerminalPaneKey,
+    viewports: HashMap<Uuid, usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalPaneKey {
+    Primary,
+    Extra(Uuid),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum TerminalPaneNodeSnapshot {
+    Leaf(TerminalPaneKey),
+    Split {
+        horizontal: bool,
+        ratio: f32,
+        first: Box<TerminalPaneNodeSnapshot>,
+        second: Box<TerminalPaneNodeSnapshot>,
+    },
+}
+
+/// Politique de cwd des nouveaux PTY locaux. `Unscoped` est réservé au
+/// terminal général; un terminal de workspace reste `Required` même lorsque
+/// sa racine n'est plus disponible, afin de ne jamais retomber sur HOME.
+#[derive(Clone, Debug)]
+enum LocalCwdScope {
+    Unscoped,
+    Required {
+        intended: std::path::PathBuf,
+        canonical: Option<std::path::PathBuf>,
+    },
+}
+
 pub struct TerminalView {
     pub pane: TerminalPane,
     pub tabs: Vec<TerminalTab>,
@@ -167,6 +214,8 @@ pub struct TerminalView {
     /// `shelldeck-terminal` ($SHELL → /bin/bash on Unix; PowerShell →
     /// %COMSPEC% → cmd.exe on Windows).
     default_shell: Option<String>,
+    /// Portée de checkout exigée par chaque nouveau PTY local.
+    default_cwd: LocalCwdScope,
     pub focus_handle: FocusHandle,
     _refresh_task: Option<gpui::Task<()>>,
     /// Last known grid dimensions so we can detect when a resize is needed.
@@ -327,6 +376,7 @@ impl TerminalView {
             font_size: 14.0,
             font_family: "JetBrains Mono".to_string(),
             default_shell: None,
+            default_cwd: LocalCwdScope::Unscoped,
             focus_handle: cx.focus_handle(),
             _refresh_task: None,
             last_grid_rows: 0,
@@ -435,6 +485,104 @@ impl TerminalView {
     /// they were spawned with.
     pub fn set_default_shell(&mut self, shell: Option<String>) {
         self.default_shell = shell.filter(|s| !s.trim().is_empty());
+    }
+
+    /// Set the canonical checkout root for every future local tab, split, or
+    /// CLI-created terminal owned by this view.
+    pub(crate) fn set_default_cwd(&mut self, cwd: &std::path::Path) -> Result<(), String> {
+        let intended = cwd.to_path_buf();
+        self.default_cwd = LocalCwdScope::Required {
+            intended: intended.clone(),
+            canonical: None,
+        };
+        let canonical = std::fs::canonicalize(cwd).map_err(|error| error.to_string())?;
+        if !canonical.is_dir() {
+            return Err("terminal working directory is not a directory".into());
+        }
+        self.default_cwd = LocalCwdScope::Required {
+            intended,
+            canonical: Some(canonical),
+        };
+        Ok(())
+    }
+
+    /// Installe une racine déjà canonique et autorisée sans relire le système
+    /// de fichiers. Le lanceur s'en sert avant d'exposer une nouvelle surface:
+    /// les actions utilisateur ne peuvent ainsi jamais retomber sur le cwd du
+    /// processus. Si le dossier disparaît ensuite, la création du PTY échoue
+    /// fermée avec cette racine au lieu d'utiliser un autre répertoire.
+    pub(crate) fn install_authorized_default_cwd(&mut self, canonical_cwd: &std::path::Path) {
+        debug_assert!(canonical_cwd.is_absolute());
+        self.default_cwd = LocalCwdScope::Required {
+            intended: canonical_cwd.to_path_buf(),
+            canonical: Some(canonical_cwd.to_path_buf()),
+        };
+    }
+
+    pub(crate) fn required_cwd_unavailable_message(&self) -> Option<String> {
+        let LocalCwdScope::Required {
+            intended,
+            canonical: None,
+        } = &self.default_cwd
+        else {
+            return None;
+        };
+        Some(
+            t!(
+                "terminal.empty.workspace_folder_unavailable",
+                path = intended.display().to_string().as_str()
+            )
+            .to_string(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_config_probe(&self) -> (f32, bool, f32, &str, Option<&str>, bool, usize) {
+        (
+            self.sidebar_width,
+            self.menu_bar_visible,
+            self.font_size,
+            &self.font_family,
+            self.default_shell.as_deref(),
+            self.cursor_blink_enabled,
+            self.configured_scrollback,
+        )
+    }
+
+    fn spawn_configured_local(
+        &mut self,
+        rows: u16,
+        cols: u16,
+    ) -> shelldeck_terminal::Result<TerminalSession> {
+        let cwd = match &self.default_cwd {
+            LocalCwdScope::Unscoped => {
+                return TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols);
+            }
+            LocalCwdScope::Required {
+                canonical: Some(cwd),
+                ..
+            } => cwd.clone(),
+            LocalCwdScope::Required {
+                canonical: None, ..
+            } => {
+                return Err(shelldeck_terminal::TerminalError::Pty(
+                    "required workspace terminal directory is unavailable".into(),
+                ));
+            }
+        };
+        // `portable-pty` peut retomber silencieusement sur le répertoire du
+        // processus lorsque `cwd` disparaît. Refuser ici ferme cette course
+        // pour tous les onglets, splits et lanceurs CLI, puis rend l'état
+        // indisponible visible au prochain rendu.
+        if !cwd.is_dir() {
+            if let LocalCwdScope::Required { canonical, .. } = &mut self.default_cwd {
+                *canonical = None;
+            }
+            return Err(shelldeck_terminal::TerminalError::Pty(
+                "authorized terminal working directory is unavailable".into(),
+            ));
+        }
+        TerminalSession::spawn_local_at(self.default_shell.as_deref(), rows, cols, &cwd)
     }
 
     /// Update the cursor style preference.
@@ -701,6 +849,13 @@ impl TerminalView {
     }
 
     pub fn select_tab(&mut self, id: Uuid) {
+        if self
+            .tabs
+            .get(self.pane.active_index)
+            .is_some_and(|active| active.id == id)
+        {
+            return;
+        }
         // Save the current tab's pane layout before switching away.
         if let Some(current_tab) = self.tabs.get(self.pane.active_index) {
             let current_id = current_tab.id;
@@ -1008,6 +1163,85 @@ impl TerminalView {
         self.pane.active_index
     }
 
+    /// Capture tab order, active tab, native split ratios/focus and viewport
+    /// offsets without moving or cloning any live terminal session.
+    pub(crate) fn capture_workspace_snapshot(&self) -> TerminalWorkspaceSnapshot {
+        let mut layouts = HashMap::new();
+        for tab in &self.tabs {
+            let layout = if self
+                .tabs
+                .get(self.pane.active_index)
+                .is_some_and(|active| active.id == tab.id)
+            {
+                &self.layout
+            } else {
+                self.stored_layouts.get(&tab.id).unwrap_or(&self.layout)
+            };
+            let mut viewports = HashMap::new();
+            if let Some(session) = self.session_by_id(tab.id) {
+                viewports.insert(session.id, session.grid.lock().scroll_info().2);
+            }
+            for session in layout.extra.values() {
+                viewports.insert(session.id, session.grid.lock().scroll_info().2);
+            }
+            layouts.insert(
+                tab.id,
+                TerminalPaneSnapshot {
+                    tree: snapshot_pane_node(&layout.tree),
+                    focused: snapshot_pane_key(layout.focused),
+                    viewports,
+                },
+            );
+        }
+        TerminalWorkspaceSnapshot {
+            tabs: self.tabs.iter().map(|tab| tab.id).collect(),
+            active_tab: self.tabs.get(self.pane.active_index).map(|tab| tab.id),
+            layouts,
+        }
+    }
+
+    /// Reapply a snapshot to sessions still owned by this entity. Unknown or
+    /// closed tabs are ignored; no PTY is ever recreated as a side effect.
+    pub(crate) fn apply_workspace_snapshot(&mut self, snapshot: &TerminalWorkspaceSnapshot) {
+        if let Some(active) = snapshot
+            .active_tab
+            .filter(|id| self.tabs.iter().any(|tab| tab.id == *id))
+        {
+            self.select_tab(active);
+        }
+        for (tab_id, pane) in &snapshot.layouts {
+            let layout = if self
+                .tabs
+                .get(self.pane.active_index)
+                .is_some_and(|active| active.id == *tab_id)
+            {
+                Some(&mut self.layout)
+            } else {
+                self.stored_layouts.get_mut(tab_id)
+            };
+            let Some(layout) = layout else { continue };
+            apply_pane_node_snapshot(&mut layout.tree, &pane.tree);
+            let focused = restore_pane_key(pane.focused);
+            if layout.leaves().contains(&focused) {
+                layout.focused = focused;
+            }
+            for session in layout.extra.values() {
+                if let Some(offset) = pane.viewports.get(&session.id) {
+                    session.grid.lock().set_scroll_offset(*offset);
+                }
+            }
+        }
+        for session in &self.pane.sessions {
+            if let Some(offset) = snapshot
+                .layouts
+                .values()
+                .find_map(|pane| pane.viewports.get(&session.id))
+            {
+                session.grid.lock().set_scroll_offset(*offset);
+            }
+        }
+    }
+
     /// Return the last computed grid dimensions, or a default if unknown.
     pub fn grid_size(&self) -> (u16, u16) {
         if self.last_grid_rows > 0 {
@@ -1283,7 +1517,7 @@ impl TerminalView {
         } else {
             (24, 80)
         };
-        match TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols) {
+        match self.spawn_configured_local(rows, cols) {
             Ok(session) => {
                 self.add_session(session);
                 tracing::info!("Spawned new local terminal");
@@ -1294,6 +1528,27 @@ impl TerminalView {
         }
 
         self.ensure_refresh_running(cx);
+    }
+
+    /// Attach a real local PTY at an existing, canonicalized checkout root.
+    pub(crate) fn spawn_local_terminal_at(
+        &mut self,
+        cwd: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> Result<Uuid, String> {
+        let (rows, cols) = if self.last_grid_rows > 0 {
+            (self.last_grid_rows, self.last_grid_cols)
+        } else {
+            (24, 80)
+        };
+        self.set_default_cwd(cwd)?;
+        let session = self
+            .spawn_configured_local(rows, cols)
+            .map_err(|error| error.to_string())?;
+        let id = session.id;
+        self.add_session(session);
+        self.ensure_refresh_running(cx);
+        Ok(id)
     }
 
     /// Run a local CLI in the active terminal, creating one when necessary.
@@ -4331,14 +4586,13 @@ impl TerminalView {
         } else {
             (24, 80)
         };
-        let new_session =
-            match TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!("Failed to spawn split terminal: {}", e);
-                    return;
-                }
-            };
+        let new_session = match self.spawn_configured_local(rows, cols) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to spawn split terminal: {}", e);
+                return;
+            }
+        };
         self.install_split_pane(new_session, direction);
         self.ensure_refresh_running(cx);
         cx.notify();
@@ -4581,6 +4835,33 @@ impl TerminalView {
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(message) = self.required_cwd_unavailable_message() {
+            return div()
+                .id("terminal-workspace-folder-unavailable")
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .size_full()
+                .p(px(24.0))
+                .gap(px(8.0))
+                .bg(ShellDeckColors::bg_primary())
+                .child(
+                    div()
+                        .text_size(px(16.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(t!("terminal.empty.workspace_unavailable_title").to_string()),
+                )
+                .child(
+                    div()
+                        .max_w(px(620.0))
+                        .text_center()
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(message),
+                );
+        }
         let cmd = if cfg!(target_os = "macos") {
             "\u{2318}"
         } else {
@@ -4762,6 +5043,63 @@ impl TerminalView {
                             ),
                     ),
             )
+    }
+}
+
+fn snapshot_pane_key(id: PaneId) -> TerminalPaneKey {
+    match id {
+        PaneId::Primary => TerminalPaneKey::Primary,
+        PaneId::Extra(id) => TerminalPaneKey::Extra(id),
+    }
+}
+
+fn restore_pane_key(id: TerminalPaneKey) -> PaneId {
+    match id {
+        TerminalPaneKey::Primary => PaneId::Primary,
+        TerminalPaneKey::Extra(id) => PaneId::Extra(id),
+    }
+}
+
+fn snapshot_pane_node(node: &PaneNode) -> TerminalPaneNodeSnapshot {
+    match node {
+        PaneNode::Leaf(id) => TerminalPaneNodeSnapshot::Leaf(snapshot_pane_key(*id)),
+        PaneNode::Split {
+            direction,
+            ratio,
+            a,
+            b,
+        } => TerminalPaneNodeSnapshot::Split {
+            horizontal: matches!(direction, SplitDirection::Horizontal),
+            ratio: *ratio,
+            first: Box::new(snapshot_pane_node(a)),
+            second: Box::new(snapshot_pane_node(b)),
+        },
+    }
+}
+
+fn apply_pane_node_snapshot(node: &mut PaneNode, snapshot: &TerminalPaneNodeSnapshot) {
+    match (node, snapshot) {
+        (PaneNode::Leaf(current), TerminalPaneNodeSnapshot::Leaf(saved))
+            if snapshot_pane_key(*current) == *saved => {}
+        (
+            PaneNode::Split {
+                direction,
+                ratio,
+                a,
+                b,
+            },
+            TerminalPaneNodeSnapshot::Split {
+                horizontal,
+                ratio: saved_ratio,
+                first,
+                second,
+            },
+        ) if matches!(direction, SplitDirection::Horizontal) == *horizontal => {
+            *ratio = saved_ratio.clamp(0.1, 0.9);
+            apply_pane_node_snapshot(a, first);
+            apply_pane_node_snapshot(b, second);
+        }
+        _ => {}
     }
 }
 
@@ -5016,7 +5354,8 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_ai_command;
+    use super::{validate_ai_command, PaneId, PaneNode, TerminalView};
+    use gpui::{AppContext, TestAppContext};
 
     // SDTEST-1333 / SDTEST-1334 retired 2026-08-06: command_available now
     // delegates to shelldeck_core::util::executable_on_path, whose contracts
@@ -5031,5 +5370,117 @@ mod tests {
             validate_ai_command("echo first\necho second"),
             Err("multiline")
         );
+    }
+
+    #[test]
+    fn native_workspace_snapshot_reapplies_split_focus_and_ratio() {
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let captured = terminal.update(&mut app, |terminal, cx| {
+            terminal.spawn_local_terminal(cx);
+            terminal.split_horizontal(cx);
+            terminal.toggle_split_focus();
+            let PaneNode::Split { ratio, .. } = &mut terminal.layout.tree else {
+                panic!("local split must create a native split tree");
+            };
+            *ratio = 0.63;
+            terminal.capture_workspace_snapshot()
+        });
+        terminal.update(&mut app, |terminal, _| {
+            terminal.toggle_split_focus();
+            let PaneNode::Split { ratio, .. } = &mut terminal.layout.tree else {
+                panic!("split must remain live");
+            };
+            *ratio = 0.25;
+            terminal.apply_workspace_snapshot(&captured);
+            assert_eq!(terminal.capture_workspace_snapshot(), captured);
+            terminal.close_all_sessions();
+        });
+    }
+
+    #[test]
+    fn canonical_workspace_cwd_reaches_tabs_splits_and_cli_created_terminals() {
+        let root = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(root.path()).unwrap();
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            terminal.set_default_cwd(&canonical).unwrap();
+            terminal.spawn_local_terminal(cx);
+            terminal.spawn_local_terminal(cx);
+            assert!(terminal
+                .pane
+                .sessions
+                .iter()
+                .all(|session| session.initial_cwd() == Some(canonical.as_path())));
+            terminal.split_horizontal(cx);
+            assert!(terminal
+                .layout
+                .extra
+                .values()
+                .all(|session| session.initial_cwd() == Some(canonical.as_path())));
+            terminal.close_all_sessions();
+            terminal.launch_cli("true", "test", cx);
+            assert_eq!(
+                terminal
+                    .active_session()
+                    .and_then(|session| session.initial_cwd()),
+                Some(canonical.as_path())
+            );
+            terminal.close_all_sessions();
+        });
+    }
+
+    // SDTEST-1736
+    #[test]
+    fn missing_required_workspace_cwd_blocks_open_and_cli_without_home_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let intended = root.path().to_path_buf();
+        root.close().unwrap();
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            assert!(terminal.set_default_cwd(&intended).is_err());
+            let message = terminal.required_cwd_unavailable_message().unwrap();
+            assert!(message.contains(&intended.display().to_string()));
+            assert!(
+                message.contains("Aucun terminal local") || message.contains("No local terminal")
+            );
+            terminal.spawn_local_terminal(cx);
+            terminal.launch_cli("true", "test", cx);
+            assert_eq!(terminal.tab_count(), 0);
+            assert!(terminal.active_session().is_none());
+        });
+    }
+
+    // SDTEST-1736
+    #[test]
+    fn disappearing_required_workspace_cwd_blocks_split_of_a_live_local_session() {
+        let initial_root = tempfile::tempdir().unwrap();
+        let split_root = tempfile::tempdir().unwrap();
+        let disappearing = std::fs::canonicalize(split_root.path()).unwrap();
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            terminal.set_default_cwd(initial_root.path()).unwrap();
+            terminal.spawn_local_terminal(cx);
+            assert_eq!(terminal.tab_count(), 1, "fixture must own a live local tab");
+
+            terminal.set_default_cwd(&disappearing).unwrap();
+            split_root.close().unwrap();
+            assert!(!disappearing.exists(), "authorized split cwd must be gone");
+
+            terminal.split_horizontal(cx);
+            assert_eq!(terminal.tab_count(), 1);
+            assert!(
+                terminal.layout.extra.is_empty(),
+                "failed split must not retain a secondary PTY"
+            );
+            assert!(
+                matches!(terminal.layout.tree, PaneNode::Leaf(PaneId::Primary)),
+                "failed split must not mutate the pane tree"
+            );
+            terminal.close_all_sessions();
+        });
     }
 }
