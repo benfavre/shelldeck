@@ -23,7 +23,6 @@ use shelldeck_core::workspace_navigation::{
     WorkspaceNavigationAction, WorkspaceNavigationState, WorkspaceSurfaceState, WorkspaceTab,
     WorkspaceTabContent, WorkspaceTabId,
 };
-use shelldeck_terminal::session::SessionState;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
@@ -32,6 +31,14 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 type ExecutorFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum WorkspaceLaunchMode {
+    #[default]
+    ExistingFolder,
+    GitWorktree,
+    Ssh,
+}
 
 /// Autorité immuable résolue avant de quitter le catalogue.
 #[derive(Clone, Debug)]
@@ -55,6 +62,7 @@ pub(super) struct WorkspaceExecutionRequest {
     pub name: String,
     pub intake: WorkspaceLaunchIntake,
     pub host: AuthorizedLaunchHost,
+    mode: WorkspaceLaunchMode,
 }
 
 /// Frontière non bloquante du futur adaptateur d'effets.
@@ -90,6 +98,20 @@ impl WorkspaceLaunchExecutor for ExistingFolderWorkspaceExecutor {
                 revision = request.catalog_revision,
                 "launching authorized workspace attach"
             );
+            if request.mode == WorkspaceLaunchMode::GitWorktree {
+                return Err(WorkspaceCreateFailure {
+                    kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
+                    message: t!("workspaces.launcher.worktree_unavailable").to_string(),
+                    retryable: false,
+                });
+            }
+            if request.mode == WorkspaceLaunchMode::Ssh {
+                return Err(WorkspaceCreateFailure {
+                    kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
+                    message: t!("workspaces.launcher.ssh_executor_unavailable").to_string(),
+                    retryable: false,
+                });
+            }
             if let AuthorizedLaunchHost::Ssh {
                 connection_id,
                 remote_root,
@@ -195,6 +217,7 @@ impl LauncherIntakeKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WorkspaceLauncherDraft {
+    mode: WorkspaceLaunchMode,
     intake: LauncherIntakeKind,
     checkout: Option<CatalogCheckoutId>,
     name: String,
@@ -208,6 +231,7 @@ struct WorkspaceLauncherDraft {
 impl Default for WorkspaceLauncherDraft {
     fn default() -> Self {
         Self {
+            mode: WorkspaceLaunchMode::ExistingFolder,
             intake: LauncherIntakeKind::Manual,
             checkout: None,
             name: String::new(),
@@ -326,6 +350,106 @@ struct WorkspaceCardPresentation {
     provider_bound: bool,
 }
 
+#[derive(Clone, Debug)]
+struct GitCardSource {
+    branch: Option<String>,
+    staged: usize,
+    modified: usize,
+    untracked: usize,
+    observed_at: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ProviderCardObservation {
+    pub agent: WorkspaceAgentState,
+    pub unread: usize,
+    pub attention: usize,
+    pub freshness: WorkspaceFreshness,
+    pub observed_at: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct WorkspaceCardSources {
+    git: Option<GitCardSource>,
+    git_unavailable: bool,
+    provider: Option<ProviderCardObservation>,
+    terminal_tabs: usize,
+}
+
+#[derive(Default)]
+struct WorkspaceCardAggregator {
+    sources: BTreeMap<CatalogWorkspaceId, WorkspaceCardSources>,
+    revision: u64,
+}
+
+impl WorkspaceCardAggregator {
+    fn observe_git(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        status: Option<shelldeck_core::git::GitStatus>,
+        observed_at: u64,
+    ) {
+        let source = self.sources.entry(workspace).or_default();
+        source.git_unavailable = status.is_none();
+        if let Some(status) = status {
+            source.git = Some(GitCardSource {
+                branch: status.branch,
+                staged: status.staged,
+                modified: status.modified,
+                untracked: status.untracked,
+                observed_at,
+            });
+        }
+    }
+
+    fn observe_terminal(&mut self, workspace: CatalogWorkspaceId, tabs: usize) {
+        self.sources.entry(workspace).or_default().terminal_tabs = tabs;
+    }
+
+    #[allow(dead_code)]
+    fn observe_provider(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        observation: ProviderCardObservation,
+    ) {
+        self.sources.entry(workspace).or_default().provider = Some(observation);
+    }
+
+    fn aggregate(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        previous: &WorkspaceCardState,
+    ) -> WorkspaceCardState {
+        self.revision = self.revision.saturating_add(1).max(1);
+        let source = self.sources.entry(workspace).or_default();
+        let mut card = previous.clone();
+        if let Some(git) = &source.git {
+            card.branch.clone_from(&git.branch);
+            card.dirty.staged = git.staged;
+            card.dirty.modified = git.modified;
+            card.dirty.untracked = git.untracked;
+            // `git status` does not currently report conflicts: preserve the
+            // last authoritative value rather than inventing zero.
+        }
+        if let Some(provider) = &source.provider {
+            card.agent = provider.agent;
+            card.unread = provider.unread;
+            card.attention = provider.attention;
+            card.freshness = provider.freshness;
+        } else if source.git_unavailable {
+            card.freshness = WorkspaceFreshness::Stale;
+        }
+        card.source_revision = self.revision;
+        card.observed_at_millis = match (&source.git, &source.provider) {
+            (Some(git), Some(provider)) if !source.git_unavailable => {
+                git.observed_at.min(provider.observed_at)
+            }
+            _ => 0,
+        };
+        card
+    }
+}
+
 fn workspace_card_presentation(
     catalog: &ProjectCatalog,
     workspace: &UserWorkspaceRecord,
@@ -383,6 +507,37 @@ struct RetainedWorkspaceSurface {
     workspace: CatalogWorkspaceId,
     terminal: Entity<TerminalView>,
     native_snapshot: Option<crate::terminal_view::TerminalWorkspaceSnapshot>,
+}
+
+#[derive(Clone)]
+pub(super) struct WorkspaceTerminalConfig {
+    pub theme: TerminalTheme,
+    pub font_size: f32,
+    pub font_family: String,
+    pub default_shell: Option<String>,
+    pub cursor_style: String,
+    pub cursor_blink: bool,
+    pub scrollback_lines: usize,
+    pub sidebar_width: f32,
+    pub menu_bar_visible: bool,
+}
+
+fn apply_terminal_config(
+    terminal: &Entity<TerminalView>,
+    config: &WorkspaceTerminalConfig,
+    cx: &mut App,
+) {
+    terminal.update(cx, |terminal, _| {
+        terminal.set_terminal_theme(&config.theme);
+        terminal.set_font_size(config.font_size);
+        terminal.set_font_family(config.font_family.clone());
+        terminal.set_default_shell(config.default_shell.clone());
+        terminal.set_cursor_style(&config.cursor_style);
+        terminal.set_cursor_blink(config.cursor_blink);
+        terminal.set_scrollback_lines(config.scrollback_lines);
+        terminal.set_sidebar_width(config.sidebar_width);
+        terminal.set_menu_bar_visible(config.menu_bar_visible);
+    });
 }
 
 impl RetainedWorkspaceSurface {
@@ -493,9 +648,11 @@ fn terminal_surface(
 pub(super) struct WorkspaceHubView {
     catalog: ProjectCatalog,
     navigation: WorkspaceNavigationState,
+    cards: WorkspaceCardAggregator,
     creation: WorkspaceCreationReducer,
     retained: BTreeMap<CatalogWorkspaceId, Entity<RetainedWorkspaceSurface>>,
     unclaimed_terminal: Option<Entity<TerminalView>>,
+    terminal_config: Option<WorkspaceTerminalConfig>,
     connections: HashMap<Uuid, String>,
     executor: Arc<dyn WorkspaceLaunchExecutor>,
     onboarding_open: bool,
@@ -526,6 +683,21 @@ pub(super) enum WorkspaceHubEvent {
 impl EventEmitter<WorkspaceHubEvent> for WorkspaceHubView {}
 
 impl WorkspaceHubView {
+    pub(super) fn configure_terminals(
+        &mut self,
+        config: WorkspaceTerminalConfig,
+        cx: &mut Context<Self>,
+    ) {
+        for surface in self.retained.values() {
+            let terminal = surface.read(cx).terminal.clone();
+            apply_terminal_config(&terminal, &config, cx);
+        }
+        if let Some(terminal) = self.unclaimed_terminal.as_ref() {
+            apply_terminal_config(terminal, &config, cx);
+        }
+        self.terminal_config = Some(config);
+    }
+
     pub(super) fn new(
         catalog: Result<ProjectCatalog, String>,
         connections: &[(Uuid, String)],
@@ -599,6 +771,17 @@ impl WorkspaceHubView {
             } else {
                 cx.new(TerminalView::new)
             };
+            if let Ok(checkout) =
+                catalog.checkout_in_project(workspace.project_id(), workspace.checkout_id())
+            {
+                if let CheckoutHost::Local { root, .. } = checkout.host() {
+                    if let Err(error) =
+                        terminal.update(cx, |terminal, _| terminal.set_default_cwd(root))
+                    {
+                        tracing::warn!(%error, workspace = %workspace.id(), "workspace terminal cwd unavailable");
+                    }
+                }
+            }
             retained.insert(
                 workspace.id(),
                 cx.new(move |_| RetainedWorkspaceSurface::new(workspace.id(), terminal)),
@@ -609,9 +792,11 @@ impl WorkspaceHubView {
         Self {
             catalog,
             navigation,
+            cards: WorkspaceCardAggregator::default(),
             creation: WorkspaceCreationReducer::default(),
             retained,
             unclaimed_terminal: initial_terminal,
+            terminal_config: None,
             connections,
             executor,
             onboarding_open,
@@ -679,7 +864,7 @@ impl WorkspaceHubView {
         cx.notify();
     }
 
-    fn observe_local_card(&self, workspace: CatalogWorkspaceId, cx: &mut Context<Self>) {
+    fn observe_local_card(&mut self, workspace: CatalogWorkspaceId, cx: &mut Context<Self>) {
         let Some((root, terminal)) = self.catalog.workspace(workspace).ok().and_then(|record| {
             let checkout = self
                 .catalog
@@ -701,34 +886,19 @@ impl WorkspaceHubView {
         cx.spawn(async move |this, cx| {
             let git = task.await;
             let _ = this.update(cx, |this, cx| {
-                let running = terminal
-                    .read(cx)
-                    .tabs
-                    .iter()
-                    .any(|tab| matches!(tab.state, SessionState::Running));
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64;
-                let card = WorkspaceCardState {
-                    branch: git.as_ref().and_then(|status| status.branch.clone()),
-                    dirty: git.map_or_else(GitDirtyState::default, |status| GitDirtyState {
-                        staged: status.staged,
-                        modified: status.modified,
-                        untracked: status.untracked,
-                        conflicted: 0,
-                    }),
-                    agent: if running {
-                        WorkspaceAgentState::Running
-                    } else {
-                        WorkspaceAgentState::Idle
-                    },
-                    unread: 0,
-                    attention: 0,
-                    freshness: WorkspaceFreshness::Fresh,
-                    source_revision: now,
-                    observed_at_millis: now,
-                };
+                this.cards.observe_git(workspace, git, now);
+                this.cards
+                    .observe_terminal(workspace, terminal.read(cx).tab_count());
+                let previous = this
+                    .navigation
+                    .workspace(workspace)
+                    .map(|state| state.card.clone())
+                    .unwrap_or_default();
+                let card = this.cards.aggregate(workspace, &previous);
                 if let Err(error) = this.navigation.reduce(
                     &this.catalog,
                     WorkspaceNavigationAction::UpdateCard {
@@ -744,8 +914,42 @@ impl WorkspaceHubView {
         .detach();
     }
 
+    /// Production ingress for the Fleet/Platform observer. Kept separate from
+    /// Git polling so a missing provider refresh cannot erase prior evidence.
+    #[allow(dead_code)]
+    pub(super) fn observe_provider_card(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        observation: ProviderCardObservation,
+        cx: &mut Context<Self>,
+    ) {
+        self.cards.observe_provider(workspace, observation);
+        let previous = self
+            .navigation
+            .workspace(workspace)
+            .map(|state| state.card.clone())
+            .unwrap_or_default();
+        let card = self.cards.aggregate(workspace, &previous);
+        if let Err(error) = self.navigation.reduce(
+            &self.catalog,
+            WorkspaceNavigationAction::UpdateCard {
+                id: workspace,
+                card,
+            },
+        ) {
+            self.error = Some(error.to_string());
+        }
+        cx.notify();
+    }
+
     fn set_intake(&mut self, intake: LauncherIntakeKind, cx: &mut Context<Self>) {
         self.launcher.intake = intake;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn set_launch_mode(&mut self, mode: WorkspaceLaunchMode, cx: &mut Context<Self>) {
+        self.launcher.mode = mode;
         self.error = None;
         cx.notify();
     }
@@ -852,13 +1056,51 @@ impl WorkspaceHubView {
         });
         match result {
             Ok(()) => {
-                self.launcher.checkout = Some(checkout_id);
+                self.refresh_checkout_select(Some(checkout_id), cx);
                 self.onboarding_open = false;
                 self.error = None;
             }
             Err(error) => self.error = Some(error),
         }
         cx.notify();
+    }
+
+    fn refresh_checkout_select(
+        &mut self,
+        selected: Option<CatalogCheckoutId>,
+        cx: &mut Context<Self>,
+    ) {
+        let options = checkout_options(&self.catalog, &self.connections);
+        let selected = selected
+            .filter(|id| options.iter().any(|(candidate, _)| candidate == id))
+            .or_else(|| options.first().map(|(id, _)| *id));
+        let selected_index = selected.and_then(|selected| {
+            options
+                .iter()
+                .position(|(candidate, _)| *candidate == selected)
+        });
+        let parent = cx.entity();
+        self.checkout_select = cx.new(move |select_cx| {
+            Select::new(select_cx)
+                .options(
+                    options
+                        .into_iter()
+                        .map(|(id, label)| SelectOption::new(id, label))
+                        .collect(),
+                )
+                .selected_index(selected_index)
+                .placeholder(t!("workspaces.launcher.checkout_placeholder").to_string())
+                .searchable(true)
+                .search_placeholder(t!("workspaces.launcher.checkout_search").to_string())
+                .disabled(selected.is_none())
+                .on_change(move |checkout, _window, cx| {
+                    parent.update(cx, |this, cx| {
+                        this.launcher.checkout = Some(*checkout);
+                        cx.notify();
+                    });
+                })
+        });
+        self.launcher.checkout = selected;
     }
 
     fn submit_launcher(&mut self, cx: &mut Context<Self>) {
@@ -923,6 +1165,11 @@ impl WorkspaceHubView {
                 return;
             }
         };
+        let mode = if matches!(host, AuthorizedLaunchHost::Ssh { .. }) {
+            WorkspaceLaunchMode::Ssh
+        } else {
+            self.launcher.mode
+        };
         let workspace = CatalogWorkspaceId::new();
         let launch_name = self.launcher.name.clone();
         let launch_intake = intake.clone();
@@ -971,6 +1218,18 @@ impl WorkspaceHubView {
             .unclaimed_terminal
             .take()
             .unwrap_or_else(|| cx.new(TerminalView::new));
+        if let Some(config) = self.terminal_config.as_ref() {
+            apply_terminal_config(&terminal, config, cx);
+        }
+        if let AuthorizedLaunchHost::Local { canonical_root } = &host {
+            if let Err(error) =
+                terminal.update(cx, |terminal, _| terminal.set_default_cwd(canonical_root))
+            {
+                self.error = Some(error);
+                cx.notify();
+                return;
+            }
+        }
         self.retained.insert(
             workspace,
             cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
@@ -983,6 +1242,7 @@ impl WorkspaceHubView {
             name: self.launcher.name.clone(),
             intake,
             host,
+            mode,
         };
         self.pending_requests.insert(workspace, request.clone());
         self.launcher_open = false;
@@ -1028,6 +1288,40 @@ impl WorkspaceHubView {
         let Some(request) = self.pending_requests.get(&workspace).cloned() else {
             return;
         };
+        let event = if matches!(event, WorkspaceCreateEvent::Completed { .. }) {
+            let attach = match &request.host {
+                AuthorizedLaunchHost::Local { canonical_root } => self
+                    .retained
+                    .get(&workspace)
+                    .ok_or_else(|| "workspace terminal owner missing".to_string())
+                    .and_then(|surface| {
+                        let terminal = surface.read(cx).terminal.clone();
+                        terminal.update(cx, |terminal, cx| {
+                            terminal.spawn_local_terminal_at(canonical_root, cx)
+                        })
+                    }),
+                AuthorizedLaunchHost::Ssh { .. } => {
+                    Err(t!("workspaces.launcher.ssh_executor_unavailable").to_string())
+                }
+            };
+            match attach {
+                Ok(_) => WorkspaceCreateEvent::Completed {
+                    workspace,
+                    operation: request.operation,
+                },
+                Err(message) => WorkspaceCreateEvent::Failed {
+                    workspace,
+                    operation: request.operation,
+                    failure: WorkspaceCreateFailure {
+                        kind: WorkspaceCreateFailureKind::Filesystem,
+                        message,
+                        retryable: true,
+                    },
+                },
+            }
+        } else {
+            event
+        };
         if let Err(error) = self.creation.reduce(request.catalog_revision, event) {
             self.error = Some(error.to_string());
             cx.notify();
@@ -1037,17 +1331,6 @@ impl WorkspaceHubView {
             self.creation.state(workspace),
             Some(BackgroundWorkspaceCreateState::Completed { .. })
         ) {
-            if let AuthorizedLaunchHost::Local { canonical_root } = &request.host {
-                if let Some(surface) = self.retained.get(&workspace) {
-                    let terminal = surface.read(cx).terminal.clone();
-                    let result = terminal.update(cx, |terminal, cx| {
-                        terminal.spawn_local_terminal_at(canonical_root, cx)
-                    });
-                    if let Err(error) = result {
-                        self.error = Some(error);
-                    }
-                }
-            }
             self.pending_requests.remove(&workspace);
             self.observe_local_card(workspace, cx);
         }
@@ -1185,745 +1468,10 @@ impl WorkspaceHubView {
         }
         cx.notify();
     }
-
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity();
-        let has_checkout = self
-            .catalog
-            .projects()
-            .any(|project| project.checkouts().len() > 0);
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .px(px(18.0))
-            .py(px(12.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.0))
-                    .child(
-                        div()
-                            .text_size(px(16.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("workspaces.title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("workspaces.subtitle").to_string()),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.0))
-                    .child(
-                        Button::new(
-                            "workspace-onboarding-open",
-                            t!("workspaces.onboarding.add").to_string(),
-                        )
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Outline)
-                        .on_click({
-                            let entity = entity.clone();
-                            move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.onboarding_open = true;
-                                    this.error = None;
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                    )
-                    .child(
-                        Button::new("workspace-launcher-open", t!("workspaces.new").to_string())
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Default)
-                            .disabled(!has_checkout)
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.launcher_open = true;
-                                    this.error = None;
-                                    cx.notify();
-                                });
-                            }),
-                    ),
-            )
-    }
-
-    fn render_catalog(&self, _cx: &mut Context<Self>) -> impl IntoElement {
-        let mut body = div().flex().flex_col().gap(px(8.0)).p(px(10.0));
-        if self.catalog.projects().len() == 0 {
-            body = body.child(
-                Card::new().content(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(7.0))
-                        .p(px(16.0))
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(lucide_icon(
-                            "folder-git-2",
-                            22.0,
-                            ShellDeckColors::text_muted(),
-                        ))
-                        .child(t!("workspaces.catalog.empty").to_string()),
-                ),
-            );
-        }
-        for project in self.catalog.projects() {
-            let mut project_view = div().flex().flex_col().gap(px(5.0)).child(
-                div()
-                    .px(px(4.0))
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(project.name().to_owned()),
-            );
-            for checkout in project.checkouts() {
-                let item = checkout_presentation(project, checkout, &self.connections);
-                project_view = project_view.child(
-                    Card::new().content(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(ShellDeckColors::text_primary())
-                                            .child(item.checkout),
-                                    )
-                                    .child(
-                                        Badge::new(t!(item.host_kind).to_string())
-                                            .variant(BadgeVariant::Outline),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(format!("{} · {}", item.host, item.repository)),
-                            ),
-                    ),
-                );
-            }
-            body = body.child(project_view);
-        }
-        scrollable_vertical(body)
-    }
-
-    fn render_onboarding(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity();
-        let local_entity = entity.clone();
-        let ssh_entity = entity.clone();
-        let submit_entity = entity.clone();
-        let close_entity = entity.clone();
-        let mut connections = div().flex().flex_wrap().gap(px(5.0));
-        if self.onboarding_ssh {
-            for (id, label) in &self.connections {
-                let id = *id;
-                let selected = self.onboarding_connection == Some(id);
-                let select_entity = entity.clone();
-                connections = connections.child(
-                    Button::new(("workspace-host", id.as_u128() as u64), label.clone())
-                        .size(ButtonSize::Sm)
-                        .variant(if selected {
-                            ButtonVariant::Secondary
-                        } else {
-                            ButtonVariant::Outline
-                        })
-                        .on_click(move |_, _, cx| {
-                            select_entity.update(cx, |this, cx| {
-                                this.onboarding_connection = Some(id);
-                                cx.notify();
-                            });
-                        }),
-                );
-            }
-        }
-        Card::new().content(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .child(t!("workspaces.onboarding.title").to_string())
-                .child(
-                    Input::new(&self.onboarding_project)
-                        .placeholder(t!("workspaces.onboarding.project").to_string()),
-                )
-                .child(
-                    Input::new(&self.onboarding_checkout)
-                        .placeholder(t!("workspaces.onboarding.checkout").to_string()),
-                )
-                .child(
-                    Input::new(&self.onboarding_repository)
-                        .placeholder(t!("workspaces.onboarding.repository").to_string()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(5.0))
-                        .child(
-                            Button::new(
-                                "onboard-local",
-                                t!("workspaces.authority.local").to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(if self.onboarding_ssh {
-                                ButtonVariant::Outline
-                            } else {
-                                ButtonVariant::Secondary
-                            })
-                            .on_click(move |_, _, cx| {
-                                local_entity.update(cx, |this, cx| {
-                                    this.onboarding_ssh = false;
-                                    cx.notify();
-                                })
-                            }),
-                        )
-                        .child(
-                            Button::new("onboard-ssh", t!("workspaces.authority.ssh").to_string())
-                                .size(ButtonSize::Sm)
-                                .variant(if self.onboarding_ssh {
-                                    ButtonVariant::Secondary
-                                } else {
-                                    ButtonVariant::Outline
-                                })
-                                .disabled(self.connections.is_empty())
-                                .on_click(move |_, _, cx| {
-                                    ssh_entity.update(cx, |this, cx| {
-                                        this.onboarding_ssh = true;
-                                        cx.notify();
-                                    })
-                                }),
-                        ),
-                )
-                .child(connections)
-                .child(
-                    Input::new(&self.onboarding_root).placeholder(if self.onboarding_ssh {
-                        t!("workspaces.onboarding.remote_root").to_string()
-                    } else {
-                        t!("workspaces.onboarding.local_root").to_string()
-                    }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(px(5.0))
-                        .child(
-                            Button::new(
-                                "onboard-close",
-                                t!("workspaces.launcher.close").to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Ghost)
-                            .on_click(move |_, _, cx| {
-                                close_entity.update(cx, |this, cx| {
-                                    this.onboarding_open = false;
-                                    cx.notify();
-                                })
-                            }),
-                        )
-                        .child(
-                            Button::new(
-                                "onboard-save",
-                                t!("workspaces.onboarding.save").to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Default)
-                            .on_click(move |_, _, cx| {
-                                submit_entity.update(cx, |this, cx| this.submit_onboarding(cx))
-                            }),
-                        ),
-                ),
-        )
-    }
-
-    fn render_workspace_card(
-        &self,
-        presentation: WorkspaceCardPresentation,
-        active: bool,
-        creation: Option<&BackgroundWorkspaceCreateState>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let entity = cx.entity();
-        let id = presentation.id;
-        let select_entity = entity.clone();
-        let archive_entity = entity.clone();
-        let mut badges = div().flex().items_center().flex_wrap().gap(px(5.0));
-        badges = badges
-            .child(
-                Badge::new(format!(
-                    "{} · {}",
-                    t!("workspaces.authority.terminal_filesystem"),
-                    t!(presentation.host_kind)
-                ))
-                .variant(BadgeVariant::Outline),
-            )
-            .child(
-                Badge::new(if presentation.provider_bound {
-                    t!("workspaces.authority.provider_only").to_string()
-                } else {
-                    t!("workspaces.authority.provider_unbound").to_string()
-                })
-                .variant(BadgeVariant::Secondary),
-            );
-        if presentation.unread > 0 {
-            badges = badges.child(
-                Badge::new(t!("workspaces.card.unread", count = presentation.unread).to_string())
-                    .variant(BadgeVariant::Secondary),
-            );
-        }
-        if presentation.attention > 0 {
-            badges = badges.child(
-                Badge::new(
-                    t!("workspaces.card.attention", count = presentation.attention).to_string(),
-                )
-                .variant(BadgeVariant::Destructive),
-            );
-        }
-        let mut content = div()
-            .flex()
-            .flex_col()
-            .gap(px(7.0))
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(12.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(presentation.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(10.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(format!(
-                                        "{} · {} · {} · {}",
-                                        presentation.project,
-                                        presentation.host,
-                                        presentation.repository,
-                                        presentation.checkout
-                                    )),
-                            ),
-                    )
-                    .child(
-                        Badge::new(if presentation.observed {
-                            freshness_label(presentation.freshness)
-                        } else {
-                            t!("workspaces.freshness.unknown").to_string()
-                        })
-                        .variant(if presentation.observed {
-                            freshness_variant(presentation.freshness)
-                        } else {
-                            BadgeVariant::Outline
-                        }),
-                    ),
-            )
-            .child(badges);
-        let dirty = presentation.dirty;
-        content = content.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .text_size(px(10.0))
-                .text_color(ShellDeckColors::text_muted())
-                .child(
-                    presentation
-                        .branch
-                        .clone()
-                        .unwrap_or_else(|| t!("workspaces.card.branch_unknown").to_string()),
-                )
-                .child(if presentation.observed {
-                    t!(
-                        "workspaces.card.dirty",
-                        staged = dirty.staged,
-                        modified = dirty.modified,
-                        untracked = dirty.untracked,
-                        conflicted = dirty.conflicted
-                    )
-                    .to_string()
-                } else {
-                    t!("workspaces.card.awaiting_observation").to_string()
-                })
-                .child(agent_label(presentation.agent)),
-        );
-        if let Some(external) = presentation.external {
-            content = content.child(authority_row(
-                "circle-dot",
-                t!("workspaces.card.external").to_string(),
-                external,
-            ));
-        }
-        if let Some(orchestration) = presentation.orchestration {
-            content = content.child(authority_row(
-                "bot",
-                t!("workspaces.card.orchestration").to_string(),
-                orchestration,
-            ));
-        }
-        if let Some(state) = creation {
-            content = content.child(render_creation_state(state));
-        }
-        content = content.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .child(
-                    Button::new(
-                        ("workspace-open", id.as_uuid().as_u128() as u64),
-                        if active {
-                            t!("workspaces.card.active").to_string()
-                        } else {
-                            t!("workspaces.card.open").to_string()
-                        },
-                    )
-                    .size(ButtonSize::Sm)
-                    .variant(if active {
-                        ButtonVariant::Secondary
-                    } else {
-                        ButtonVariant::Default
-                    })
-                    .disabled(presentation.archived)
-                    .on_click(move |_, _, cx| {
-                        select_entity.update(cx, |this, cx| this.switch_to(id, cx));
-                    }),
-                )
-                .child(
-                    Button::new(
-                        ("workspace-lifecycle", id.as_uuid().as_u128() as u64),
-                        if presentation.archived {
-                            t!("workspaces.card.resume").to_string()
-                        } else {
-                            t!("workspaces.card.archive").to_string()
-                        },
-                    )
-                    .size(ButtonSize::Sm)
-                    .variant(ButtonVariant::Ghost)
-                    .on_click(move |_, _, cx| {
-                        archive_entity.update(cx, |this, cx| {
-                            this.archive_or_resume(id, cx);
-                        });
-                    }),
-                ),
-        );
-        if matches!(
-            creation,
-            Some(
-                BackgroundWorkspaceCreateState::Running { .. }
-                    | BackgroundWorkspaceCreateState::Cancelling { .. }
-            )
-        ) {
-            let cancel_entity = entity.clone();
-            content = content.child(
-                Button::new(
-                    ("workspace-cancel", id.as_uuid().as_u128() as u64),
-                    t!("workspaces.create.cancel").to_string(),
-                )
-                .size(ButtonSize::Sm)
-                .variant(ButtonVariant::Destructive)
-                .on_click(move |_, _, cx| {
-                    cancel_entity.update(cx, |this, cx| this.request_cancel(id, cx));
-                }),
-            );
-        }
-        if creation.is_some_and(creation_retryable) {
-            let retry_entity = entity;
-            content = content.child(
-                Button::new(
-                    ("workspace-retry", id.as_uuid().as_u128() as u64),
-                    t!("workspaces.create.retry").to_string(),
-                )
-                .size(ButtonSize::Sm)
-                .variant(ButtonVariant::Outline)
-                .on_click(move |_, _, cx| {
-                    retry_entity.update(cx, |this, cx| this.retry_create(id, cx));
-                }),
-            );
-        }
-        Card::new()
-            .content(content)
-            .border_color(if active {
-                ShellDeckColors::primary()
-            } else {
-                ShellDeckColors::border()
-            })
-            .into_any_element()
-    }
-
-    fn render_launcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity();
-        let mut intake_row = div().flex().items_center().flex_wrap().gap(px(6.0));
-        for (intake_index, intake) in [
-            LauncherIntakeKind::Manual,
-            LauncherIntakeKind::Issue,
-            LauncherIntakeKind::PullRequest,
-            LauncherIntakeKind::Task,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let target = entity.clone();
-            intake_row = intake_row.child(
-                Button::new(("workspace-intake", intake_index), intake.label())
-                    .size(ButtonSize::Sm)
-                    .variant(if self.launcher.intake == intake {
-                        ButtonVariant::Default
-                    } else {
-                        ButtonVariant::Outline
-                    })
-                    .on_click(move |_, _, cx| {
-                        target.update(cx, |this, cx| this.set_intake(intake, cx));
-                    }),
-            );
-        }
-        let mut form = div()
-            .flex()
-            .flex_col()
-            .gap(px(9.0))
-            .child(intake_row)
-            .child(self.checkout_select.clone())
-            .child(
-                Input::new(&self.name_state)
-                    .size(InputSize::Sm)
-                    .variant(InputVariant::Outline)
-                    .placeholder(t!("workspaces.launcher.name").to_string()),
-            );
-        if self.launcher.intake != LauncherIntakeKind::Manual {
-            form = form
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.0))
-                        .child(
-                            Input::new(&self.provider_state)
-                                .size(InputSize::Sm)
-                                .placeholder(t!("workspaces.launcher.provider").to_string()),
-                        )
-                        .child(
-                            Input::new(&self.repository_state)
-                                .size(InputSize::Sm)
-                                .placeholder(t!("workspaces.launcher.repository").to_string()),
-                        ),
-                )
-                .child(
-                    Input::new(&self.key_state)
-                        .size(InputSize::Sm)
-                        .placeholder(t!("workspaces.launcher.key").to_string()),
-                )
-                .child(
-                    Input::new(&self.title_state)
-                        .size(InputSize::Sm)
-                        .placeholder(t!("workspaces.launcher.external_title").to_string()),
-                )
-                .child(
-                    Input::new(&self.url_state)
-                        .size(InputSize::Sm)
-                        .placeholder(t!("workspaces.launcher.url").to_string()),
-                );
-        }
-        let close_entity = entity.clone();
-        let submit_entity = entity;
-        Card::new().content(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(t!("workspaces.launcher.title").to_string()),
-                )
-                .child(form)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap(px(6.0))
-                        .child(
-                            Button::new(
-                                "workspace-launcher-close",
-                                t!("workspaces.launcher.close").to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Ghost)
-                            .on_click(move |_, _, cx| {
-                                close_entity.update(cx, |this, cx| {
-                                    this.launcher_open = false;
-                                    cx.notify();
-                                });
-                            }),
-                        )
-                        .child(
-                            Button::new(
-                                "workspace-launcher-submit",
-                                t!("workspaces.launcher.create").to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Default)
-                            .on_click(move |_, _, cx| {
-                                submit_entity.update(cx, |this, cx| this.submit_launcher(cx));
-                            }),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("workspaces.launcher.effect_notice").to_string()),
-                ),
-        )
-    }
 }
 
-impl Render for WorkspaceHubView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut workspace_cards = div().flex().flex_col().gap(px(8.0));
-        let default_card = WorkspaceCardState::default();
-        for workspace in self.catalog.workspaces() {
-            let card = self
-                .navigation
-                .workspace(workspace.id())
-                .map(|retained| &retained.card)
-                .unwrap_or(&default_card);
-            if let Some(presentation) =
-                workspace_card_presentation(&self.catalog, workspace, card, &self.connections)
-            {
-                workspace_cards = workspace_cards.child(self.render_workspace_card(
-                    presentation,
-                    self.navigation.active() == Some(workspace.id()),
-                    self.creation.state(workspace.id()),
-                    cx,
-                ));
-            }
-        }
-        if self.catalog.workspaces().len() == 0 {
-            workspace_cards = workspace_cards.child(
-                div()
-                    .p(px(16.0))
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("workspaces.cards.empty").to_string()),
-            );
-        }
-
-        let mut center = div().flex().flex_col().min_w_0().flex_1();
-        let mut top = div().flex().flex_col().gap(px(8.0)).p(px(12.0));
-        if let Some(error) = self.load_error.as_ref().or(self.error.as_ref()) {
-            top = top.child(
-                Alert::new()
-                    .variant(AlertVariant::Error)
-                    .description(error.clone()),
-            );
-        }
-        if self.launcher_open {
-            top = top.child(self.render_launcher(cx));
-        }
-        if self.onboarding_open {
-            top = top.child(self.render_onboarding(cx));
-        }
-        top = top.child(workspace_cards);
-        center = center.child(scrollable_vertical(top));
-
-        let active_surface = self
-            .navigation
-            .active()
-            .and_then(|id| self.retained.get(&id).cloned());
-        let surface = div()
-            .flex()
-            .flex_col()
-            .min_w(px(280.0))
-            .flex_1()
-            .border_l_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                div()
-                    .px(px(14.0))
-                    .py(px(9.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(t!("workspaces.surface.title").to_string()),
-            )
-            .children(active_surface)
-            .when(self.navigation.active().is_none(), |view| {
-                view.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(8.0))
-                        .flex_1()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(lucide_icon(
-                            "mouse-pointer-2",
-                            22.0,
-                            ShellDeckColors::text_muted(),
-                        ))
-                        .child(t!("workspaces.surface.select").to_string()),
-                )
-            });
-
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(ShellDeckColors::bg_primary())
-            .child(self.render_header(cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .child(
-                        div()
-                            .w(px(250.0))
-                            .flex_shrink_0()
-                            .border_r_1()
-                            .border_color(ShellDeckColors::border())
-                            .child(self.render_catalog(cx)),
-                    )
-                    .child(center)
-                    .child(surface),
-            )
-    }
-}
-
+#[path = "workspaces_render.rs"]
+mod hub_render;
 fn checkout_options(
     catalog: &ProjectCatalog,
     connections: &HashMap<Uuid, String>,
@@ -2079,368 +1627,5 @@ fn create_conflict_label(conflict: &WorkspaceCreateConflict) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        mutate_and_persist, workspace_card_presentation, AuthorizedLaunchHost,
-        ExistingFolderWorkspaceExecutor, LauncherIntakeKind, WorkspaceExecutionRequest,
-        WorkspaceHubView, WorkspaceLaunchExecutor, WorkspaceLauncherDraft,
-    };
-    use crate::terminal_view::TerminalView;
-    use gpui::{AppContext, TestAppContext};
-    use shelldeck_core::config::workspace_catalog::{
-        CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, CheckoutHost, ExternalWorkItem,
-        ExternalWorkItemKind, PlatformContextRef, PlatformMappingReconciliation, PlatformV2Mapping,
-        ProjectCatalog, ProjectCheckout, ProjectRecord, RepositoryIdentity, WorkspaceLaunchIntake,
-        WorkspaceLaunchRequest,
-    };
-    use shelldeck_core::workspace_navigation::{
-        CreationOperationId, GitDirtyState, WorkspaceAgentState, WorkspaceCardState,
-        WorkspaceCreateEvent, WorkspaceCreatePhase, WorkspaceFreshness,
-    };
-    use std::collections::HashMap;
-    use tokio::sync::mpsc;
-    use uuid::Uuid;
-
-    fn fixture_catalog() -> (
-        ProjectCatalog,
-        CatalogWorkspaceId,
-        CatalogWorkspaceId,
-        CatalogCheckoutId,
-        CatalogCheckoutId,
-        Uuid,
-    ) {
-        let project_id = CatalogProjectId::from_uuid(Uuid::from_u128(1));
-        let checkout_id = CatalogCheckoutId::from_uuid(Uuid::from_u128(2));
-        let ssh_checkout_id = CatalogCheckoutId::from_uuid(Uuid::from_u128(5));
-        let ssh_connection = Uuid::from_u128(50);
-        let workspace_a = CatalogWorkspaceId::from_uuid(Uuid::from_u128(3));
-        let workspace_b = CatalogWorkspaceId::from_uuid(Uuid::from_u128(4));
-        let mut project = ProjectRecord::new(project_id, "ShellDeck");
-        project.add_checkout(ProjectCheckout::new(
-            checkout_id,
-            "principal",
-            CheckoutHost::Local {
-                device_label: "Machine locale".into(),
-                root: std::env::current_dir().unwrap().join("fixture-repo"),
-            },
-            RepositoryIdentity {
-                slug: "inklura/shelldeck".into(),
-                canonical_url: None,
-            },
-        ));
-        project.add_checkout(ProjectCheckout::new(
-            ssh_checkout_id,
-            "distant",
-            CheckoutHost::Ssh {
-                connection_id: ssh_connection,
-                root: shelldeck_core::config::workspace_catalog::RemotePosixPath::new(
-                    "/srv/shelldeck",
-                )
-                .unwrap(),
-            },
-            RepositoryIdentity {
-                slug: "inklura/shelldeck".into(),
-                canonical_url: None,
-            },
-        ));
-        let mut catalog = ProjectCatalog::default();
-        catalog.insert_project(project).unwrap();
-        for (id, name, checkout_id) in [
-            (workspace_a, "A", checkout_id),
-            (workspace_b, "B", ssh_checkout_id),
-        ] {
-            catalog
-                .create_workspace(WorkspaceLaunchRequest {
-                    id,
-                    project_id,
-                    checkout_id,
-                    name: name.into(),
-                    intake: WorkspaceLaunchIntake::Manual,
-                })
-                .unwrap();
-        }
-        (
-            catalog,
-            workspace_a,
-            workspace_b,
-            checkout_id,
-            ssh_checkout_id,
-            ssh_connection,
-        )
-    }
-
-    // SDTEST-1736 — SDUC-490 — YELLOW: native terminal identity is proven;
-    // editor/files/browser ownership remains explicitly unsupported.
-    #[test]
-    fn keyed_gpui_workspace_entity_retention_preserves_hidden_terminal_state() {
-        let mut cx = TestAppContext::single();
-        let (catalog, workspace_a, workspace_b, _checkout, _ssh_checkout, _ssh_connection) =
-            fixture_catalog();
-        let initial_terminal = cx.update(|cx| cx.new(TerminalView::new));
-        let native_terminal_before = initial_terminal.entity_id();
-        let hub = cx.update(|cx| {
-            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], initial_terminal.clone(), cx))
-        });
-        let workspace_entity_before = hub.read_with(&cx, |hub, _| {
-            hub.retained.get(&workspace_a).unwrap().entity_id()
-        });
-
-        hub.update(&mut cx, |hub, cx| {
-            hub.switch_to(workspace_a, cx);
-            hub.switch_to(workspace_b, cx);
-            hub.switch_to(workspace_a, cx);
-        });
-
-        hub.read_with(&cx, |hub, cx| {
-            let surface = hub.retained.get(&workspace_a).unwrap();
-            assert_eq!(surface.entity_id(), workspace_entity_before);
-            assert_eq!(
-                surface.read(cx).terminal.entity_id(),
-                native_terminal_before
-            );
-            assert!(surface.read(cx).native_snapshot.is_some());
-        });
-    }
-
-    // SDTEST-1738 — SDUC-489, SDUC-490 — YELLOW: local git/terminal
-    // observations use UpdateCard; a live provider observation feed is pending.
-    #[test]
-    fn workspace_card_keeps_external_and_provider_authorities_distinct() {
-        let (mut catalog, workspace_a, _, checkout, _, _) = fixture_catalog();
-        let project = catalog.workspace(workspace_a).unwrap().project_id();
-        let exact_mapping = PlatformV2Mapping {
-            reconciliation_revision: 1,
-            project: PlatformContextRef {
-                id: "platform-project".into(),
-                revision: 1,
-            },
-            checkout: PlatformContextRef {
-                id: "platform-checkout".into(),
-                revision: 1,
-            },
-            user_workspace: PlatformContextRef {
-                id: "platform-workspace-a".into(),
-                revision: 1,
-            },
-            reconciliation: PlatformMappingReconciliation::Exact {
-                reconciled_at_millis: 1,
-            },
-        };
-        catalog
-            .set_platform_mapping(workspace_a, None, exact_mapping)
-            .unwrap();
-        catalog
-            .bind_orchestration_run(
-                workspace_a,
-                Some(
-                    shelldeck_core::config::workspace_catalog::OrchestrationRunRef {
-                        runtime: "Automonique".into(),
-                        run_id: "run-1".into(),
-                        session_id: Some("session-1".into()),
-                        platform_user_workspace_id: "platform-workspace-a".into(),
-                    },
-                ),
-            )
-            .unwrap();
-        let mut task_catalog = ProjectCatalog::default();
-        let source_project = catalog
-            .projects()
-            .find(|item| item.id() == project)
-            .unwrap()
-            .clone();
-        task_catalog.insert_project(source_project).unwrap();
-        let task_workspace = CatalogWorkspaceId::from_uuid(Uuid::from_u128(30));
-        task_catalog
-            .create_workspace(WorkspaceLaunchRequest {
-                id: task_workspace,
-                project_id: project,
-                checkout_id: checkout,
-                name: "Issue 127".into(),
-                intake: WorkspaceLaunchIntake::Prefilled(ExternalWorkItem {
-                    provider: "GitHub".into(),
-                    repository: "inklura/shelldeck".into(),
-                    kind: ExternalWorkItemKind::Issue,
-                    key: "#127".into(),
-                    title: Some("Workspace navigation".into()),
-                    url: None,
-                }),
-            })
-            .unwrap();
-
-        let card = WorkspaceCardState {
-            branch: Some("fix/workspace-navigation-ui-127".into()),
-            dirty: GitDirtyState {
-                staged: 1,
-                modified: 2,
-                untracked: 3,
-                conflicted: 0,
-            },
-            agent: WorkspaceAgentState::WaitingForInput,
-            unread: 4,
-            attention: 2,
-            freshness: WorkspaceFreshness::Aging,
-            source_revision: 9,
-            observed_at_millis: 100,
-        };
-        let external = workspace_card_presentation(
-            &task_catalog,
-            task_catalog.workspace(task_workspace).unwrap(),
-            &card,
-            &HashMap::new(),
-        )
-        .unwrap();
-        assert_eq!(
-            external.external.as_deref(),
-            Some("Issue #127 · inklura/shelldeck")
-        );
-        assert_eq!(external.orchestration, None);
-        assert!(!external.provider_bound);
-        assert_eq!(
-            external.branch.as_deref(),
-            Some("fix/workspace-navigation-ui-127")
-        );
-        assert_eq!(external.dirty.modified, 2);
-        assert_eq!(external.agent, WorkspaceAgentState::WaitingForInput);
-        assert_eq!((external.unread, external.attention), (4, 2));
-
-        let provider = workspace_card_presentation(
-            &catalog,
-            catalog.workspace(workspace_a).unwrap(),
-            &card,
-            &HashMap::new(),
-        )
-        .unwrap();
-        assert_eq!(provider.external, None);
-        assert_eq!(
-            provider.orchestration.as_deref(),
-            Some("Automonique · run-1")
-        );
-        assert!(provider.provider_bound);
-    }
-
-    #[test]
-    fn launcher_prefills_all_external_kinds_through_one_validated_model() {
-        for (intake, expected) in [
-            (LauncherIntakeKind::Issue, ExternalWorkItemKind::Issue),
-            (
-                LauncherIntakeKind::PullRequest,
-                ExternalWorkItemKind::PullRequest,
-            ),
-            (LauncherIntakeKind::Task, ExternalWorkItemKind::Task),
-        ] {
-            let draft = WorkspaceLauncherDraft {
-                intake,
-                provider: "GitHub".into(),
-                repository: "inklura/shelldeck".into(),
-                key: "#127".into(),
-                title: "Navigation".into(),
-                ..WorkspaceLauncherDraft::default()
-            };
-            let WorkspaceLaunchIntake::Prefilled(item) = draft.launch_intake().unwrap() else {
-                panic!("external intake must stay prefilled");
-            };
-            assert_eq!(item.kind, expected);
-            assert_eq!(item.key, "#127");
-        }
-    }
-
-    #[test]
-    fn catalog_save_failure_rolls_back_the_real_mutation() {
-        let (mut catalog, workspace, ..) = fixture_catalog();
-        let before = catalog.clone();
-        let temp = tempfile::tempdir().unwrap();
-        let parent_file = temp.path().join("not-a-directory");
-        std::fs::write(&parent_file, b"occupied").unwrap();
-        let invalid_target = parent_file.join("catalog.json");
-        let result = mutate_and_persist(
-            &mut catalog,
-            |catalog| {
-                catalog
-                    .archive_workspace(workspace)
-                    .map_err(|error| error.to_string())
-            },
-            |catalog| {
-                catalog
-                    .save_to(&invalid_target)
-                    .map_err(|error| error.to_string())
-            },
-        );
-        assert!(result.is_err());
-        assert_eq!(catalog, before);
-    }
-
-    #[test]
-    fn explicit_catalog_store_round_trips_an_existing_folder_checkout() {
-        let temp = tempfile::tempdir().unwrap();
-        let catalog_path = temp.path().join("catalog.json");
-        let mut catalog = ProjectCatalog::default();
-        let project_id = CatalogProjectId::new();
-        let checkout_id = CatalogCheckoutId::new();
-        catalog
-            .insert_project(ProjectRecord::new(project_id, "ShellDeck"))
-            .unwrap();
-        catalog
-            .add_checkout(
-                project_id,
-                ProjectCheckout::new(
-                    checkout_id,
-                    "Issue 127",
-                    CheckoutHost::Local {
-                        device_label: "Test".into(),
-                        root: temp.path().to_path_buf(),
-                    },
-                    RepositoryIdentity {
-                        slug: "inklura/shelldeck".into(),
-                        canonical_url: None,
-                    },
-                ),
-            )
-            .unwrap();
-        catalog.save_to(&catalog_path).unwrap();
-        let loaded = ProjectCatalog::load_from(&catalog_path).unwrap();
-        assert_eq!(loaded, catalog);
-        assert!(loaded.checkout_in_project(project_id, checkout_id).is_ok());
-    }
-
-    #[tokio::test]
-    async fn existing_folder_executor_streams_intermediate_progress() {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = CatalogWorkspaceId::new();
-        let operation = CreationOperationId::new();
-        let request = WorkspaceExecutionRequest {
-            workspace,
-            checkout: CatalogCheckoutId::new(),
-            operation,
-            catalog_revision: 7,
-            name: "Attach".into(),
-            intake: WorkspaceLaunchIntake::Manual,
-            host: AuthorizedLaunchHost::Local {
-                canonical_root: temp.path().to_path_buf(),
-            },
-        };
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        ExistingFolderWorkspaceExecutor
-            .launch(request, tx)
-            .await
-            .unwrap();
-        let mut phases = Vec::new();
-        while let Some(event) = rx.recv().await {
-            match event {
-                WorkspaceCreateEvent::Progress { progress, .. } => phases.push(progress.phase),
-                WorkspaceCreateEvent::Completed { workspace: id, .. } => {
-                    assert_eq!(id, workspace);
-                }
-                other => panic!("unexpected event: {other:?}"),
-            }
-        }
-        assert_eq!(
-            phases,
-            vec![
-                WorkspaceCreatePhase::ResolvingHost,
-                WorkspaceCreatePhase::PreparingCheckout,
-                WorkspaceCreatePhase::CreatingWorkspace,
-                WorkspaceCreatePhase::BindingRuntime,
-            ]
-        );
-    }
-}
+#[path = "workspaces_tests.rs"]
+mod tests_file;

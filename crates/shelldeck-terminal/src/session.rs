@@ -46,6 +46,7 @@ pub struct TerminalSession {
     /// processed, so the UI can repaint event-driven instead of polling.
     output_notifier: Arc<Mutex<Option<mpsc::UnboundedSender<()>>>>,
     shell_flavor: ShellFlavor,
+    initial_cwd: Option<std::path::PathBuf>,
 }
 
 impl TerminalSession {
@@ -53,6 +54,12 @@ impl TerminalSession {
     /// the UI wake and repaint only when there is actually new data.
     pub fn set_output_notifier(&self, tx: mpsc::UnboundedSender<()>) {
         *self.output_notifier.lock() = Some(tx);
+    }
+
+    /// Canonical working directory requested for this local PTY.
+    #[must_use]
+    pub fn initial_cwd(&self) -> Option<&std::path::Path> {
+        self.initial_cwd.as_deref()
     }
 }
 
@@ -178,6 +185,7 @@ impl TerminalSession {
             resize_fn: Some(resize_fn),
             output_notifier,
             shell_flavor,
+            initial_cwd: Some(cwd.to_path_buf()),
         })
     }
 
@@ -248,6 +256,7 @@ impl TerminalSession {
             resize_fn: None,
             output_notifier,
             shell_flavor: ShellFlavor::Posix,
+            initial_cwd: None,
         };
 
         Ok((session, data_tx, input_rx))

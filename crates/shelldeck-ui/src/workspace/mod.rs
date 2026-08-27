@@ -991,18 +991,21 @@ impl Workspace {
             let cursor_blink = cfg.cursor_blink;
             let scrollback = cfg.scrollback_lines;
             let menu_bar_visible = config.general.menu_bar_visible;
-            terminal.update(cx, |t, _| {
-                t.set_menu_bar_visible(menu_bar_visible);
-                t.set_terminal_theme(&theme);
-                t.set_font_size(font_size);
-                t.set_font_family(font_family);
-                t.set_default_shell(default_shell);
-                t.set_cursor_style(&cursor_style);
-                t.set_cursor_blink(cursor_blink);
-                t.set_scrollback_lines(scrollback);
-                // Panel + activity rail: the rail is on unless the persisted
-                // "navigation collapsed" preference hides it.
-                t.set_sidebar_width(initial_sidebar_width + crate::sidebar::RAIL_WIDTH);
+            workspace_hub.update(cx, |hub, cx| {
+                hub.configure_terminals(
+                    workspaces::WorkspaceTerminalConfig {
+                        theme,
+                        font_size,
+                        font_family,
+                        default_shell,
+                        cursor_style,
+                        cursor_blink,
+                        scrollback_lines: scrollback,
+                        sidebar_width: initial_sidebar_width + crate::sidebar::RAIL_WIDTH,
+                        menu_bar_visible,
+                    },
+                    cx,
+                );
             });
         }
 

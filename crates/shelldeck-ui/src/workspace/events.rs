@@ -510,21 +510,24 @@ impl Workspace {
                 self.sync_ai_affordances(cx);
                 // Apply terminal settings to running view
                 let terminal_theme = TerminalTheme::by_name(&self.app_config.terminal.theme);
-                self.terminal.update(cx, |terminal, cx| {
-                    terminal.set_font_size(self.app_config.terminal.font_size);
-                    terminal.set_font_family(self.app_config.terminal.font_family.clone());
-                    terminal.set_default_shell(self.app_config.terminal.default_shell.clone());
-                    terminal.set_cursor_style(&self.app_config.terminal.cursor_style);
-                    terminal.set_cursor_blink(self.app_config.terminal.cursor_blink);
-                    terminal.set_scrollback_lines(self.app_config.terminal.scrollback_lines);
-                    terminal.set_terminal_theme(&terminal_theme);
-                    cx.notify();
-                });
                 // Apply sidebar width (panel + activity rail).
                 self.sidebar_width = self.app_config.general.sidebar_width;
                 let total = self.sidebar.read(cx).total_width();
-                self.terminal.update(cx, |terminal, _cx| {
-                    terminal.set_sidebar_width(total);
+                self.workspace_hub.update(cx, |hub, cx| {
+                    hub.configure_terminals(
+                        super::workspaces::WorkspaceTerminalConfig {
+                            theme: terminal_theme,
+                            font_size: self.app_config.terminal.font_size,
+                            font_family: self.app_config.terminal.font_family.clone(),
+                            default_shell: self.app_config.terminal.default_shell.clone(),
+                            cursor_style: self.app_config.terminal.cursor_style.clone(),
+                            cursor_blink: self.app_config.terminal.cursor_blink,
+                            scrollback_lines: self.app_config.terminal.scrollback_lines,
+                            sidebar_width: total,
+                            menu_bar_visible: self.app_config.general.menu_bar_visible,
+                        },
+                        cx,
+                    );
                 });
                 // Apply application UI font (cascades to all child views on re-render)
                 self.resolved_ui_font_family =

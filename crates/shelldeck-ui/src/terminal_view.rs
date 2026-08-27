@@ -202,6 +202,8 @@ pub struct TerminalView {
     /// `shelldeck-terminal` ($SHELL → /bin/bash on Unix; PowerShell →
     /// %COMSPEC% → cmd.exe on Windows).
     default_shell: Option<String>,
+    /// Canonical checkout root used by every subsequently-created local PTY.
+    default_cwd: Option<std::path::PathBuf>,
     pub focus_handle: FocusHandle,
     _refresh_task: Option<gpui::Task<()>>,
     /// Last known grid dimensions so we can detect when a resize is needed.
@@ -362,6 +364,7 @@ impl TerminalView {
             font_size: 14.0,
             font_family: "JetBrains Mono".to_string(),
             default_shell: None,
+            default_cwd: None,
             focus_handle: cx.focus_handle(),
             _refresh_task: None,
             last_grid_rows: 0,
@@ -470,6 +473,29 @@ impl TerminalView {
     /// they were spawned with.
     pub fn set_default_shell(&mut self, shell: Option<String>) {
         self.default_shell = shell.filter(|s| !s.trim().is_empty());
+    }
+
+    /// Set the canonical checkout root for every future local tab, split, or
+    /// CLI-created terminal owned by this view.
+    pub(crate) fn set_default_cwd(&mut self, cwd: &std::path::Path) -> Result<(), String> {
+        let canonical = std::fs::canonicalize(cwd).map_err(|error| error.to_string())?;
+        if !canonical.is_dir() {
+            return Err("terminal working directory is not a directory".into());
+        }
+        self.default_cwd = Some(canonical);
+        Ok(())
+    }
+
+    fn spawn_configured_local(
+        &self,
+        rows: u16,
+        cols: u16,
+    ) -> shelldeck_terminal::Result<TerminalSession> {
+        if let Some(cwd) = self.default_cwd.as_deref() {
+            TerminalSession::spawn_local_at(self.default_shell.as_deref(), rows, cols, cwd)
+        } else {
+            TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols)
+        }
     }
 
     /// Update the cursor style preference.
@@ -1404,7 +1430,7 @@ impl TerminalView {
         } else {
             (24, 80)
         };
-        match TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols) {
+        match self.spawn_configured_local(rows, cols) {
             Ok(session) => {
                 self.add_session(session);
                 tracing::info!("Spawned new local terminal");
@@ -1428,9 +1454,10 @@ impl TerminalView {
         } else {
             (24, 80)
         };
-        let session =
-            TerminalSession::spawn_local_at(self.default_shell.as_deref(), rows, cols, cwd)
-                .map_err(|error| error.to_string())?;
+        self.set_default_cwd(cwd)?;
+        let session = self
+            .spawn_configured_local(rows, cols)
+            .map_err(|error| error.to_string())?;
         let id = session.id;
         self.add_session(session);
         self.ensure_refresh_running(cx);
@@ -4472,14 +4499,13 @@ impl TerminalView {
         } else {
             (24, 80)
         };
-        let new_session =
-            match TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!("Failed to spawn split terminal: {}", e);
-                    return;
-                }
-            };
+        let new_session = match self.spawn_configured_local(rows, cols) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to spawn split terminal: {}", e);
+                return;
+            }
+        };
         self.install_split_pane(new_session, direction);
         self.ensure_refresh_running(cx);
         cx.notify();
@@ -5254,6 +5280,39 @@ mod tests {
             *ratio = 0.25;
             terminal.apply_workspace_snapshot(&captured);
             assert_eq!(terminal.capture_workspace_snapshot(), captured);
+            terminal.close_all_sessions();
+        });
+    }
+
+    #[test]
+    fn canonical_workspace_cwd_reaches_tabs_splits_and_cli_created_terminals() {
+        let root = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(root.path()).unwrap();
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            terminal.set_default_cwd(&canonical).unwrap();
+            terminal.spawn_local_terminal(cx);
+            terminal.spawn_local_terminal(cx);
+            assert!(terminal
+                .pane
+                .sessions
+                .iter()
+                .all(|session| session.initial_cwd() == Some(canonical.as_path())));
+            terminal.split_horizontal(cx);
+            assert!(terminal
+                .layout
+                .extra
+                .values()
+                .all(|session| session.initial_cwd() == Some(canonical.as_path())));
+            terminal.close_all_sessions();
+            terminal.launch_cli("true", "test", cx);
+            assert_eq!(
+                terminal
+                    .active_session()
+                    .and_then(|session| session.initial_cwd()),
+                Some(canonical.as_path())
+            );
             terminal.close_all_sessions();
         });
     }
