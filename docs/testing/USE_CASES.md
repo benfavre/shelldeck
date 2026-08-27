@@ -1369,6 +1369,13 @@ terminal sessions on startup and automatically attaching tmux are absent for a
 User/Support-only account. Opening Settings pauses surface-only polling and
 closing it returns to the intact current mode.
 
+At 600 logical pixels or less, the fixed Settings rail becomes one compact
+horizontal tab bar above a shrinkable, full-width scroll body. Every tab and
+interactive control remains reachable; Appearance card groups wrap inside the
+available width and About keeps its complete brand, values, and links. Above
+the breakpoint the side rail remains. The opaque Settings root owns the two
+bottom window corners while floating and leaves them square when maximized.
+
 ### SDUC-311 — Toasts respect level
 
 `show_toast` renders Info / Success / Warn / Error variants with the
