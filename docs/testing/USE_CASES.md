@@ -1993,6 +1993,11 @@ reducing the readability of those operational cards. In Mes sites, choosing a
 site is explicitly labelled as selection rather than activation. Every row also
 offers separate public-site and Manage-page destinations; a host without a
 scheme becomes HTTPS, while non-HTTP(S) or credential-bearing URLs stay inert.
+The account card keeps the identity and both Manage actions visible at every
+supported width. At 600 logical pixels or below its action group moves below
+the identity; above that breakpoint the original horizontal composition is
+preserved. The breakpoint follows UI scale, and neither the display name nor
+the role badge may collapse into vertical glyphs while flex space is resolved.
 Support mode opens on its own Accueil tab with open,
 SLA-risk, unassigned, and hosted request counters. Every counter is a route,
 not decoration: it opens the matching Tickets/Requests queue after clearing

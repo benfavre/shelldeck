@@ -2,10 +2,16 @@ use super::*;
 use crate::overlay::round_window_bottom;
 
 const WELCOME_CENTERED_MIN_LOGICAL_HEIGHT: f32 = 560.0;
+const USER_HEADER_STACK_MAX_LOGICAL_WIDTH: f32 = 600.0;
 
 pub(super) fn welcome_uses_compact_flow(viewport_height: f32, ui_font_size: f32) -> bool {
     let scale = crate::scale::scale_for_font_size(ui_font_size);
     viewport_height / scale < WELCOME_CENTERED_MIN_LOGICAL_HEIGHT
+}
+
+pub(super) fn user_header_uses_compact_flow(viewport_width: f32, ui_font_size: f32) -> bool {
+    let scale = crate::scale::scale_for_font_size(ui_font_size);
+    viewport_width / scale <= USER_HEADER_STACK_MAX_LOGICAL_WIDTH
 }
 
 fn managed_site_public_url(host: &str) -> Option<String> {
@@ -1488,6 +1494,7 @@ impl Workspace {
     pub(super) fn render_user_home(
         &self,
         is_maximized: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let account = self.app_config.account.clone().unwrap_or_default();
@@ -1496,6 +1503,10 @@ impl Workspace {
         let primary_role = primary_user_role(&role_tokens)
             .filter(|role| *role != "user")
             .map(user_role_label);
+        let compact_header = user_header_uses_compact_flow(
+            window.viewport_size().width.to_f64() as f32,
+            self.ui_font_size,
+        );
 
         // Preferred area buttons for each site row (subset of the directory).
         let preferred = [
@@ -1512,25 +1523,31 @@ impl Workspace {
             .collect();
 
         // Header card.
-        let header = div()
+        let mut header = div()
             .flex()
-            .items_center()
-            .justify_between()
             .gap(px(12.0))
             .p(px(16.0))
             .m(px(16.0))
             .rounded(px(12.0))
             .border_1()
             .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_sidebar())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.0))
+            .bg(ShellDeckColors::bg_sidebar());
+        if compact_header {
+            header = header.flex_col();
+        } else {
+            header = header.items_center().justify_between();
+        }
+        let header = header
+            .child({
+                let mut identity_group = div().flex().items_center().gap(px(12.0));
+                if compact_header {
+                    identity_group = identity_group.w_full();
+                }
+                identity_group
                     .child(
                         div()
                             .size(px(40.0))
+                            .flex_shrink_0()
                             .rounded_full()
                             .bg(ShellDeckColors::primary().opacity(0.20))
                             .flex()
@@ -1581,13 +1598,14 @@ impl Workspace {
                             );
                         }
                         identity
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
+                    })
+            })
+            .child({
+                let mut actions = div().flex().items_center().flex_shrink_0().gap(px(8.0));
+                if compact_header {
+                    actions = actions.w_full().flex_wrap().justify_end();
+                }
+                actions
                     .child(
                         div()
                             .id("uh-open-manage")
@@ -1638,8 +1656,8 @@ impl Workspace {
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.cloud_sync_now(cx);
                             })),
-                    ),
-            );
+                    )
+            });
 
         // Sites: filter by search, sort (conn-bearing first, then alpha),
         // split into (active-card, others-for-virt-list). Recomputed inside
@@ -1903,7 +1921,7 @@ impl Workspace {
 mod tests {
     use super::{
         humanize_custom_role, managed_site_public_url, nonempty_text, primary_user_role,
-        user_role_tokens, welcome_uses_compact_flow,
+        user_header_uses_compact_flow, user_role_tokens, welcome_uses_compact_flow,
     };
     use shelldeck_core::config::cloud_account::AccountInfo;
 
@@ -1914,6 +1932,17 @@ mod tests {
         assert!(!welcome_uses_compact_flow(560.0, 14.0));
         assert!(welcome_uses_compact_flow(1_119.0, 28.0));
         assert!(!welcome_uses_compact_flow(1_120.0, 28.0));
+    }
+
+    // SDTEST-1728 — SDUC-440. The account header stacks before either action
+    // can leave the card, and the threshold follows the configured UI scale.
+    #[test]
+    fn user_account_header_breakpoint_tracks_ui_scale() {
+        assert!(user_header_uses_compact_flow(600.0, 14.0));
+        assert!(!user_header_uses_compact_flow(601.0, 14.0));
+        assert!(!user_header_uses_compact_flow(700.0, 14.0));
+        assert!(user_header_uses_compact_flow(1_200.0, 28.0));
+        assert!(!user_header_uses_compact_flow(1_201.0, 28.0));
     }
 
     // SDTEST-1716 — remote site metadata is allowed to omit the scheme, but

@@ -176,7 +176,7 @@ impl Render for Workspace {
                     main_area = main_area.child(self.support.clone());
                 }
                 AppMode::User => {
-                    main_area = main_area.child(self.render_user_home(is_maximized, _cx));
+                    main_area = main_area.child(self.render_user_home(is_maximized, _window, _cx));
                 }
                 AppMode::Dev => {
                     // Always rendered: the activity rail stays on screen even
