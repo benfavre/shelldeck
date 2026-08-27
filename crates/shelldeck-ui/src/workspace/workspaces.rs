@@ -345,7 +345,8 @@ struct WorkspaceCardPresentation {
     unread: usize,
     attention: usize,
     freshness: WorkspaceFreshness,
-    observed: bool,
+    git_observed: bool,
+    provider_observed: bool,
     archived: bool,
     provider_bound: bool,
 }
@@ -455,6 +456,7 @@ fn workspace_card_presentation(
     workspace: &UserWorkspaceRecord,
     card: &WorkspaceCardState,
     connections: &HashMap<Uuid, String>,
+    sources: Option<&WorkspaceCardSources>,
 ) -> Option<WorkspaceCardPresentation> {
     let project = catalog
         .projects()
@@ -495,7 +497,8 @@ fn workspace_card_presentation(
         unread: card.unread,
         attention: card.attention,
         freshness: card.freshness,
-        observed: card.observed_at_millis > 0,
+        git_observed: sources.is_some_and(|source| source.git.is_some()),
+        provider_observed: sources.is_some_and(|source| source.provider.is_some()),
         archived: workspace.lifecycle() == UserWorkspaceLifecycle::Archived,
         provider_bound: workspace.orchestration_run().is_some(),
     })
@@ -1170,6 +1173,19 @@ impl WorkspaceHubView {
         } else {
             self.launcher.mode
         };
+        if mode != WorkspaceLaunchMode::ExistingFolder {
+            self.error = Some(match mode {
+                WorkspaceLaunchMode::GitWorktree => {
+                    t!("workspaces.launcher.worktree_unavailable").to_string()
+                }
+                WorkspaceLaunchMode::Ssh => {
+                    t!("workspaces.launcher.ssh_executor_unavailable").to_string()
+                }
+                WorkspaceLaunchMode::ExistingFolder => unreachable!(),
+            });
+            cx.notify();
+            return;
+        }
         let workspace = CatalogWorkspaceId::new();
         let launch_name = self.launcher.name.clone();
         let launch_intake = intake.clone();
@@ -1289,40 +1305,53 @@ impl WorkspaceHubView {
             return;
         };
         let event = if matches!(event, WorkspaceCreateEvent::Completed { .. }) {
-            let attach = match &request.host {
-                AuthorizedLaunchHost::Local { canonical_root } => self
-                    .retained
-                    .get(&workspace)
-                    .ok_or_else(|| "workspace terminal owner missing".to_string())
-                    .and_then(|surface| {
-                        let terminal = surface.read(cx).terminal.clone();
-                        terminal.update(cx, |terminal, cx| {
-                            terminal.spawn_local_terminal_at(canonical_root, cx)
-                        })
-                    }),
-                AuthorizedLaunchHost::Ssh { .. } => {
-                    Err(t!("workspaces.launcher.ssh_executor_unavailable").to_string())
-                }
-            };
-            match attach {
-                Ok(_) => WorkspaceCreateEvent::Completed {
+            if self.catalog.revision() != request.catalog_revision {
+                WorkspaceCreateEvent::Conflict {
                     workspace,
                     operation: request.operation,
-                },
-                Err(message) => WorkspaceCreateEvent::Failed {
-                    workspace,
-                    operation: request.operation,
-                    failure: WorkspaceCreateFailure {
-                        kind: WorkspaceCreateFailureKind::Filesystem,
-                        message,
-                        retryable: true,
+                    conflict: WorkspaceCreateConflict::CatalogRevisionChanged {
+                        expected: request.catalog_revision,
+                        actual: self.catalog.revision(),
                     },
-                },
+                }
+            } else {
+                let attach = match &request.host {
+                    AuthorizedLaunchHost::Local { canonical_root } => self
+                        .retained
+                        .get(&workspace)
+                        .ok_or_else(|| t!("workspaces.launcher.terminal_owner_missing").to_string())
+                        .and_then(|surface| {
+                            let terminal = surface.read(cx).terminal.clone();
+                            terminal
+                                .update(cx, |terminal, cx| {
+                                    terminal.spawn_local_terminal_at(canonical_root, cx)
+                                })
+                                .map_err(|_| t!("workspaces.launcher.attach_failed").to_string())
+                        }),
+                    AuthorizedLaunchHost::Ssh { .. } => {
+                        Err(t!("workspaces.launcher.ssh_executor_unavailable").to_string())
+                    }
+                };
+                match attach {
+                    Ok(_) => WorkspaceCreateEvent::Completed {
+                        workspace,
+                        operation: request.operation,
+                    },
+                    Err(message) => WorkspaceCreateEvent::Failed {
+                        workspace,
+                        operation: request.operation,
+                        failure: WorkspaceCreateFailure {
+                            kind: WorkspaceCreateFailureKind::Filesystem,
+                            message,
+                            retryable: true,
+                        },
+                    },
+                }
             }
         } else {
             event
         };
-        if let Err(error) = self.creation.reduce(request.catalog_revision, event) {
+        if let Err(error) = self.creation.reduce(self.catalog.revision(), event) {
             self.error = Some(error.to_string());
             cx.notify();
             return;
@@ -1450,6 +1479,27 @@ impl WorkspaceHubView {
             .catalog
             .workspace(workspace)
             .is_ok_and(|item| item.lifecycle() == UserWorkspaceLifecycle::Archived);
+        let was_active = self.navigation.active() == Some(workspace);
+        if !archived && was_active {
+            if let Some(surface) = self.retained.get(&workspace) {
+                let state = {
+                    let retained = surface.read(cx);
+                    terminal_surface(&self.catalog, workspace, retained.terminal.read(cx))
+                };
+                surface.update(cx, |surface, cx| surface.capture(cx));
+                if let Err(error) = self.navigation.reduce(
+                    &self.catalog,
+                    WorkspaceNavigationAction::UpdateSurface {
+                        id: workspace,
+                        surface: state,
+                    },
+                ) {
+                    self.error = Some(error.to_string());
+                    cx.notify();
+                    return;
+                }
+            }
+        }
         let result = mutate_and_save(&mut self.catalog, |catalog| {
             if archived {
                 catalog.resume_workspace(workspace)
@@ -1464,6 +1514,15 @@ impl WorkspaceHubView {
             self.navigation.reconcile_catalog(&self.catalog);
             if archived {
                 self.switch_to(workspace, cx);
+            } else if was_active {
+                let fallback = self
+                    .unclaimed_terminal
+                    .get_or_insert_with(|| cx.new(TerminalView::new))
+                    .clone();
+                if let Some(config) = self.terminal_config.as_ref() {
+                    apply_terminal_config(&fallback, config, cx);
+                }
+                cx.emit(WorkspaceHubEvent::ActiveTerminal(fallback));
             }
         }
         cx.notify();

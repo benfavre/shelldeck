@@ -1153,6 +1153,8 @@ impl Workspace {
                     cx.subscribe(terminal, |this, _terminal, event: &TerminalEvent, cx| {
                         this.handle_terminal_event(event, cx);
                     });
+                this.sync_scripts_to_terminal_toolbar(cx);
+                this.sync_ai_affordances(cx);
                 cx.notify();
             },
         );

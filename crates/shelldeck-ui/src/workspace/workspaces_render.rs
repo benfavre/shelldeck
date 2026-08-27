@@ -349,16 +349,20 @@ impl WorkspaceHubView {
                             ),
                     )
                     .child(
-                        Badge::new(if presentation.observed {
-                            freshness_label(presentation.freshness)
-                        } else {
-                            t!("workspaces.freshness.unknown").to_string()
-                        })
-                        .variant(if presentation.observed {
-                            freshness_variant(presentation.freshness)
-                        } else {
-                            BadgeVariant::Outline
-                        }),
+                        Badge::new(
+                            if presentation.git_observed || presentation.provider_observed {
+                                freshness_label(presentation.freshness)
+                            } else {
+                                t!("workspaces.freshness.unknown").to_string()
+                            },
+                        )
+                        .variant(
+                            if presentation.git_observed || presentation.provider_observed {
+                                freshness_variant(presentation.freshness)
+                            } else {
+                                BadgeVariant::Outline
+                            },
+                        ),
                     ),
             )
             .child(badges);
@@ -376,7 +380,7 @@ impl WorkspaceHubView {
                         .clone()
                         .unwrap_or_else(|| t!("workspaces.card.branch_unknown").to_string()),
                 )
-                .child(if presentation.observed {
+                .child(if presentation.git_observed {
                     t!(
                         "workspaces.card.dirty",
                         staged = dirty.staged,
@@ -388,7 +392,9 @@ impl WorkspaceHubView {
                 } else {
                     t!("workspaces.card.awaiting_observation").to_string()
                 })
-                .child(agent_label(presentation.agent)),
+                .when(presentation.provider_observed, |row| {
+                    row.child(agent_label(presentation.agent))
+                }),
         );
         if let Some(external) = presentation.external {
             content = content.child(authority_row(
@@ -548,6 +554,7 @@ impl WorkspaceHubView {
                     modes = modes.child(
                         Button::new(("workspace-launch-mode", index), label)
                             .size(ButtonSize::Sm)
+                            .disabled(mode != WorkspaceLaunchMode::ExistingFolder)
                             .variant(if self.launcher.mode == mode {
                                 ButtonVariant::Secondary
                             } else {
@@ -667,9 +674,13 @@ impl Render for WorkspaceHubView {
                 .workspace(workspace.id())
                 .map(|retained| &retained.card)
                 .unwrap_or(&default_card);
-            if let Some(presentation) =
-                workspace_card_presentation(&self.catalog, workspace, card, &self.connections)
-            {
+            if let Some(presentation) = workspace_card_presentation(
+                &self.catalog,
+                workspace,
+                card,
+                &self.connections,
+                self.cards.sources.get(&workspace.id()),
+            ) {
                 workspace_cards = workspace_cards.child(self.render_workspace_card(
                     presentation,
                     self.navigation.active() == Some(workspace.id()),

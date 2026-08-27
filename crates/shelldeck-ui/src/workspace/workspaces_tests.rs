@@ -17,8 +17,9 @@ mod tests {
         WorkspaceLaunchRequest,
     };
     use shelldeck_core::workspace_navigation::{
-        CreationOperationId, GitDirtyState, WorkspaceAgentState, WorkspaceCardState,
-        WorkspaceCreateEvent, WorkspaceCreatePhase, WorkspaceFreshness,
+        BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState, WorkspaceAgentState,
+        WorkspaceCardState, WorkspaceCreateConflict, WorkspaceCreateEvent, WorkspaceCreatePhase,
+        WorkspaceFreshness,
     };
     use std::collections::HashMap;
     use tokio::sync::mpsc;
@@ -210,6 +211,7 @@ mod tests {
             task_catalog.workspace(task_workspace).unwrap(),
             &card,
             &HashMap::new(),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -231,6 +233,7 @@ mod tests {
             catalog.workspace(workspace_a).unwrap(),
             &card,
             &HashMap::new(),
+            None,
         )
         .unwrap();
         assert_eq!(provider.external, None);
@@ -410,5 +413,62 @@ mod tests {
         assert_eq!((unavailable.unread, unavailable.attention), (8, 3));
         assert_eq!(unavailable.dirty.conflicted, 5);
         assert_eq!(unavailable.observed_at_millis, 0);
+    }
+
+    #[test]
+    fn catalog_change_before_completion_prevents_native_attach() {
+        let mut app = TestAppContext::single();
+        let (catalog, workspace, other, checkout, ..) = fixture_catalog();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal.clone(), cx))
+        });
+        let root = tempfile::tempdir().unwrap();
+        hub.update(&mut app, |hub, cx| {
+            let operation = CreationOperationId::new();
+            let starting_revision = hub.catalog.revision();
+            hub.creation
+                .reduce(
+                    starting_revision,
+                    WorkspaceCreateEvent::Start {
+                        workspace,
+                        operation,
+                    },
+                )
+                .unwrap();
+            hub.pending_requests.insert(
+                workspace,
+                WorkspaceExecutionRequest {
+                    workspace,
+                    checkout,
+                    operation,
+                    catalog_revision: starting_revision,
+                    name: "Attach".into(),
+                    intake: WorkspaceLaunchIntake::Manual,
+                    host: AuthorizedLaunchHost::Local {
+                        canonical_root: root.path().to_path_buf(),
+                    },
+                    mode: WorkspaceLaunchMode::ExistingFolder,
+                },
+            );
+            hub.catalog.archive_workspace(other).unwrap();
+            hub.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Completed {
+                    workspace,
+                    operation,
+                },
+                cx,
+            );
+            assert!(matches!(
+                hub.creation.state(workspace),
+                Some(BackgroundWorkspaceCreateState::Conflict {
+                    conflict: WorkspaceCreateConflict::CatalogRevisionChanged { .. },
+                    ..
+                })
+            ));
+            assert_eq!(terminal.read(cx).tab_count(), 0);
+            assert!(hub.pending_requests.contains_key(&workspace));
+        });
     }
 }
