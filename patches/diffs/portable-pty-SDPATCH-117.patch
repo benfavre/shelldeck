@@ -13,14 +13,14 @@
 +        // creation fails closed if the directory disappeared.
 +        let dir: &OsStr = self.cwd.as_deref().unwrap_or(home.as_ref());
          let shell = self.get_shell();
-@@ -566,2 +566,4 @@
+@@ -566,2 +564,4 @@
 -        let cwd: Option<&OsStr> = self.cwd.as_deref().filter(|path| Path::new(path).is_dir());
 -        let dir: Option<&OsStr> = cwd.or(home);
 +        // ShellDeck patch: SDPATCH-117 — preserve an explicit cwd even after it
 +        // disappears so CreateProcessW fails closed instead of silently starting
 +        // the shell in USERPROFILE outside the authorized workspace.
 +        let dir: Option<&OsStr> = self.cwd.as_deref().or(home);
-@@ -754,4 +756,58 @@
+@@ -754,4 +754,58 @@
          cmd.env_remove("cARGO_pKG_aUTHORS");
          assert!(cmd.get_env("CARGO_PKG_AUTHORS").is_none());
      }

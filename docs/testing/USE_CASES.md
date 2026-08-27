@@ -2607,8 +2607,59 @@ Start cannot bypass retryability. Once retry starts, a late completion or
 failure from the earlier attempt is rejected and cannot overwrite the new
 operation.
 
+### SDUC-492 — Workspace review mutations remain previewed, scoped, and exactly once
+
+A workspace review combines staged, unstaged, untracked, and conflict state at
+one observed repository revision. Text and recognized bounded images may be
+previewed; HTML is escaped and displayed only as inert source, while oversized
+or unknown binary content is refused. The core draft ledger persists line
+comments against their exact file, section, unique hunk, side, line, and review
+revision; its pre-anchor schema is refused rather than guessed, and only
+explicitly selected current comments with unique comment IDs form a send batch.
+Stage, approval, check, and delivery mutations are
+separately scoped: provider-session control cannot grant repository, CI, or
+pull-request authority. A crate-private grant can prepare only a workflow-owned
+capability. Durable submit rechecks the current grant (including revocation,
+supersession, actor and scope) and the exact fresh local-review,
+provider-session/approval, Platform user-workspace identity plus reconciliation
+revision, catalog-validated workspace surface, or delivery target fence.
+Receipts echo the actor,
+authority revision, typed target and one idempotency key. An in-flight operation
+reloaded after restart becomes reconciliation-only work with that original key.
+Prepared and terminal records remain enumerable after operation-ID loss; only
+explicit abandonment and terminal acknowledgement release a bounded ledger slot.
+Forced-process and real-adapter no-replay evidence remains a Red release gate.
+
+### SDUC-493 — Agent attention always returns to its authoritative work context
+
+Needs You, Working, Blocked, Done, and Idle are typed observations with unread
+state and a nested-agent path. Each item names one local user workspace and
+pane; provider-session items additionally name the exact session in that pane.
+Older or conflicting same-revision observations are refused. Opening an item in
+the core resolves only through retained state keyed by the authoritative local
+workspace and validates all coordinates against that workspace surface,
+refuses duplicate pane/session coordinates, returns only that exact tab, and
+records local read state separately from the authoritative observation revision.
+Delivery checks, review status, merge readiness, and delivery state carry their
+observed authority and freshness. Once Fresh, they cannot be overwritten by a
+Stale or Unknown projection even if that projection claims a higher revision.
+
 ## Change log
 
+- **2026-08-27** — Bound comment/approval receipts to exact Platform mapping
+  identity/revision and made attention resolve through workspace-keyed retained
+  navigation, including same-checkout Browser isolation.
+- **2026-08-27** — Hardened SDUC-492/493 and added SDTEST-1759..1762 with
+  section/hunk-bound anchors,
+  current-grant and exact-workspace revalidation, recoverable terminal ledger
+  acknowledgement, no-follow maximum-plus-one persistence reads,
+  catalog-validated attention surfaces, and Fresh-preserving delivery state.
+- **2026-08-27** — Added SDUC-492/493 and SDTEST-1751..1758 for combined
+  workspace review state, bounded inert previews, workspace-keyed draft CAS,
+  separately scoped typed revision fences, durable reconciliation obligations,
+  local-read-separated attention targets, nested-agent state, and stale-fenced
+  delivery evidence. Native process, adapter, decoder, and retained-GPUI proof
+  is explicitly tracked Red/Yellow rather than inferred from reducer tests.
 - **2026-08-27** — Added SDUC-488..491 and SDTEST-1729..1742 for the revisioned
   local/SSH project catalog, Platform v2 reconciliation mapping, portable path
   and authority admission, interprocess/Windows-safe persistence, canonical
