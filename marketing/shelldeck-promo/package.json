@@ -1,0 +1,41 @@
+{
+  "name": "shelldeck-promo",
+  "version": "1.0.0",
+  "description": "Light-mode ShellDeck marketing video built with Remotion",
+  "repository": {},
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "@remotion/cli": "4.0.518",
+    "@remotion/tailwind-v4": "4.0.518",
+    "@remotion/transitions": "4.0.518",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.518",
+    "tailwindcss": "4.0.0"
+  },
+  "devDependencies": {
+    "@remotion/eslint-config-flat": "4.0.518",
+    "@types/react": "19.2.7",
+    "@types/web": "0.0.166",
+    "eslint": "9.19.0",
+    "prettier": "3.8.1",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "dev": "remotion studio",
+    "build": "remotion bundle",
+    "render": "remotion render ShellDeck-Light-Promo out/shelldeck-light-promo.mp4",
+    "render:user-support": "remotion render ShellDeck-User-Support-Promo out/shelldeck-user-support-promo.mp4",
+    "render:user-support:webm": "remotion render ShellDeck-User-Support-Promo out/shelldeck-user-support-promo.webm --codec=vp9",
+    "render:user-support:mobile": "remotion render ShellDeck-User-Support-Promo-Mobile out/shelldeck-user-support-promo-mobile.mp4",
+    "still": "remotion still ShellDeck-Light-Promo out/shelldeck-light-promo.png --frame=90",
+    "still:user-support": "remotion still ShellDeck-User-Support-Promo out/shelldeck-user-support-promo.png --frame=320",
+    "still:user-support:mobile": "remotion still ShellDeck-User-Support-Promo-Mobile out/shelldeck-user-support-promo-mobile.png --frame=317",
+    "upgrade": "remotion upgrade",
+    "lint": "eslint src && tsc"
+  },
+  "sideEffects": [
+    "*.css"
+  ]
+}
