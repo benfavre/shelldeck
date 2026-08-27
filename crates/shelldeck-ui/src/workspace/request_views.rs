@@ -28,11 +28,155 @@ impl Workspace {
     pub(super) fn render_user_request_row(
         &self,
         iss: &Issue,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let id = iss.id.clone();
         let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
         let group_name = SharedString::from(format!("uiss-row-{}", iss.id));
+        let row_h = if compact {
+            USER_REQUEST_ROW_H_COMPACT
+        } else {
+            USER_REQUEST_ROW_H
+        };
+        let mut title = div()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .text_size(px(13.0))
+            .text_color(ShellDeckColors::text_primary());
+        title = if compact {
+            title.w_full().line_clamp(2)
+        } else {
+            title.flex_1().whitespace_nowrap().truncate()
+        };
+        let title = title.child(crate::external_content::external_title(&iss.title));
+
+        let mut metadata = div().flex().items_center().min_w(px(0.0)).overflow_hidden();
+        let mut metadata_has_item = compact;
+        if compact {
+            metadata = metadata.w_full().child(issue_status_badge(&iss.status));
+        } else {
+            metadata = metadata.flex_shrink_0();
+        }
+        if let Some(site_label) = iss
+            .site_label
+            .as_ref()
+            .filter(|label| !label.trim().is_empty())
+        {
+            let item_margin = if metadata_has_item { 8.0 } else { 0.0 };
+            metadata = metadata.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .ml(px(item_margin))
+                    .child(
+                        Badge::new(Self::ellipsize_badge_label(site_label, 17))
+                            .variant(BadgeVariant::Outline)
+                            .max_w(px(140.0))
+                            .overflow_hidden(),
+                    ),
+            );
+            metadata_has_item = true;
+        }
+        // Deux informations que la file Support affichait déjà et que le
+        // client, propriétaire de la demande, n'avait pas : depuis quand elle
+        // a bougé, et si quelqu'un y a répondu. Sans elles, on ne peut pas
+        // savoir que le support a écrit.
+        if iss.comment_count > 0 {
+            let item_margin = if metadata_has_item { 8.0 } else { 0.0 };
+            metadata = metadata.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .ml(px(item_margin))
+                    .flex_shrink_0()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    // `messages-square` : le lot Lucide embarqué ne contient
+                    // pas `message-square` au singulier, et un slug absent ne
+                    // dessine rien du tout (`.agents/icons.md`).
+                    .child(lucide_icon(
+                        "messages-square",
+                        11.0,
+                        ShellDeckColors::text_muted(),
+                    ))
+                    .child(iss.comment_count.to_string()),
+            );
+            metadata_has_item = true;
+        }
+        let item_margin = if metadata_has_item { 8.0 } else { 0.0 };
+        metadata = metadata.child(
+            div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .ml(px(item_margin))
+                .child(priority_badge(&iss.priority)),
+        );
+        metadata_has_item = true;
+        let updated = crate::i18n::rel_time(iss.updated_at);
+        if !updated.is_empty() {
+            let item_margin = if metadata_has_item { 8.0 } else { 0.0 };
+            metadata = metadata.child(
+                div()
+                    .flex_shrink_0()
+                    .ml(px(item_margin))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(updated),
+            );
+            metadata_has_item = true;
+        }
+        if let Some(g) = &iss.github {
+            let item_margin = if metadata_has_item { 8.0 } else { 0.0 };
+            metadata = metadata.child(
+                div()
+                    .flex_shrink_0()
+                    .ml(px(item_margin))
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("user.github_issue", number = g.number).to_string()),
+            );
+            metadata_has_item = true;
+        }
+        let del_id = iss.id.clone();
+        let mut delete = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "uiss-del-{}",
+                iss.id
+            ))))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(22.0))
+            .h(px(22.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .text_color(ShellDeckColors::error())
+            .opacity(0.0)
+            .group_hover(group_name.clone(), |el| el.opacity(1.0))
+            .hover(|el| el.bg(ShellDeckColors::error().opacity(0.15)))
+            .child(
+                svg()
+                    .path(lucide_path("trash-2"))
+                    .size(px(13.0))
+                    .text_color(ShellDeckColors::error()),
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                this.confirm_issue_delete = Some(del_id.clone());
+                cx.notify();
+            }));
+        if compact {
+            delete = delete.ml_auto();
+        } else if metadata_has_item {
+            delete = delete.ml(px(8.0));
+        }
+        metadata = metadata.child(delete);
+
         let mut row = div()
             .id(ElementId::from(SharedString::from(format!(
                 "uiss-{}",
@@ -40,9 +184,11 @@ impl Workspace {
             ))))
             .group(group_name.clone())
             .w_full()
+            // The virtualized wrapper reserves the final 4 px as the gap to
+            // the next card. Use its remaining height explicitly so internal
+            // top/bottom padding stays symmetrical.
+            .h(px(row_h - 4.0))
             .flex()
-            .items_center()
-            .gap(px(8.0))
             .px(px(10.0))
             .py(px(7.0))
             .rounded(px(8.0))
@@ -57,106 +203,16 @@ impl Workspace {
             .on_click({
                 let id = id.clone();
                 cx.listener(move |this, _: &ClickEvent, _, cx| this.select_issue(id.clone(), cx))
-            })
-            .child(issue_status_badge(&iss.status))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .truncate()
-                    .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(crate::external_content::external_title(&iss.title)),
-            );
-        if let Some(site_label) = iss
-            .site_label
-            .as_ref()
-            .filter(|label| !label.trim().is_empty())
-        {
-            row = row.child(
-                Badge::new(Self::ellipsize_badge_label(site_label, 17))
-                    .variant(BadgeVariant::Outline)
-                    .max_w(px(140.0))
-                    .overflow_hidden(),
-            );
+            });
+        if compact {
+            row = row.flex_col().justify_center().gap(px(5.0));
+            row.child(title).child(metadata)
+        } else {
+            row = row.items_center().gap(px(8.0));
+            row.child(issue_status_badge(&iss.status))
+                .child(title)
+                .child(metadata)
         }
-        // Deux informations que la file Support affichait déjà et que le
-        // client, propriétaire de la demande, n'avait pas : depuis quand elle
-        // a bougé, et si quelqu'un y a répondu. Sans elles, on ne peut pas
-        // savoir que le support a écrit.
-        if iss.comment_count > 0 {
-            row = row.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .flex_shrink_0()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    // `messages-square` : le lot Lucide embarqué ne contient
-                    // pas `message-square` au singulier, et un slug absent ne
-                    // dessine rien du tout (`.agents/icons.md`).
-                    .child(lucide_icon(
-                        "messages-square",
-                        11.0,
-                        ShellDeckColors::text_muted(),
-                    ))
-                    .child(iss.comment_count.to_string()),
-            );
-        }
-        row = row.child(priority_badge(&iss.priority));
-        let updated = crate::i18n::rel_time(iss.updated_at);
-        if !updated.is_empty() {
-            row = row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(updated),
-            );
-        }
-        if let Some(g) = &iss.github {
-            row = row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("user.github_issue", number = g.number).to_string()),
-            );
-        }
-        let del_id = iss.id.clone();
-        row.child(
-            div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "uiss-del-{}",
-                    iss.id
-                ))))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(22.0))
-                .h(px(22.0))
-                .rounded(px(4.0))
-                .cursor_pointer()
-                .text_color(ShellDeckColors::error())
-                .opacity(0.0)
-                .group_hover(group_name.clone(), |el| el.opacity(1.0))
-                .hover(|el| el.bg(ShellDeckColors::error().opacity(0.15)))
-                .child(
-                    svg()
-                        .path(lucide_path("trash-2"))
-                        .size(px(13.0))
-                        .text_color(ShellDeckColors::error()),
-                )
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    this.confirm_issue_delete = Some(del_id.clone());
-                    cx.notify();
-                })),
-        )
     }
 
     /// User-mode "Mes demandes": a list of the tenant's requests. Selecting a
@@ -164,7 +220,11 @@ impl Workspace {
     /// button in the header opens the composer as another right-side sheet.
     /// Both live at the workspace root — they slide over the list without
     /// pushing it down (the pre-sheet layout used to append them inline).
-    pub(super) fn render_user_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_user_requests(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // User mode is the "as-a-normal-user" surface — even for a
         // super-admin viewing it, we only surface requests *they* filed.
         // (The server hands staff every in-scope request without a
@@ -189,7 +249,12 @@ impl Workspace {
         } else {
             const MAX_LIST_H: f32 = 600.0;
             const MIN_LIST_H: f32 = 120.0;
-            let visible_h = (mine_count as f32 * USER_REQUEST_ROW_H).clamp(MIN_LIST_H, MAX_LIST_H);
+            let request_row_h = if compact {
+                USER_REQUEST_ROW_H_COMPACT
+            } else {
+                USER_REQUEST_ROW_H
+            };
+            let visible_h = (mine_count as f32 * request_row_h).clamp(MIN_LIST_H, MAX_LIST_H);
             div()
                 .w_full()
                 .h(px(visible_h))
@@ -198,7 +263,7 @@ impl Workspace {
                     uniform_list(
                         "user-requests-virt",
                         mine_count,
-                        cx.processor(|this, range: Range<usize>, _window, cx| {
+                        cx.processor(move |this, range: Range<usize>, _window, cx| {
                             let mine_indices = this
                                 .issues_list
                                 .iter()
@@ -212,8 +277,15 @@ impl Workspace {
                                 .map(|issue| {
                                     div()
                                         .w_full()
+                                        // `uniform_list` positions slots by
+                                        // the declared row height but does
+                                        // not impose that height on the
+                                        // element returned by the processor.
+                                        // Without it, compact rows stretch
+                                        // apart inside the reserved list.
+                                        .h(px(request_row_h))
                                         .pb(px(4.0))
-                                        .child(this.render_user_request_row(issue, cx))
+                                        .child(this.render_user_request_row(issue, compact, cx))
                                         .into_any_element()
                                 })
                                 .collect::<Vec<_>>()

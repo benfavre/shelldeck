@@ -1439,13 +1439,16 @@ impl Workspace {
 /// visible card (~56px) + 4px padding top/bottom, which reads as an 8px
 /// gap between adjacent rows without breaking `uniform_list`'s
 /// uniform-height contract. Any change here must also update the
-/// `others_count * SITE_ROW_H` calc in `render_user_home`.
+/// `others_count * site_row_h` calc in `render_user_home`.
 const SITE_ROW_H: f32 = 64.0;
+const SITE_ROW_H_COMPACT: f32 = 88.0;
 
-/// Uniform slot for User-mode request rows. The inner row occupies 38px and
-/// the remaining 4px preserves the existing visual gap while allowing GPUI
-/// to render only the visible range.
+/// Uniform slots for User-mode request rows. Each inner row explicitly uses
+/// `slot - 4px`; the remainder is the visual gap while GPUI renders only the
+/// visible range. Compact rows reserve enough height for a two-line title and
+/// one metadata line without making their internal padding asymmetric.
 const USER_REQUEST_ROW_H: f32 = 42.0;
+const USER_REQUEST_ROW_H_COMPACT: f32 = 76.0;
 
 /// Lucide slug for a Manage area key. Kept in one place so the User-home
 /// site cards and any future palette entries share the same visual vocab.

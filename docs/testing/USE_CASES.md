@@ -1989,15 +1989,25 @@ request composer. Its three most recent requests open directly from the
 dashboard, while a compact status card exposes the Manage session, active site,
 synchronized directory, and a manual sync action. A dashboard-specific network
 illustration with a contrast gradient gives the page a clear identity without
-reducing the readability of those operational cards. In Mes sites, choosing a
-site is explicitly labelled as selection rather than activation. Every row also
-offers separate public-site and Manage-page destinations; a host without a
-scheme becomes HTTPS, while non-HTTP(S) or credential-bearing URLs stay inert.
+reducing the readability of those operational cards. At 600 logical pixels or
+below, the banner gains enough height for the localized copy and narrows its
+padding while keeping the counter, title, subtitle, artwork, and ShellDeck mark
+inside distinct safe zones; the wide composition remains unchanged above the
+breakpoint. In Mes sites, choosing a site is explicitly labelled as selection
+rather than activation. Every row also offers separate public-site and
+Manage-page destinations; a host without a scheme becomes HTTPS, while
+non-HTTP(S) or credential-bearing URLs stay inert.
 The account card keeps the identity and both Manage actions visible at every
 supported width. At 600 logical pixels or below its action group moves below
 the identity; above that breakpoint the original horizontal composition is
 preserved. The breakpoint follows UI scale, and neither the display name nor
 the role badge may collapse into vertical glyphs while flex space is resolved.
+The same breakpoint gives compact site and request rows two explicit levels:
+the site identity or complete request title remains above, while actions or
+metadata move below. Their virtualized slots preserve a fixed 4 px interval,
+and request badges, counters, and relative dates retain an explicit 8 px
+separation instead of depending on component-internal padding. Above the
+breakpoint, the original single-line rows remain unchanged.
 Support mode opens on its own Accueil tab with open,
 SLA-risk, unassigned, and hosted request counters. Every counter is a route,
 not decoration: it opens the matching Tickets/Requests queue after clearing
@@ -2556,6 +2566,13 @@ the neighboring Tickets queue.
 
 ## Change log
 
+- **2026-08-27** — Amended SDUC-440 and SDTEST-1728: compact User site and
+  request rows now place identity above actions or metadata, with explicit
+  inter-item and inter-row spacing; the wide rows keep their original layout.
+- **2026-08-27** — Amended SDUC-440 and SDTEST-1728: the User home header and
+  illustrated banner now share a scale-aware 600 px compact breakpoint. The
+  banner keeps its counter and localized copy inside a measured safe zone
+  without changing the wide composition.
 - **2026-08-26** — Added SDUC-486 and SDTEST-1725: Manage returns privacy-safe
   request status counts before the selected status slice, and Support renders
   them with the same pill/badge structure as Tickets.
