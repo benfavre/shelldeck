@@ -637,6 +637,52 @@ fn sdtest_1760_comment_batches_require_exact_workspace_surface_and_unique_anchor
             10,
         )
         .unwrap();
+    let receipt_preview = workflow
+        .prepare(
+            MutationTargetEvidence::ReviewAndProviderSession {
+                review: &review,
+                session: &provider_projection(5),
+                catalog: &catalog,
+                surface: &surface,
+            },
+            &grant,
+            ReviewMutationKind::SendComments {
+                session_id: "session-1".into(),
+                comments: vec![review_comment(55)],
+            },
+            10,
+        )
+        .unwrap();
+    workflow
+        .submit(
+            &receipt_preview,
+            current(
+                MutationTargetEvidence::ReviewAndProviderSession {
+                    review: &review,
+                    session: &provider_projection(5),
+                    catalog: &catalog,
+                    surface: &surface,
+                },
+                &grant,
+            ),
+            11,
+        )
+        .unwrap();
+    let mut wrong_platform_receipt = receipt(&receipt_preview);
+    if let MutationTargetFence::ReviewAndProviderSession {
+        platform_user_workspace_id,
+        ..
+    } = &mut wrong_platform_receipt.target
+    {
+        *platform_user_workspace_id = "other-platform-workspace".into();
+    }
+    assert_eq!(
+        workflow.apply_transport_result(
+            receipt_preview.operation(),
+            MutationTransportResult::Receipt(wrong_platform_receipt),
+        ),
+        Err(ReviewWorkflowError::ReceiptMismatch)
+    );
 
     let mut foreign_session = provider_projection(5);
     foreign_session.workspace = workspace(2);
@@ -1172,6 +1218,7 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
         board.open_target(browser_id, workspace(1), &catalog, &keyed_navigation),
         Err(AttentionError::InvalidSurface)
     );
+    assert!(board.is_unread(browser_id));
     keyed_navigation
         .reduce(
             &catalog,
@@ -1191,6 +1238,7 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
             tab_id: local_browser_tab,
         }
     );
+    assert!(!board.is_unread(browser_id));
 }
 
 // SDTEST-1756
