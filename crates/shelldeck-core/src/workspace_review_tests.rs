@@ -135,9 +135,9 @@ fn receipt(preview: &ReviewMutationPreview) -> ReviewMutationReceipt {
     }
 }
 
-// SDTEST-1743
+// SDTEST-1751
 #[test]
-fn sdtest_1743_combined_review_preserves_sections_and_validates_inert_previews() {
+fn sdtest_1751_combined_review_preserves_sections_and_validates_inert_previews() {
     assert_eq!(
         snapshot().combined_sections(),
         BTreeSet::from([
@@ -182,9 +182,9 @@ fn sdtest_1743_combined_review_preserves_sections_and_validates_inert_previews()
     ));
 }
 
-// SDTEST-1744
+// SDTEST-1752
 #[test]
-fn sdtest_1744_drafts_use_workspace_paths_monotone_cas_and_expected_identity() {
+fn sdtest_1752_drafts_use_workspace_paths_monotone_cas_and_expected_identity() {
     let root = temp_root("drafts");
     let mut store = ReviewDraftStore::load_at(root.clone(), workspace(1)).unwrap();
     store
@@ -240,9 +240,9 @@ fn sdtest_1744_drafts_use_workspace_paths_monotone_cas_and_expected_identity() {
     std::fs::remove_dir_all(root).ok();
 }
 
-// SDTEST-1745
+// SDTEST-1753
 #[test]
-fn sdtest_1745_only_registered_unexpired_previews_can_submit() {
+fn sdtest_1753_only_registered_unexpired_previews_can_submit() {
     let root = temp_root("capability");
     let mut workflow = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
     let provider = AuthorityGrant::provider_session(
@@ -297,9 +297,9 @@ fn sdtest_1745_only_registered_unexpired_previews_can_submit() {
     std::fs::remove_dir_all(root).ok();
 }
 
-// SDTEST-1746
+// SDTEST-1754
 #[test]
-fn sdtest_1746_dispatched_ledger_recovers_only_by_original_receipt() {
+fn sdtest_1754_dispatched_ledger_recovers_only_by_original_receipt() {
     let root = temp_root("ledger");
     let mut workflow = ReviewWorkflow::load_at(root.clone(), workspace(1)).unwrap();
     let preview = workflow
@@ -350,9 +350,9 @@ fn sdtest_1746_dispatched_ledger_recovers_only_by_original_receipt() {
     std::fs::remove_dir_all(root).ok();
 }
 
-// SDTEST-1747
+// SDTEST-1755
 #[test]
-fn sdtest_1747_attention_read_state_replays_and_duplicate_coordinates_fail_closed() {
+fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_closed() {
     let pane = PaneId::from_uuid(uuid(20));
     let tab = WorkspaceTabId::from_uuid(uuid(21));
     let provider_tab = |id, session: &str| WorkspaceTab {
@@ -411,9 +411,9 @@ fn sdtest_1747_attention_read_state_replays_and_duplicate_coordinates_fail_close
     );
 }
 
-// SDTEST-1748
+// SDTEST-1756
 #[test]
-fn sdtest_1748_delivery_mutations_require_exact_fresh_projection_revision() {
+fn sdtest_1756_delivery_mutations_require_exact_fresh_projection_revision() {
     let root = temp_root("delivery");
     let delivery = delivery_projection(3);
     let grant = AuthorityGrant::delivery(
@@ -471,9 +471,9 @@ fn sdtest_1748_delivery_mutations_require_exact_fresh_projection_revision() {
     std::fs::remove_dir_all(root).ok();
 }
 
-// SDTEST-1749
+// SDTEST-1757
 #[test]
-fn sdtest_1749_approval_is_bound_to_pending_id_and_session_revision() {
+fn sdtest_1757_approval_is_bound_to_pending_id_and_session_revision() {
     let root = temp_root("approval");
     let session = provider_projection(5);
     let grant = AuthorityGrant::provider_session(

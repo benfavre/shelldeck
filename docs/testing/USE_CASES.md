@@ -2639,7 +2639,7 @@ cannot be overwritten by stale evidence.
 
 ## Change log
 
-- **2026-08-27** — Added SDUC-492/493 and SDTEST-1743..1748 for combined
+- **2026-08-27** — Added SDUC-492/493 and SDTEST-1751..1758 for combined
   workspace review state, bounded inert previews, workspace-keyed draft CAS,
   separately scoped typed revision fences, durable reconciliation obligations,
   local-read-separated attention targets, nested-agent state, and stale-fenced
