@@ -1,6 +1,20 @@
 use super::*;
 
+fn close_titlebar_menu_flags(account: &mut bool, mode: &mut bool, site: &mut bool) {
+    *account = false;
+    *mode = false;
+    *site = false;
+}
+
 impl Workspace {
+    pub(super) fn close_titlebar_menus(&mut self) {
+        close_titlebar_menu_flags(
+            &mut self.account_menu_open,
+            &mut self.mode_menu_open,
+            &mut self.site_menu_open,
+        );
+    }
+
     /// Render the custom window titlebar with drag area and window controls.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_titlebar(
@@ -1308,5 +1322,23 @@ impl Workspace {
                 )
                 .with_priority(2),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::close_titlebar_menu_flags;
+
+    // SDTEST-1737 — NAV-07 / SDUC-487. Opening a global overlay or changing
+    // destination clears every titlebar popover owner in one operation.
+    #[test]
+    fn global_overlay_transition_closes_all_titlebar_menus() {
+        for open_menu in 0..3 {
+            let mut account = open_menu == 0;
+            let mut mode = open_menu == 1;
+            let mut site = open_menu == 2;
+            close_titlebar_menu_flags(&mut account, &mut mode, &mut site);
+            assert!(!account && !mode && !site);
+        }
     }
 }

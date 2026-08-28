@@ -154,6 +154,7 @@ impl Workspace {
     }
 
     pub fn set_active_view(&mut self, view: ActiveView) {
+        self.close_titlebar_menus();
         self.active_view = view;
     }
 
@@ -355,6 +356,10 @@ impl Workspace {
     /// links, remote triggers) to toggle the command palette without
     /// touching the private `command_palette` field.
     pub fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let opening = !self.command_palette.read(cx).visible;
+        if opening {
+            self.close_titlebar_menus();
+        }
         self.command_palette.update(cx, |palette, cx| {
             palette.toggle(window, cx);
             cx.notify();
@@ -388,6 +393,7 @@ impl Workspace {
     }
 
     pub fn switch_to_section(&mut self, section: SidebarSection) {
+        self.close_titlebar_menus();
         self.active_view = match section {
             SidebarSection::Connections => ActiveView::Dashboard,
             SidebarSection::Terminals => ActiveView::Terminal,
@@ -421,6 +427,7 @@ impl Workspace {
     /// Called when the active Dev view changes — (re)start the Monique poll if the
     /// console just became visible.
     pub(super) fn on_active_view_changed(&mut self, cx: &mut Context<Self>) {
+        self.close_titlebar_menus();
         self.sync_monique_poll(cx);
         self.sync_fleet_view_poll(cx);
         self.sync_bext_poll(cx);

@@ -2625,8 +2625,21 @@ the returned list is capped to a smaller loaded page; the virtual list still
 renders only the rows actually received. The four visible filters use the same
 compact button plus secondary count badge as the neighboring Tickets queue.
 
+### SDUC-487 — Global Workspace overlays have one visible owner
+
+Opening the in-window command palette closes every titlebar dropdown — account,
+mode, and site — before its backdrop renders. The shortcut action, application
+menu command, and public Workspace entry point all use that same transition.
+Changing the active Dev destination also clears those dropdown owners, so an
+action selected from the palette cannot leave its former menu attached to the
+new surface.
+
 ## Change log
 
+- **2026-08-28** — Added SDUC-487 and SDTEST-1737: account, mode, and site
+  dropdowns close before the command palette opens through any entry point and
+  are reset again on destination changes, preventing stacked or surviving
+  global chrome overlays.
 - **2026-08-28** — Amended SDUC-443 and added SDTEST-1736: the compact Dev
   status bar prioritizes live counters and bounded notifications, suppressing
   branch, shortcut hint, and default version metadata below 800 scale-aware
