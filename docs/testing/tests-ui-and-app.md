@@ -515,6 +515,9 @@ parallel `cargo test`.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-1779 | `fleet_view.rs::review_render_tests::canonical_semantic_keys_drive_the_actual_review_badge_words` | SDUC-494 | Green | The exact semantic keys exercised by the shared corpus drive the visible native Fleet badge words for all five attention states and every review, check/required, pull-request/readiness, delivery, preview/sanitization and freshness case. The render path remains presentation-only. |
+| SDTEST-1782 | `workspace/fleet.rs::review_mutation_result_rechecks_connection_target_and_original_action_attribution` | SDUC-495 | Green | A review mutation result is applied only when the complete captured Platform connection, active project/workspace target, and preview attribution still agree; changed credentials, switched workspaces, and mismatched result targets are dropped while the original idempotency key remains lookup-only. |
+| SDTEST-1783 | `fleet_view.rs::review_render_tests::review_dispatch_reducer_switches_permanently_from_execute_to_lookup` | SDUC-495 | Green | The pure native review reducer emits one execute directive only before dispatch; once an unresolved original key exists, lookup-only dominates even if a later draft also exists, preventing blind replay. |
+| SDTEST-1785 | `fleet_view.rs::review_render_tests::unresolved_review_keys_remain_bound_to_their_exact_workspace` | SDUC-495 | Green | An ambiguous review key blocks and reconciles only its exact project/workspace target; switching to another workspace neither replays the old action nor disables the new context, and returning selects the original key. |
 
 ---
 
