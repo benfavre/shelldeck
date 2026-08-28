@@ -588,7 +588,7 @@ impl WorkspaceHubView {
                     modes = modes.child(
                         Button::new(("workspace-launch-mode", index), label)
                             .size(ButtonSize::Sm)
-                            .disabled(mode != WorkspaceLaunchMode::ExistingFolder)
+                            .disabled(mode == WorkspaceLaunchMode::Ssh)
                             .variant(if self.launcher.mode == mode {
                                 ButtonVariant::Secondary
                             } else {
@@ -608,6 +608,21 @@ impl WorkspaceHubView {
                     .variant(InputVariant::Outline)
                     .placeholder(t!("workspaces.launcher.name").to_string()),
             );
+        if self.launcher.mode == WorkspaceLaunchMode::GitWorktree {
+            form = form
+                .child(
+                    Input::new(&self.branch_state)
+                        .size(InputSize::Sm)
+                        .variant(InputVariant::Outline)
+                        .placeholder(t!("workspaces.launcher.branch").to_string()),
+                )
+                .child(
+                    Input::new(&self.start_point_state)
+                        .size(InputSize::Sm)
+                        .variant(InputVariant::Outline)
+                        .placeholder(t!("workspaces.launcher.start_point").to_string()),
+                );
+        }
         if self.launcher.intake != LauncherIntakeKind::Manual {
             form = form
                 .child(

@@ -3,8 +3,8 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::{
-        mutate_and_persist, workspace_card_presentation, AuthorizedLaunchHost,
-        ExistingFolderWorkspaceExecutor, LauncherIntakeKind, ProviderCardObservation,
+        mutate_and_persist, workspace_card_presentation, AuthorizedLaunchHost, GitWorktreeAdapter,
+        LauncherIntakeKind, NativeLaunchOutcome, NativeWorkspaceExecutor, ProviderCardObservation,
         WorkspaceCardAggregator, WorkspaceExecutionRequest, WorkspaceHubView,
         WorkspaceLaunchExecutor, WorkspaceLaunchMode, WorkspaceLauncherDraft,
         WorkspaceTerminalConfig,
@@ -26,6 +26,9 @@ mod tests {
         WorkspaceFreshness,
     };
     use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
@@ -428,6 +431,24 @@ mod tests {
     }
 
     #[test]
+    fn failed_multi_step_catalog_mutation_rolls_back_before_persistence() {
+        let (mut catalog, workspace, ..) = fixture_catalog();
+        let before = catalog.clone();
+        let result = mutate_and_persist(
+            &mut catalog,
+            |catalog| {
+                catalog
+                    .archive_workspace(workspace)
+                    .map_err(|error| error.to_string())?;
+                Err::<(), _>("second mutation refused".to_string())
+            },
+            |_| panic!("a failed mutation must not be persisted"),
+        );
+        assert_eq!(result.unwrap_err(), "second mutation refused");
+        assert_eq!(catalog, before);
+    }
+
+    #[test]
     fn explicit_catalog_store_round_trips_an_existing_folder_checkout() {
         let temp = tempfile::tempdir().unwrap();
         let catalog_path = temp.path().join("catalog.json");
@@ -460,6 +481,7 @@ mod tests {
         assert!(loaded.checkout_in_project(project_id, checkout_id).is_ok());
     }
 
+    // SDTEST-1737
     #[tokio::test]
     async fn existing_folder_executor_streams_intermediate_progress() {
         let temp = tempfile::tempdir().unwrap();
@@ -472,13 +494,13 @@ mod tests {
             catalog_revision: 7,
             name: "Attach".into(),
             intake: WorkspaceLaunchIntake::Manual,
-            host: AuthorizedLaunchHost::Local {
+            host: AuthorizedLaunchHost::LocalExisting {
                 canonical_root: temp.path().to_path_buf(),
             },
             mode: WorkspaceLaunchMode::ExistingFolder,
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
-        ExistingFolderWorkspaceExecutor
+        NativeWorkspaceExecutor::default()
             .launch(request, tx)
             .await
             .unwrap();
@@ -502,6 +524,89 @@ mod tests {
                 WorkspaceCreatePhase::BindingRuntime,
             ]
         );
+    }
+
+    #[derive(Default)]
+    struct RecordingGitAdapter {
+        call: parking_lot::Mutex<Option<(PathBuf, PathBuf, String, String)>>,
+    }
+
+    impl GitWorktreeAdapter for RecordingGitAdapter {
+        fn prepare(
+            &self,
+            source_root: &Path,
+            target_root: &Path,
+            branch: &str,
+            start_point: &str,
+            _cancelled: &AtomicBool,
+        ) -> Result<NativeLaunchOutcome, WorkspaceCreateFailure> {
+            *self.call.lock() = Some((
+                source_root.to_path_buf(),
+                target_root.to_path_buf(),
+                branch.to_owned(),
+                start_point.to_owned(),
+            ));
+            Ok(NativeLaunchOutcome::Ready {
+                cleanup_on_cancel: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn native_worktree_executor_uses_exact_typed_arguments_and_completes_all_phases() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = std::fs::canonicalize(temp.path()).unwrap();
+        let target = source.join("owned-worktree");
+        let workspace = CatalogWorkspaceId::new();
+        let operation = CreationOperationId::new();
+        let git = Arc::new(RecordingGitAdapter::default());
+        let request = WorkspaceExecutionRequest {
+            workspace,
+            checkout: CatalogCheckoutId::new(),
+            operation,
+            catalog_revision: 11,
+            name: "Issue 127".into(),
+            intake: WorkspaceLaunchIntake::Manual,
+            host: AuthorizedLaunchHost::LocalWorktree {
+                source_root: source.clone(),
+                target_root: target.clone(),
+                branch: "fix/issue-127".into(),
+                start_point: "origin/main".into(),
+            },
+            mode: WorkspaceLaunchMode::GitWorktree,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        NativeWorkspaceExecutor::with_git(git.clone())
+            .launch(request, tx)
+            .await
+            .unwrap();
+        let mut phases = Vec::new();
+        let mut completed = false;
+        while let Some(event) = rx.recv().await {
+            match event {
+                WorkspaceCreateEvent::Progress { progress, .. } => phases.push(progress.phase),
+                WorkspaceCreateEvent::Completed { workspace: id, .. } => {
+                    assert_eq!(id, workspace);
+                    completed = true;
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        assert_eq!(
+            git.call.lock().clone().unwrap(),
+            (source, target, "fix/issue-127".into(), "origin/main".into())
+        );
+        assert_eq!(
+            phases,
+            vec![
+                WorkspaceCreatePhase::Queued,
+                WorkspaceCreatePhase::ResolvingHost,
+                WorkspaceCreatePhase::PreparingCheckout,
+                WorkspaceCreatePhase::CreatingWorkspace,
+                WorkspaceCreatePhase::BindingRuntime,
+            ]
+        );
+        assert!(completed);
     }
 
     #[test]
@@ -643,7 +748,7 @@ mod tests {
                     catalog_revision: starting_revision,
                     name: "Attach".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
+                    host: AuthorizedLaunchHost::LocalExisting {
                         canonical_root: root.path().to_path_buf(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
@@ -702,7 +807,7 @@ mod tests {
                     catalog_revision: revision,
                     name: "Vanished".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
+                    host: AuthorizedLaunchHost::LocalExisting {
                         canonical_root: vanished.clone(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
@@ -779,7 +884,7 @@ mod tests {
                     catalog_revision: revision,
                     name: "Authorized".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
+                    host: AuthorizedLaunchHost::LocalExisting {
                         canonical_root: canonical_root.clone(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
@@ -883,7 +988,7 @@ mod tests {
                     catalog_revision: revision,
                     name: "Retry".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
+                    host: AuthorizedLaunchHost::LocalExisting {
                         canonical_root: root.path().to_path_buf(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
@@ -948,7 +1053,7 @@ mod tests {
                     catalog_revision: revision,
                     name: "Cancel".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
+                    host: AuthorizedLaunchHost::LocalExisting {
                         canonical_root: root.path().to_path_buf(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
@@ -1001,7 +1106,7 @@ mod tests {
                     catalog_revision: revision,
                     name: "Too soon".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
+                    host: AuthorizedLaunchHost::LocalExisting {
                         canonical_root: root.path().to_path_buf(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,

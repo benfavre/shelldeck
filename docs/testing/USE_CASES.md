@@ -2607,6 +2607,17 @@ Start cannot bypass retryability. Once retry starts, a late completion or
 failure from the earlier attempt is rejected and cannot overwrite the new
 operation.
 
+For local creation, the production adapter either revalidates an exact existing
+catalog folder or creates a new Git worktree below ShellDeck's private
+application-data root. The selected checkout must be the repository top-level;
+branch and start-point arguments are separately validated and passed to fixed
+Git subcommands without shell parsing. A retry adopts an existing target only
+when its canonical worktree path and branch match exactly. Cancellation is
+operation-scoped, terminates an in-flight Git child and removes only that exact
+ShellDeck-owned worktree. Resume re-canonicalizes the catalog root before the
+retained terminal becomes interactive. SSH creation remains explicitly
+unavailable until a beneath/no-follow remote adapter exists.
+
 ### SDUC-492 — Workspace review mutations remain previewed, scoped, and exactly once
 
 A workspace review combines staged, unstaged, untracked, and conflict state at
@@ -2646,6 +2657,10 @@ Stale or Unknown projection even if that projection claims a higher revision.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-489/491 with the production local-folder and
+  ShellDeck-owned Git-worktree adapter, exact repository/branch/path adoption,
+  operation-scoped cancellation cleanup, transactional catalog rollback, and
+  resume-time root revalidation. SSH effects remain explicitly unavailable.
 - **2026-08-27** — Bound comment/approval receipts to exact Platform mapping
   identity/revision and made attention resolve through workspace-keyed retained
   navigation, including same-checkout Browser isolation.

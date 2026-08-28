@@ -25,9 +25,13 @@ use shelldeck_core::workspace_navigation::{
 };
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
+use std::io::Read;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 type ExecutorFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
@@ -43,9 +47,18 @@ enum WorkspaceLaunchMode {
 /// Autorité immuable résolue avant de quitter le catalogue.
 #[derive(Clone, Debug)]
 pub(super) enum AuthorizedLaunchHost {
-    Local {
+    LocalExisting {
         canonical_root: PathBuf,
     },
+    LocalWorktree {
+        source_root: PathBuf,
+        target_root: PathBuf,
+        branch: String,
+        start_point: String,
+    },
+    // Retained as the typed authority boundary for the future beneath/no-follow
+    // SSH adapter; the launcher currently refuses it before dispatch.
+    #[allow(dead_code)]
     Ssh {
         connection_id: Uuid,
         remote_root: String,
@@ -82,29 +95,125 @@ pub(super) trait WorkspaceLaunchExecutor: Send + Sync {
     ) -> ExecutorFuture<Result<WorkspaceCreateEvent, WorkspaceCreateFailure>>;
 }
 
-#[derive(Default)]
-struct ExistingFolderWorkspaceExecutor;
+struct LaunchCancellation {
+    requested: AtomicBool,
+    finished: AtomicBool,
+}
 
-impl WorkspaceLaunchExecutor for ExistingFolderWorkspaceExecutor {
+impl Default for LaunchCancellation {
+    fn default() -> Self {
+        Self {
+            requested: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+        }
+    }
+}
+
+struct NativeWorkspaceExecutor {
+    cancellations: Arc<parking_lot::Mutex<BTreeMap<CreationOperationId, Arc<LaunchCancellation>>>>,
+    git: Arc<dyn GitWorktreeAdapter>,
+}
+
+enum NativeLaunchOutcome {
+    Ready { cleanup_on_cancel: bool },
+    Cancelled,
+    Conflict(WorkspaceCreateConflict),
+}
+
+struct LaunchFinishGuard {
+    operation: CreationOperationId,
+    cancellation: Arc<LaunchCancellation>,
+    registry: Arc<parking_lot::Mutex<BTreeMap<CreationOperationId, Arc<LaunchCancellation>>>>,
+}
+
+impl Drop for LaunchFinishGuard {
+    fn drop(&mut self) {
+        self.cancellation.finished.store(true, Ordering::Release);
+        self.registry.lock().remove(&self.operation);
+    }
+}
+
+struct ChildOutput {
+    status: ExitStatus,
+    stderr: String,
+    timed_out: bool,
+}
+
+trait GitWorktreeAdapter: Send + Sync {
+    fn prepare(
+        &self,
+        source_root: &std::path::Path,
+        target_root: &std::path::Path,
+        branch: &str,
+        start_point: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<NativeLaunchOutcome, WorkspaceCreateFailure>;
+}
+
+#[derive(Default)]
+struct SystemGitWorktreeAdapter;
+
+impl GitWorktreeAdapter for SystemGitWorktreeAdapter {
+    fn prepare(
+        &self,
+        source_root: &std::path::Path,
+        target_root: &std::path::Path,
+        branch: &str,
+        start_point: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<NativeLaunchOutcome, WorkspaceCreateFailure> {
+        prepare_git_worktree(source_root, target_root, branch, start_point, cancelled)
+    }
+}
+
+impl Default for NativeWorkspaceExecutor {
+    fn default() -> Self {
+        Self {
+            cancellations: Arc::default(),
+            git: Arc::new(SystemGitWorktreeAdapter),
+        }
+    }
+}
+
+impl NativeWorkspaceExecutor {
+    #[cfg(test)]
+    fn with_git(git: Arc<dyn GitWorktreeAdapter>) -> Self {
+        Self {
+            cancellations: Arc::default(),
+            git,
+        }
+    }
+
+    fn cancellation(&self, operation: CreationOperationId) -> Arc<LaunchCancellation> {
+        let mut cancellations = self.cancellations.lock();
+        cancellations
+            .entry(operation)
+            .or_insert_with(|| Arc::new(LaunchCancellation::default()))
+            .clone()
+    }
+}
+
+impl WorkspaceLaunchExecutor for NativeWorkspaceExecutor {
     fn launch(
         &self,
         request: WorkspaceExecutionRequest,
         events: mpsc::UnboundedSender<WorkspaceCreateEvent>,
     ) -> ExecutorFuture<Result<(), WorkspaceCreateFailure>> {
+        let cancellation = self.cancellation(request.operation);
+        let executor = self.cancellations.clone();
+        let git = self.git.clone();
         Box::pin(async move {
+            let _finish = LaunchFinishGuard {
+                operation: request.operation,
+                cancellation: cancellation.clone(),
+                registry: executor.clone(),
+            };
             tracing::debug!(
                 checkout = %request.checkout,
                 intake = ?request.intake,
                 revision = request.catalog_revision,
                 "launching authorized workspace attach"
             );
-            if request.mode == WorkspaceLaunchMode::GitWorktree {
-                return Err(WorkspaceCreateFailure {
-                    kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
-                    message: t!("workspaces.launcher.worktree_unavailable").to_string(),
-                    retryable: false,
-                });
-            }
             if request.mode == WorkspaceLaunchMode::Ssh {
                 return Err(WorkspaceCreateFailure {
                     kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
@@ -119,20 +228,6 @@ impl WorkspaceLaunchExecutor for ExistingFolderWorkspaceExecutor {
             {
                 tracing::debug!(%connection_id, remote_root, "SSH attach adapter unavailable");
             }
-            let AuthorizedLaunchHost::Local { canonical_root } = &request.host else {
-                return Err(WorkspaceCreateFailure {
-                    kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
-                    message: t!("workspaces.launcher.ssh_executor_unavailable").to_string(),
-                    retryable: false,
-                });
-            };
-            if !canonical_root.is_dir() {
-                return Err(WorkspaceCreateFailure {
-                    kind: WorkspaceCreateFailureKind::Filesystem,
-                    message: t!("workspaces.launcher.folder_unavailable").to_string(),
-                    retryable: true,
-                });
-            }
             let phases = [
                 WorkspaceCreatePhase::Queued,
                 WorkspaceCreatePhase::ResolvingHost,
@@ -140,7 +235,12 @@ impl WorkspaceLaunchExecutor for ExistingFolderWorkspaceExecutor {
                 WorkspaceCreatePhase::CreatingWorkspace,
                 WorkspaceCreatePhase::BindingRuntime,
             ];
-            for phase in phases {
+            for phase in phases.into_iter().take(3) {
+                if cancellation.requested.load(Ordering::Acquire) {
+                    cancellation.finished.store(true, Ordering::Release);
+                    executor.lock().remove(&request.operation);
+                    return Ok(());
+                }
                 events
                     .send(WorkspaceCreateEvent::Progress {
                         workspace: request.workspace,
@@ -162,16 +262,106 @@ impl WorkspaceLaunchExecutor for ExistingFolderWorkspaceExecutor {
                     })?;
                 tokio::task::yield_now().await;
             }
+            let outcome = match &request.host {
+                AuthorizedLaunchHost::LocalExisting { canonical_root } => {
+                    match std::fs::canonicalize(canonical_root) {
+                        Ok(actual) if actual == *canonical_root && actual.is_dir() => {
+                            NativeLaunchOutcome::Ready {
+                                cleanup_on_cancel: false,
+                            }
+                        }
+                        _ => {
+                            cancellation.finished.store(true, Ordering::Release);
+                            executor.lock().remove(&request.operation);
+                            return Err(WorkspaceCreateFailure {
+                                kind: WorkspaceCreateFailureKind::Filesystem,
+                                message: t!("workspaces.launcher.folder_unavailable").to_string(),
+                                retryable: true,
+                            });
+                        }
+                    }
+                }
+                AuthorizedLaunchHost::LocalWorktree {
+                    source_root,
+                    target_root,
+                    branch,
+                    start_point,
+                } => git.prepare(
+                    source_root,
+                    target_root,
+                    branch,
+                    start_point,
+                    &cancellation.requested,
+                )?,
+                AuthorizedLaunchHost::Ssh { .. } => unreachable!(),
+            };
+            let cleanup_worktree = match outcome {
+                NativeLaunchOutcome::Cancelled => {
+                    cancellation.finished.store(true, Ordering::Release);
+                    executor.lock().remove(&request.operation);
+                    return Ok(());
+                }
+                NativeLaunchOutcome::Conflict(conflict) => {
+                    events
+                        .send(WorkspaceCreateEvent::Conflict {
+                            workspace: request.workspace,
+                            operation: request.operation,
+                            conflict,
+                        })
+                        .map_err(|_| receiver_closed())?;
+                    cancellation.finished.store(true, Ordering::Release);
+                    executor.lock().remove(&request.operation);
+                    return Ok(());
+                }
+                NativeLaunchOutcome::Ready { cleanup_on_cancel } => cleanup_on_cancel.then(|| {
+                    let AuthorizedLaunchHost::LocalWorktree {
+                        source_root,
+                        target_root,
+                        branch,
+                        ..
+                    } = &request.host
+                    else {
+                        unreachable!()
+                    };
+                    (source_root.clone(), target_root.clone(), branch.clone())
+                }),
+            };
+            for phase in phases.into_iter().skip(3) {
+                if cancellation.requested.load(Ordering::Acquire) {
+                    if let Some((source, target, branch)) = cleanup_worktree.as_ref() {
+                        cleanup_cancelled_worktree(source, target, branch);
+                    }
+                    cancellation.finished.store(true, Ordering::Release);
+                    executor.lock().remove(&request.operation);
+                    return Ok(());
+                }
+                events
+                    .send(WorkspaceCreateEvent::Progress {
+                        workspace: request.workspace,
+                        operation: request.operation,
+                        progress: WorkspaceCreateProgress {
+                            phase,
+                            completed_steps: 1,
+                            total_steps: 1,
+                            detail: request.name.clone(),
+                        },
+                    })
+                    .map_err(|_| receiver_closed())?;
+            }
+            if cancellation.requested.load(Ordering::Acquire) {
+                if let Some((source, target, branch)) = cleanup_worktree.as_ref() {
+                    cleanup_cancelled_worktree(source, target, branch);
+                }
+                return Ok(());
+            }
             events
                 .send(WorkspaceCreateEvent::Completed {
                     workspace: request.workspace,
                     operation: request.operation,
                 })
-                .map_err(|_| WorkspaceCreateFailure {
-                    kind: WorkspaceCreateFailureKind::Unknown,
-                    message: "workspace progress receiver closed".into(),
-                    retryable: true,
-                })?;
+                .map_err(|_| receiver_closed())?;
+            cancellation.finished.store(true, Ordering::Release);
+            executor.lock().remove(&request.operation);
             Ok(())
         })
     }
@@ -180,13 +370,301 @@ impl WorkspaceLaunchExecutor for ExistingFolderWorkspaceExecutor {
         &self,
         request: WorkspaceExecutionRequest,
     ) -> ExecutorFuture<Result<WorkspaceCreateEvent, WorkspaceCreateFailure>> {
+        let cancellation = self.cancellations.lock().get(&request.operation).cloned();
         Box::pin(async move {
+            if let Some(cancellation) = cancellation {
+                cancellation.requested.store(true, Ordering::Release);
+                while !cancellation.finished.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
             Ok(WorkspaceCreateEvent::Cancelled {
                 workspace: request.workspace,
                 operation: request.operation,
             })
         })
     }
+}
+
+fn receiver_closed() -> WorkspaceCreateFailure {
+    WorkspaceCreateFailure {
+        kind: WorkspaceCreateFailureKind::Unknown,
+        message: "workspace progress receiver closed".into(),
+        retryable: true,
+    }
+}
+
+fn prepare_git_worktree(
+    source_root: &std::path::Path,
+    target_root: &std::path::Path,
+    branch: &str,
+    start_point: &str,
+    cancelled: &AtomicBool,
+) -> Result<NativeLaunchOutcome, WorkspaceCreateFailure> {
+    let source = std::fs::canonicalize(source_root).map_err(|_| workspace_fs_failure())?;
+    if source != source_root || !source.is_dir() {
+        return Err(workspace_fs_failure());
+    }
+    let top = git_stdout(&source, &["rev-parse", "--show-toplevel"])?;
+    let top = std::fs::canonicalize(PathBuf::from(top.trim())).map_err(|_| git_repo_failure())?;
+    if top != source {
+        return Err(WorkspaceCreateFailure {
+            kind: WorkspaceCreateFailureKind::Authorization,
+            message: t!("workspaces.launcher.git_root_mismatch").to_string(),
+            retryable: false,
+        });
+    }
+    if branch.is_empty() || branch.len() > 255 || branch.starts_with('-') {
+        return Err(invalid_branch_failure());
+    }
+    let branch_check = Command::new("git")
+        .args(["check-ref-format", "--branch", branch])
+        .current_dir(&source)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|_| git_runtime_failure())?;
+    if !branch_check.success() {
+        return Err(invalid_branch_failure());
+    }
+    if start_point.is_empty()
+        || start_point.len() > 512
+        || start_point.starts_with('-')
+        || start_point.chars().any(char::is_control)
+    {
+        return Err(WorkspaceCreateFailure {
+            kind: WorkspaceCreateFailureKind::Authorization,
+            message: t!("workspaces.launcher.invalid_start_point").to_string(),
+            retryable: false,
+        });
+    }
+    let commitish = format!("{start_point}^{{commit}}");
+    let start_check = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
+        .arg(&commitish)
+        .current_dir(&source)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|_| git_runtime_failure())?;
+    if !start_check.success() {
+        return Err(WorkspaceCreateFailure {
+            kind: WorkspaceCreateFailureKind::Filesystem,
+            message: t!("workspaces.launcher.start_point_missing").to_string(),
+            retryable: true,
+        });
+    }
+    if target_root.exists() {
+        return if exact_worktree(&source, target_root, branch)? {
+            Ok(NativeLaunchOutcome::Ready {
+                cleanup_on_cancel: false,
+            })
+        } else {
+            Ok(NativeLaunchOutcome::Conflict(
+                WorkspaceCreateConflict::CheckoutAlreadyExists {
+                    root: target_root.display().to_string(),
+                },
+            ))
+        };
+    }
+    let parent = target_root.parent().ok_or_else(workspace_fs_failure)?;
+    std::fs::create_dir_all(parent).map_err(|_| workspace_fs_failure())?;
+    let parent = std::fs::canonicalize(parent).map_err(|_| workspace_fs_failure())?;
+    if target_root.parent() != Some(parent.as_path()) {
+        return Err(WorkspaceCreateFailure {
+            kind: WorkspaceCreateFailureKind::Authorization,
+            message: t!("workspaces.launcher.target_authority_changed").to_string(),
+            retryable: false,
+        });
+    }
+    let branch_ref = format!("refs/heads/{branch}");
+    let branch_status = Command::new("git")
+        .args(["show-ref", "--verify", "--quiet", "--end-of-options"])
+        .arg(&branch_ref)
+        .current_dir(&source)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|_| git_runtime_failure())?;
+    if branch_status.success() {
+        return Ok(NativeLaunchOutcome::Conflict(
+            WorkspaceCreateConflict::BranchAlreadyExists {
+                branch: branch.to_owned(),
+            },
+        ));
+    }
+    if cancelled.load(Ordering::Acquire) {
+        return Ok(NativeLaunchOutcome::Cancelled);
+    }
+    let mut command = Command::new("git");
+    command
+        .args(["worktree", "add", "--no-track", "-b", branch, "--"])
+        .arg(target_root)
+        .arg(start_point)
+        .current_dir(&source)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let output = run_cancellable(command, cancelled)?;
+    if cancelled.load(Ordering::Acquire) {
+        cleanup_cancelled_worktree(&source, target_root, branch);
+        return Ok(NativeLaunchOutcome::Cancelled);
+    }
+    if output.timed_out {
+        cleanup_cancelled_worktree(&source, target_root, branch);
+        return Err(WorkspaceCreateFailure {
+            kind: WorkspaceCreateFailureKind::Filesystem,
+            message: t!("workspaces.launcher.worktree_timeout").to_string(),
+            retryable: true,
+        });
+    }
+    if output.status.success() || exact_worktree(&source, target_root, branch)? {
+        return Ok(NativeLaunchOutcome::Ready {
+            cleanup_on_cancel: true,
+        });
+    }
+    tracing::warn!(stderr = %bounded_error(&output.stderr), "git worktree creation failed");
+    Err(WorkspaceCreateFailure {
+        kind: WorkspaceCreateFailureKind::Filesystem,
+        message: t!("workspaces.launcher.worktree_failed").to_string(),
+        retryable: true,
+    })
+}
+
+fn run_cancellable(
+    mut command: Command,
+    cancelled: &AtomicBool,
+) -> Result<ChildOutput, WorkspaceCreateFailure> {
+    let mut child = command.spawn().map_err(|_| git_runtime_failure())?;
+    let started = Instant::now();
+    let mut timed_out = false;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            let _ = child.kill();
+        } else if started.elapsed() >= Duration::from_secs(120) {
+            timed_out = true;
+            let _ = child.kill();
+        }
+        match child.try_wait().map_err(|_| git_runtime_failure())? {
+            Some(status) => {
+                let mut stderr = String::new();
+                if let Some(pipe) = child.stderr.take() {
+                    let _ = pipe.take(16_385).read_to_string(&mut stderr);
+                }
+                return Ok(ChildOutput {
+                    status,
+                    stderr,
+                    timed_out,
+                });
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}
+
+fn exact_worktree(
+    source: &std::path::Path,
+    target: &std::path::Path,
+    branch: &str,
+) -> Result<bool, WorkspaceCreateFailure> {
+    let Some(target) = std::fs::canonicalize(target).ok() else {
+        return Ok(false);
+    };
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .current_dir(source)
+        .output()
+        .map_err(|_| git_runtime_failure())?;
+    if !output.status.success() {
+        return Err(git_repo_failure());
+    }
+    let expected_branch = format!("refs/heads/{branch}");
+    let mut path = None;
+    let mut observed_branch = None;
+    for field in output.stdout.split(|byte| *byte == 0) {
+        let field = String::from_utf8_lossy(field);
+        if field.is_empty() {
+            if path.as_ref() == Some(&target)
+                && observed_branch.as_deref() == Some(expected_branch.as_str())
+            {
+                return Ok(true);
+            }
+            path = None;
+            observed_branch = None;
+        } else if let Some(value) = field.strip_prefix("worktree ") {
+            path = std::fs::canonicalize(value).ok();
+        } else if let Some(value) = field.strip_prefix("branch ") {
+            observed_branch = Some(value.to_owned());
+        }
+    }
+    Ok(path.as_ref() == Some(&target) && observed_branch.as_deref() == Some(&expected_branch))
+}
+
+fn cleanup_cancelled_worktree(source: &std::path::Path, target: &std::path::Path, branch: &str) {
+    if exact_worktree(source, target, branch).unwrap_or(false) {
+        let _ = Command::new("git")
+            .args(["worktree", "remove", "--force", "--"])
+            .arg(target)
+            .current_dir(source)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let branch_ref = format!("refs/heads/{branch}");
+        let _ = Command::new("git")
+            .args(["branch", "-D", "--"])
+            .arg(branch_ref.strip_prefix("refs/heads/").unwrap_or(branch))
+            .current_dir(source)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+fn git_stdout(root: &std::path::Path, args: &[&str]) -> Result<String, WorkspaceCreateFailure> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|_| git_runtime_failure())?;
+    if !output.status.success() {
+        return Err(git_repo_failure());
+    }
+    String::from_utf8(output.stdout).map_err(|_| git_repo_failure())
+}
+
+fn workspace_fs_failure() -> WorkspaceCreateFailure {
+    WorkspaceCreateFailure {
+        kind: WorkspaceCreateFailureKind::Filesystem,
+        message: t!("workspaces.launcher.folder_unavailable").to_string(),
+        retryable: true,
+    }
+}
+
+fn git_runtime_failure() -> WorkspaceCreateFailure {
+    WorkspaceCreateFailure {
+        kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
+        message: t!("workspaces.launcher.git_unavailable").to_string(),
+        retryable: true,
+    }
+}
+
+fn git_repo_failure() -> WorkspaceCreateFailure {
+    WorkspaceCreateFailure {
+        kind: WorkspaceCreateFailureKind::Filesystem,
+        message: t!("workspaces.launcher.git_repository_required").to_string(),
+        retryable: false,
+    }
+}
+
+fn invalid_branch_failure() -> WorkspaceCreateFailure {
+    WorkspaceCreateFailure {
+        kind: WorkspaceCreateFailureKind::Authorization,
+        message: t!("workspaces.launcher.invalid_branch").to_string(),
+        retryable: false,
+    }
+}
+
+fn bounded_error(value: &str) -> String {
+    value.chars().take(512).collect()
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -230,6 +708,8 @@ struct WorkspaceLauncherDraft {
     key: String,
     title: String,
     url: String,
+    branch: String,
+    start_point: String,
 }
 
 impl Default for WorkspaceLauncherDraft {
@@ -244,6 +724,8 @@ impl Default for WorkspaceLauncherDraft {
             key: String::new(),
             title: String::new(),
             url: String::new(),
+            branch: String::new(),
+            start_point: "HEAD".into(),
         }
     }
 }
@@ -280,7 +762,13 @@ fn mutate_and_persist<T>(
     persist: impl FnOnce(&mut ProjectCatalog) -> Result<(), String>,
 ) -> Result<T, String> {
     let before = catalog.clone();
-    let value = mutate(catalog)?;
+    let value = match mutate(catalog) {
+        Ok(value) => value,
+        Err(error) => {
+            *catalog = before;
+            return Err(error);
+        }
+    };
     if let Err(error) = persist(catalog) {
         *catalog = before;
         return Err(error);
@@ -691,6 +1179,8 @@ pub(super) struct WorkspaceHubView {
     key_state: Entity<InputState>,
     title_state: Entity<InputState>,
     url_state: Entity<InputState>,
+    branch_state: Entity<InputState>,
+    start_point_state: Entity<InputState>,
     checkout_select: Entity<Select<CatalogCheckoutId>>,
     error: Option<String>,
     load_error: Option<String>,
@@ -729,7 +1219,7 @@ impl WorkspaceHubView {
             catalog,
             connections,
             initial_terminal,
-            Arc::new(ExistingFolderWorkspaceExecutor),
+            Arc::new(NativeWorkspaceExecutor::default()),
             cx,
         )
     }
@@ -838,6 +1328,8 @@ impl WorkspaceHubView {
             key_state: cx.new(InputState::new),
             title_state: cx.new(InputState::new),
             url_state: cx.new(InputState::new),
+            branch_state: cx.new(InputState::new),
+            start_point_state: cx.new(InputState::new),
             checkout_select,
             error: None,
             load_error,
@@ -982,6 +1474,11 @@ impl WorkspaceHubView {
         self.launcher.key = self.key_state.read(cx).content().trim().to_owned();
         self.launcher.title = self.title_state.read(cx).content().trim().to_owned();
         self.launcher.url = self.url_state.read(cx).content().trim().to_owned();
+        self.launcher.branch = self.branch_state.read(cx).content().trim().to_owned();
+        self.launcher.start_point = self.start_point_state.read(cx).content().trim().to_owned();
+        if self.launcher.start_point.is_empty() {
+            self.launcher.start_point = "HEAD".into();
+        }
     }
 
     fn submit_onboarding(&mut self, cx: &mut Context<Self>) {
@@ -1158,61 +1655,111 @@ impl WorkspaceHubView {
                 return;
             }
         };
-        let host = match self
+        let selected_checkout = match self
             .catalog
             .checkout_in_project(project_id, checkout_id)
-            .map(ProjectCheckout::host)
+            .cloned()
         {
-            Ok(CheckoutHost::Local { root, .. }) => match std::fs::canonicalize(root) {
-                Ok(canonical_root) if canonical_root.is_dir() => {
-                    AuthorizedLaunchHost::Local { canonical_root }
-                }
-                _ => {
-                    self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
-                    cx.notify();
-                    return;
-                }
-            },
-            Ok(CheckoutHost::Ssh {
-                connection_id,
-                root,
-            }) => AuthorizedLaunchHost::Ssh {
-                connection_id: *connection_id,
-                remote_root: root.as_str().to_owned(),
-            },
+            Ok(checkout) => checkout,
             Err(error) => {
                 self.error = Some(error.to_string());
                 cx.notify();
                 return;
             }
         };
-        let mode = if matches!(host, AuthorizedLaunchHost::Ssh { .. }) {
+        let mode = if matches!(selected_checkout.host(), CheckoutHost::Ssh { .. }) {
             WorkspaceLaunchMode::Ssh
         } else {
             self.launcher.mode
         };
-        if mode != WorkspaceLaunchMode::ExistingFolder {
-            self.error = Some(match mode {
-                WorkspaceLaunchMode::GitWorktree => {
-                    t!("workspaces.launcher.worktree_unavailable").to_string()
-                }
-                WorkspaceLaunchMode::Ssh => {
-                    t!("workspaces.launcher.ssh_executor_unavailable").to_string()
-                }
-                WorkspaceLaunchMode::ExistingFolder => unreachable!(),
-            });
+        if mode == WorkspaceLaunchMode::Ssh {
+            self.error = Some(t!("workspaces.launcher.ssh_executor_unavailable").to_string());
             cx.notify();
             return;
         }
         let workspace = CatalogWorkspaceId::new();
+        let (host, workspace_checkout, created_checkout) = match (mode, selected_checkout.host()) {
+            (WorkspaceLaunchMode::ExistingFolder, CheckoutHost::Local { root, .. }) => {
+                match std::fs::canonicalize(root) {
+                    Ok(canonical_root) if canonical_root.is_dir() => (
+                        AuthorizedLaunchHost::LocalExisting { canonical_root },
+                        checkout_id,
+                        None,
+                    ),
+                    _ => {
+                        self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+            (WorkspaceLaunchMode::GitWorktree, CheckoutHost::Local { root, device_label }) => {
+                if self.launcher.branch.is_empty() || self.launcher.start_point.is_empty() {
+                    self.error =
+                        Some(t!("workspaces.launcher.worktree_fields_required").to_string());
+                    cx.notify();
+                    return;
+                }
+                let source_root = match std::fs::canonicalize(root) {
+                    Ok(source_root) if source_root.is_dir() => source_root,
+                    _ => {
+                        self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+                        cx.notify();
+                        return;
+                    }
+                };
+                let owned_parent =
+                    shelldeck_core::config::AppConfig::config_dir().join("workspace-checkouts");
+                if std::fs::create_dir_all(&owned_parent).is_err() {
+                    self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+                    cx.notify();
+                    return;
+                }
+                let owned_parent = match std::fs::canonicalize(&owned_parent) {
+                    Ok(path) if path.is_dir() => path,
+                    _ => {
+                        self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+                        cx.notify();
+                        return;
+                    }
+                };
+                let target_root = owned_parent.join(workspace.to_string());
+                let generated_checkout = CatalogCheckoutId::new();
+                let checkout = ProjectCheckout::new(
+                    generated_checkout,
+                    self.launcher.name.clone(),
+                    CheckoutHost::Local {
+                        device_label: device_label.clone(),
+                        root: target_root.clone(),
+                    },
+                    selected_checkout.repository().clone(),
+                );
+                (
+                    AuthorizedLaunchHost::LocalWorktree {
+                        source_root,
+                        target_root,
+                        branch: self.launcher.branch.clone(),
+                        start_point: self.launcher.start_point.clone(),
+                    },
+                    generated_checkout,
+                    Some(checkout),
+                )
+            }
+            _ => unreachable!("SSH mode was refused above"),
+        };
         let launch_name = self.launcher.name.clone();
         let launch_intake = intake.clone();
         if let Err(error) = mutate_and_save(&mut self.catalog, |catalog| {
+            if let Some(checkout) = created_checkout {
+                catalog
+                    .add_checkout(project_id, checkout)
+                    .map_err(|error| error.to_string())?;
+            }
             catalog
                 .create_workspace(WorkspaceLaunchRequest {
                     id: workspace,
                     project_id,
-                    checkout_id,
+                    checkout_id: workspace_checkout,
                     name: launch_name.clone(),
                     intake: launch_intake.clone(),
                 })
@@ -1255,12 +1802,17 @@ impl WorkspaceHubView {
         if let Some(config) = self.terminal_config.as_ref() {
             apply_terminal_config(&terminal, config, cx);
         }
-        if let AuthorizedLaunchHost::Local { canonical_root } = &host {
+        let authorized_root = match &host {
+            AuthorizedLaunchHost::LocalExisting { canonical_root } => canonical_root,
+            AuthorizedLaunchHost::LocalWorktree { target_root, .. } => target_root,
+            AuthorizedLaunchHost::Ssh { .. } => unreachable!(),
+        };
+        {
             // `host` a été canonisé et autorisé avant la mutation du
             // catalogue. Cette installation ne touche pas au disque et doit
             // précéder l'exposition de la surface interactive.
             terminal.update(cx, |terminal, _| {
-                terminal.install_authorized_default_cwd(canonical_root)
+                terminal.install_authorized_default_cwd(authorized_root)
             });
         }
         self.retained.insert(
@@ -1269,7 +1821,7 @@ impl WorkspaceHubView {
         );
         let request = WorkspaceExecutionRequest {
             workspace,
-            checkout: checkout_id,
+            checkout: workspace_checkout,
             operation,
             catalog_revision: self.catalog.revision(),
             name: self.launcher.name.clone(),
@@ -1350,7 +1902,7 @@ impl WorkspaceHubView {
                 }
             } else {
                 let attach = match &request.host {
-                    AuthorizedLaunchHost::Local { canonical_root } => self
+                    AuthorizedLaunchHost::LocalExisting { canonical_root } => self
                         .retained
                         .get(&event_workspace)
                         .ok_or_else(|| t!("workspaces.launcher.terminal_owner_missing").to_string())
@@ -1359,6 +1911,20 @@ impl WorkspaceHubView {
                             terminal
                                 .update(cx, |terminal, cx| {
                                     terminal.spawn_local_terminal_at(canonical_root, cx)
+                                })
+                                .map_err(|_| {
+                                    t!("workspaces.launcher.folder_unavailable").to_string()
+                                })
+                        }),
+                    AuthorizedLaunchHost::LocalWorktree { target_root, .. } => self
+                        .retained
+                        .get(&event_workspace)
+                        .ok_or_else(|| t!("workspaces.launcher.terminal_owner_missing").to_string())
+                        .and_then(|surface| {
+                            let terminal = surface.read(cx).terminal.clone();
+                            terminal
+                                .update(cx, |terminal, cx| {
+                                    terminal.spawn_local_terminal_at(target_root, cx)
                                 })
                                 .map_err(|_| {
                                     t!("workspaces.launcher.folder_unavailable").to_string()
@@ -1461,6 +2027,11 @@ impl WorkspaceHubView {
             ) => *catalog_revision,
             _ => return,
         };
+        if !request_matches_catalog(&self.catalog, &prior) {
+            self.error = Some(t!("workspaces.launcher.authority_changed").to_string());
+            cx.notify();
+            return;
+        }
         let operation = CreationOperationId::new();
         if let Err(error) = self.creation.reduce(
             catalog_revision,
@@ -1516,6 +2087,47 @@ impl WorkspaceHubView {
             .workspace(workspace)
             .is_ok_and(|item| item.lifecycle() == UserWorkspaceLifecycle::Archived);
         let was_active = self.navigation.active() == Some(workspace);
+        if !archived
+            && matches!(
+                self.creation.state(workspace),
+                Some(
+                    BackgroundWorkspaceCreateState::Running { .. }
+                        | BackgroundWorkspaceCreateState::Cancelling { .. }
+                )
+            )
+        {
+            self.error = Some(t!("workspaces.lifecycle.cancel_before_archive").to_string());
+            cx.notify();
+            return;
+        }
+        if archived {
+            let root = self.catalog.workspace(workspace).ok().and_then(|record| {
+                self.catalog
+                    .checkout_in_project(record.project_id(), record.checkout_id())
+                    .ok()
+            });
+            let Some(CheckoutHost::Local { root, .. }) = root.map(ProjectCheckout::host) else {
+                self.error = Some(t!("workspaces.launcher.ssh_executor_unavailable").to_string());
+                cx.notify();
+                return;
+            };
+            let Ok(canonical) = std::fs::canonicalize(root) else {
+                self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+                cx.notify();
+                return;
+            };
+            if canonical != *root || !canonical.is_dir() {
+                self.error = Some(t!("workspaces.launcher.authority_changed").to_string());
+                cx.notify();
+                return;
+            }
+            if let Some(surface) = self.retained.get(&workspace) {
+                let terminal = surface.read(cx).terminal.clone();
+                terminal.update(cx, |terminal, _| {
+                    terminal.install_authorized_default_cwd(&canonical)
+                });
+            }
+        }
         if !archived && was_active {
             if let Some(surface) = self.retained.get(&workspace) {
                 let state = {
@@ -1562,6 +2174,39 @@ impl WorkspaceHubView {
             }
         }
         cx.notify();
+    }
+}
+
+fn request_matches_catalog(catalog: &ProjectCatalog, request: &WorkspaceExecutionRequest) -> bool {
+    let Ok(workspace) = catalog.workspace(request.workspace) else {
+        return false;
+    };
+    if workspace.checkout_id() != request.checkout {
+        return false;
+    }
+    let Ok(checkout) = catalog.checkout_in_project(workspace.project_id(), request.checkout) else {
+        return false;
+    };
+    match (&request.host, checkout.host()) {
+        (
+            AuthorizedLaunchHost::LocalExisting { canonical_root },
+            CheckoutHost::Local { root, .. },
+        ) => root == canonical_root,
+        (
+            AuthorizedLaunchHost::LocalWorktree { target_root, .. },
+            CheckoutHost::Local { root, .. },
+        ) => root == target_root,
+        (
+            AuthorizedLaunchHost::Ssh {
+                connection_id,
+                remote_root,
+            },
+            CheckoutHost::Ssh {
+                connection_id: catalog_connection,
+                root,
+            },
+        ) => connection_id == catalog_connection && remote_root == root.as_str(),
+        _ => false,
     }
 }
 
@@ -1734,6 +2379,9 @@ fn create_conflict_label(conflict: &WorkspaceCreateConflict) -> String {
         }
         WorkspaceCreateConflict::WorktreeLocked { .. } => {
             t!("workspaces.create.conflict_worktree").to_string()
+        }
+        WorkspaceCreateConflict::BranchAlreadyExists { branch } => {
+            t!("workspaces.create.conflict_branch_exists", branch = branch).to_string()
         }
         WorkspaceCreateConflict::BranchAlreadyCheckedOut { branch } => {
             t!("workspaces.create.conflict_branch", branch = branch).to_string()
