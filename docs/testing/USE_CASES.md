@@ -2817,6 +2817,13 @@ the core resolves only through retained state keyed by the authoritative local
 workspace and validates all coordinates against that workspace surface,
 refuses duplicate pane/session coordinates, returns only that exact tab, and
 records local read state separately from the authoritative observation revision.
+The retained native workspace surface renders each admitted item with its typed
+state, unread state, and complete nested-agent path. Activating a row re-resolves
+the captured item revision through the current catalog and retained navigation
+snapshot, switches to that exact workspace/pane/tab, and records read state only
+after native focus succeeds. Review chronology is not converted into a local
+attention target because its events do not carry retained pane/session
+coordinates.
 Delivery checks, review status, merge readiness, and delivery state carry their
 observed authority and freshness. Once Fresh, they cannot be overwritten by a
 Stale or Unknown projection even if that projection claims a higher revision.
@@ -2919,6 +2926,9 @@ an unavailable adapter refuses before any effect.
   the fixed workspace subsystem: exact prepare/release plus prepare/resume into
   the descriptor-retained clean repository, using the production client and
   no path-bearing SSH exec request.
+- **2026-08-28** — Expanded SDUC-493 and added SDTEST-1810/1811 for
+  revision-bound retained attention rows and exact native workspace/pane/tab
+  activation without inferring coordinates from review events.
 - **2026-08-28** — Added SDTEST-1792 so line and comment selections cannot
   cross a project/workspace switch or review-snapshot revision boundary.
 - **2026-08-28** — Expanded SDUC-495 and added SDTEST-1791 for exact

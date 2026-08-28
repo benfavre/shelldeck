@@ -3,10 +3,10 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::{
-        mutate_and_persist, workspace_card_presentation, AuthorizedLaunchHost, GitWorktreeAdapter,
-        LauncherIntakeKind, NativeLaunchOutcome, NativeWorkspaceExecutor, ProviderCardObservation,
-        WorkspaceCardAggregator, WorkspaceExecutionRequest, WorkspaceHubView,
-        WorkspaceLaunchExecutor, WorkspaceLaunchMode, WorkspaceLauncherDraft,
+        mutate_and_persist, terminal_surface, workspace_card_presentation, AuthorizedLaunchHost,
+        GitWorktreeAdapter, LauncherIntakeKind, NativeLaunchOutcome, NativeWorkspaceExecutor,
+        ProviderCardObservation, WorkspaceCardAggregator, WorkspaceExecutionRequest,
+        WorkspaceHubView, WorkspaceLaunchExecutor, WorkspaceLaunchMode, WorkspaceLauncherDraft,
         WorkspaceTerminalConfig,
     };
     use crate::terminal_view::TerminalView;
@@ -19,11 +19,15 @@ mod tests {
         WorkspaceLaunchRequest,
     };
     use shelldeck_core::workspace_navigation::{
-        BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState, WorkspaceAgentState,
-        WorkspaceCardState, WorkspaceCreateEvent, WorkspaceCreateFailure,
+        BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState, PaneId,
+        WorkspaceAgentState, WorkspaceCardState, WorkspaceCreateEvent, WorkspaceCreateFailure,
         WorkspaceCreateFailureKind, WorkspaceCreatePhase, WorkspaceCreateProgress,
-        WorkspaceFreshness,
+        WorkspaceFreshness, WorkspaceNavigationAction, WorkspaceTabId,
     };
+    use shelldeck_core::workspace_review::{
+        AttentionError, AttentionItem, AttentionItemId, AttentionState, AttentionTarget,
+    };
+    use shelldeck_terminal::session::TerminalSession;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -160,6 +164,173 @@ mod tests {
                 native_terminal_before
             );
             assert!(surface.read(cx).native_snapshot.is_some());
+        });
+    }
+
+    // SDTEST-1811
+    #[test]
+    fn sdtest_1811_retained_gpui_attention_opens_exact_workspace_pane_and_tab() {
+        let mut cx = TestAppContext::single();
+        let (catalog, workspace_a, workspace_b, _checkout, _ssh_checkout, ssh_connection) =
+            fixture_catalog();
+        let initial_terminal = cx.update(|cx| cx.new(TerminalView::new));
+        let hub = cx.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], initial_terminal, cx))
+        });
+        cx.run_until_parked();
+
+        let (session_a1, _data_a1, _input_a1) =
+            TerminalSession::spawn_ssh("A first".into(), 24, 80).unwrap();
+        let session_a1_id = session_a1.id;
+        let (session_a2, _data_a2, _input_a2) =
+            TerminalSession::spawn_ssh("A attention".into(), 24, 80).unwrap();
+        let session_a2_id = session_a2.id;
+        let (session_b, _data_b, _input_b) =
+            TerminalSession::spawn_ssh("B active".into(), 24, 80).unwrap();
+
+        hub.update(&mut cx, |hub, cx| {
+            let terminal_a = hub
+                .retained
+                .get(&workspace_a)
+                .unwrap()
+                .read(cx)
+                .terminal
+                .clone();
+            terminal_a.update(cx, |terminal, _| {
+                terminal.add_session(session_a1);
+                terminal.add_session(session_a2);
+            });
+            let surface_a = terminal_surface(&hub.catalog, workspace_a, terminal_a.read(cx));
+            hub.navigation
+                .reduce(
+                    &hub.catalog,
+                    WorkspaceNavigationAction::UpdateSurface {
+                        id: workspace_a,
+                        surface: surface_a,
+                    },
+                )
+                .unwrap();
+
+            let terminal_b = hub
+                .retained
+                .get(&workspace_b)
+                .unwrap()
+                .read(cx)
+                .terminal
+                .clone();
+            terminal_b.update(cx, |terminal, _| {
+                terminal.add_session_with_connection(session_b, Some(ssh_connection));
+            });
+            let surface_b = terminal_surface(&hub.catalog, workspace_b, terminal_b.read(cx));
+            hub.navigation
+                .reduce(
+                    &hub.catalog,
+                    WorkspaceNavigationAction::UpdateSurface {
+                        id: workspace_b,
+                        surface: surface_b,
+                    },
+                )
+                .unwrap();
+
+            let attention_id = AttentionItemId::from_uuid(Uuid::from_u128(70));
+            hub.apply_attention_item(
+                AttentionItem {
+                    id: attention_id,
+                    revision: 7,
+                    observed_at_millis: 700,
+                    target: AttentionTarget {
+                        workspace: workspace_a,
+                        pane: PaneId::from_uuid(workspace_a.as_uuid()),
+                        tab_id: Some(WorkspaceTabId::from_uuid(session_a2_id)),
+                        session_id: None,
+                    },
+                    state: AttentionState::NeedsYou,
+                    title: "Review exact tab".into(),
+                    unread: true,
+                    agent_path: vec!["root".into(), "reviewer".into()],
+                },
+                cx,
+            )
+            .unwrap();
+            let rows = hub.attention_items(workspace_a);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].state, AttentionState::NeedsYou);
+            assert!(rows[0].unread);
+            assert_eq!(rows[0].agent_path, ["root", "reviewer"]);
+
+            hub.switch_to(workspace_a, cx);
+            hub.switch_to(workspace_b, cx);
+            assert_eq!(hub.navigation.active(), Some(workspace_b));
+
+            // The retained pane's mutable active tab changes after the
+            // observation. Activation must still use the captured tab ID.
+            terminal_a.update(cx, |terminal, _| {
+                terminal.select_tab(session_a1_id);
+            });
+            let moved_surface = terminal_surface(&hub.catalog, workspace_a, terminal_a.read(cx));
+            hub.navigation
+                .reduce(
+                    &hub.catalog,
+                    WorkspaceNavigationAction::UpdateSurface {
+                        id: workspace_a,
+                        surface: moved_surface,
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                terminal_a.read(cx).tabs[terminal_a.read(cx).active_tab_index()].id,
+                session_a1_id
+            );
+
+            let focus = hub
+                .open_attention_item(workspace_a, attention_id, 7, cx)
+                .unwrap();
+            assert_eq!(hub.navigation.active(), Some(workspace_a));
+            assert_eq!(focus.pane_id, PaneId::from_uuid(workspace_a.as_uuid()));
+            assert_eq!(focus.tab_id.as_uuid(), session_a2_id);
+            assert_eq!(
+                hub.navigation.workspace(workspace_a).unwrap().surface.focus,
+                Some(focus)
+            );
+            assert_eq!(
+                terminal_a.read(cx).tabs[terminal_a.read(cx).active_tab_index()].id,
+                session_a2_id
+            );
+            assert_ne!(session_a1_id, session_a2_id);
+            assert!(!hub
+                .attention
+                .get(&workspace_a)
+                .unwrap()
+                .is_unread(attention_id));
+
+            hub.apply_attention_item(
+                AttentionItem {
+                    id: attention_id,
+                    revision: 8,
+                    observed_at_millis: 800,
+                    target: AttentionTarget {
+                        workspace: workspace_a,
+                        pane: focus.pane_id,
+                        tab_id: Some(focus.tab_id),
+                        session_id: None,
+                    },
+                    state: AttentionState::Blocked,
+                    title: "Newer exact attention".into(),
+                    unread: true,
+                    agent_path: vec!["root".into(), "reviewer".into()],
+                },
+                cx,
+            )
+            .unwrap();
+            assert_eq!(
+                hub.open_attention_item(workspace_a, attention_id, 7, cx),
+                Err(AttentionError::StaleObservation)
+            );
+            assert!(hub
+                .attention
+                .get(&workspace_a)
+                .unwrap()
+                .is_unread(attention_id));
         });
     }
 

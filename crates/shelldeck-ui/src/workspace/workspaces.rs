@@ -25,6 +25,9 @@ use shelldeck_core::workspace_navigation::{
     WorkspaceNavigationState, WorkspaceSurfaceState, WorkspaceTab, WorkspaceTabContent,
     WorkspaceTabId,
 };
+use shelldeck_core::workspace_review::{
+    AttentionBoard, AttentionError, AttentionItem, AttentionItemId, AttentionState,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -215,6 +218,17 @@ struct WorkspaceCardPresentation {
     provider_freshness: Option<WorkspaceFreshness>,
     archived: bool,
     provider_bound: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AttentionItemPresentation {
+    workspace: CatalogWorkspaceId,
+    id: AttentionItemId,
+    revision: u64,
+    state: AttentionState,
+    title: String,
+    unread: bool,
+    agent_path: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -529,6 +543,7 @@ fn terminal_surface(
 pub(super) struct WorkspaceHubView {
     catalog: ProjectCatalog,
     navigation: WorkspaceNavigationState,
+    attention: BTreeMap<CatalogWorkspaceId, AttentionBoard>,
     cards: WorkspaceCardAggregator,
     creation: WorkspaceCreationReducer,
     retained: BTreeMap<CatalogWorkspaceId, Entity<RetainedWorkspaceSurface>>,
@@ -651,6 +666,7 @@ impl WorkspaceHubView {
         });
         let mut navigation = WorkspaceNavigationState::default();
         let mut retained = BTreeMap::new();
+        let mut attention = BTreeMap::new();
         let mut initial_terminal = Some(initial_terminal);
         for workspace in catalog.workspaces() {
             let surface = WorkspaceSurfaceState::default();
@@ -684,6 +700,7 @@ impl WorkspaceHubView {
                 workspace.id(),
                 cx.new(move |_| RetainedWorkspaceSurface::new(workspace.id(), terminal)),
             );
+            attention.insert(workspace.id(), AttentionBoard::new(workspace.id()));
         }
         let onboarding_open = catalog.projects().len() == 0;
         let onboarding_connection = connections.keys().next().copied();
@@ -716,6 +733,7 @@ impl WorkspaceHubView {
         Self {
             catalog,
             navigation,
+            attention,
             cards: WorkspaceCardAggregator::default(),
             creation: WorkspaceCreationReducer::default(),
             retained,
@@ -752,10 +770,14 @@ impl WorkspaceHubView {
     }
 
     fn switch_to(&mut self, id: CatalogWorkspaceId, cx: &mut Context<Self>) {
+        self.switch_to_checked(id, cx);
+    }
+
+    fn switch_to_checked(&mut self, id: CatalogWorkspaceId, cx: &mut Context<Self>) -> bool {
         if self.recovery_pending {
             self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
             cx.notify();
-            return;
+            return false;
         }
         if let Some(outgoing) = self.navigation.active() {
             if let Some(surface) = self.retained.get(&outgoing) {
@@ -773,7 +795,7 @@ impl WorkspaceHubView {
                 ) {
                     self.error = Some(error.to_string());
                     cx.notify();
-                    return;
+                    return false;
                 }
             }
         }
@@ -790,10 +812,119 @@ impl WorkspaceHubView {
                     ));
                 }
                 self.observe_local_card(id, cx);
+                cx.notify();
+                true
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+                false
+            }
         }
+    }
+
+    /// Admit one already-authoritative local attention item. Canonical review
+    /// events are deliberately not converted here because they do not carry
+    /// the exact retained pane/session coordinates this board requires.
+    #[allow(dead_code)]
+    pub(super) fn apply_attention_item(
+        &mut self,
+        item: AttentionItem,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, AttentionError> {
+        let workspace = item.target.workspace;
+        let board = self
+            .attention
+            .get_mut(&workspace)
+            .ok_or(AttentionError::WrongWorkspace)?;
+        let notify = board.apply(item)?;
         cx.notify();
+        Ok(notify)
+    }
+
+    fn attention_items(&self, workspace: CatalogWorkspaceId) -> Vec<AttentionItemPresentation> {
+        let Some(board) = self.attention.get(&workspace) else {
+            return Vec::new();
+        };
+        board
+            .ordered()
+            .into_iter()
+            .rev()
+            .map(|item| AttentionItemPresentation {
+                workspace,
+                id: item.id,
+                revision: item.revision,
+                state: item.state,
+                title: item.title.clone(),
+                unread: board.is_unread(item.id),
+                agent_path: item.agent_path.clone(),
+            })
+            .collect()
+    }
+
+    fn open_attention_item(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        id: AttentionItemId,
+        expected_revision: u64,
+        cx: &mut Context<Self>,
+    ) -> Result<shelldeck_core::workspace_navigation::WorkspaceFocus, AttentionError> {
+        let focus = self
+            .attention
+            .get(&workspace)
+            .ok_or(AttentionError::WrongWorkspace)?
+            .resolve_target(
+                id,
+                expected_revision,
+                workspace,
+                &self.catalog,
+                &self.navigation,
+            )?;
+
+        let native_target_exists = self.retained.get(&workspace).is_some_and(|surface| {
+            let terminal = surface.read(cx).terminal.clone();
+            terminal
+                .read(cx)
+                .tabs
+                .iter()
+                .any(|tab| tab.id == focus.tab_id.as_uuid())
+        });
+        if !native_target_exists {
+            return Err(AttentionError::InvalidSurface);
+        }
+        if !self.switch_to_checked(workspace, cx) {
+            return Err(AttentionError::InvalidSurface);
+        }
+
+        let surface = self
+            .retained
+            .get(&workspace)
+            .cloned()
+            .ok_or(AttentionError::InvalidSurface)?;
+        let terminal = surface.read(cx).terminal.clone();
+        terminal.update(cx, |terminal, _| {
+            terminal.select_tab(focus.tab_id.as_uuid());
+        });
+        let native_surface = terminal_surface(&self.catalog, workspace, terminal.read(cx));
+        if native_surface.focus != Some(focus) {
+            return Err(AttentionError::InvalidSurface);
+        }
+        self.navigation
+            .reduce(
+                &self.catalog,
+                WorkspaceNavigationAction::UpdateSurface {
+                    id: workspace,
+                    surface: native_surface,
+                },
+            )
+            .map_err(|_| AttentionError::InvalidSurface)?;
+        self.attention
+            .get_mut(&workspace)
+            .ok_or(AttentionError::WrongWorkspace)?
+            .mark_read(id, expected_revision)?;
+        self.error = None;
+        cx.notify();
+        Ok(focus)
     }
 
     fn observe_local_card(&mut self, workspace: CatalogWorkspaceId, cx: &mut Context<Self>) {
@@ -1399,6 +1530,8 @@ impl WorkspaceHubView {
                     workspace,
                     cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
                 );
+                self.attention
+                    .insert(workspace, AttentionBoard::new(workspace));
                 let executor = self.executor.clone();
                 let acknowledge = cx
                     .background_executor()
@@ -1582,6 +1715,8 @@ impl WorkspaceHubView {
             workspace,
             cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
         );
+        self.attention
+            .insert(workspace, AttentionBoard::new(workspace));
         if let Err(error) = self.creation.reduce(
             request.catalog_revision,
             WorkspaceCreateEvent::Completed {
@@ -2018,6 +2153,31 @@ fn agent_label(agent: WorkspaceAgentState) -> String {
         WorkspaceAgentState::Completed => t!("workspaces.agent.completed"),
     }
     .to_string()
+}
+
+fn attention_state_label(state: AttentionState) -> String {
+    match state {
+        AttentionState::NeedsYou => t!("workspaces.attention.needs_you"),
+        AttentionState::Working => t!("workspaces.attention.working"),
+        AttentionState::Blocked => t!("workspaces.attention.blocked"),
+        AttentionState::Done => t!("workspaces.attention.done"),
+        AttentionState::Idle => t!("workspaces.attention.idle"),
+    }
+    .to_string()
+}
+
+fn attention_state_variant(state: AttentionState) -> BadgeVariant {
+    match state {
+        AttentionState::NeedsYou => BadgeVariant::Warning,
+        AttentionState::Blocked => BadgeVariant::Destructive,
+        AttentionState::Done => BadgeVariant::Default,
+        AttentionState::Working => BadgeVariant::Secondary,
+        AttentionState::Idle => BadgeVariant::Outline,
+    }
+}
+
+fn attention_error_label(_error: AttentionError) -> String {
+    t!("workspaces.attention.open_refused").to_string()
 }
 
 fn freshness_label(freshness: WorkspaceFreshness) -> String {

@@ -17,7 +17,7 @@ use crate::config::workspace_catalog::{
 };
 use crate::workspace_navigation::{
     PaneId, PaneNode, WorkspaceFocus, WorkspaceNavigationState, WorkspaceSurfaceState,
-    WorkspaceTabContent,
+    WorkspaceTabContent, WorkspaceTabId,
 };
 
 #[path = "workspace_review_preview.rs"]
@@ -1758,6 +1758,11 @@ pub enum AttentionState {
 pub struct AttentionTarget {
     pub workspace: CatalogWorkspaceId,
     pub pane: PaneId,
+    /// Exact retained native tab coordinate. Provider-only projections may
+    /// instead use `session_id`, which is resolved without consulting the
+    /// pane's mutable active-tab state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<WorkspaceTabId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 }
@@ -1860,14 +1865,18 @@ impl AttentionBoard {
         Ok(notify)
     }
 
-    pub fn open_target(
-        &mut self,
+    pub fn resolve_target(
+        &self,
         id: AttentionItemId,
+        expected_revision: u64,
         workspace: CatalogWorkspaceId,
         catalog: &ProjectCatalog,
         navigation: &WorkspaceNavigationState,
     ) -> Result<WorkspaceFocus, AttentionError> {
-        let item = self.items.get_mut(&id).ok_or(AttentionError::InvalidItem)?;
+        let item = self.items.get(&id).ok_or(AttentionError::InvalidItem)?;
+        if item.revision != expected_revision {
+            return Err(AttentionError::StaleObservation);
+        }
         if self.workspace != workspace || item.target.workspace != workspace {
             return Err(AttentionError::WrongWorkspace);
         }
@@ -1880,8 +1889,24 @@ impl AttentionBoard {
             .map_err(|_| AttentionError::InvalidSurface)?;
         let leaf = find_pane(surface.root.as_ref(), item.target.pane)
             .ok_or(AttentionError::UnknownPane)?;
-        let tab = match item.target.session_id.as_ref() {
-            Some(session_id) => {
+        let exact_tab = item
+            .target
+            .tab_id
+            .and_then(|tab_id| leaf.tabs.iter().find(|tab| tab.id == tab_id));
+        if item.target.tab_id.is_some() && exact_tab.is_none() {
+            return Err(AttentionError::SessionOutsidePane);
+        }
+        let tab = match (exact_tab, item.target.session_id.as_ref()) {
+            (Some(tab), Some(session_id)) => match &tab.content {
+                WorkspaceTabContent::ProviderSession(binding)
+                    if binding.session_id == *session_id =>
+                {
+                    Some(tab)
+                }
+                _ => None,
+            },
+            (Some(tab), None) => Some(tab),
+            (None, Some(session_id)) => {
                 let mut matches = leaf.tabs.iter().filter(|tab| {
                     matches!(
                         &tab.content,
@@ -1895,16 +1920,41 @@ impl AttentionBoard {
                 }
                 tab
             }
-            None => leaf
-                .active_tab
-                .and_then(|active| leaf.tabs.iter().find(|tab| tab.id == active)),
+            (None, None) => None,
         }
         .ok_or(AttentionError::SessionOutsidePane)?;
-        self.locally_read.insert((id, item.revision));
         Ok(WorkspaceFocus {
             pane_id: leaf.id,
             tab_id: tab.id,
         })
+    }
+
+    /// Mark only the exact observation revision that was successfully opened.
+    /// A newer replay must remain unread rather than inheriting an older click.
+    pub fn mark_read(
+        &mut self,
+        id: AttentionItemId,
+        expected_revision: u64,
+    ) -> Result<(), AttentionError> {
+        let item = self.items.get(&id).ok_or(AttentionError::InvalidItem)?;
+        if item.revision != expected_revision {
+            return Err(AttentionError::StaleObservation);
+        }
+        self.locally_read.insert((id, expected_revision));
+        Ok(())
+    }
+
+    pub fn open_target(
+        &mut self,
+        id: AttentionItemId,
+        expected_revision: u64,
+        workspace: CatalogWorkspaceId,
+        catalog: &ProjectCatalog,
+        navigation: &WorkspaceNavigationState,
+    ) -> Result<WorkspaceFocus, AttentionError> {
+        let focus = self.resolve_target(id, expected_revision, workspace, catalog, navigation)?;
+        self.mark_read(id, expected_revision)?;
+        Ok(focus)
     }
 
     #[must_use]
