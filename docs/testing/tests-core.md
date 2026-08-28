@@ -544,6 +544,17 @@ Existing: **0 tests**.
 
 ---
 
+## 29. `config/platform_attention.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1816 | `config/platform_attention.rs::sdtest_1816_inventory_is_exact_bounded_and_authority_derived` | SDUC-493 | Green | Exact project/workspace relations, typed review presence, and attempt-to-session lineage derive only the bounded authoritative source set; missing/foreign, duplicate, and over-limit inventories fail closed. |
+| SDTEST-1817 | `config/platform_attention.rs::sdtest_1817_snapshot_replacement_is_atomic_and_retains_revision_custody` | SDUC-493 | Green | Exact replay is inert; discontinuous successors make zero mutation; valid empty replacement, new opaque incarnation, refusal/unavailability, restart-chain retention, and authoritative source removal have distinct fail-closed semantics. |
+| SDTEST-1818 | `config/platform_attention.rs::sdtest_1818_ui_identity_is_source_scoped_and_collisions_fail_atomically` | SDUC-493 | Green | Length-delimited raw source/item tuples produce deterministic presentation-only UUIDv5 values without delimiter aliasing, while an injected collision across different raw tuples rejects the entire candidate board. |
+| SDTEST-1819 | `config/platform_attention.rs::sdtest_1819_local_overlay_is_revision_bound_durable_and_fail_closed` | SDUC-493 | Green | Read and notification custody survives restart only under exact source/item/revision tuples. Exact replay is suppressed; revision advance is independently eligible; valid replacement prunes old custody; capacity, write, and unknown-field failures do not mutate the accepted store. |
+
+---
+
 ## Retired tests
 
 *(none yet)*

@@ -2818,20 +2818,24 @@ Forced-process and real-adapter no-replay evidence remains a Red release gate.
 ### SDUC-493 — Agent attention always returns to its authoritative work context
 
 Needs You, Working, Blocked, Done, and Idle are typed observations with unread
-state and a nested-agent path. Each item names one local user workspace and
-pane; provider-session items additionally name the exact session in that pane.
-Older or conflicting same-revision observations are refused. Opening an item in
-the core resolves only through retained state keyed by the authoritative local
-workspace and validates all coordinates against that workspace surface,
-refuses duplicate pane/session coordinates, returns only that exact tab, and
-records local read state separately from the authoritative observation revision.
-The retained native workspace surface renders each admitted item with its typed
-state, unread state, and complete nested-agent path. Activating a row re-resolves
-the captured item revision through the current catalog and retained navigation
-snapshot, switches to that exact workspace/pane/tab, and records read state only
-after native focus succeeds. Review chronology is not converted into a local
-attention target because its events do not carry retained pane/session
-coordinates.
+state and a nested-agent path. The legacy local board names a retained local
+workspace/pane/session surface and validates all coordinates before returning
+one exact tab. Shared Platform v2 attention instead retains the authoritative
+project, user workspace, source-scoped opaque item identity, item revision, and
+optional authority-qualified provider session exactly as supplied. It never
+invents a pane, tab, terminal, path, or session from chronology or labels.
+Platform sources are derived only from a bounded duplicate-free work-context
+inventory and typed review presence. A complete source snapshot atomically
+replaces its predecessor; exact replay is inert, stale/conflicting successors
+are refused, valid absence removes an item, and refusal or transport failure
+hides but does not discard predecessor custody. A documented source-scoped
+UUIDv5 is presentation-only and collisions fail the entire replacement.
+Local read and notification custody is stored separately under exact
+`(source,item,item_revision)` tuples. It is bounded and atomically persisted;
+capacity, parse, or write failure suppresses new custody instead of evicting an
+older tuple. Navigation and OS notification activation remain separate native
+integration milestones. The retained native workspace surface continues to
+mark local items read only after exact native focus succeeds.
 Delivery checks, review status, merge readiness, and delivery state carry their
 observed authority and freshness. Once Fresh, they cannot be overwritten by a
 Stale or Unknown projection even if that projection claims a higher revision.
@@ -2877,6 +2881,12 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-08-28** — Expanded SDUC-493 and added SDTEST-1816..1819 for the
+  canonical Platform v2 attention source inventory, source-atomic revision
+  reducer, source-scoped deterministic UI identities, and bounded durable local
+  read/notification custody. Native navigation and OS notifications remain a
+  separate integration milestone.
 
 - **2026-08-28** — Hardened SDUC-435 and added SDTEST-1813..1815: Windows now
   handles Explorer's `TaskbarCreated` broadcast through an invisible top-level

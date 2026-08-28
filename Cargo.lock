@@ -881,7 +881,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "automonique-platform-client"
 version = "0.1.0"
-source = "git+https://github.com/bext-stack/automonique?rev=1dd5c13f7a53aac9e28d3cd004bf73789ca66bb7#1dd5c13f7a53aac9e28d3cd004bf73789ca66bb7"
+source = "git+https://github.com/bext-stack/automonique?rev=72a0c3cd50362f25472a1da92a10e9d8e14b2985#72a0c3cd50362f25472a1da92a10e9d8e14b2985"
 dependencies = [
  "automonique-protocol",
  "base64 0.22.1",
@@ -892,7 +892,7 @@ dependencies = [
 [[package]]
 name = "automonique-protocol"
 version = "0.1.0"
-source = "git+https://github.com/bext-stack/automonique?rev=1dd5c13f7a53aac9e28d3cd004bf73789ca66bb7#1dd5c13f7a53aac9e28d3cd004bf73789ca66bb7"
+source = "git+https://github.com/bext-stack/automonique?rev=72a0c3cd50362f25472a1da92a10e9d8e14b2985#72a0c3cd50362f25472a1da92a10e9d8e14b2985"
 
 [[package]]
 name = "av-scenechange"
