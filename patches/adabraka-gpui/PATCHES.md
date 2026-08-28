@@ -9,10 +9,25 @@ step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
 Total marker occurrences in code: **139**
-(`rg "ShellDeck patch:" src/`; SDPATCH-103 is Cargo.toml-only and outside
-the src-scoped marker convention.)
+(`rg "ShellDeck patch:" src/`; SDPATCH-103 and SDPATCH-119 are
+Cargo.toml-only and outside the src-scoped marker convention.)
 
 ## Patches
+
+### SDPATCH-119 — Keep GPUI test support free of unused Git fixtures
+
+- **Files / symbols**:
+  - `Cargo.toml` — `test-support` feature (uses `util/rand` instead of
+    `util/test-support`)
+- **Markers**: none — `Cargo.toml` is outside the `patches/<crate>/src/`
+  marker scope. The entry exists so the sync knows to re-apply it after each
+  overlay.
+- **Why**: GPUI's test dispatcher needs `rand`, but no GPUI source or test uses
+  `adabraka_util::test`. Enabling the broader feature pulled `git2` and its
+  native library into all downstream test-support builds solely for an unused
+  temporary Git-tree helper. Selecting the exact required feature preserves
+  GPUI's test API while removing that unnecessary dependency path.
+- **Upstream status**: not filed yet — suitable as a small feature-hygiene PR.
 
 ### SDPATCH-101 — `PathPromptOptions::starting_directory`
 
@@ -571,6 +586,11 @@ the src-scoped marker convention.)
 - **Upstream status**: not filed yet.
 
 ## Sync log
+
+- **2026-08-28** — Added SDPATCH-119: narrowed GPUI's downstream
+  `test-support` feature to the `adabraka_util` capability it actually uses,
+  removing the unused `git2`/`libgit2-sys` test-fixture dependency path. No
+  source marker was added because this is a Cargo.toml-only patch.
 
 - **2026-08-28** — Added SDPATCH-118: upgraded Linux text/SVG rendering to
   `cosmic-text` 0.19 and `resvg`/`usvg` 0.48, removing both `rustybuzz`
