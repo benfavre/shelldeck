@@ -1827,6 +1827,46 @@ mod tests {
         }
     }
 
+    fn ssh_request(workspace: CatalogWorkspaceId) -> WorkspaceExecutionRequest {
+        WorkspaceExecutionRequest {
+            workspace,
+            project: CatalogProjectId::new(),
+            source_checkout: CatalogCheckoutId::new(),
+            checkout: CatalogCheckoutId::new(),
+            created_checkout: None,
+            operation: CreationOperationId::new(),
+            catalog_revision: 1,
+            name: "Remote lifecycle test".into(),
+            intake: WorkspaceLaunchIntake::Manual,
+            host: AuthorizedLaunchHost::Ssh {
+                connection_id: uuid::Uuid::new_v4(),
+                remote_root: "/srv/shelldeck/workspaces".into(),
+            },
+            mode: WorkspaceLaunchMode::Ssh,
+        }
+    }
+
+    // SDTEST-1780 — SDUC-491
+    #[tokio::test]
+    async fn sdtest_1780_ssh_launch_refuses_before_progress_without_trusted_beneath_helper() {
+        let executor = NativeWorkspaceExecutor::default();
+        let request = ssh_request(CatalogWorkspaceId::new());
+        let operation = request.operation;
+        let (events, mut received) = mpsc::unbounded_channel();
+
+        let failure = executor.launch(request, events).await.unwrap_err();
+
+        assert_eq!(failure.kind, WorkspaceCreateFailureKind::RuntimeUnavailable);
+        assert!(failure.retryable);
+        assert_eq!(
+            received.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected),
+            "refusal must publish no progress"
+        );
+        assert!(executor.take_receipt(operation).is_none());
+        assert!(!executor.cancellations.lock().contains_key(&operation));
+    }
+
     // SDTEST-1763 — SDUC-491
     #[tokio::test]
     async fn sdtest_1763_durable_journal_restarts_only_an_exact_clean_worktree() {
