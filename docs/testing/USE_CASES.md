@@ -994,7 +994,17 @@ explicit Resources and Sessions views; their counters remain visible and each
 view owns the full available width. Session attach/control and approval actions
 move to a dedicated row instead of leaving the viewport. The compact header
 keeps connection state and Refresh, while the desktop two-column composition
-returns at and above the breakpoint. The breakpoint follows UI scale.
+returns at and above the breakpoint. Type and state badges keep their intrinsic
+width; only secondary identifiers may truncate. The breakpoint follows UI
+scale.
+
+Opening the cockpit still triggers an immediate projection read. While healthy,
+automatic reads run at most every 10 seconds. An unavailable Platform emits one
+Platform-labelled warning for the outage and backs automatic network retries
+off to 30, 60, then 120 seconds; the explicit Refresh action bypasses that wait.
+A successful read resets the outage and retry state. Persistent request and
+control errors occupy an in-flow notice above the panels, never an overlay over
+resource or session actions.
 
 ---
 
@@ -2600,6 +2610,9 @@ compact button plus secondary count badge as the neighboring Tickets queue.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-476 and added SDTEST-1732: Platform polling
+  uses a bounded failure backoff with one diagnostic per outage, while its
+  persistent error notice reserves layout space instead of covering sessions.
 - **2026-08-28** — Amended SDUC-476 and added SDTEST-1731: the Platform
   cockpit switches from fixed desktop columns to explicit full-width Resources
   and Sessions views below a scale-aware 1,000 logical pixels.

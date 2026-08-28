@@ -544,11 +544,14 @@ impl FleetView {
                             .items_center()
                             .gap(px(6.0))
                             .child(
-                                Badge::new(resource.resource.kind.as_str().to_owned())
-                                    .variant(BadgeVariant::Outline),
+                                div().flex_shrink_0().child(
+                                    Badge::new(resource.resource.kind.as_str().to_owned())
+                                        .variant(BadgeVariant::Outline),
+                                ),
                             )
                             .child(
                                 div()
+                                    .flex_1()
                                     .min_w(px(0.0))
                                     .truncate()
                                     .text_size(px(10.0))
@@ -773,48 +776,59 @@ impl FleetView {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .w_full()
                             .min_w(px(0.0))
                             .items_center()
                             .gap(px(6.0))
                             .child(
-                                Badge::new(if attached {
-                                    t!("fleet.session.attached").to_string()
-                                } else {
-                                    t!("fleet.session.observed").to_string()
-                                })
-                                .variant(if attached {
-                                    BadgeVariant::Default
-                                } else {
-                                    BadgeVariant::Outline
-                                }),
+                                div().flex_shrink_0().child(
+                                    Badge::new(if attached {
+                                        t!("fleet.session.attached").to_string()
+                                    } else {
+                                        t!("fleet.session.observed").to_string()
+                                    })
+                                    .variant(if attached {
+                                        BadgeVariant::Default
+                                    } else {
+                                        BadgeVariant::Outline
+                                    }),
+                                ),
                             )
                             .children(lease.map(|lease| {
-                                Badge::new(
-                                    t!(
-                                        "fleet.session.control",
-                                        expiry = lease.expires_at.as_millis()
+                                div().flex_shrink_0().child(
+                                    Badge::new(
+                                        t!(
+                                            "fleet.session.control",
+                                            expiry = lease.expires_at.as_millis()
+                                        )
+                                        .to_string(),
                                     )
-                                    .to_string(),
+                                    .variant(BadgeVariant::Warning),
                                 )
-                                .variant(BadgeVariant::Warning)
                             }))
                             .children(pane.and_then(|pane| {
                                 (pane.unread > 0).then(|| {
-                                    Badge::new(
-                                        t!("fleet.session.unread", count = pane.unread).to_string(),
+                                    div().flex_shrink_0().child(
+                                        Badge::new(
+                                            t!("fleet.session.unread", count = pane.unread)
+                                                .to_string(),
+                                        )
+                                        .variant(BadgeVariant::Default),
                                     )
-                                    .variant(BadgeVariant::Default)
                                 })
                             }))
                             .children(pane.and_then(|pane| {
                                 pane.control_lost.then(|| {
-                                    Badge::new(t!("fleet.session.control_lost").to_string())
-                                        .variant(BadgeVariant::Destructive)
+                                    div().flex_shrink_0().child(
+                                        Badge::new(t!("fleet.session.control_lost").to_string())
+                                            .variant(BadgeVariant::Destructive),
+                                    )
                                 })
                             }))
                             .child(
                                 div()
+                                    .flex_1()
                                     .min_w(px(0.0))
                                     .truncate()
                                     .text_size(px(10.0))
@@ -1305,7 +1319,7 @@ impl Render for FleetView {
             .snapshot
             .as_ref()
             .map_or(0, |snapshot| snapshot.sessions.len());
-        let mut content = if compact {
+        let content = if compact {
             let panel = match self.compact_section {
                 FleetCompactSection::Resources => div()
                     .flex_1()
@@ -1387,34 +1401,35 @@ impl Render for FleetView {
                         .child(self.render_sessions(false, cx)),
                 )
         };
-        if let Some(error) = &self.error {
-            content = content.child(
+        let notice = if let Some(error) = &self.error {
+            Some(
                 div()
-                    .absolute()
-                    .left(px(16.0))
-                    .right(px(16.0))
-                    .bottom(px(16.0))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .px(px(12.0))
+                    .pt(px(10.0))
                     .child(
                         Alert::error()
                             .title(t!("fleet.error.title").to_string())
                             .description(error.clone()),
-                    ),
-            );
-        }
-        if let Some((outcome, explanation)) = &self.refusal {
-            content = content.child(
+                    )
+                    .into_any_element(),
+            )
+        } else {
+            self.refusal.as_ref().map(|(outcome, explanation)| {
                 div()
-                    .absolute()
-                    .left(px(16.0))
-                    .right(px(16.0))
-                    .bottom(px(16.0))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .px(px(12.0))
+                    .pt(px(10.0))
                     .child(
                         Alert::error()
                             .title(t!("fleet.action.refused", outcome = outcome).to_string())
                             .description(explanation.clone()),
-                    ),
-            );
-        }
+                    )
+                    .into_any_element()
+            })
+        };
         div()
             .relative()
             .size_full()
@@ -1425,6 +1440,7 @@ impl Render for FleetView {
             .bg(ShellDeckColors::bg_primary())
             .child(self.render_header(compact, cx))
             .child(self.render_action_preview(compact, cx))
+            .children(notice)
             .child(content)
     }
 }

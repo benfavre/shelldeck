@@ -105,6 +105,34 @@ pub fn api_error_message(err: &shelldeck_core::error::ShellDeckError) -> String 
     crate::t!(key).to_string()
 }
 
+/// Human-readable error for the shared Platform projection.
+///
+/// Platform polling can retry the same unavailable endpoint several times.
+/// `log_failure` lets its owner emit one diagnostic per outage instead of one
+/// warning per poll while still rebuilding the localized UI message.
+pub fn platform_error_message(
+    err: &shelldeck_core::error::ShellDeckError,
+    log_failure: bool,
+) -> String {
+    use shelldeck_core::config::cloud_account::{classify_api_error, ApiFailure};
+
+    if log_failure {
+        tracing::warn!("requête Plateforme échouée : {err}");
+    }
+
+    let key = match classify_api_error(err) {
+        ApiFailure::Unreachable => "fleet.error.unreachable",
+        ApiFailure::Timeout => "fleet.error.timeout",
+        ApiFailure::AuthRejected => "fleet.error.auth_rejected",
+        ApiFailure::Forbidden => "fleet.error.forbidden",
+        ApiFailure::NotFound => "fleet.error.not_found",
+        ApiFailure::ServerError => "fleet.error.server",
+        ApiFailure::BadResponse => "fleet.error.bad_response",
+        ApiFailure::Other => "fleet.error.other",
+    };
+    crate::t!(key).to_string()
+}
+
 /// Comme [`api_error_message`], mais pour un échec du **formulaire de
 /// connexion**.
 ///
