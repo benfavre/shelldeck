@@ -6,7 +6,8 @@ use shelldeck_core::config::platform::{
     ResourceCoordinate, RetainedSessionUpdate,
 };
 use shelldeck_core::config::platform_review::{
-    PlatformReviewLoad, PlatformReviewTarget, PlatformReviewUnavailable,
+    PlatformReviewCapabilitiesLoad, PlatformReviewLoad, PlatformReviewTarget,
+    PlatformReviewUnavailable,
 };
 
 enum PlatformActionResult {
@@ -36,6 +37,7 @@ enum PlatformLoadResult {
 struct AttributedPlatformReview {
     target: PlatformReviewTarget,
     load: PlatformReviewLoad,
+    capabilities: PlatformReviewCapabilitiesLoad,
 }
 
 struct AttributedPlatformReviewActionResult {
@@ -51,19 +53,36 @@ fn load_review(
         let load = connection
             .review(&target)
             .unwrap_or_else(|error| unavailable_review(&error));
-        AttributedPlatformReview { target, load }
+        let capabilities = connection
+            .review_capabilities(&target)
+            .unwrap_or_else(|error| unavailable_review_capabilities(&error));
+        AttributedPlatformReview {
+            target,
+            load,
+            capabilities,
+        }
     })
 }
 
 /// Admit a remote observation only when it is still attributed to the exact
 /// active catalog mapping that requested it. A switched or now-unmapped
 /// workspace clears the strip instead of inheriting foreign review state.
+#[cfg(test)]
 fn review_for_active_target(
     active: Option<&PlatformReviewTarget>,
     attributed: Option<AttributedPlatformReview>,
 ) -> Option<PlatformReviewLoad> {
     attributed
         .and_then(|attributed| (Some(&attributed.target) == active).then_some(attributed.load))
+}
+
+fn review_and_capabilities_for_active_target(
+    active: Option<&PlatformReviewTarget>,
+    attributed: Option<AttributedPlatformReview>,
+) -> Option<(PlatformReviewLoad, PlatformReviewCapabilitiesLoad)> {
+    attributed.and_then(|attributed| {
+        (Some(&attributed.target) == active).then_some((attributed.load, attributed.capabilities))
+    })
 }
 
 fn platform_connection_is_current(
@@ -78,9 +97,9 @@ fn review_for_active_context(
     captured_connection: &PlatformConnection,
     active_target: Option<&PlatformReviewTarget>,
     attributed: Option<AttributedPlatformReview>,
-) -> Option<PlatformReviewLoad> {
+) -> Option<(PlatformReviewLoad, PlatformReviewCapabilitiesLoad)> {
     platform_connection_is_current(current_connection, captured_connection)
-        .then(|| review_for_active_target(active_target, attributed))
+        .then(|| review_and_capabilities_for_active_target(active_target, attributed))
         .flatten()
 }
 
@@ -98,6 +117,15 @@ fn review_action_for_active_context(
 
 fn unavailable_review(error: &shelldeck_core::error::ShellDeckError) -> PlatformReviewLoad {
     PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+        category: "transport_error".to_owned(),
+        explanation: error.to_string(),
+    })
+}
+
+fn unavailable_review_capabilities(
+    error: &shelldeck_core::error::ShellDeckError,
+) -> PlatformReviewCapabilitiesLoad {
+    PlatformReviewCapabilitiesLoad::Unavailable(PlatformReviewUnavailable {
         category: "transport_error".to_owned(),
         explanation: error.to_string(),
     })
@@ -260,7 +288,10 @@ impl Workspace {
                         workspace.fleet_snapshot = Some(snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.set_snapshot(snapshot);
-                            view.set_review(active_review_target.clone(), review);
+                            let (review, capabilities) = review
+                                .map(|(review, capabilities)| (Some(review), Some(capabilities)))
+                                .unwrap_or((None, None));
+                            view.set_review(active_review_target.clone(), review, capabilities);
                             cx.notify();
                         });
                         workspace.focus_pending_fleet_session(cx);
@@ -299,7 +330,10 @@ impl Workspace {
                                 view.set_follow_up_result(result, cx);
                             }
                             view.apply_retained_updates(retained);
-                            view.set_review(active_review_target.clone(), review);
+                            let (review, capabilities) = review
+                                .map(|(review, capabilities)| (Some(review), Some(capabilities)))
+                                .unwrap_or((None, None));
+                            view.set_review(active_review_target.clone(), review, capabilities);
                             if let Some(result) = review_action {
                                 view.set_review_action_result(result, cx);
                             }
@@ -571,9 +605,10 @@ mod tests {
     use shelldeck_core::config::platform::{PlatformConnection, PlatformReviewActionResult};
     use shelldeck_core::config::platform_review::{
         AttentionState, ConflictState, DeliverySemantic, DeliveryState, DiffChangeKind, DiffSide,
-        MergeReadiness, PlatformReviewActionPreview, PlatformReviewLoad, PlatformReviewSemantic,
-        PlatformReviewTarget, PlatformReviewUnavailable, PreviewKind, PullRequestSemantic,
-        PullRequestState, ReviewAnchorSemantic, ReviewAttentionSemantic, ReviewAuthorityKind,
+        MergeReadiness, PlatformReviewActionPreview, PlatformReviewCapabilitiesLoad,
+        PlatformReviewLoad, PlatformReviewSemantic, PlatformReviewTarget,
+        PlatformReviewUnavailable, PreviewKind, PullRequestSemantic, PullRequestState,
+        ReviewAnchorSemantic, ReviewAttentionSemantic, ReviewAuthorityKind,
         ReviewAuthoritySemantic, ReviewDecision, ReviewFileSemantic, ReviewFreshnessSemantic,
         ReviewFreshnessState, ReviewHunkSemantic, ReviewPreviewSemantic, ReviewSchemaVersion,
         ReviewStatusSemantic, WorktreeFileState,
@@ -611,6 +646,10 @@ mod tests {
             load: PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
                 category: "not_available".to_owned(),
                 explanation: "review projection is not available".to_owned(),
+            }),
+            capabilities: PlatformReviewCapabilitiesLoad::Unavailable(PlatformReviewUnavailable {
+                category: "not_available".to_owned(),
+                explanation: "review capabilities are not available".to_owned(),
             }),
         }
     }

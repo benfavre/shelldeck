@@ -5,6 +5,7 @@
 //! observations. Mutation previews retain their exact snapshot coordinates;
 //! only the server can resolve them against separately configured authority.
 
+pub use automonique_platform_client::platform_v2_client::ReviewActionConfirmation;
 use automonique_protocol::platform::IdempotencyKey;
 use automonique_protocol::platform_v2::{ProjectId, WorkContextIdentity, WorkContextTargetKind};
 pub use automonique_protocol::platform_v2_review::{
@@ -16,12 +17,22 @@ pub use automonique_protocol::platform_v2_review::{
     ReviewProposalId, ReviewProposalKind, ReviewReceiptOutcome, ReviewReconciliation,
     ReviewSchemaVersion, ReviewSnapshot, ReviewText, WorktreeFileState,
 };
+pub use automonique_protocol::platform_v2_transport::{
+    ReviewCapabilities, ReviewCheckRerunCapability, ReviewConfirmationDigest,
+    ReviewReceiptCorrelationDigest,
+};
 use automonique_protocol::primitives::Revision;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::workspace_catalog::PlatformV2Mapping;
+
+mod custody;
+pub use custody::{
+    PlatformReviewCustodyStore, ReviewCustodyError, ReviewCustodyPresentation,
+    ReviewCustodyRecovery,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlatformReviewTarget {
@@ -95,6 +106,7 @@ pub struct PlatformReviewActionPreview {
     expected_revision: Revision,
     action: ReviewAction,
     idempotency_key: IdempotencyKey,
+    confirmation: Option<ReviewActionConfirmation>,
 }
 
 impl PlatformReviewActionPreview {
@@ -122,7 +134,7 @@ impl PlatformReviewActionPreview {
             body: ReviewText::new(body.trim().to_owned())
                 .map_err(|_| "review comment is invalid")?,
         };
-        Self::review_action(target, review.revision, action, &nonce)
+        Self::review_action(target, review.revision, action, &nonce, None)
     }
 
     pub fn approve(
@@ -141,6 +153,7 @@ impl PlatformReviewActionPreview {
                 expected_review_revision: review.review.freshness.observed_revision,
             },
             &nonce,
+            None,
         )
     }
 
@@ -179,6 +192,7 @@ impl PlatformReviewActionPreview {
             review.revision,
             ReviewAction::BatchSendCommentsToAgent { comments },
             &nonce,
+            None,
         )
     }
 
@@ -205,12 +219,13 @@ impl PlatformReviewActionPreview {
             }
         };
         let nonce = review_nonce();
-        Self::review_action(target, review.revision, action, &nonce)
+        Self::review_action(target, review.revision, action, &nonce, None)
     }
 
     pub fn rerun_check(
         target: PlatformReviewTarget,
         review: &PlatformReviewSemantic,
+        capabilities: &ReviewCapabilities,
         check_id: &str,
     ) -> Result<Self, &'static str> {
         validate_review_target(&target, review)?;
@@ -220,6 +235,27 @@ impl PlatformReviewActionPreview {
             .find(|check| check.id == check_id)
             .filter(|check| review.check_is_rerunnable(&check.id))
             .ok_or("review check is not actionable")?;
+        if capabilities.project() != &target.project
+            || capabilities.workspace() != &target.workspace
+            || capabilities.snapshot_revision() != review.revision
+        {
+            return Err("review capabilities are stale or belong to another workspace");
+        }
+        let capability = capabilities
+            .rerunnable_checks()
+            .iter()
+            .find(|capability| capability.check_id().as_str() == check.id)
+            .filter(|capability| {
+                capability.expected_check_revision() == check.freshness.observed_revision
+                    && capability.authority().kind() == check.authority.kind
+                    && capability.authority().id().as_str() == check.authority.id
+            })
+            .ok_or("review check capability is unavailable or stale")?;
+        let confirmation = ReviewActionConfirmation::new(
+            capability.confirmation_digest().clone(),
+            capabilities.workspace_revision(),
+            capability.receipt_correlation_digest().clone(),
+        );
         let nonce = review_nonce();
         Self::review_action(
             target,
@@ -230,6 +266,7 @@ impl PlatformReviewActionPreview {
                 expected_check_revision: check.freshness.observed_revision,
             },
             &nonce,
+            Some(confirmation),
         )
     }
 
@@ -262,6 +299,7 @@ impl PlatformReviewActionPreview {
                     .map_err(|_| "pull request head revision is invalid")?,
             },
             &nonce,
+            None,
         )
     }
 
@@ -270,10 +308,14 @@ impl PlatformReviewActionPreview {
         expected_revision: Revision,
         action: ReviewAction,
         nonce: &str,
+        confirmation: Option<ReviewActionConfirmation>,
     ) -> Result<Self, &'static str> {
         action
             .validate_client_shape()
             .map_err(|_| "review action is invalid")?;
+        if matches!(action, ReviewAction::RerunCheck { .. }) != confirmation.is_some() {
+            return Err("review action confirmation does not match its action");
+        }
         let idempotency_key = IdempotencyKey::new(format!("shelldeck-review-{nonce}"))
             .map_err(|_| "review idempotency key is invalid")?;
         Ok(Self {
@@ -281,6 +323,7 @@ impl PlatformReviewActionPreview {
             expected_revision,
             action,
             idempotency_key,
+            confirmation,
         })
     }
 
@@ -302,6 +345,38 @@ impl PlatformReviewActionPreview {
     #[must_use]
     pub const fn idempotency_key(&self) -> &IdempotencyKey {
         &self.idempotency_key
+    }
+
+    #[must_use]
+    pub const fn confirmation(&self) -> Option<&ReviewActionConfirmation> {
+        self.confirmation.as_ref()
+    }
+
+    /// Revalidate a confirmed rerun against the latest authoritative
+    /// capability generation before crossing the durable dispatch fence.
+    #[must_use]
+    pub fn matches_capabilities(&self, capabilities: &ReviewCapabilities) -> bool {
+        let (
+            ReviewAction::RerunCheck {
+                check_id,
+                expected_check_revision,
+            },
+            Some(confirmation),
+        ) = (&self.action, &self.confirmation)
+        else {
+            return self.confirmation.is_none();
+        };
+        capabilities.project() == &self.target.project
+            && capabilities.workspace() == &self.target.workspace
+            && capabilities.snapshot_revision() == self.expected_revision
+            && capabilities.workspace_revision() == confirmation.expected_workspace_revision()
+            && capabilities.rerunnable_checks().iter().any(|capability| {
+                capability.check_id() == check_id
+                    && capability.expected_check_revision() == *expected_check_revision
+                    && capability.confirmation_digest() == confirmation.confirmation_digest()
+                    && capability.receipt_correlation_digest()
+                        == confirmation.receipt_correlation_digest()
+            })
     }
 
     #[must_use]
@@ -456,6 +531,24 @@ fn validate_anchor(
 pub enum PlatformReviewLoad {
     Available(Box<PlatformReviewSemantic>),
     Unavailable(PlatformReviewUnavailable),
+}
+
+/// Authenticated server-advertised review mutation capabilities for one exact
+/// project/workspace snapshot. An unavailable capability load grants nothing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlatformReviewCapabilitiesLoad {
+    Available(ReviewCapabilities),
+    Unavailable(PlatformReviewUnavailable),
+}
+
+impl PlatformReviewCapabilitiesLoad {
+    #[must_use]
+    pub fn available(&self) -> Option<&ReviewCapabilities> {
+        match self {
+            Self::Available(capabilities) => Some(capabilities),
+            Self::Unavailable(_) => None,
+        }
+    }
 }
 
 impl PlatformReviewLoad {
@@ -976,6 +1069,34 @@ mod tests {
     const RENDER_CORPUS: &[u8] =
         include_bytes!("../../tests/fixtures/platform-v2-render-conformance-v1.json");
 
+    fn rerun_capabilities(
+        target: &PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+    ) -> ReviewCapabilities {
+        let check = &review.checks[0];
+        ReviewCapabilities::new(
+            target.project.clone(),
+            target.workspace.clone(),
+            review.revision,
+            Revision::new(91).unwrap(),
+            vec![ReviewCheckRerunCapability::new(
+                ReviewCheckId::new(check.id.clone()).unwrap(),
+                check.freshness.observed_revision,
+                ReviewAuthority::new(
+                    check.authority.kind,
+                    automonique_protocol::platform_v2_review::ReviewAuthorityId::new(
+                        check.authority.id.clone(),
+                    )
+                    .unwrap(),
+                ),
+                ReviewConfirmationDigest::new("a".repeat(64)).unwrap(),
+                ReviewReceiptCorrelationDigest::new("b".repeat(64)).unwrap(),
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
     #[derive(Deserialize)]
     struct RenderCorpus {
         schema: String,
@@ -1393,6 +1514,7 @@ mod tests {
         let rerun = PlatformReviewActionPreview::rerun_check(
             target.clone(),
             &semantic,
+            &rerun_capabilities(&target, &semantic),
             &semantic.checks[0].id,
         )
         .unwrap();
@@ -1464,6 +1586,7 @@ mod tests {
         assert!(PlatformReviewActionPreview::rerun_check(
             target.clone(),
             &stale,
+            &rerun_capabilities(&target, &semantic),
             &stale.checks[0].id,
         )
         .is_err());
@@ -1506,6 +1629,7 @@ mod tests {
         assert!(PlatformReviewActionPreview::rerun_check(
             target.clone(),
             &wrong_authority,
+            &rerun_capabilities(&target, &semantic),
             &wrong_authority.checks[0].id,
         )
         .is_err());
@@ -1533,6 +1657,7 @@ mod tests {
         assert!(PlatformReviewActionPreview::rerun_check(
             target.clone(),
             &semantic,
+            &rerun_capabilities(&target, &semantic),
             "check-missing",
         )
         .is_err());

@@ -22,10 +22,10 @@ use shelldeck_core::config::platform::{
     SessionHistoryEvent, SessionRecord,
 };
 use shelldeck_core::config::platform_review::{
-    CommentAgentState, ConflictResolution, DiffSide, PlatformReviewActionPreview,
-    PlatformReviewConfirmationCoordinates, PlatformReviewLoad, PlatformReviewRenderSemantic,
-    PlatformReviewSemantic, PlatformReviewTarget, ReviewAction, ReviewAnchorSemantic,
-    ReviewProposalKind, ReviewReceiptOutcome,
+    ConflictResolution, DiffSide, PlatformReviewActionPreview, PlatformReviewCapabilitiesLoad,
+    PlatformReviewConfirmationCoordinates, PlatformReviewCustodyStore, PlatformReviewLoad,
+    PlatformReviewRenderSemantic, PlatformReviewSemantic, PlatformReviewTarget, ReviewAction,
+    ReviewAnchorSemantic, ReviewCustodyRecovery, ReviewProposalKind, ReviewReceiptOutcome,
 };
 
 use crate::icons::lucide_icon;
@@ -90,6 +90,41 @@ fn same_exact_review_snapshot(
     next_revision: Option<u64>,
 ) -> bool {
     current_target == next_target && current_revision.is_some() && current_revision == next_revision
+}
+
+fn review_rerun_is_visible(
+    review: &PlatformReviewSemantic,
+    target: Option<&PlatformReviewTarget>,
+    capabilities: Option<&shelldeck_core::config::platform_review::ReviewCapabilities>,
+    custody_available: bool,
+    check_id: &str,
+) -> bool {
+    if !review_rerun_control_gate(capabilities.is_some(), custody_available) {
+        return false;
+    }
+    let Some((target, capabilities)) = target.zip(capabilities) else {
+        return false;
+    };
+    let Some(check) = review.checks.iter().find(|check| check.id == check_id) else {
+        return false;
+    };
+    review.check_is_rerunnable(check_id)
+        && capabilities.project() == &target.project
+        && capabilities.workspace() == &target.workspace
+        && capabilities.snapshot_revision() == review.revision
+        && capabilities.rerunnable_checks().iter().any(|capability| {
+            capability.check_id().as_str() == check.id
+                && capability.expected_check_revision() == check.freshness.observed_revision
+                && capability.authority().kind() == check.authority.kind
+                && capability.authority().id().as_str() == check.authority.id
+        })
+}
+
+const fn review_rerun_control_gate(
+    authoritative_capability_available: bool,
+    custody_available: bool,
+) -> bool {
+    authoritative_capability_available && custody_available
 }
 
 fn localized_review_proposal_kind(kind: ReviewProposalKind) -> String {
@@ -211,7 +246,9 @@ fn localized_external_review_coordinates(
 pub struct FleetView {
     snapshot: Option<PlatformSnapshot>,
     review: Option<PlatformReviewLoad>,
+    review_capabilities: Option<PlatformReviewCapabilitiesLoad>,
     review_target: Option<PlatformReviewTarget>,
+    review_custody: Option<PlatformReviewCustodyStore>,
     cockpit: PlatformCockpitState,
     search_state: Entity<InputState>,
     search_query: String,
@@ -236,10 +273,13 @@ pub struct FleetView {
 
 impl FleetView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let review_custody = PlatformReviewCustodyStore::open_default().ok();
         Self {
             snapshot: None,
             review: None,
+            review_capabilities: None,
             review_target: None,
+            review_custody,
             cockpit: PlatformCockpitState::default(),
             search_state: cx.new(InputState::new),
             search_query: String::new(),
@@ -282,6 +322,7 @@ impl FleetView {
         &mut self,
         target: Option<PlatformReviewTarget>,
         review: Option<PlatformReviewLoad>,
+        capabilities: Option<PlatformReviewCapabilitiesLoad>,
     ) {
         let prior_revision = match &self.review {
             Some(PlatformReviewLoad::Available(review)) => Some(review.revision.get()),
@@ -321,14 +362,80 @@ impl FleetView {
             }
             _ => self.selected_review_comments.clear(),
         }
-        if self.pending_review_preview.as_ref().is_some_and(|preview| {
+        let preview_is_stale = self.pending_review_preview.as_ref().is_some_and(|preview| {
             target.as_ref() != Some(preview.target())
                 || !matches!(&review, Some(PlatformReviewLoad::Available(value)) if value.revision == preview.expected_revision())
-        }) {
-            self.pending_review_preview = None;
+                || (preview.confirmation().is_some()
+                    && !capabilities
+                        .as_ref()
+                        .and_then(PlatformReviewCapabilitiesLoad::available)
+                        .is_some_and(|value| preview.matches_capabilities(value)))
+        });
+        if preview_is_stale {
+            self.cancel_pending_review_preview();
         }
         self.review_target = target;
         self.review = review;
+        self.review_capabilities = capabilities;
+        self.restore_review_custody();
+    }
+
+    fn available_review_capabilities(
+        &self,
+    ) -> Result<&shelldeck_core::config::platform_review::ReviewCapabilities, &'static str> {
+        self.review_capabilities
+            .as_ref()
+            .and_then(PlatformReviewCapabilitiesLoad::available)
+            .ok_or("review capabilities are unavailable")
+    }
+
+    fn restore_review_custody(&mut self) {
+        let (Some(store), Some(target)) = (&self.review_custody, &self.review_target) else {
+            return;
+        };
+        match store.recovery(target) {
+            Ok(Some(ReviewCustodyRecovery::NeverStarted(preview))) => {
+                // A preview never crossed the durable dispatch fence. Remove
+                // it on restart; it must never trigger a provider lookup.
+                if store.cancel_prepared(&preview).is_ok() {
+                    self.review_receipt = Some((
+                        t!("fleet.review.state_refused").to_string(),
+                        t!("fleet.review.never_dispatched").to_string(),
+                    ));
+                }
+            }
+            Ok(Some(ReviewCustodyRecovery::LookupOnly(preview))) => {
+                if !self
+                    .unresolved_review_actions
+                    .iter()
+                    .any(|candidate| candidate.idempotency_key() == preview.idempotency_key())
+                {
+                    self.unresolved_review_actions.push(preview);
+                }
+            }
+            Ok(Some(ReviewCustodyRecovery::Terminal(presentation))) => {
+                self.review_receipt = Some((
+                    presentation.outcome,
+                    presentation
+                        .actor
+                        .map_or(presentation.detail.clone(), |actor| {
+                            t!(
+                                "fleet.review.receipt_actor",
+                                detail = presentation.detail,
+                                actor = actor
+                            )
+                            .to_string()
+                        }),
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.review_receipt = Some((
+                    t!("fleet.review.state_refused").to_string(),
+                    error.to_string(),
+                ));
+            }
+        }
     }
 
     pub fn pending_review_reconciliation(&self) -> Option<PlatformReviewActionPreview> {
@@ -576,57 +683,22 @@ impl FleetView {
         Ok(())
     }
 
-    fn prepare_review_comment_batch(&mut self) -> Result<(), &'static str> {
-        let target = self
-            .review_target
-            .clone()
-            .ok_or("exact review target is unavailable")?;
-        let selected = self
-            .selected_review_comments
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        let preview = PlatformReviewActionPreview::batch_send_comments(
-            target,
-            self.available_review()?,
-            &selected,
-        )?;
-        self.pending_review_preview = Some(preview);
-        Ok(())
-    }
-
-    fn prepare_review_proposal(&mut self, proposal_id: &str) -> Result<(), &'static str> {
-        let target = self
-            .review_target
-            .clone()
-            .ok_or("exact review target is unavailable")?;
-        let preview = PlatformReviewActionPreview::apply_proposal(
-            target,
-            self.available_review()?,
-            proposal_id,
-        )?;
-        self.pending_review_preview = Some(preview);
-        Ok(())
-    }
-
     fn prepare_review_check_rerun(&mut self, check_id: &str) -> Result<(), &'static str> {
         let target = self
             .review_target
             .clone()
             .ok_or("exact review target is unavailable")?;
-        let preview =
-            PlatformReviewActionPreview::rerun_check(target, self.available_review()?, check_id)?;
-        self.pending_review_preview = Some(preview);
-        Ok(())
-    }
-
-    fn prepare_review_merge(&mut self) -> Result<(), &'static str> {
-        let target = self
-            .review_target
-            .clone()
-            .ok_or("exact review target is unavailable")?;
-        let preview =
-            PlatformReviewActionPreview::merge_pull_request(target, self.available_review()?)?;
+        let preview = PlatformReviewActionPreview::rerun_check(
+            target,
+            self.available_review()?,
+            self.available_review_capabilities()?,
+            check_id,
+        )?;
+        self.review_custody
+            .as_ref()
+            .ok_or("review custody is unavailable")?
+            .prepare(&preview)
+            .map_err(|_| "review custody refused the preview")?;
         self.pending_review_preview = Some(preview);
         Ok(())
     }
@@ -639,6 +711,29 @@ impl FleetView {
         {
             return None;
         }
+        let preview = self.pending_review_preview.as_ref()?;
+        if preview.confirmation().is_some() {
+            let capabilities = self.available_review_capabilities().ok()?;
+            if !preview.matches_capabilities(capabilities) {
+                self.review_receipt = Some((
+                    t!("fleet.review.state_refused").to_string(),
+                    t!("fleet.review.capability_stale").to_string(),
+                ));
+                return None;
+            }
+            if self
+                .review_custody
+                .as_ref()?
+                .mark_dispatched(preview)
+                .is_err()
+            {
+                self.review_receipt = Some((
+                    t!("fleet.review.state_refused").to_string(),
+                    t!("fleet.review.custody_failed").to_string(),
+                ));
+                return None;
+            }
+        }
         let preview = self.pending_review_preview.take()?;
         self.operation_busy = true;
         self.unresolved_review_actions.push(preview.clone());
@@ -649,6 +744,17 @@ impl FleetView {
         Some(preview)
     }
 
+    fn cancel_pending_review_preview(&mut self) {
+        let Some(preview) = self.pending_review_preview.take() else {
+            return;
+        };
+        if preview.confirmation().is_some() {
+            if let Some(store) = &self.review_custody {
+                let _ = store.cancel_prepared(&preview);
+            }
+        }
+    }
+
     pub fn set_review_action_result(
         &mut self,
         result: PlatformReviewActionResult,
@@ -656,14 +762,57 @@ impl FleetView {
     ) {
         let keep_lookup = result.requires_lookup();
         let preview = result.preview().clone();
+        if preview.confirmation().is_some() {
+            let persisted = match &result {
+                PlatformReviewActionResult::Receipt { receipt, .. } => self
+                    .review_custody
+                    .as_ref()
+                    .ok_or("review custody is unavailable")
+                    .and_then(|store| {
+                        store
+                            .record_receipt(&preview, receipt)
+                            .map_err(|_| "review receipt custody failed")
+                    }),
+                PlatformReviewActionResult::Refused {
+                    category,
+                    explanation,
+                    ..
+                } => self
+                    .review_custody
+                    .as_ref()
+                    .ok_or("review custody is unavailable")
+                    .and_then(|store| {
+                        store
+                            .record_refusal(&preview, category, explanation)
+                            .map_err(|_| "review refusal custody failed")
+                    }),
+                PlatformReviewActionResult::ReconciliationPending { .. } => Ok(()),
+            };
+            if let Err(category) = persisted {
+                self.review_receipt = Some((
+                    t!("fleet.review.state_ambiguous").to_string(),
+                    category.to_owned(),
+                ));
+                self.unresolved_review_actions
+                    .retain(|candidate| candidate.idempotency_key() != preview.idempotency_key());
+                self.unresolved_review_actions.push(preview);
+                self.operation_busy = false;
+                self.loading = false;
+                return;
+            }
+        }
         match result {
             PlatformReviewActionResult::Receipt { receipt, .. } => {
                 self.review_receipt = Some((
                     receipt.outcome().as_str().to_owned(),
                     format!(
-                        "{} · {}",
+                        "{} · {} · {}",
                         receipt.action_id().as_str(),
-                        receipt.reconciliation().as_str()
+                        receipt.reconciliation().as_str(),
+                        t!(
+                            "fleet.review.receipt_actor_short",
+                            actor = receipt.actor().as_str()
+                        )
                     ),
                 ));
                 if matches!(receipt.outcome(), ReviewReceiptOutcome::Completed)
@@ -704,7 +853,7 @@ impl FleetView {
     }
 
     pub fn reset_review_action_for_context_change(&mut self) {
-        self.pending_review_preview = None;
+        self.cancel_pending_review_preview();
         self.review_receipt = None;
         self.operation_busy = false;
     }
@@ -722,6 +871,7 @@ impl FleetView {
     pub fn reset(&mut self) {
         self.snapshot = None;
         self.review = None;
+        self.review_capabilities = None;
         self.review_target = None;
         self.cockpit = PlatformCockpitState::default();
         self.search_query.clear();
@@ -732,7 +882,7 @@ impl FleetView {
         self.review_comment_value.clear();
         self.selected_review_anchor = None;
         self.selected_review_comments.clear();
-        self.pending_review_preview = None;
+        self.cancel_pending_review_preview();
         self.unresolved_review_actions.clear();
         self.review_receipt = None;
         self.refusal = None;
@@ -1167,7 +1317,7 @@ impl FleetView {
                             .on_click(move |_, _, cx| {
                                 select_entity.update(cx, |this, cx| {
                                     this.selected_review_anchor = Some(anchor_for_click.clone());
-                                    this.pending_review_preview = None;
+                                    this.cancel_pending_review_preview();
                                     cx.notify();
                                 });
                             }),
@@ -1245,13 +1395,6 @@ impl FleetView {
 
         let mut comments = div().flex().flex_col().gap(px(4.0));
         for comment in &review.comments {
-            let selectable = matches!(
-                comment.agent_state,
-                CommentAgentState::NotSent | CommentAgentState::Refused
-            ) && review.comment_is_batch_actionable(&comment.id);
-            let selected = self.selected_review_comments.contains(&comment.id);
-            let select_entity = entity.clone();
-            let comment_id = comment.id.clone();
             comments = comments.child(
                 div()
                     .flex()
@@ -1274,35 +1417,6 @@ impl FleetView {
                             )
                             .to_string(),
                         ),
-                    )
-                    .child(
-                        Button::new(
-                            ElementId::from(SharedString::from(format!(
-                                "select-review-comment-{}",
-                                comment.id
-                            ))),
-                            if selected {
-                                t!("fleet.review.comment_selected").to_string()
-                            } else {
-                                t!("fleet.review.comment_select").to_string()
-                            },
-                        )
-                        .size(ButtonSize::Sm)
-                        .variant(if selected {
-                            ButtonVariant::Secondary
-                        } else {
-                            ButtonVariant::Ghost
-                        })
-                        .disabled(!can_prepare || !selectable)
-                        .on_click(move |_, _, cx| {
-                            select_entity.update(cx, |this, cx| {
-                                if !this.selected_review_comments.remove(&comment_id) {
-                                    this.selected_review_comments.insert(comment_id.clone());
-                                }
-                                this.pending_review_preview = None;
-                                cx.notify();
-                            });
-                        }),
                     ),
             );
         }
@@ -1330,7 +1444,6 @@ impl FleetView {
 
         let comment_entity = entity.clone();
         let approve_entity = entity.clone();
-        let batch_entity = entity.clone();
         let can_comment = can_prepare
             && selected_anchor.is_some()
             && !self.review_comment_value.trim().is_empty();
@@ -1347,71 +1460,23 @@ impl FleetView {
                 .to_string()
             },
         );
-        let mut effect_controls = div().flex().flex_wrap().gap(px(6.0)).child(
-            Button::new(
-                "prepare-review-comment-batch",
-                t!(
-                    "fleet.review.prepare_comment_batch",
-                    count = self.selected_review_comments.len()
-                )
-                .to_string(),
+        // External Git, agent-delivery, and pull-request actions remain absent:
+        // Platform v2 currently advertises only explicit check-rerun authority.
+        let mut effect_controls = div().flex().flex_wrap().gap(px(6.0));
+        let capabilities = self
+            .review_capabilities
+            .as_ref()
+            .and_then(PlatformReviewCapabilitiesLoad::available);
+        let target = self.review_target.as_ref();
+        for check in review.checks.iter().filter(|check| {
+            review_rerun_is_visible(
+                review,
+                target,
+                capabilities,
+                self.review_custody.is_some(),
+                &check.id,
             )
-            .size(ButtonSize::Sm)
-            .variant(ButtonVariant::Outline)
-            .disabled(!can_prepare || self.selected_review_comments.is_empty())
-            .on_click(move |_, _, cx| {
-                batch_entity.update(cx, |this, cx| {
-                    if this.prepare_review_comment_batch().is_err() {
-                        this.review_receipt = Some((
-                            t!("fleet.review.state_refused").to_string(),
-                            t!("fleet.review.invalid_preview").to_string(),
-                        ));
-                    }
-                    cx.notify();
-                });
-            }),
-        );
-        for proposal in review
-            .proposals
-            .iter()
-            .filter(|proposal| review.proposal_is_actionable(&proposal.id))
-        {
-            let proposal_entity = entity.clone();
-            let proposal_id = proposal.id.clone();
-            effect_controls = effect_controls.child(
-                Button::new(
-                    ElementId::from(SharedString::from(format!(
-                        "prepare-review-proposal-{}",
-                        proposal.id
-                    ))),
-                    t!(
-                        "fleet.review.prepare_proposal",
-                        action = localized_review_proposal_kind(proposal.kind),
-                        files = proposal.files.len()
-                    )
-                    .to_string(),
-                )
-                .size(ButtonSize::Sm)
-                .variant(ButtonVariant::Outline)
-                .disabled(!can_prepare)
-                .on_click(move |_, _, cx| {
-                    proposal_entity.update(cx, |this, cx| {
-                        if this.prepare_review_proposal(&proposal_id).is_err() {
-                            this.review_receipt = Some((
-                                t!("fleet.review.state_refused").to_string(),
-                                t!("fleet.review.invalid_preview").to_string(),
-                            ));
-                        }
-                        cx.notify();
-                    });
-                }),
-            );
-        }
-        for check in review
-            .checks
-            .iter()
-            .filter(|check| review.check_is_rerunnable(&check.id))
-        {
+        }) {
             let check_entity = entity.clone();
             let check_id = check.id.clone();
             effect_controls = effect_controls.child(
@@ -1428,29 +1493,6 @@ impl FleetView {
                 .on_click(move |_, _, cx| {
                     check_entity.update(cx, |this, cx| {
                         if this.prepare_review_check_rerun(&check_id).is_err() {
-                            this.review_receipt = Some((
-                                t!("fleet.review.state_refused").to_string(),
-                                t!("fleet.review.invalid_preview").to_string(),
-                            ));
-                        }
-                        cx.notify();
-                    });
-                }),
-            );
-        }
-        if review.pull_request_is_mergeable() {
-            let merge_entity = entity.clone();
-            effect_controls = effect_controls.child(
-                Button::new(
-                    "prepare-review-merge",
-                    t!("fleet.review.prepare_merge").to_string(),
-                )
-                .size(ButtonSize::Sm)
-                .variant(ButtonVariant::Outline)
-                .disabled(!can_prepare)
-                .on_click(move |_, _, cx| {
-                    merge_entity.update(cx, |this, cx| {
-                        if this.prepare_review_merge().is_err() {
                             this.review_receipt = Some((
                                 t!("fleet.review.state_refused").to_string(),
                                 t!("fleet.review.invalid_preview").to_string(),
@@ -1497,7 +1539,7 @@ impl FleetView {
                                 move |value, cx| {
                                     entity.update(cx, |this, cx| {
                                         this.review_comment_value = value.to_string();
-                                        this.pending_review_preview = None;
+                                        this.cancel_pending_review_preview();
                                         cx.notify();
                                     });
                                 }
@@ -1692,7 +1734,7 @@ impl FleetView {
                     .variant(ButtonVariant::Ghost)
                     .on_click(move |_, _, cx| {
                         cancel_entity.update(cx, |this, cx| {
-                            this.pending_review_preview = None;
+                            this.cancel_pending_review_preview();
                             cx.notify();
                         });
                     }),
@@ -3033,7 +3075,8 @@ impl Render for FleetView {
 mod review_render_tests {
     use super::{
         exact_review_target_index, fleet_uses_compact_layout, review_dispatch_directive,
-        same_exact_review_snapshot, semantic_words, ReviewDispatchDirective,
+        review_rerun_control_gate, same_exact_review_snapshot, semantic_words,
+        ReviewDispatchDirective,
     };
     use shelldeck_core::config::platform_review::PlatformReviewTarget;
     use shelldeck_core::config::workspace_catalog::{
@@ -3191,5 +3234,14 @@ mod review_render_tests {
             Some(41)
         ));
         assert!(!same_exact_review_snapshot(None, None, None, None));
+    }
+
+    // SDTEST-1828 — without both a server-advertised capability and durable
+    // custody, the rerun control is absent rather than disabled optimistically.
+    #[test]
+    fn rerun_control_is_absent_without_capability_or_custody() {
+        assert!(!review_rerun_control_gate(false, true));
+        assert!(!review_rerun_control_gate(true, false));
+        assert!(review_rerun_control_gate(true, true));
     }
 }
