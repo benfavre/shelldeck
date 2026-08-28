@@ -1934,8 +1934,13 @@ off, and the main ShellDeck window remains hidden. Every visible tray label,
 including zero/one/many counter forms and the empty pinned-connections row,
 follows the selected French or English UI locale. A live language change
 republishes the tray snapshot so every desktop backend updates the native menu
-immediately. Counters and pinned connections follow the same owner-thread
-snapshot path. The Dock header and rail toolbox use keyboard-focusable controls
+immediately. Counters and pinned connections rebuild the same immutable GPUI
+native-menu snapshot on its foreground executor. Informational counters and
+signed-out session actions are native disabled labels, while command dispatch
+independently rechecks authentication. Linux uses GPUI's
+StatusNotifierItem/`ksni` backend without GTK or AppIndicator; its
+service-thread events are marshalled back to the GPUI foreground executor
+before application dispatch. The Dock header and rail toolbox use keyboard-focusable controls
 with visible localized names or tooltips; Escape remains an explicit hide
 action. On macOS, the tray uses a dedicated
 36 px black-and-alpha Monolith mark as an AppKit template image, so the system
@@ -1948,7 +1953,10 @@ Windows retain the colored app icon.
 when the system tray was created successfully. The default remains a visible
 start for old and fresh configurations. If the tray backend is unavailable,
 ShellDeck ignores the hidden-start preference and opens its main window so the
-process is always recoverable. Tray and deep-link show actions explicitly show
+process is always recoverable. On Windows, an Explorer restart authoritatively
+re-adds the retained icon; a failed re-add makes tray availability false rather
+than claiming a notification-area entry that no longer exists. Tray and
+deep-link show actions explicitly show
 the hidden window before activating it. A hidden start initially owns only a
 lightweight `CompanionRoot`: it does not construct `Workspace`, its views or
 its pollers until a tray, deep-link, palette, Dock or task-target command needs
@@ -2869,6 +2877,17 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-08-28** — Hardened SDUC-435 and added SDTEST-1813..1815: Windows now
+  handles Explorer's `TaskbarCreated` broadcast through an invisible top-level
+  tray owner, re-adds the retained HICON with fail-closed availability, and
+  exercises GPUI's ICO selector plus `CreateIconFromResourceEx` on native CI.
+
+- **2026-08-28** — Amended SDUC-434/435 after moving every desktop tray to
+  GPUI's native backend: Linux no longer initializes GTK/AppIndicator, native
+  availability remains authoritative for hidden start, and counters/signed-out
+  actions use portable disabled labels with foreground-thread event delivery.
+  Added SDTEST-1812 for Windows ICO decoding and visible-icon registration.
 
 - **2026-08-28** — Amended SDUC-443 and added SDTEST-1808: status counters
   now use semantic icons, numbers, 20 px hover targets, and localized tooltips;

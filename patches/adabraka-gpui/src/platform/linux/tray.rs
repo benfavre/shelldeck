@@ -108,6 +108,12 @@ fn convert_menu_item(
                 ..Default::default()
             })
         }
+        // ShellDeck patch: SDPATCH-120 — render informational rows disabled.
+        TrayMenuItem::Label { label } => ksni::MenuItem::Standard(ksni::menu::StandardItem {
+            label: label.to_string(),
+            enabled: false,
+            ..Default::default()
+        }),
         TrayMenuItem::Separator => ksni::MenuItem::Separator,
         TrayMenuItem::Submenu { label, items } => ksni::MenuItem::SubMenu(ksni::menu::SubMenu {
             label: label.to_string(),
@@ -180,6 +186,12 @@ impl LinuxTray {
                 tray.icon_data = data.clone();
             });
         }
+    }
+
+    // ShellDeck patch: SDPATCH-120 — a successful ksni handle is the native
+    // availability authority used by hidden-start policy.
+    pub fn is_available(&self) -> bool {
+        self.handle.is_some()
     }
 
     pub fn set_tooltip(&mut self, tooltip: &str) {
