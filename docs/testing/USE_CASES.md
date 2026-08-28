@@ -2729,6 +2729,10 @@ an unavailable adapter refuses before any effect.
 
 ## Change log
 
+- **2026-08-28** — Added SDTEST-1793 for a real SSH transport acceptance of
+  the fixed workspace subsystem: exact prepare/release plus prepare/resume into
+  the descriptor-retained clean repository, using the production client and
+  no path-bearing SSH exec request.
 - **2026-08-28** — Added SDTEST-1792 so line and comment selections cannot
   cross a project/workspace switch or review-snapshot revision boundary.
 - **2026-08-28** — Expanded SDUC-495 and added SDTEST-1791 for exact
