@@ -18,6 +18,31 @@ struct SupportHomeStat {
     target: SupportHomeTarget,
 }
 
+fn support_home_card_header(icon: &'static str, color: Hsla, title: String) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(9.0))
+        .child(
+            div()
+                .size(px(26.0))
+                .rounded(px(7.0))
+                .bg(color.opacity(0.12))
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .child(lucide_icon(icon, 14.0, color)),
+        )
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(ShellDeckColors::text_primary())
+                .child(title),
+        )
+}
+
 impl SupportHomeTarget {
     fn section(self) -> SupportSection {
         match self {
@@ -189,8 +214,10 @@ impl SupportView {
             .flex()
             .items_center()
             .gap(px(10.0))
-            .px(px(2.0))
+            .mx(px(-8.0))
+            .px(px(8.0))
             .py(px(9.0))
+            .rounded(px(8.0))
             .border_b_1()
             .border_color(ShellDeckColors::border().opacity(0.65))
             .cursor_pointer()
@@ -272,8 +299,10 @@ impl SupportView {
             .flex()
             .items_center()
             .gap(px(10.0))
-            .px(px(2.0))
+            .mx(px(-8.0))
+            .px(px(8.0))
             .py(px(9.0))
+            .rounded(px(8.0))
             .border_b_1()
             .border_color(ShellDeckColors::border().opacity(0.65))
             .cursor_pointer()
@@ -543,51 +572,22 @@ impl SupportView {
                         .gap(px(12.0))
                         .child(
                             Card::new()
-                                .header(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(7.0))
-                                        .child(lucide_icon(
-                                            "siren",
-                                            15.0,
-                                            ShellDeckColors::warning(),
-                                        ))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(ShellDeckColors::text_primary())
-                                                .child(
-                                                    t!("support.home.priority_column_title")
-                                                        .to_string(),
-                                                ),
-                                        ),
-                                )
+                                .header(support_home_card_header(
+                                    "triangle-alert",
+                                    ShellDeckColors::warning(),
+                                    t!("support.home.priority_column_title").to_string(),
+                                ))
                                 .content(attention)
                                 .min_w(px(360.0))
                                 .flex_1(),
                         )
                         .child(
                             Card::new()
-                                .header(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(7.0))
-                                        .child(lucide_icon(
-                                            "history",
-                                            15.0,
-                                            ShellDeckColors::success(),
-                                        ))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(ShellDeckColors::text_primary())
-                                                .child(t!("user.home.recent_requests").to_string()),
-                                        ),
-                                )
+                                .header(support_home_card_header(
+                                    "clock",
+                                    ShellDeckColors::success(),
+                                    t!("user.home.recent_requests").to_string(),
+                                ))
                                 .content(recent_requests)
                                 .min_w(px(360.0))
                                 .flex_1(),
