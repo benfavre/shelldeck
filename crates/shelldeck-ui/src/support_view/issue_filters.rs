@@ -277,4 +277,11 @@ impl SupportView {
             .filter(|issue| self.issues_staff || self.is_my_issue(issue))
             .count()
     }
+
+    /// Total authorized request universe advertised by the server. The API
+    /// may cap the loaded page, so navigation and dashboard labels must not
+    /// collapse this total to the number of rows currently in memory.
+    pub(super) fn issue_total_count(&self) -> usize {
+        super::reconciled_issue_total(self.issue_counts.all, self.visible_issue_count())
+    }
 }

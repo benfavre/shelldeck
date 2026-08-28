@@ -988,6 +988,24 @@ Disconnect drops local control authority, preserves observation panes, marks
 them offline, and requires a new server-side lease after reconnect. Stale
 runtime configuration cannot restore the removed behavior.
 
+The native cockpit stays fully operable at compact widths. Below 1,000 logical
+pixels it replaces the fixed 380 px resource column plus session column with
+explicit Resources and Sessions views; their counters remain visible and each
+view owns the full available width. Session attach/control and approval actions
+move to a dedicated row instead of leaving the viewport. The compact header
+keeps connection state and Refresh, while the desktop two-column composition
+returns at and above the breakpoint. Type and state badges keep their intrinsic
+width; only secondary identifiers may truncate. The breakpoint follows UI
+scale.
+
+Opening the cockpit still triggers an immediate projection read. While healthy,
+automatic reads run at most every 10 seconds. An unavailable Platform emits one
+Platform-labelled warning for the outage and backs automatic network retries
+off to 30, 60, then 120 seconds; the explicit Refresh action bypasses that wait.
+A successful read resets the outage and retry state. Persistent request and
+control errors occupy an in-flow notice above the panels, never an overlay over
+resource or session actions.
+
 ---
 
 ## 12. Hosted issue management (requests)
@@ -1120,6 +1138,14 @@ non-empty bracket label touches a safe HTTP(S) autolink, the conversation shows
 only that label as the link text and retains the shared confirmation panel.
 Standard `[label](destination)` Markdown, standalone or whitespace-separated
 autolinks, unsafe schemes, code and image syntax are not reinterpreted.
+
+Outlook may also leave an inline-image Content-ID marker such as
+`[cid:image003.png@opaque-id]` in the plain-text body. Conversation rendering
+matches the filename before `@` against attachments belonging to that exact
+message: a match becomes a localized pointer to the attachment gallery; a miss
+becomes an explicit unavailable-image label. The opaque transport identifier is
+never rendered. Ticket, Support-request and User-request threads use the same
+presentation adapter, while cached source text and copy actions stay untouched.
 
 ### SDUC-461 — External Support titles remain readable without rewriting source data
 
@@ -1545,6 +1571,11 @@ script, tunnel, support ticket, hosted request, site, Monique, Fleet, or bext.
 When Recent AI is enabled, a row can explicitly open the assistant with only
 that activity entry and the bounded host directory as context.
 
+Below 1,000 logical pixels the header and search stack, while each activity
+entry reserves a multiline identity row above its contextual actions. Long
+titles wrap instead of running under the buttons, and variable virtual-list
+extents match the compact row height at every UI scale.
+
 ---
 
 ## 21. Pinned connections
@@ -1601,6 +1632,9 @@ shaping, so long turns remain wholly inside the conversation viewport instead
 of extending beneath history. Below that scale-aware breakpoint, history and
 conversation are exclusive full-width panels selected by the header button:
 the compact conversation never keeps a clipped or unusable history rail. In
+that compact Sheet header, actions and task count keep intrinsic width while a
+long shaped conversation title receives a Unicode-safe visible ellipsis; wide
+headers and short titles retain their complete text. In
 the main window, the
 right-side Assistant Sheet preserves the floating window's top-right and
 bottom-right 12 px `radius_xl`; the complete overlay is clipped once at the
@@ -2130,6 +2164,26 @@ panel-less activities.
 The panel header names the active activity, so the list below it does not
 repeat that name as its own section header.
 
+The Dev status bar follows the same compact vocabulary. Its three live activity
+counts render as distinct semantic Lucide icons plus numbers; hovering each
+20-pixel target reveals the complete localized meaning. Below the compact
+breakpoint, branch, palette hint, and default version metadata disappear. On a
+wide layout the Git branch is positioned at the geometric center independently
+of the left counters and right metadata, so either side can grow without moving
+or gluing it to a neighbor.
+
+The main Sites and Scripts surfaces also preserve this navigation contract at
+narrow Dev widths. Sites uses contained full-width cards and replaces the list
+with one fully scrollable detail view; Scripts shows either its full-width
+master list or the selected editor with an explicit return action. At wide
+widths their table and side-by-side master/detail layouts remain unchanged.
+
+The Dev status bar follows the same scale-aware containment rule. Below 800
+logical pixels it keeps the three live activity counters, hides the secondary
+Git branch, palette hint, and default version, and still gives an update or
+notification the remaining bounded space. Wide windows retain the complete
+metadata row.
+
 ### SDUC-444 — A global shortcut that cannot register says why
 
 A global shortcut whose registration is refused reports it instead of looking
@@ -2577,11 +2631,91 @@ other chip counts disappear or exposing information outside the caller's scope.
 ShellDeck defaults missing counts to zero for compatibility with older servers,
 uses the server values for the Support request pills, and keeps them coherent
 during local create, status-change, and delete updates until the next poll. The
-four visible filters use the same compact button plus secondary count badge as
-the neighboring Tickets queue.
+Support home counter and Requests tab show that same authorized total even when
+the returned list is capped to a smaller loaded page; the virtual list still
+renders only the rows actually received. The four visible filters use the same
+compact button plus secondary count badge as the neighboring Tickets queue.
+
+### SDUC-487 — Global Workspace overlays have one visible owner
+
+Opening the in-window command palette closes every titlebar dropdown — account,
+mode, and site — before its backdrop renders. The shortcut action, application
+menu command, and public Workspace entry point all use that same transition.
+Changing the active Dev destination also clears those dropdown owners, so an
+action selected from the palette cannot leave its former menu attached to the
+new surface.
+
+### SDUC-488 — Site scope labels disclose every truncation
+
+The titlebar site chip, site-switcher rows, and Manage-area links remain bounded
+inside their available flex space. A label that cannot fit ends with a visible
+ellipsis rather than an unexplained fragment. The complete unmodified label is
+retained as the tooltip for every interactive row; the titlebar chip keeps the
+same full-scope tooltip. Short labels remain unchanged, and truncation follows
+Unicode scalar boundaries instead of slicing encoded text.
+
+The explicit source-level ellipsis is intentional: GPUI can clip flex text after
+layout without painting its configured overflow marker. Layout truncation remains
+as a second containment layer, while the source marker guarantees that the user
+can see that more text exists.
+
+### SDUC-489 — Bext Instance failures keep their service context
+
+Errors returned by the single-instance SDK never pass through the Manage portal
+error presenter. The raw HTTP status, internal SDK route, and loopback address
+remain in logs, while the UI identifies the Bext instance and gives guidance
+appropriate to the failure class. A 404 says that a resource or SDK route is
+missing on the targeted instance and suggests checking the target and version;
+it never claims that a portal item was deleted.
+
+The mapping distinguishes unreachable, timeout, rejected, not-found, server,
+bad-response, and fallback failures in both supported locales. The persistent
+Instance notice stays inset and rounded at compact widths and is capped on wide
+layouts, so a more useful message cannot overflow its owning view.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-443 and added SDTEST-1741: status counters
+  now use semantic icons, numbers, 20 px hover targets, and localized tooltips;
+  the wide Git branch is anchored to the geometric center outside the flex
+  flow. Replayed at 600 and 1,210 px after catching the former flex regression.
+- **2026-08-28** — Added SDUC-489 and SDTEST-1740: Instance SDK failures now
+  use their own bilingual presentation instead of Manage semantics. The real
+  loopback 404 was replayed at 600 and 1,210 px, with a contained error notice
+  and the technical route/status retained only in logs.
+- **2026-08-28** — Added SDUC-488 and SDTEST-1739: long labels in the titlebar
+  site chip, site rows, section heading, and Manage-area rows now show an
+  explicit Unicode-safe ellipsis and expose their untouched value in tooltips.
+  The switcher was replayed at 600 and 1,210 px on the real Manage directory.
+- **2026-08-28** — Amended SDUC-414 and added SDTEST-1738: compact Assistant
+  Sheet titles gain a source-level visible ellipsis because GPUI can clip a
+  multi-run `StyledText` without painting its CSS ellipsis; short and wide
+  titles remain unchanged beside the intrinsic task/actions chrome.
+- **2026-08-28** — Added SDUC-487 and SDTEST-1737: account, mode, and site
+  dropdowns close before the command palette opens through any entry point and
+  are reset again on destination changes, preventing stacked or surviving
+  global chrome overlays.
+- **2026-08-28** — Amended SDUC-443 and added SDTEST-1736: the compact Dev
+  status bar prioritizes live counters and bounded notifications, suppressing
+  branch, shortcut hint, and default version metadata below 800 scale-aware
+  logical pixels while preserving the complete wide row.
+- **2026-08-28** — Amended SDUC-409/443 and added SDTEST-1733/1734/1735: at
+  narrow Dev widths, Recent Activity stacks actions below wrapping titles,
+  Sites uses contained cards plus one scrollable detail view, and Scripts uses
+  an explicit list/editor master-detail switch. All three breakpoints follow
+  the UI scale and preserve their wide layouts.
+- **2026-08-28** — Amended SDUC-476 and added SDTEST-1732: Platform polling
+  uses a bounded failure backoff with one diagnostic per outage, while its
+  persistent error notice reserves layout space instead of covering sessions.
+- **2026-08-28** — Amended SDUC-476 and added SDTEST-1731: the Platform
+  cockpit switches from fixed desktop columns to explicit full-width Resources
+  and Sessions views below a scale-aware 1,000 logical pixels.
+- **2026-08-28** — Amended SDUC-460 and added SDTEST-1730: Outlook Content-ID
+  image markers resolve against same-message attachments or become a localized
+  unavailable-image label across all request/ticket conversation surfaces.
+- **2026-08-28** — Amended SDUC-486 and SDTEST-1725: Support navigation and
+  home counters retain the authorized server total when the loaded request page
+  is capped, while the virtual list remains bounded to the rows received.
 - **2026-08-27** — Amended SDUC-414 and SDTEST-1600: below the Assistant
   Sheet's two-column breakpoint, history now swaps with the conversation as a
   full panel instead of collapsing into a clipped 94 px rail that steals width

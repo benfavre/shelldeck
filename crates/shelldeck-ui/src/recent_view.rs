@@ -26,6 +26,12 @@ const KIND_FILTERS: &[ActivityKind] = &[
 
 const ACTIVITY_ROW_HEIGHT: f32 = 60.0;
 const ACTIVITY_ROW_WITH_DETAIL_HEIGHT: f32 = 80.0;
+const ACTIVITY_COMPACT_ROW_HEIGHT: f32 = 116.0;
+const ACTIVITY_COMPACT_ROW_WITH_DETAIL_HEIGHT: f32 = 136.0;
+
+fn recent_uses_compact_layout(viewport_width: Pixels, rem_size: Pixels) -> bool {
+    viewport_width < px(1_000.0).to_pixels(rem_size)
+}
 
 struct ActivityRowExtents(Vec<Pixels>);
 
@@ -159,21 +165,32 @@ impl RecentView {
                 .is_some_and(|d| d.to_lowercase().contains(&q))
     }
 
-    fn row_height(entry: &ActivityEntry) -> f32 {
-        if entry.detail.as_ref().is_some_and(|d| !d.trim().is_empty()) {
+    fn row_height(entry: &ActivityEntry, compact: bool) -> f32 {
+        let has_detail = entry.detail.as_ref().is_some_and(|d| !d.trim().is_empty());
+        Self::row_height_for_content(has_detail, compact)
+    }
+
+    fn row_height_for_content(has_detail: bool, compact: bool) -> f32 {
+        if compact {
+            if has_detail {
+                ACTIVITY_COMPACT_ROW_WITH_DETAIL_HEIGHT
+            } else {
+                ACTIVITY_COMPACT_ROW_HEIGHT
+            }
+        } else if has_detail {
             ACTIVITY_ROW_WITH_DETAIL_HEIGHT
         } else {
             ACTIVITY_ROW_HEIGHT
         }
     }
 
-    fn render_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_filters(&self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let mut row = div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(px(6.0))
-            .px(px(24.0))
+            .px(px(if compact { 12.0 } else { 24.0 }))
             .py(px(10.0));
         let all_selected = self.selected_kind.is_none();
         row = row.child(
@@ -207,7 +224,12 @@ impl RecentView {
         row
     }
 
-    fn render_entry(&self, entry: &ActivityEntry, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_entry(
+        &self,
+        entry: &ActivityEntry,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let color = Self::kind_color(entry.kind);
         let icon = Self::kind_icon(entry.kind);
         let at_ms = entry.at.timestamp_millis() as f64;
@@ -225,11 +247,22 @@ impl RecentView {
             .whitespace_nowrap()
             .text_size(px(11.0))
             .text_color(ShellDeckColors::text_muted())
-            .child(Badge::new(Self::kind_label(entry.kind)).variant(BadgeVariant::Outline))
-            .child(crate::i18n::rel_time(at_ms));
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .child(Badge::new(Self::kind_label(entry.kind)).variant(BadgeVariant::Outline)),
+            )
+            .child(div().flex_shrink_0().child(crate::i18n::rel_time(at_ms)));
 
         if let Some(label) = entry.target_label.as_ref().filter(|s| !s.trim().is_empty()) {
-            meta = meta.child(div().max_w(px(220.0)).truncate().child(label.clone()));
+            meta = meta.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .max_w(px(220.0))
+                    .truncate()
+                    .child(label.clone()),
+            );
         }
 
         let mut text_col = div()
@@ -244,7 +277,8 @@ impl RecentView {
                     .text_size(px(14.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_primary())
-                    .truncate()
+                    .when(compact, |text| text.line_clamp(2))
+                    .when(!compact, |text| text.truncate())
                     .child(entry.message.clone()),
             );
 
@@ -258,17 +292,11 @@ impl RecentView {
             );
         }
 
-        let mut row = div()
+        let identity = div()
             .flex()
             .items_center()
             .gap(px(12.0))
             .w_full()
-            .h(px(Self::row_height(entry)))
-            .px(px(14.0))
-            .py(px(8.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
             .child(
                 div()
                     .flex()
@@ -313,8 +341,28 @@ impl RecentView {
             );
         }
 
-        if action != ActivityAction::None || self.ai_enabled {
-            row = row.child(actions);
+        let has_actions = action != ActivityAction::None || self.ai_enabled;
+        let mut row = div()
+            .flex()
+            .items_center()
+            .gap(px(12.0))
+            .w_full()
+            .h(px(Self::row_height(entry, compact)))
+            .px(px(14.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .hover(|el| el.bg(ShellDeckColors::hover_bg()));
+        if compact {
+            row = row.flex_col().items_start().gap(px(8.0)).child(identity);
+            if has_actions {
+                row = row.child(actions.w_full().justify_end());
+            }
+        } else {
+            row = row.child(identity);
+            if has_actions {
+                row = row.child(actions);
+            }
         }
 
         row
@@ -345,8 +393,38 @@ impl RecentView {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{recent_uses_compact_layout, RecentView};
+
+    // SDTEST-1733 — D-09 / SDUC-409. The activity view's breakpoint follows
+    // the logical UI scale, and compact rows reserve enough room for a wrapped
+    // title plus their separate action row.
+    #[test]
+    fn recent_compact_layout_and_row_heights_are_scale_aware() {
+        assert!(recent_uses_compact_layout(gpui::px(999.0), gpui::px(16.0)));
+        assert!(!recent_uses_compact_layout(
+            gpui::px(1_000.0),
+            gpui::px(16.0)
+        ));
+        assert!(recent_uses_compact_layout(
+            gpui::px(1_999.0),
+            gpui::px(32.0)
+        ));
+        assert!(!recent_uses_compact_layout(
+            gpui::px(2_000.0),
+            gpui::px(32.0)
+        ));
+        assert_eq!(RecentView::row_height_for_content(false, false), 60.0);
+        assert_eq!(RecentView::row_height_for_content(true, false), 80.0);
+        assert_eq!(RecentView::row_height_for_content(false, true), 116.0);
+        assert_eq!(RecentView::row_height_for_content(true, true), 136.0);
+    }
+}
+
 impl Render for RecentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact = recent_uses_compact_layout(window.viewport_size().width, window.rem_size());
         let filtered_indices: Vec<usize> = self
             .entries
             .iter()
@@ -378,7 +456,7 @@ impl Render for RecentView {
                 filtered_indices
                     .iter()
                     .filter_map(|index| self.entries.get(*index))
-                    .map(|entry| gpui::px(Self::row_height(entry) * scale))
+                    .map(|entry| gpui::px(Self::row_height(entry, compact) * scale))
                     .collect(),
             );
 
@@ -386,7 +464,9 @@ impl Render for RecentView {
                 "recent-activity-list",
                 filtered_indices.len(),
                 extents,
-                cx.processor(|this, range: Range<usize>, _window, cx| {
+                cx.processor(|this, range: Range<usize>, window, cx| {
+                    let compact =
+                        recent_uses_compact_layout(window.viewport_size().width, window.rem_size());
                     let visible_indices = this
                         .entries
                         .iter()
@@ -397,7 +477,7 @@ impl Render for RecentView {
                     range
                         .filter_map(|index| visible_indices.get(index).copied())
                         .filter_map(|index| this.entries.get(index))
-                        .map(|entry| this.render_entry(entry, cx).into_any_element())
+                        .map(|entry| this.render_entry(entry, compact, cx).into_any_element())
                         .collect::<Vec<_>>()
                 }),
             )
@@ -407,72 +487,76 @@ impl Render for RecentView {
             .into_any_element()
         };
 
+        let heading = div()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .min_w(px(0.0))
+            .flex_grow()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(lucide_icon("activity", 18.0, ShellDeckColors::text_muted()))
+                    .child(
+                        div()
+                            .text_size(px(18.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .truncate()
+                            .child(t!("recent.title").to_string()),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .when(!compact, |text| text.truncate())
+                    .when(compact, |text| text.line_clamp(2))
+                    .child(t!("recent.subtitle").to_string()),
+            );
+        let mut search = div().flex_shrink_0().child(self.render_search(cx));
+        search = if compact {
+            search.w_full()
+        } else {
+            search.w(px(320.0)).max_w(relative(0.45))
+        };
+        let mut header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(16.0))
+            .px(px(if compact { 12.0 } else { 24.0 }))
+            .py(px(14.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border());
+        header = if compact {
+            header
+                .flex_col()
+                .items_start()
+                .gap(px(10.0))
+                .child(heading)
+                .child(search)
+        } else {
+            header.child(heading).child(search)
+        };
+
         div()
             .flex()
             .flex_col()
             .size_full()
             .bg(ShellDeckColors::bg_primary())
             .track_focus(&self.focus_handle)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(16.0))
-                    .px(px(24.0))
-                    .py(px(14.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.0))
-                            .min_w(px(0.0))
-                            .flex_grow()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.0))
-                                    .child(lucide_icon(
-                                        "activity",
-                                        18.0,
-                                        ShellDeckColors::text_muted(),
-                                    ))
-                                    .child(
-                                        div()
-                                            .text_size(px(18.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(ShellDeckColors::text_primary())
-                                            .truncate()
-                                            .child(t!("recent.title").to_string()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .truncate()
-                                    .child(t!("recent.subtitle").to_string()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w(px(320.0))
-                            .max_w(relative(0.45))
-                            .flex_shrink_0()
-                            .child(self.render_search(cx)),
-                    ),
-            )
-            .child(self.render_filters(cx))
+            .child(header)
+            .child(self.render_filters(compact, cx))
             .child(
                 div()
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_hidden()
-                    .px(px(24.0))
-                    .pb(px(18.0))
+                    .px(px(if compact { 12.0 } else { 24.0 }))
+                    .pb(px(if compact { 12.0 } else { 18.0 }))
                     .child(
                         div()
                             .flex()

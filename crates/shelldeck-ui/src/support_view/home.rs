@@ -555,7 +555,7 @@ impl SupportView {
                             SupportHomeStat {
                                 id: "support-home-requests-stat",
                                 icon: "tag",
-                                value: self.visible_issue_count(),
+                                value: self.issue_total_count(),
                                 label: t!("support.home.requests").to_string(),
                                 color: ShellDeckColors::success(),
                                 target: SupportHomeTarget::Requests,

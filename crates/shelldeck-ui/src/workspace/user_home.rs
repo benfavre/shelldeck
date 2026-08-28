@@ -126,9 +126,12 @@ impl Workspace {
 
     pub(super) fn render_site_section_header(label: &str) -> impl IntoElement {
         div()
+            .w_full()
+            .min_w(px(0.0))
             .px(px(8.0))
             .pt(px(8.0))
             .pb(px(4.0))
+            .truncate()
             .text_size(px(10.0))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(ShellDeckColors::text_muted())

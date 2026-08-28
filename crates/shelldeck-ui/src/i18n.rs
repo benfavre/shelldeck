@@ -105,6 +105,56 @@ pub fn api_error_message(err: &shelldeck_core::error::ShellDeckError) -> String 
     crate::t!(key).to_string()
 }
 
+/// Human-readable error for the SDK exposed by one bext instance.
+///
+/// Its HTTP statuses do not describe Manage resources. In particular, a 404
+/// can mean that the targeted instance does not expose the requested SDK route;
+/// it must never be presented as an item deleted from the portal.
+pub fn bext_instance_error_message(err: &shelldeck_core::error::ShellDeckError) -> String {
+    use shelldeck_core::config::cloud_account::{classify_api_error, ApiFailure};
+
+    tracing::warn!("requête Instance bext échouée : {err}");
+
+    let key = match classify_api_error(err) {
+        ApiFailure::Unreachable => "bext.error.instance_unreachable",
+        ApiFailure::Timeout => "bext.error.instance_timeout",
+        ApiFailure::AuthRejected | ApiFailure::Forbidden => "bext.error.instance_rejected",
+        ApiFailure::NotFound => "bext.error.instance_not_found",
+        ApiFailure::ServerError => "bext.error.instance_server",
+        ApiFailure::BadResponse => "bext.error.instance_bad_response",
+        ApiFailure::Other => "bext.error.instance_other",
+    };
+    crate::t!(key).to_string()
+}
+
+/// Human-readable error for the shared Platform projection.
+///
+/// Platform polling can retry the same unavailable endpoint several times.
+/// `log_failure` lets its owner emit one diagnostic per outage instead of one
+/// warning per poll while still rebuilding the localized UI message.
+pub fn platform_error_message(
+    err: &shelldeck_core::error::ShellDeckError,
+    log_failure: bool,
+) -> String {
+    use shelldeck_core::config::cloud_account::{classify_api_error, ApiFailure};
+
+    if log_failure {
+        tracing::warn!("requête Plateforme échouée : {err}");
+    }
+
+    let key = match classify_api_error(err) {
+        ApiFailure::Unreachable => "fleet.error.unreachable",
+        ApiFailure::Timeout => "fleet.error.timeout",
+        ApiFailure::AuthRejected => "fleet.error.auth_rejected",
+        ApiFailure::Forbidden => "fleet.error.forbidden",
+        ApiFailure::NotFound => "fleet.error.not_found",
+        ApiFailure::ServerError => "fleet.error.server",
+        ApiFailure::BadResponse => "fleet.error.bad_response",
+        ApiFailure::Other => "fleet.error.other",
+    };
+    crate::t!(key).to_string()
+}
+
 /// Comme [`api_error_message`], mais pour un échec du **formulaire de
 /// connexion**.
 ///
@@ -160,6 +210,33 @@ mod tests {
         assert_ne!(
             shown, expired,
             "portail injoignable et session expirée disent la même chose en {language}",
+        );
+    }
+
+    /// SDTEST-1740 — reste dans le scénario bilingue unique car la locale
+    /// rust-i18n est globale au processus.
+    fn assert_bext_instance_failures_keep_sdk_context(language: &str, expected_404: &str) {
+        use shelldeck_core::error::ShellDeckError;
+
+        let not_found = bext_instance_error_message(&ShellDeckError::Connection(
+            "instance SDK request failed: HTTP 404".to_string(),
+        ));
+        assert_eq!(not_found, expected_404);
+        assert!(
+            !not_found.to_ascii_lowercase().contains("portal")
+                && !not_found.to_ascii_lowercase().contains("portail")
+                && !not_found.contains("404"),
+            "un statut Instance est attribué au portail en {language}: {not_found}",
+        );
+
+        let unreachable = bext_instance_error_message(&ShellDeckError::Connection(
+            "instance SDK request failed: error sending request for url \
+             (http://127.0.0.1/__bext/sdk/site/list)"
+                .to_string(),
+        ));
+        assert!(
+            !unreachable.contains("127.0.0.1") && !unreachable.contains("/__bext/"),
+            "URL SDK exposée en {language}: {unreachable}",
         );
     }
 
@@ -268,6 +345,10 @@ mod tests {
             "Connexion interrompue\u{a0}: production"
         );
         assert_portal_failures_stay_readable("fr");
+        assert_bext_instance_failures_keep_sdk_context(
+            "fr",
+            "Ressource ou route SDK introuvable sur l’Instance Bext. Vérifiez la cible et sa version.",
+        );
         assert_operational_vocabulary_is_localized(
             "statut inconnu",
             "Priorité inconnue",
@@ -303,6 +384,10 @@ mod tests {
             "Connection interrupted: production"
         );
         assert_portal_failures_stay_readable("en");
+        assert_bext_instance_failures_keep_sdk_context(
+            "en",
+            "Resource or SDK route not found on the Bext instance. Check the target and its version.",
+        );
         assert_operational_vocabulary_is_localized(
             "unknown status",
             "Unknown priority",

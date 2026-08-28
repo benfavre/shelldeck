@@ -53,7 +53,7 @@ impl SupportView {
             return;
         };
 
-        self.issue_body_blocks = markdown_blocks(&issue.body);
+        self.issue_body_blocks = markdown_blocks(&issue.body, &issue.attachments);
         self.issue_comment_blocks = issue
             .comments
             .iter()
@@ -61,7 +61,7 @@ impl SupportView {
                 if comment.is_note() {
                     Vec::new()
                 } else {
-                    markdown_blocks(&comment.body)
+                    markdown_blocks(&comment.body, &comment.attachments)
                 }
             })
             .collect();
@@ -590,7 +590,7 @@ impl SupportView {
         let ai_entity = entity.clone();
         let focus = self.composer_state.read(cx).focus_handle(cx);
         let author = comment.author.clone();
-        let quoted = comment.body.clone();
+        let quoted = super::thread::cid_safe_text(&comment.body, &comment.attachments);
         let reply_id = SharedString::from(format!("issue-reply-{}", comment.id));
         let copy_id = SharedString::from(format!("issue-copy-{}", comment.id));
         let ai_id = SharedString::from(format!("issue-ai-rewrite-{}", comment.id));

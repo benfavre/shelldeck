@@ -1109,13 +1109,20 @@ impl Render for BextCloudView {
                     .absolute()
                     .bottom(px(12.0))
                     .left(px(12.0))
-                    .px(px(12.0))
-                    .py(px(8.0))
-                    .rounded(px(8.0))
-                    .bg(ShellDeckColors::error())
-                    .text_size(px(12.0))
-                    .text_color(white())
-                    .child(err.clone()),
+                    .right(px(12.0))
+                    .flex()
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(580.0))
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .rounded(px(8.0))
+                            .bg(ShellDeckColors::error())
+                            .text_size(px(12.0))
+                            .text_color(white())
+                            .child(err.clone()),
+                    ),
             );
         }
         root

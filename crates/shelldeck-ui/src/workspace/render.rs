@@ -277,11 +277,7 @@ impl Render for Workspace {
             .on_action(move |_: &ToggleCommandPalette, window, cx| {
                 if let Some(ws) = h5.upgrade() {
                     ws.update(cx, |ws, cx| {
-                        ws.command_palette.update(cx, |palette, cx| {
-                            palette.toggle(window, cx);
-                            cx.notify();
-                        });
-                        cx.notify();
+                        ws.toggle_command_palette(window, cx);
                     });
                 }
             })

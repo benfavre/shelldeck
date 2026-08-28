@@ -590,6 +590,10 @@ pub struct Workspace {
     _fleet_view_poll: Option<gpui::Task<()>>,
     /// Prevent overlapping cursor reads from applying out of order.
     fleet_refresh_in_flight: bool,
+    /// Consecutive projection failures, used to deduplicate diagnostics and
+    /// back off automatic retries while preserving manual Refresh.
+    fleet_refresh_failures: u32,
+    fleet_retry_not_before: Option<std::time::Instant>,
     /// Fences platform responses across sign-out and subsequent sign-in.
     fleet_request_epoch: u64,
     /// Mentionable people from Inklura Manage, for the assistant's `@` picker.
@@ -1374,6 +1378,8 @@ impl Workspace {
             pending_fleet_session_focus: None,
             _fleet_view_poll: None,
             fleet_refresh_in_flight: false,
+            fleet_refresh_failures: 0,
+            fleet_retry_not_before: None,
             fleet_request_epoch: 0,
             mention_people: Vec::new(),
             issues_list: Vec::new(),

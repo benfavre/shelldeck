@@ -16,6 +16,31 @@ use uuid::Uuid;
 
 const PAGE_SIZE: usize = 50;
 
+fn sites_uses_compact_layout(viewport_width: Pixels, rem_size: Pixels) -> bool {
+    viewport_width < px(1_000.0).to_pixels(rem_size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sites_uses_compact_layout;
+
+    // SDTEST-1734 — D-09 / SDUC-443. Sites switches to its contained card
+    // layout at the same logical width regardless of the active UI scale.
+    #[test]
+    fn sites_compact_layout_breakpoint_is_scale_aware() {
+        assert!(sites_uses_compact_layout(gpui::px(999.0), gpui::px(16.0)));
+        assert!(!sites_uses_compact_layout(
+            gpui::px(1_000.0),
+            gpui::px(16.0)
+        ));
+        assert!(sites_uses_compact_layout(gpui::px(1_999.0), gpui::px(32.0)));
+        assert!(!sites_uses_compact_layout(
+            gpui::px(2_000.0),
+            gpui::px(32.0)
+        ));
+    }
+}
+
 use crate::icons::lucide_icon;
 use crate::markdown::{markdown_link_popover, MarkdownLinkAction, MarkdownLinkHandler};
 use crate::monolith::{animated_monolith, MonolithMotion};
@@ -471,14 +496,14 @@ impl SitesView {
 
     // -- Render helpers ------------------------------------------------------
 
-    fn render_stat_card(label: impl AsRef<str>, value: String, accent: Hsla) -> Div {
+    fn render_stat_card(label: impl AsRef<str>, value: String, accent: Hsla, compact: bool) -> Div {
         div()
             .flex()
             .flex_col()
             .flex_1()
-            .min_w(px(120.0))
-            .px(px(16.0))
-            .py(px(12.0))
+            .min_w(px(if compact { 100.0 } else { 120.0 }))
+            .px(px(if compact { 12.0 } else { 16.0 }))
+            .py(px(if compact { 10.0 } else { 12.0 }))
             .rounded(px(8.0))
             .bg(ShellDeckColors::bg_surface())
             .border_1()
@@ -500,31 +525,36 @@ impl SitesView {
             )
     }
 
-    fn render_stats_row(&self) -> Div {
+    fn render_stats_row(&self, compact: bool) -> Div {
         div()
             .flex()
-            .gap(px(12.0))
+            .flex_wrap()
+            .gap(px(if compact { 8.0 } else { 12.0 }))
             .w_full()
             .flex_shrink_0()
             .child(Self::render_stat_card(
                 &t!("sites.stats.sites"),
                 self.total_sites().to_string(),
                 ShellDeckColors::primary(),
+                compact,
             ))
             .child(Self::render_stat_card(
                 &t!("sites.stats.databases"),
                 self.total_databases().to_string(),
                 ShellDeckColors::success(),
+                compact,
             ))
             .child(Self::render_stat_card(
                 &t!("sites.stats.servers"),
                 self.servers_scanned().to_string(),
                 ShellDeckColors::warning(),
+                compact,
             ))
             .child(Self::render_stat_card(
                 &t!("sites.stats.ssl"),
                 self.ssl_sites_count().to_string(),
                 ShellDeckColors::status_connected(),
+                compact,
             ))
     }
 
@@ -619,17 +649,17 @@ impl SitesView {
     /// `compact_filter_button`s for type / sort / view mode. Same widgets,
     /// same layout as Support so both surfaces share visual language
     /// (see `.agents/ui-components.md`).
-    fn render_filter_toolbar(&self, cx: &mut Context<Self>) -> Div {
+    fn render_filter_toolbar(&self, compact: bool, cx: &mut Context<Self>) -> Div {
         let entity = cx.entity();
         let total = self.sites.len();
         let filtered = self.filtered_sites().len();
 
-        let search_row = div()
+        let mut search_row = div()
             .flex()
             .items_center()
             .gap(px(6.0))
             .child(
-                div().flex_1().min_w(px(220.0)).child(
+                div().flex_1().min_w(px(0.0)).child(
                     Input::new(&self.search_state)
                         .size(InputSize::Sm)
                         .placeholder(t!("sites.search_placeholder").to_string())
@@ -656,6 +686,9 @@ impl SitesView {
                 })
                 .variant(BadgeVariant::Secondary),
             );
+        if compact {
+            search_row = search_row.flex_col().items_start();
+        }
 
         let mut chips_row = div()
             .flex()
@@ -692,27 +725,30 @@ impl SitesView {
             .child(self.render_sort_chip(SiteSortBy::Type, cx))
             .child(self.render_sort_chip(SiteSortBy::DiscoveredAt, cx));
 
-        // Separator + view mode toggle.
-        chips_row = chips_row
-            .child(
-                div()
-                    .mx(px(4.0))
-                    .w(px(1.0))
-                    .h(px(20.0))
-                    .bg(ShellDeckColors::border()),
-            )
-            .child(self.render_view_mode_chip(
-                SitesViewMode::Table,
-                t!("sites.view.table").to_string(),
-                "table",
-                cx,
-            ))
-            .child(self.render_view_mode_chip(
-                SitesViewMode::Cards,
-                t!("sites.view.cards").to_string(),
-                "grid-2x2",
-                cx,
-            ));
+        // Compact mode deliberately owns one card presentation; exposing a
+        // table toggle there would offer a layout that cannot fit the pane.
+        if !compact {
+            chips_row = chips_row
+                .child(
+                    div()
+                        .mx(px(4.0))
+                        .w(px(1.0))
+                        .h(px(20.0))
+                        .bg(ShellDeckColors::border()),
+                )
+                .child(self.render_view_mode_chip(
+                    SitesViewMode::Table,
+                    t!("sites.view.table").to_string(),
+                    "table",
+                    cx,
+                ))
+                .child(self.render_view_mode_chip(
+                    SitesViewMode::Cards,
+                    t!("sites.view.cards").to_string(),
+                    "grid-2x2",
+                    cx,
+                ));
+        }
 
         div()
             .flex()
@@ -971,7 +1007,12 @@ impl SitesView {
             .child(actions)
     }
 
-    fn render_card(&self, site: &ManagedSite, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_card(
+        &self,
+        site: &ManagedSite,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let site_id = site.id;
         let is_selected = self.selected_site == Some(site_id);
 
@@ -990,7 +1031,8 @@ impl SitesView {
             ))))
             .flex()
             .flex_col()
-            .w(px(220.0))
+            .when(compact, |card| card.w_full())
+            .when(!compact, |card| card.w(px(220.0)))
             .px(px(14.0))
             .py(px(12.0))
             .rounded(px(8.0))
@@ -1123,7 +1165,7 @@ impl SitesView {
         card
     }
 
-    fn render_detail_panel(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+    fn render_detail_panel(&self, window: &Window, compact: bool, cx: &mut Context<Self>) -> Div {
         let site_id = match self.selected_site {
             Some(id) => id,
             None => return div(),
@@ -1150,10 +1192,11 @@ impl SitesView {
         let mut panel = div()
             .flex()
             .flex_col()
-            .w(px(320.0))
+            .when(compact, |panel| panel.w_full())
+            .when(!compact, |panel| panel.w(px(320.0)))
             .flex_shrink_0()
             .h_full()
-            .border_l_1()
+            .when(!compact, |panel| panel.border_l_1())
             .border_color(ShellDeckColors::border())
             .bg(ShellDeckColors::bg_surface())
             .overflow_hidden();
@@ -1455,15 +1498,13 @@ impl SitesView {
                 )),
         );
 
-        panel = panel.child(content);
-
         // Quick actions footer
         let mut actions = div()
             .flex()
             .flex_col()
             .gap(px(4.0))
             .flex_shrink_0()
-            .px(px(16.0))
+            .px(px(if compact { 0.0 } else { 16.0 }))
             .py(px(12.0))
             .border_t_1()
             .border_color(ShellDeckColors::border());
@@ -1530,7 +1571,14 @@ impl SitesView {
             }),
         ));
 
-        panel = panel.child(actions);
+        if compact {
+            // At narrow widths the action stack is taller than the remaining
+            // viewport. Keep it in the same scroller as the details so every
+            // field and destructive action remains reachable.
+            panel = panel.child(content.child(actions));
+        } else {
+            panel = panel.child(content).child(actions);
+        }
 
         panel
     }
@@ -1775,6 +1823,7 @@ impl SitesView {
 
 impl Render for SitesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact = sites_uses_compact_layout(window.viewport_size().width, window.rem_size());
         let filtered = self.filtered_sites();
         let flat_items_count = Self::grouped_flat_items(&filtered, &self.collapsed_groups).len();
         let has_sites = !self.sites.is_empty();
@@ -1797,10 +1846,13 @@ impl Render for SitesView {
             .items_center()
             .justify_between()
             .flex_shrink_0()
-            .px(px(24.0))
-            .py(px(16.0))
+            .px(px(if compact { 12.0 } else { 24.0 }))
+            .py(px(if compact { 12.0 } else { 16.0 }))
             .border_b_1()
             .border_color(ShellDeckColors::border());
+        if compact {
+            header = header.flex_col().items_start().gap(px(10.0));
+        }
 
         header = header.child(
             div()
@@ -1863,7 +1915,9 @@ impl Render for SitesView {
                     cx.emit(SitesEvent::ScanAllServers);
                 }));
         }
-        scan_btn = scan_btn.child(t!("sites.scan_all").to_string());
+        scan_btn = scan_btn
+            .when(compact, |button| button.w_full().text_center())
+            .child(t!("sites.scan_all").to_string());
 
         // Action destructive : elle ne s'affiche que s'il y a quelque chose à
         // effacer. Elle était rouge et cliquable au-dessus d'un écran vide.
@@ -1882,17 +1936,20 @@ impl Render for SitesView {
                 .on_click(cx.listener(|_this, _, _, cx| {
                     cx.emit(SitesEvent::ClearAllSites);
                 }))
+                .when(compact, |button| button.w_full().text_center())
                 .child(t!("sites.clear_all").to_string())
         });
 
-        header = header.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .children(clear_btn)
-                .child(scan_btn),
-        );
+        let mut header_actions = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .children(clear_btn)
+            .child(scan_btn);
+        if compact {
+            header_actions = header_actions.w_full().flex_col().items_start();
+        }
+        header = header.child(header_actions);
 
         page = page.child(header);
 
@@ -1904,19 +1961,19 @@ impl Render for SitesView {
         // Stats row
         page = page.child(
             div()
-                .px(px(24.0))
+                .px(px(if compact { 12.0 } else { 24.0 }))
                 .py(px(12.0))
                 .flex_shrink_0()
-                .child(self.render_stats_row()),
+                .child(self.render_stats_row(compact)),
         );
 
         // Filter toolbar
         page = page.child(
             div()
-                .px(px(24.0))
+                .px(px(if compact { 12.0 } else { 24.0 }))
                 .py(px(10.0))
                 .flex_shrink_0()
-                .child(self.render_filter_toolbar(cx)),
+                .child(self.render_filter_toolbar(compact, cx)),
         );
 
         let filtered_count = filtered.len();
@@ -1944,7 +2001,11 @@ impl Render for SitesView {
                     .child(t!("sites.empty.filtered").to_string()),
             );
         } else {
-            match self.view_mode {
+            match if compact {
+                SitesViewMode::Cards
+            } else {
+                self.view_mode
+            } {
                 SitesViewMode::Table => {
                     list_area = list_area.child(Self::render_table_header());
 
@@ -2030,7 +2091,11 @@ impl Render for SitesView {
                         .min_h(px(0.0))
                         .overflow_y_scroll();
 
-                    let mut cards_wrap = div().flex().flex_wrap().gap(px(12.0)).p(px(24.0));
+                    let mut cards_wrap = div().flex().flex_wrap().gap(px(12.0)).p(px(if compact {
+                        12.0
+                    } else {
+                        24.0
+                    }));
 
                     let mut card_i = 0;
                     let mut site_cards_shown: usize = 0;
@@ -2093,12 +2158,16 @@ impl Render for SitesView {
                                 if site_cards_shown >= visible_count {
                                     break;
                                 }
-                                cards_wrap =
-                                    cards_wrap.child(self.render_card(filtered[card_i + j], cx));
+                                cards_wrap = cards_wrap.child(self.render_card(
+                                    filtered[card_i + j],
+                                    compact,
+                                    cx,
+                                ));
                                 site_cards_shown += 1;
                             }
                         } else {
-                            cards_wrap = cards_wrap.child(self.render_card(filtered[card_i], cx));
+                            cards_wrap =
+                                cards_wrap.child(self.render_card(filtered[card_i], compact, cx));
                             site_cards_shown += 1;
                         }
 
@@ -2113,10 +2182,11 @@ impl Render for SitesView {
                         card_grid = card_grid.child(
                             div()
                                 .flex()
+                                .flex_wrap()
                                 .items_center()
                                 .justify_center()
                                 .gap(px(12.0))
-                                .px(px(24.0))
+                                .px(px(if compact { 12.0 } else { 24.0 }))
                                 .py(px(12.0))
                                 .flex_shrink_0()
                                 .child(
@@ -2177,11 +2247,14 @@ impl Render for SitesView {
             }
         }
 
-        content_area = content_area.child(list_area);
-
-        // Detail panel
-        if self.detail_panel_open && self.selected_site.is_some() {
-            content_area = content_area.child(self.render_detail_panel(window, cx));
+        let detail_open = self.detail_panel_open && self.selected_site.is_some();
+        if compact && detail_open {
+            content_area = content_area.child(self.render_detail_panel(window, true, cx));
+        } else {
+            content_area = content_area.child(list_area);
+            if detail_open {
+                content_area = content_area.child(self.render_detail_panel(window, false, cx));
+            }
         }
 
         page = page.child(content_area);

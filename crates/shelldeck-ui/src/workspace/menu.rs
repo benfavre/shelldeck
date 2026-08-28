@@ -141,12 +141,7 @@ impl Workspace {
             Cmd::TerminalZoomOut => window.dispatch_action(Box::new(ZoomOut), cx),
             Cmd::TerminalZoomReset => window.dispatch_action(Box::new(ZoomReset), cx),
 
-            Cmd::CommandPalette => {
-                self.command_palette.update(cx, |palette, cx| {
-                    palette.toggle(window, cx);
-                    cx.notify();
-                });
-            }
+            Cmd::CommandPalette => self.toggle_command_palette(window, cx),
 
             Cmd::ToggleSidebar => self.toggle_sidebar(cx),
             Cmd::ToggleMenuBar => self.toggle_menu_bar(cx),
