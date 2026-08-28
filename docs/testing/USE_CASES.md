@@ -2577,11 +2577,16 @@ other chip counts disappear or exposing information outside the caller's scope.
 ShellDeck defaults missing counts to zero for compatibility with older servers,
 uses the server values for the Support request pills, and keeps them coherent
 during local create, status-change, and delete updates until the next poll. The
-four visible filters use the same compact button plus secondary count badge as
-the neighboring Tickets queue.
+Support home counter and Requests tab show that same authorized total even when
+the returned list is capped to a smaller loaded page; the virtual list still
+renders only the rows actually received. The four visible filters use the same
+compact button plus secondary count badge as the neighboring Tickets queue.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-486 and SDTEST-1725: Support navigation and
+  home counters retain the authorized server total when the loaded request page
+  is capped, while the virtual list remains bounded to the rows received.
 - **2026-08-27** — Amended SDUC-414 and SDTEST-1600: below the Assistant
   Sheet's two-column breakpoint, history now swaps with the conversation as a
   full panel instead of collapsing into a clipped 94 px rail that steals width
