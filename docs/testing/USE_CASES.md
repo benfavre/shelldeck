@@ -2840,7 +2840,12 @@ Local read and notification custody is stored separately under exact
 capacity, parse, or write failure suppresses new custody instead of evicting an
 older tuple. A private no-follow/reparse-fenced storage boundary and an
 exclusive sidecar lock serialize reload/compare/persist across independent
-processes, so only one process may reserve a notification tuple. The serialized
+processes, so only one process may reserve a notification tuple. Version-two
+overlay tuples also bind the exact Platform target; unqualified version-one
+tuples are discarded during migration rather than inherited after a remap.
+Target/source retirement fences are written to the same document before a
+board disappears, and successful cleanup atomically removes both old overlay
+and fence. A surviving fence blocks replacement custody after restart. The serialized
 document must fit its read bound before replacement. The native Workspace and
 Fleet surfaces now consume the same authoritative board. Every activation
 re-resolves the current exact catalog mapping, full authority-qualified session
@@ -2849,10 +2854,14 @@ coordinates refuse without consuming unread state. Review and orchestration
 items open only their exact workspace attention surface; provider items open
 only the fresh session bound to their authoritative WorkContext source, either
 in Fleet or its unique retained pane. Whole-poll failures hide retained
-projections, and removing or replacing an exact local mapping retires its old
-board before a new target may appear. Every destination first stages and
-verifies its visible Dev surface; a hidden or failed transition cannot consume
-local unread state. Same-process
+projections. Loss of all active context retires orphan boards; an exact context
+removal/remap retires only that workspace, so visiting a different retained
+workspace preserves the first board and overlay. A failed retirement-fence
+write leaves the old board unavailable and blocks replacement. Every destination
+queues its exact activation until the real Dev transition finishes, opens the
+required surface, then re-resolves authority and rendered visibility on a later
+UI turn before durable read custody. User, Support, Settings, or an unrelated
+in-flight transition cannot consume unread while the destination is hidden. Same-process
 OS notification handles remain alive through activation/dismissal and route the
 same tuple back through that current-catalog resolver. A failed durable
 notification reservation suppresses the toast. Native cold-launch/OS launch

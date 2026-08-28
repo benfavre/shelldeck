@@ -937,6 +937,18 @@ impl FleetView {
         true
     }
 
+    pub(crate) fn session_is_open_exact(&self, coordinate: &ResourceCoordinate) -> bool {
+        self.selected_session.as_deref() == Some(coordinate.id.as_str())
+            && self.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .sessions
+                    .iter()
+                    .filter(|session| &session.session.resource == coordinate)
+                    .count()
+                    == 1
+            })
+    }
+
     pub(crate) fn set_platform_attention(&mut self, rows: Vec<PlatformAttentionPresentation>) {
         self.platform_attention = rows;
     }

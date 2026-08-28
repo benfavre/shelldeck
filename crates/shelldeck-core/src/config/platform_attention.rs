@@ -44,7 +44,7 @@ pub const MAX_ATTENTION_INVENTORY_RECORDS: usize = 512;
 /// Maximum locally retained read/notification tuples.
 pub const MAX_ATTENTION_LOCAL_ENTRIES: usize = 4_096;
 const MAX_ATTENTION_LOCAL_FILE_BYTES: u64 = 1024 * 1024;
-const ATTENTION_LOCAL_SCHEMA: u16 = 1;
+const ATTENTION_LOCAL_SCHEMA: u16 = 2;
 static ATTENTION_LOCAL_STORE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Namespace reserved for ShellDeck's presentation-only attention UUIDs.
@@ -56,7 +56,7 @@ const ATTENTION_UI_NAMESPACE: Uuid = Uuid::from_bytes([
     0xa6, 0x61, 0x14, 0x3f, 0x23, 0x88, 0x5a, 0x25, 0xa4, 0xca, 0x53, 0x42, 0x6e, 0x92, 0x7d, 0x31,
 ]);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PlatformAttentionTarget {
     pub project: ProjectId,
     pub user_workspace: UserWorkspaceId,
@@ -855,17 +855,54 @@ fn build_ui_index(
 /// Durable local acknowledgement key. Server `unread` remains untouched.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct AttentionLocalKey {
+    target: PlatformAttentionTarget,
     item: AttentionItemKey,
     item_revision: Revision,
 }
 
+/// Durable fence for local overlay custody belonging to a retired Platform
+/// source incarnation. The target is part of the key so a remap can never
+/// make an old target's cleanup look like custody for the replacement.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AttentionRetirement {
+    target: PlatformAttentionTarget,
+    source: AttentionSource,
+}
+
+impl AttentionRetirement {
+    #[must_use]
+    pub const fn new(target: PlatformAttentionTarget, source: AttentionSource) -> Self {
+        Self { target, source }
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> &PlatformAttentionTarget {
+        &self.target
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> &AttentionSource {
+        &self.source
+    }
+}
+
 impl AttentionLocalKey {
     #[must_use]
-    pub const fn new(item: AttentionItemKey, item_revision: Revision) -> Self {
+    pub const fn new(
+        target: PlatformAttentionTarget,
+        item: AttentionItemKey,
+        item_revision: Revision,
+    ) -> Self {
         Self {
+            target,
             item,
             item_revision,
         }
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> &PlatformAttentionTarget {
+        &self.target
     }
 
     #[must_use]
@@ -889,6 +926,7 @@ struct AttentionLocalFlags {
 pub struct AttentionLocalState {
     capacity: usize,
     entries: BTreeMap<AttentionLocalKey, AttentionLocalFlags>,
+    retirements: BTreeSet<AttentionRetirement>,
 }
 
 impl AttentionLocalState {
@@ -899,6 +937,7 @@ impl AttentionLocalState {
         Ok(Self {
             capacity,
             entries: BTreeMap::new(),
+            retirements: BTreeSet::new(),
         })
     }
 
@@ -913,10 +952,20 @@ impl AttentionLocalState {
     }
 
     fn mark_read(&mut self, key: AttentionLocalKey) -> Result<bool, AttentionLocalStateError> {
+        if self.retirements.iter().any(|retirement| {
+            retirement.target() == key.target() && retirement.source() == key.item().source()
+        }) {
+            return Err(AttentionLocalStateError::RetirementPending);
+        }
         self.update(key, |flags| &mut flags.read)
     }
 
     fn mark_notified(&mut self, key: AttentionLocalKey) -> Result<bool, AttentionLocalStateError> {
+        if self.retirements.iter().any(|retirement| {
+            retirement.target() == key.target() && retirement.source() == key.item().source()
+        }) {
+            return Err(AttentionLocalStateError::RetirementPending);
+        }
         self.update(key, |flags| &mut flags.notified)
     }
 
@@ -938,13 +987,31 @@ impl AttentionLocalState {
 
     fn retain_source_keys(
         &mut self,
+        target: &PlatformAttentionTarget,
         source: &AttentionSource,
         current: &BTreeSet<AttentionLocalKey>,
     ) -> bool {
         let before = self.entries.len();
-        self.entries
-            .retain(|key, _| key.item().source() != source || current.contains(key));
+        self.entries.retain(|key, _| {
+            key.target() != target || key.item().source() != source || current.contains(key)
+        });
         before != self.entries.len()
+    }
+
+    fn begin_retirement(
+        &mut self,
+        retirement: AttentionRetirement,
+    ) -> Result<bool, AttentionLocalStateError> {
+        if !self.retirements.contains(&retirement) && self.retirements.len() == self.capacity {
+            return Err(AttentionLocalStateError::CapacityExceeded);
+        }
+        Ok(self.retirements.insert(retirement))
+    }
+
+    fn finish_retirement(&mut self, retirement: &AttentionRetirement) -> bool {
+        let removed_entries =
+            self.retain_source_keys(retirement.target(), retirement.source(), &BTreeSet::new());
+        self.retirements.remove(retirement) || removed_entries
     }
 }
 
@@ -1009,6 +1076,11 @@ impl AttentionLocalStateStore {
             return Ok(NotificationReservation::Ineligible);
         }
         self.transact(|state| {
+            if state.retirements.iter().any(|retirement| {
+                retirement.target() == key.target() && retirement.source() == key.item().source()
+            }) {
+                return Err(AttentionLocalStateError::RetirementPending);
+            }
             if state.is_notified(&key) {
                 return Ok(NotificationReservation::AlreadyReserved);
             }
@@ -1022,22 +1094,59 @@ impl AttentionLocalStateStore {
     /// this method because neither means an empty source.
     pub fn reconcile_source(
         &mut self,
+        target: &PlatformAttentionTarget,
         source: &AttentionSource,
         current: BTreeSet<AttentionLocalKey>,
     ) -> Result<bool, AttentionLocalStateError> {
         if current.len() > MAX_ATTENTION_ITEMS
-            || current.iter().any(|key| key.item().source() != source)
+            || current
+                .iter()
+                .any(|key| key.target() != target || key.item().source() != source)
         {
             return Err(AttentionLocalStateError::ReconciliationInvalid);
         }
-        self.transact(|state| Ok(state.retain_source_keys(source, &current)))
+        self.transact(|state| {
+            if state
+                .retirements
+                .iter()
+                .any(|retirement| retirement.target() == target && retirement.source() == source)
+            {
+                return Err(AttentionLocalStateError::RetirementPending);
+            }
+            Ok(state.retain_source_keys(target, source, &current))
+        })
     }
 
     pub fn remove_source(
         &mut self,
+        target: &PlatformAttentionTarget,
         source: &AttentionSource,
     ) -> Result<bool, AttentionLocalStateError> {
-        self.reconcile_source(source, BTreeSet::new())
+        self.reconcile_source(target, source, BTreeSet::new())
+    }
+
+    /// Persist the retirement fence before the corresponding in-memory board
+    /// is removed. A crash after this succeeds leaves enough custody for the
+    /// next process to finish cleanup before admitting a replacement.
+    pub fn begin_retirement(
+        &mut self,
+        retirement: AttentionRetirement,
+    ) -> Result<bool, AttentionLocalStateError> {
+        self.transact(|state| state.begin_retirement(retirement))
+    }
+
+    /// Atomically remove every overlay tuple for the retired source and its
+    /// durable fence. Failure leaves both intact and therefore fail-closed.
+    pub fn finish_retirement(
+        &mut self,
+        retirement: &AttentionRetirement,
+    ) -> Result<bool, AttentionLocalStateError> {
+        self.transact(|state| Ok(state.finish_retirement(retirement)))
+    }
+
+    #[must_use]
+    pub fn pending_retirements(&self) -> &BTreeSet<AttentionRetirement> {
+        &self.state.retirements
     }
 
     fn transact<T>(
@@ -1064,11 +1173,42 @@ impl AttentionLocalStateStore {
 struct AttentionLocalDocument {
     schema: u16,
     entries: Vec<AttentionLocalEntry>,
+    retirements: Vec<AttentionLocalRetirement>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AttentionLocalEntry {
+    project_id: String,
+    workspace_id: String,
+    source_kind: String,
+    source_id: String,
+    item_id: String,
+    item_revision: u64,
+    read: bool,
+    notified: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttentionLocalRetirement {
+    project_id: String,
+    workspace_id: String,
+    source_kind: String,
+    source_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttentionLocalDocumentV1 {
+    schema: u16,
+    entries: Vec<AttentionLocalEntryV1>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // Parsed only to validate and boundedly discard unscoped v1 custody.
+struct AttentionLocalEntryV1 {
     source_kind: String,
     source_id: String,
     item_id: String,
@@ -1088,11 +1228,29 @@ fn load_local_state(
     if bytes.len() as u64 > MAX_ATTENTION_LOCAL_FILE_BYTES {
         return Err(AttentionLocalStateError::DocumentInvalid);
     }
-    let document: AttentionLocalDocument = serde_json::from_slice(&bytes)?;
-    if document.schema != ATTENTION_LOCAL_SCHEMA || document.entries.len() > capacity {
+    let schema = serde_json::from_slice::<serde_json::Value>(&bytes)?
+        .get("schema")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(AttentionLocalStateError::DocumentInvalid)?;
+    if schema == 1 {
+        let document: AttentionLocalDocumentV1 = serde_json::from_slice(&bytes)?;
+        if document.schema != 1 || document.entries.len() > capacity {
+            return Err(AttentionLocalStateError::DocumentInvalid);
+        }
+        // V1 tuples were not target-qualified. They cannot be safely
+        // attributed after a remap, so migration deliberately discards them
+        // rather than inheriting read/notification custody.
+        return Ok(state);
+    }
+    if schema != u64::from(ATTENTION_LOCAL_SCHEMA) {
         return Err(AttentionLocalStateError::DocumentInvalid);
     }
-    for entry in document.entries {
+    let document: AttentionLocalDocument = serde_json::from_slice(&bytes)?;
+    let (entries, retirements) = (document.entries, document.retirements);
+    if entries.len() > capacity || retirements.len() > capacity {
+        return Err(AttentionLocalStateError::DocumentInvalid);
+    }
+    for entry in entries {
         if !entry.read && !entry.notified {
             return Err(AttentionLocalStateError::DocumentInvalid);
         }
@@ -1103,6 +1261,12 @@ fn load_local_state(
                 .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
         );
         let key = AttentionLocalKey::new(
+            PlatformAttentionTarget {
+                project: ProjectId::new(entry.project_id)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+                user_workspace: UserWorkspaceId::new(entry.workspace_id)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+            },
             AttentionItemKey::new(
                 source,
                 AttentionItemId::new(entry.item_id)
@@ -1125,6 +1289,25 @@ fn load_local_state(
             return Err(AttentionLocalStateError::DocumentInvalid);
         }
     }
+    for retirement in retirements {
+        let retirement = AttentionRetirement::new(
+            PlatformAttentionTarget {
+                project: ProjectId::new(retirement.project_id)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+                user_workspace: UserWorkspaceId::new(retirement.workspace_id)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+            },
+            AttentionSource::new(
+                AttentionSourceKind::parse(&retirement.source_kind)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+                AttentionSourceId::new(retirement.source_id)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+            ),
+        );
+        if !state.retirements.insert(retirement) {
+            return Err(AttentionLocalStateError::DocumentInvalid);
+        }
+    }
     Ok(state)
 }
 
@@ -1142,6 +1325,8 @@ fn encode_local_state(state: &AttentionLocalState) -> Result<Vec<u8>, AttentionL
         .entries
         .iter()
         .map(|(key, flags)| AttentionLocalEntry {
+            project_id: key.target().project.as_str().to_owned(),
+            workspace_id: key.target().user_workspace.as_str().to_owned(),
             source_kind: key.item().source().kind().as_str().to_owned(),
             source_id: key.item().source().id().as_str().to_owned(),
             item_id: key.item().item().as_str().to_owned(),
@@ -1153,6 +1338,16 @@ fn encode_local_state(state: &AttentionLocalState) -> Result<Vec<u8>, AttentionL
     let document = AttentionLocalDocument {
         schema: ATTENTION_LOCAL_SCHEMA,
         entries,
+        retirements: state
+            .retirements
+            .iter()
+            .map(|retirement| AttentionLocalRetirement {
+                project_id: retirement.target().project.as_str().to_owned(),
+                workspace_id: retirement.target().user_workspace.as_str().to_owned(),
+                source_kind: retirement.source().kind().as_str().to_owned(),
+                source_id: retirement.source().id().as_str().to_owned(),
+            })
+            .collect(),
     };
     let bytes = serde_json::to_vec_pretty(&document)?;
     if bytes.len() as u64 > MAX_ATTENTION_LOCAL_FILE_BYTES {
@@ -1240,6 +1435,8 @@ pub enum AttentionLocalStateError {
     DocumentInvalid,
     #[error("attention local-state reconciliation is not source-exact")]
     ReconciliationInvalid,
+    #[error("attention local-state source retirement is still pending")]
+    RetirementPending,
     #[error("attention local-state I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("attention local-state serialization failed: {0}")]
@@ -1427,6 +1624,7 @@ mod tests {
 
     fn local_key(source_id: &str, item_id: &str, revision: u64) -> AttentionLocalKey {
         AttentionLocalKey::new(
+            target(),
             AttentionItemKey::new(
                 source(AttentionSourceKind::Orchestration, source_id),
                 AttentionItemId::new(item_id.to_owned()).unwrap(),
@@ -1819,13 +2017,18 @@ mod tests {
 
         let current = BTreeSet::from([next_revision.clone()]);
         restarted
-            .reconcile_source(next_revision.item().source(), current)
+            .reconcile_source(
+                next_revision.target(),
+                next_revision.item().source(),
+                current,
+            )
             .unwrap();
         assert!(!restarted.state().is_read(&first));
         assert!(restarted.state().is_notified(&next_revision));
         let before_wrong_source = std::fs::read(&path).unwrap();
         assert!(matches!(
             restarted.reconcile_source(
+                next_revision.target(),
                 &source(AttentionSourceKind::Review, "workspace-1"),
                 BTreeSet::from([next_revision.clone()]),
             ),
@@ -1887,6 +2090,7 @@ mod tests {
                 let item_id = format!("{index:04}{}", "i".repeat(252));
                 state.entries.insert(
                     AttentionLocalKey::new(
+                        target(),
                         AttentionItemKey::new(
                             oversized_source.clone(),
                             AttentionItemId::new(item_id).unwrap(),
@@ -1919,6 +2123,7 @@ mod tests {
             AttentionLocalStateStore::open(oversized_path.clone(), MAX_ATTENTION_LOCAL_ENTRIES)
                 .unwrap();
         let overflow_key = AttentionLocalKey::new(
+            target(),
             AttentionItemKey::new(
                 oversized_source,
                 AttentionItemId::new(format!("{fits:04}{}", "i".repeat(252))).unwrap(),
@@ -1934,6 +2139,84 @@ mod tests {
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
         std::fs::remove_dir_all(failing_path.parent().unwrap()).ok();
+    }
+
+    // SDTEST-1830 — SDUC-493
+    #[test]
+    fn sdtest_1830_retirement_fence_survives_failed_cleanup_and_restart() {
+        let path = temp_path("retirement-restart.json");
+        let key = local_key("workspace-1", "retired-item", 1);
+        let retirement = AttentionRetirement::new(
+            target(),
+            source(AttentionSourceKind::Orchestration, "workspace-1"),
+        );
+        let mut store = AttentionLocalStateStore::open(path.clone(), 4).unwrap();
+        assert!(store.record_read(key.clone()).unwrap());
+        assert!(store.begin_retirement(retirement.clone()).unwrap());
+        assert!(store.pending_retirements().contains(&retirement));
+        assert!(matches!(
+            store.record_read(key.clone()),
+            Err(AttentionLocalStateError::RetirementPending)
+        ));
+        assert!(matches!(
+            store.reserve_notification(key.clone(), true),
+            Err(AttentionLocalStateError::RetirementPending)
+        ));
+
+        let durable_fenced = std::fs::read(&path).unwrap();
+        let displaced = path.with_extension("fenced-backup");
+        std::fs::rename(&path, &displaced).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            store.finish_retirement(&retirement),
+            Err(AttentionLocalStateError::Io(_))
+        ));
+        assert!(store.state().is_read(&key));
+        assert!(store.pending_retirements().contains(&retirement));
+
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&displaced, &path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), durable_fenced);
+        let mut restarted = AttentionLocalStateStore::open(path.clone(), 4).unwrap();
+        assert!(restarted.state().is_read(&key));
+        assert!(restarted.pending_retirements().contains(&retirement));
+        assert!(restarted.finish_retirement(&retirement).unwrap());
+        assert!(!restarted.state().is_read(&key));
+        assert!(restarted.pending_retirements().is_empty());
+
+        let final_restart = AttentionLocalStateStore::open(path.clone(), 4).unwrap();
+        assert!(!final_restart.state().is_read(&key));
+        assert!(final_restart.pending_retirements().is_empty());
+
+        let legacy_path = temp_path("unscoped-v1.json");
+        prepare_local_storage(&legacy_path).unwrap();
+        std::fs::write(
+            &legacy_path,
+            br#"{
+              "schema": 1,
+              "entries": [{
+                "source_kind": "orchestration",
+                "source_id": "workspace-1",
+                "item_id": "retired-item",
+                "item_revision": 1,
+                "read": true,
+                "notified": true
+              }]
+            }"#,
+        )
+        .unwrap();
+        let mut migrated = AttentionLocalStateStore::open(legacy_path.clone(), 4).unwrap();
+        assert!(
+            !migrated.state().is_read(&key),
+            "unscoped v1 custody is discarded"
+        );
+        migrated.record_read(key.clone()).unwrap();
+        let migrated_document = std::fs::read_to_string(&legacy_path).unwrap();
+        assert!(migrated_document.contains("\"schema\": 2"));
+        assert!(migrated_document.contains("\"project_id\": \"project-1\""));
+        assert!(migrated_document.contains("\"workspace_id\": \"workspace-1\""));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+        std::fs::remove_dir_all(legacy_path.parent().unwrap()).ok();
     }
 
     // SDTEST-1820 — SDUC-493

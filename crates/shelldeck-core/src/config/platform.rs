@@ -13,10 +13,10 @@ use automonique_platform_client::platform_v2_client::{
     NegotiationResult, PlatformV2Client, PlatformV2ClientError, ReviewCapabilitiesResult,
     ReviewReadResult, ReviewReceiptResult, WorkContextQueryResult,
 };
-pub use automonique_platform_client::{ActionResult, ControlClaimResult};
+pub use automonique_platform_client::{ActionResult, ControlClaimResult, PlatformView};
 use automonique_platform_client::{
-    BearerToken, HttpsTransport, PlatformClient, PlatformView, SessionCommandStateResult,
-    SessionHistoryResult, SessionListResult, SubscriptionApply, SubscriptionResult,
+    BearerToken, HttpsTransport, PlatformClient, SessionCommandStateResult, SessionHistoryResult,
+    SessionListResult, SubscriptionApply, SubscriptionResult,
 };
 pub use automonique_protocol::platform::{
     ActionReceipt, Attachment, Capabilities, ClientId, ControlLease, ControlLeaseId,

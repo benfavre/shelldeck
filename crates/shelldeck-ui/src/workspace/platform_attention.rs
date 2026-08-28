@@ -3,7 +3,7 @@ use super::*;
 use shelldeck_core::config::platform::PlatformAttentionLoad;
 use shelldeck_core::config::platform_attention::{
     resolve_platform_attention_activation, AttentionApplyOutcome, AttentionError,
-    AttentionLocalKey, AttentionUnavailableReason, NotificationReservation,
+    AttentionLocalKey, AttentionRetirement, AttentionUnavailableReason, NotificationReservation,
     PlatformAttentionActivation, PlatformAttentionBoard, PlatformAttentionDestination,
 };
 use shelldeck_core::config::workspace_catalog::CatalogWorkspaceId;
@@ -58,13 +58,11 @@ fn retire_attention_board_state(
         CatalogWorkspaceId,
         shelldeck_core::config::platform_attention::AttentionSource,
     )>,
-    retired_sources: &mut BTreeSet<shelldeck_core::config::platform_attention::AttentionSource>,
     workspace: CatalogWorkspaceId,
 ) -> bool {
-    let Some(board) = boards.remove(&workspace) else {
+    if boards.remove(&workspace).is_none() {
         return false;
-    };
-    retired_sources.extend(board.inventory().sources().iter().cloned());
+    }
     resync.retain(|(id, _)| *id != workspace);
     true
 }
@@ -80,11 +78,13 @@ const fn platform_attention_destination_view(
 }
 
 fn platform_attention_surface_verified(
+    mode: AppMode,
+    transitioning: bool,
     settings_open: bool,
     active_view: ActiveView,
     required_view: ActiveView,
 ) -> bool {
-    !settings_open && active_view == required_view
+    mode == AppMode::Dev && !transitioning && !settings_open && active_view == required_view
 }
 
 fn attention_context_requires_retirement(
@@ -92,6 +92,23 @@ fn attention_context_requires_retirement(
     target: Option<&shelldeck_core::config::platform_attention::PlatformAttentionTarget>,
 ) -> bool {
     target != Some(board.inventory().target())
+}
+
+fn attention_context_retirements(
+    boards: &BTreeMap<CatalogWorkspaceId, PlatformAttentionBoard>,
+    context: Option<&(
+        CatalogWorkspaceId,
+        Option<shelldeck_core::config::platform_attention::PlatformAttentionTarget>,
+    )>,
+) -> Vec<CatalogWorkspaceId> {
+    match context {
+        None => boards.keys().copied().collect(),
+        Some((workspace, target)) => boards
+            .get(workspace)
+            .filter(|board| attention_context_requires_retirement(board, target.as_ref()))
+            .map(|_| vec![*workspace])
+            .unwrap_or_default(),
+    }
 }
 
 fn record_attention_read_after_visible_open(
@@ -125,6 +142,8 @@ pub struct PlatformAttentionNotification {
 }
 
 impl Workspace {
+    const MAX_PENDING_PLATFORM_ATTENTION_ACTIVATIONS: usize = 64;
+
     pub fn set_platform_attention_notifier(
         &mut self,
         notifier: Box<dyn Fn(PlatformAttentionNotification) + Send + Sync>,
@@ -144,18 +163,42 @@ impl Workspace {
             .is_some_and(|board| {
                 attention_context_requires_retirement(board, Some(load.inventory.target()))
             })
+            && !self.retire_platform_attention_board(workspace)
         {
-            self.retire_platform_attention_board(workspace);
-        }
-        if !self.flush_retired_platform_attention_sources() {
+            let _ = self.flush_retired_platform_attention_sources();
             self.sync_platform_attention_presentations(cx);
             return;
         }
-        let prior_sources = self
+        let removed_sources = self
             .platform_attention_boards
             .get(&workspace)
-            .map(|board| board.inventory().sources().to_vec())
+            .map(|board| {
+                board
+                    .inventory()
+                    .sources()
+                    .iter()
+                    .filter(|source| !load.inventory.contains(source))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
+        if let Some(board) = self.platform_attention_boards.get(&workspace) {
+            self.platform_attention_retirements_pending.extend(
+                removed_sources.iter().cloned().map(|source| {
+                    AttentionRetirement::new(board.inventory().target().clone(), source)
+                }),
+            );
+        }
+        if !self.flush_retired_platform_attention_sources() {
+            if let Some(board) = self.platform_attention_boards.get_mut(&workspace) {
+                for source in removed_sources {
+                    let _ = board
+                        .mark_unavailable(&source, AttentionUnavailableReason::InventoryIncomplete);
+                }
+            }
+            self.sync_platform_attention_presentations(cx);
+            return;
+        }
         let board = self
             .platform_attention_boards
             .entry(workspace)
@@ -163,16 +206,6 @@ impl Workspace {
         if let Err(error) = board.replace_inventory(load.inventory) {
             tracing::warn!(%error, %workspace, "Platform attention inventory rejected");
             return;
-        }
-        if let Some(store) = self.platform_attention_local.as_mut() {
-            for removed in prior_sources
-                .iter()
-                .filter(|source| !board.inventory().contains(source))
-            {
-                if let Err(error) = store.remove_source(removed) {
-                    tracing::warn!(%error, "Platform attention removed-source custody not persisted");
-                }
-            }
         }
         self.platform_attention_resync
             .retain(|(id, source)| *id != workspace || board.inventory().contains(source));
@@ -207,6 +240,7 @@ impl Workspace {
                         .iter()
                         .map(|item| {
                             AttentionLocalKey::new(
+                                board.inventory().target().clone(),
                                 shelldeck_core::config::platform_attention::AttentionItemKey::new(
                                     source.clone(),
                                     item.id().clone(),
@@ -220,7 +254,8 @@ impl Workspace {
             let Some(store) = self.platform_attention_local.as_mut() else {
                 continue;
             };
-            if let Err(error) = store.reconcile_source(&source, current) {
+            if let Err(error) = store.reconcile_source(board.inventory().target(), &source, current)
+            {
                 tracing::warn!(%error, "Platform attention custody reconciliation failed");
                 continue;
             }
@@ -228,7 +263,11 @@ impl Workspace {
                 .visible_items()
                 .filter(|item| item.key().source() == &source)
             {
-                let local_key = AttentionLocalKey::new(item.key().clone(), item.value().revision());
+                let local_key = AttentionLocalKey::new(
+                    board.inventory().target().clone(),
+                    item.key().clone(),
+                    item.value().revision(),
+                );
                 let eligible = item.value().unread() && !store.state().is_read(&local_key);
                 match store.reserve_notification(local_key, eligible) {
                     Ok(NotificationReservation::Reserved) => {
@@ -262,37 +301,84 @@ impl Workspace {
     }
 
     pub(super) fn clear_platform_attention(&mut self, cx: &mut Context<Self>) {
-        self.platform_attention_boards.clear();
-        self.platform_attention_resync.clear();
+        self.platform_attention_pending_activations.clear();
+        self.platform_attention_visible_confirmations.clear();
+        for workspace in self
+            .platform_attention_boards
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            let _ = self.retire_platform_attention_board(workspace);
+        }
+        let _ = self.flush_retired_platform_attention_sources();
         self.sync_platform_attention_presentations(cx);
     }
 
-    fn retire_platform_attention_board(&mut self, workspace: CatalogWorkspaceId) {
+    fn retire_platform_attention_board(&mut self, workspace: CatalogWorkspaceId) -> bool {
+        if let Some(board) = self.platform_attention_boards.get(&workspace) {
+            let target = board.inventory().target().clone();
+            self.platform_attention_retirements_pending.extend(
+                board
+                    .inventory()
+                    .sources()
+                    .iter()
+                    .cloned()
+                    .map(|source| AttentionRetirement::new(target.clone(), source)),
+            );
+            let mut fenced = true;
+            if let Some(store) = self.platform_attention_local.as_mut() {
+                for retirement in self.platform_attention_retirements_pending.clone() {
+                    if let Err(error) = store.begin_retirement(retirement) {
+                        fenced = false;
+                        tracing::warn!(%error, "Platform attention retirement fence not persisted");
+                    }
+                }
+            }
+            if !fenced {
+                if let Some(board) = self.platform_attention_boards.get_mut(&workspace) {
+                    for source in board.inventory().sources().to_vec() {
+                        let _ = board.mark_unavailable(
+                            &source,
+                            AttentionUnavailableReason::InventoryIncomplete,
+                        );
+                    }
+                }
+                return false;
+            }
+        }
         retire_attention_board_state(
             &mut self.platform_attention_boards,
             &mut self.platform_attention_resync,
-            &mut self.platform_attention_retired_sources,
             workspace,
-        );
+        )
     }
 
     fn flush_retired_platform_attention_sources(&mut self) -> bool {
         let Some(store) = self.platform_attention_local.as_mut() else {
             // With no local store there is no overlay state to inherit.
-            self.platform_attention_retired_sources.clear();
+            self.platform_attention_retirements_pending.clear();
             return true;
         };
-        for source in self.platform_attention_retired_sources.clone() {
-            match store.remove_source(&source) {
+        for retirement in self.platform_attention_retirements_pending.clone() {
+            match store.begin_retirement(retirement.clone()) {
                 Ok(_) => {
-                    self.platform_attention_retired_sources.remove(&source);
+                    self.platform_attention_retirements_pending
+                        .remove(&retirement);
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "Platform attention retired-source custody not persisted");
+                    tracing::warn!(%error, "Platform attention retirement fence not persisted");
                 }
             }
         }
-        self.platform_attention_retired_sources.is_empty()
+        let durable = store.pending_retirements().clone();
+        for retirement in durable {
+            if let Err(error) = store.finish_retirement(&retirement) {
+                tracing::warn!(%error, "Platform attention retired-source custody not removed");
+            }
+        }
+        self.platform_attention_retirements_pending.is_empty()
+            && store.pending_retirements().is_empty()
     }
 
     /// Retire a board immediately when the active local workspace loses its
@@ -307,18 +393,15 @@ impl Workspace {
         )>,
         cx: &mut Context<Self>,
     ) {
-        let Some((workspace, target)) = context else {
-            return;
-        };
-        let retire = self
-            .platform_attention_boards
-            .get(&workspace)
-            .is_some_and(|board| attention_context_requires_retirement(board, target.as_ref()));
-        if retire {
-            self.retire_platform_attention_board(workspace);
-            let _ = self.flush_retired_platform_attention_sources();
+        let retire =
+            attention_context_retirements(&self.platform_attention_boards, context.as_ref());
+        if !retire.is_empty() {
+            for workspace in retire {
+                let _ = self.retire_platform_attention_board(workspace);
+            }
             self.sync_platform_attention_presentations(cx);
         }
+        let _ = self.flush_retired_platform_attention_sources();
     }
 
     pub(super) fn mark_platform_attention_unavailable(
@@ -350,7 +433,11 @@ impl Workspace {
             let items = board
                 .visible_items()
                 .map(|item| {
-                    let key = AttentionLocalKey::new(item.key().clone(), item.value().revision());
+                    let key = AttentionLocalKey::new(
+                        board.inventory().target().clone(),
+                        item.key().clone(),
+                        item.value().revision(),
+                    );
                     PlatformAttentionPresentation {
                         activation: PlatformAttentionActivation {
                             workspace: *workspace,
@@ -384,20 +471,13 @@ impl Workspace {
         });
     }
 
-    /// Re-resolve one same-process activation against current state and mark
-    /// its exact revision read only after a destination was successfully
-    /// opened.
-    pub fn activate_platform_attention(
+    fn resolve_current_platform_attention(
         &mut self,
         activation: PlatformAttentionActivation,
         cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(board) = self.platform_attention_boards.get(&activation.workspace) else {
-            return false;
-        };
-        let Some(snapshot) = self.fleet_snapshot.as_ref() else {
-            return false;
-        };
+    ) -> Option<(PlatformAttentionDestination, AttentionLocalKey)> {
+        let board = self.platform_attention_boards.get(&activation.workspace)?;
+        let snapshot = self.fleet_snapshot.as_ref()?;
         let destination = self.workspace_hub.update(cx, |hub, _| {
             resolve_platform_attention_activation(
                 activation,
@@ -406,29 +486,96 @@ impl Workspace {
                 hub.navigation(),
                 &snapshot.sessions,
             )
-        });
-        let Ok(destination) = destination else {
-            return false;
-        };
-        let Some(local) = board
-            .item_by_ui_id(activation.item)
-            .map(|item| AttentionLocalKey::new(item.key().clone(), activation.item_revision))
-        else {
-            return false;
-        };
-        if !self.enter_dev_mode(cx) {
+            .ok()
+        })?;
+        let local = board.item_by_ui_id(activation.item).map(|item| {
+            AttentionLocalKey::new(
+                board.inventory().target().clone(),
+                item.key().clone(),
+                activation.item_revision,
+            )
+        })?;
+        Some((destination, local))
+    }
+
+    /// Admit an exact same-process activation. Opening and read custody are
+    /// deliberately separate UI turns: a real Dev transition must finish,
+    /// then the destination is opened, then current authority and rendered
+    /// visibility are checked again before the tuple becomes read.
+    pub fn activate_platform_attention(
+        &mut self,
+        activation: PlatformAttentionActivation,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self
+            .resolve_current_platform_attention(activation, cx)
+            .is_none()
+            || !self.can_access_mode(AppMode::Dev)
+        {
             return false;
         }
+        if self
+            .platform_attention_pending_activations
+            .iter()
+            .chain(
+                self.platform_attention_visible_confirmations
+                    .iter()
+                    .map(|(activation, _, _)| activation),
+            )
+            .any(|pending| *pending == activation)
+        {
+            return true;
+        }
+        if self.platform_attention_pending_activations.len()
+            + self.platform_attention_visible_confirmations.len()
+            == Self::MAX_PENDING_PLATFORM_ATTENTION_ACTIVATIONS
+        {
+            return false;
+        }
+        self.platform_attention_pending_activations
+            .push_back(activation);
+        self.drive_platform_attention_activations(cx);
+        true
+    }
+
+    pub(super) fn drive_platform_attention_activations(&mut self, cx: &mut Context<Self>) {
+        if self.platform_attention_pending_activations.is_empty()
+            || !self.platform_attention_visible_confirmations.is_empty()
+        {
+            return;
+        }
+        if !self.can_access_mode(AppMode::Dev) {
+            self.platform_attention_pending_activations.clear();
+            return;
+        }
+        if self.mode_transition.is_some() {
+            self.settings_open = false;
+            return;
+        }
+        if self.effective_mode() != AppMode::Dev {
+            let _ = self.enter_dev_mode(cx);
+            return;
+        }
+        self.settings_open = false;
+        let Some(activation) = self.platform_attention_pending_activations.pop_front() else {
+            return;
+        };
+        let Some((destination, _)) = self.resolve_current_platform_attention(activation, cx) else {
+            self.drive_platform_attention_activations(cx);
+            return;
+        };
         let required_view = platform_attention_destination_view(&destination);
-        let opened = match destination {
+        let opened = match &destination {
             PlatformAttentionDestination::WorkspaceAttention { workspace } => {
                 self.active_view = required_view;
                 self.on_active_view_changed(cx);
                 let opened = self.workspace_hub.update(cx, |hub, cx| {
-                    hub.open_platform_attention_surface(workspace, cx)
+                    hub.open_platform_attention_surface(*workspace, cx)
                 });
                 opened
                     && platform_attention_surface_verified(
+                        self.effective_mode(),
+                        self.mode_transition.is_some(),
                         self.settings_open,
                         self.active_view,
                         required_view,
@@ -441,8 +588,10 @@ impl Workspace {
                 self.open_fleet(cx)
                     && self
                         .fleet_view
-                        .update(cx, |view, _| view.open_session_exact(&session))
+                        .update(cx, |view, _| view.open_session_exact(session))
                     && platform_attention_surface_verified(
+                        self.effective_mode(),
+                        self.mode_transition.is_some(),
                         self.settings_open,
                         self.active_view,
                         required_view,
@@ -456,25 +605,95 @@ impl Workspace {
                 self.active_view = required_view;
                 self.on_active_view_changed(cx);
                 let opened = self.workspace_hub.update(cx, |hub, cx| {
-                    hub.open_retained_provider_pane(workspace, &session, focus, cx)
+                    hub.open_retained_provider_pane(*workspace, session, *focus, cx)
                 });
                 opened
                     && platform_attention_surface_verified(
+                        self.effective_mode(),
+                        self.mode_transition.is_some(),
                         self.settings_open,
                         self.active_view,
                         required_view,
                     )
             }
         };
-        if !record_attention_read_after_visible_open(
+        if !opened {
+            self.drive_platform_attention_activations(cx);
+            return;
+        }
+        self.platform_attention_visible_confirmations
+            .push_back((activation, destination, 0));
+        self.schedule_platform_attention_visibility_confirmation(cx);
+    }
+
+    fn schedule_platform_attention_visibility_confirmation(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(16))
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.confirm_visible_platform_attention_activation(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn confirm_visible_platform_attention_activation(&mut self, cx: &mut Context<Self>) {
+        let Some((activation, opened_destination, attempt)) =
+            self.platform_attention_visible_confirmations.pop_front()
+        else {
+            return;
+        };
+        let Some((current_destination, local)) =
+            self.resolve_current_platform_attention(activation, cx)
+        else {
+            self.drive_platform_attention_activations(cx);
+            return;
+        };
+        let required_view = platform_attention_destination_view(&current_destination);
+        let common_visible = current_destination == opened_destination
+            && platform_attention_surface_verified(
+                self.effective_mode(),
+                self.mode_transition.is_some(),
+                self.settings_open,
+                self.active_view,
+                required_view,
+            );
+        let exact_visible = common_visible
+            && match &current_destination {
+                PlatformAttentionDestination::WorkspaceAttention { workspace } => self
+                    .workspace_hub
+                    .read(cx)
+                    .platform_attention_surface_is_visible(*workspace),
+                PlatformAttentionDestination::FleetSession { session, .. } => {
+                    self.fleet_view.read(cx).session_is_open_exact(session)
+                }
+                PlatformAttentionDestination::RetainedProviderPane {
+                    workspace,
+                    session,
+                    focus,
+                } => self
+                    .workspace_hub
+                    .read(cx)
+                    .retained_provider_pane_is_visible(*workspace, session, *focus, cx),
+            };
+        if !exact_visible && attempt < 60 {
+            self.platform_attention_visible_confirmations.push_front((
+                activation,
+                opened_destination,
+                attempt + 1,
+            ));
+            self.schedule_platform_attention_visibility_confirmation(cx);
+            return;
+        }
+        if record_attention_read_after_visible_open(
             self.platform_attention_local.as_mut(),
             local,
-            opened,
+            exact_visible,
         ) {
-            return false;
+            self.sync_platform_attention_presentations(cx);
         }
-        self.sync_platform_attention_presentations(cx);
-        true
+        self.drive_platform_attention_activations(cx);
     }
 }
 
@@ -530,15 +749,18 @@ pub(crate) fn platform_attention_state_label(
 mod tests {
     use super::{
         apply_attention_read_with_resync, attention_context_requires_retirement,
-        mark_attention_boards_unavailable, platform_attention_destination_view,
-        platform_attention_surface_verified, record_attention_read_after_visible_open,
-        retire_attention_board_state,
+        attention_context_retirements, mark_attention_boards_unavailable,
+        platform_attention_destination_view, platform_attention_surface_verified,
+        record_attention_read_after_visible_open, retire_attention_board_state,
     };
+    use crate::workspace::workspaces::WorkspaceHubView;
     use crate::workspace::ActiveView;
     use crate::{
         ai_assistant::AiAssistantView,
+        terminal_view::TerminalView,
         workspace::{Workspace, WorkspaceAiBindings},
     };
+    use automonique_protocol::platform::{Capabilities, CursorTopic, PlatformCursor};
     use automonique_protocol::platform_v2::{
         CheckoutId, WorkContextAttributes, WorkContextIdentity, WorkContextLabel,
         WorkContextLifecycle, WorkContextRecord, WorkContextRelation, WorkContextRelationKind,
@@ -550,15 +772,21 @@ mod tests {
     use automonique_protocol::primitives::Revision;
     use gpui::AppContext;
     use shelldeck_core::config::platform::{
-        AttentionReadResult, ResourceAuthority, ResourceCoordinate, ResourceId, ResourceKind,
+        AttentionReadResult, PlatformSnapshot, PlatformView, ResourceAuthority, ResourceCoordinate,
+        ResourceId, ResourceKind,
     };
     use shelldeck_core::config::platform_attention::{
         AttentionApplyOutcome, AttentionError, AttentionItemKey, AttentionLocalKey,
-        AttentionLocalStateStore, AttentionSourceInventory, AttentionSourceStatus,
-        AttentionUnavailableReason, PlatformAttentionBoard, PlatformAttentionDestination,
-        PlatformAttentionTarget, ReviewAttentionPresence,
+        AttentionLocalStateStore, AttentionRetirement, AttentionSourceInventory,
+        AttentionSourceStatus, AttentionUnavailableReason, PlatformAttentionActivation,
+        PlatformAttentionBoard, PlatformAttentionDestination, PlatformAttentionTarget,
+        ReviewAttentionPresence,
     };
-    use shelldeck_core::config::workspace_catalog::CatalogWorkspaceId;
+    use shelldeck_core::config::workspace_catalog::{
+        CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, CheckoutHost, PlatformContextRef,
+        PlatformMappingReconciliation, PlatformV2Mapping, ProjectCatalog, ProjectCheckout,
+        ProjectRecord, RepositoryIdentity, WorkspaceLaunchIntake, WorkspaceLaunchRequest,
+    };
     use shelldeck_core::workspace_navigation::{PaneId, WorkspaceFocus, WorkspaceTabId};
     use shelldeck_core::{
         ai::{AiConfig, AiContext, AiSurface, ClippyConfig},
@@ -571,6 +799,61 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::{cell::RefCell, rc::Rc};
     use uuid::Uuid;
+
+    fn exact_catalog() -> (ProjectCatalog, CatalogWorkspaceId) {
+        let project = CatalogProjectId::from_uuid(Uuid::from_u128(18_290));
+        let checkout = CatalogCheckoutId::from_uuid(Uuid::from_u128(18_291));
+        let workspace = CatalogWorkspaceId::from_uuid(Uuid::from_u128(18_292));
+        let mut record = ProjectRecord::new(project, "Attention");
+        record.add_checkout(ProjectCheckout::new(
+            checkout,
+            "local",
+            CheckoutHost::Local {
+                device_label: "test".into(),
+                root: std::env::current_dir().unwrap(),
+            },
+            RepositoryIdentity {
+                slug: "test/attention".into(),
+                canonical_url: None,
+            },
+        ));
+        let mut catalog = ProjectCatalog::default();
+        catalog.insert_project(record).unwrap();
+        catalog
+            .create_workspace(WorkspaceLaunchRequest {
+                id: workspace,
+                project_id: project,
+                checkout_id: checkout,
+                name: "Attention".into(),
+                intake: WorkspaceLaunchIntake::Manual,
+            })
+            .unwrap();
+        catalog
+            .set_platform_mapping(
+                workspace,
+                None,
+                PlatformV2Mapping {
+                    reconciliation_revision: 1,
+                    project: PlatformContextRef {
+                        id: "project-1".into(),
+                        revision: 1,
+                    },
+                    checkout: PlatformContextRef {
+                        id: "checkout-1".into(),
+                        revision: 1,
+                    },
+                    user_workspace: PlatformContextRef {
+                        id: "workspace-1".into(),
+                        revision: 1,
+                    },
+                    reconciliation: PlatformMappingReconciliation::Exact {
+                        reconciled_at_millis: 1,
+                    },
+                },
+            )
+            .unwrap();
+        (catalog, workspace)
+    }
 
     fn relation(kind: WorkContextRelationKind, target: WorkContextIdentity) -> WorkContextRelation {
         WorkContextRelation::new(kind, target).unwrap()
@@ -642,6 +925,116 @@ mod tests {
             .unwrap()],
         )
         .unwrap()
+    }
+
+    fn workspace_activation_fixture(
+        cx: &mut gpui::TestAppContext,
+        mode: AppMode,
+    ) -> (
+        gpui::Entity<Workspace>,
+        PlatformAttentionActivation,
+        AttentionLocalKey,
+        tempfile::TempDir,
+    ) {
+        let (catalog, catalog_workspace) = exact_catalog();
+        let temp = tempfile::tempdir().unwrap();
+        let local_path = temp.path().join("private").join("local.json");
+        let entity = cx.update(|cx| {
+            let assistant = cx.new(|cx| {
+                AiAssistantView::new(
+                    AiContext::new(AiSurface::Global, "test", serde_json::json!({})),
+                    cx,
+                )
+            });
+            let mut config = AppConfig::default();
+            config.general.ui_font_family = crate::settings::normalize_ui_font_family("Inter", cx);
+            config.account = Some(AccountInfo {
+                email: "operator@example.test".into(),
+                name: "Operator".into(),
+                is_superadmin: true,
+                is_admin: true,
+                is_inklura_support: true,
+                roles: vec!["superadmin".into()],
+            });
+            config.cloud_sync.enabled = true;
+            config.cloud_sync.token = "fixture-sensitive-token".into();
+            config.cloud_sync.base_url = "https://manage.example.test".into();
+            config.cloud_sync.mode = mode;
+            let workspace = cx.new(|cx| {
+                Workspace::new(
+                    cx,
+                    config,
+                    Vec::new(),
+                    ConnectionStore::default(),
+                    WorkspaceAiBindings {
+                        assistant,
+                        tasks: Vec::new(),
+                        config: Rc::new(RefCell::new(AiConfig::default())),
+                        clippy_config: Rc::new(RefCell::new(ClippyConfig::default())),
+                    },
+                )
+            });
+            let terminal = cx.new(TerminalView::new);
+            let hub = cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal, cx));
+            workspace.update(cx, |workspace, _| {
+                workspace.workspace_hub = hub;
+                workspace.platform_attention_local =
+                    Some(AttentionLocalStateStore::open(local_path, 8).unwrap());
+                let source = source("workspace-1");
+                let mut board = PlatformAttentionBoard::new(inventory("project-1", "workspace-1"));
+                board
+                    .apply_authenticated_baseline_read(
+                        &source,
+                        AttentionReadResult::Snapshot(Box::new(snapshot(
+                            "project-1",
+                            "workspace-1",
+                            1,
+                            None,
+                        ))),
+                    )
+                    .unwrap();
+                workspace
+                    .platform_attention_boards
+                    .insert(catalog_workspace, board);
+                let cursor = PlatformCursor {
+                    authority: ResourceAuthority::Automonique,
+                    topic: CursorTopic::new("resources").unwrap(),
+                    sequence: Revision::FIRST,
+                };
+                workspace.fleet_snapshot = Some(PlatformSnapshot {
+                    capabilities: Capabilities::platform_v1(),
+                    resources: Vec::new(),
+                    cursor: cursor.clone(),
+                    sessions: Vec::new(),
+                    sessions_cursor: cursor,
+                    view: PlatformView::default(),
+                });
+                // Keep this deterministic fixture on its injected authority
+                // snapshot; the mode poll must not issue a real HTTP refresh.
+                workspace.fleet_refresh_in_flight = true;
+            });
+            workspace
+        });
+        cx.executor().allow_parking();
+        cx.run_until_parked();
+        cx.executor().forbid_parking();
+        let (activation, key) = entity.read_with(cx, |workspace, _| {
+            let board = &workspace.platform_attention_boards[&catalog_workspace];
+            let item = board.visible_items().next().unwrap();
+            (
+                PlatformAttentionActivation {
+                    workspace: catalog_workspace,
+                    item: item.ui_id(),
+                    item_revision: item.value().revision(),
+                },
+                AttentionLocalKey::new(
+                    board.inventory().target().clone(),
+                    item.key().clone(),
+                    item.value().revision(),
+                ),
+            )
+        });
+        (entity, activation, key, temp)
     }
 
     // SDTEST-1826
@@ -746,16 +1139,13 @@ mod tests {
         );
 
         let mut resync = BTreeSet::from([(workspace, source_one.clone())]);
-        let mut retired = BTreeSet::new();
         assert!(retire_attention_board_state(
             &mut boards,
             &mut resync,
-            &mut retired,
             workspace,
         ));
         assert!(!boards.contains_key(&workspace));
         assert!(resync.is_empty());
-        assert!(retired.contains(&source_one));
 
         let replacement = PlatformAttentionBoard::new(inventory("project-2", "workspace-2"));
         boards.insert(workspace, replacement);
@@ -805,18 +1195,38 @@ mod tests {
             ActiveView::Fleet
         );
         assert!(platform_attention_surface_verified(
+            AppMode::Dev,
+            false,
             false,
             ActiveView::Workspaces,
             ActiveView::Workspaces,
         ));
         assert!(!platform_attention_surface_verified(
+            AppMode::Dev,
+            false,
             true,
             ActiveView::Workspaces,
             ActiveView::Workspaces,
         ));
         assert!(!platform_attention_surface_verified(
+            AppMode::Dev,
+            false,
             false,
             ActiveView::Fleet,
+            ActiveView::Workspaces,
+        ));
+        assert!(!platform_attention_surface_verified(
+            AppMode::User,
+            false,
+            false,
+            ActiveView::Workspaces,
+            ActiveView::Workspaces,
+        ));
+        assert!(!platform_attention_surface_verified(
+            AppMode::Dev,
+            true,
+            false,
+            ActiveView::Workspaces,
             ActiveView::Workspaces,
         ));
 
@@ -827,6 +1237,7 @@ mod tests {
         )
         .unwrap();
         let local = AttentionLocalKey::new(
+            inventory("project-1", "workspace-1").target().clone(),
             AttentionItemKey::new(
                 source("workspace-1"),
                 AttentionItemId::new("item-1").unwrap(),
@@ -893,6 +1304,274 @@ mod tests {
             assert!(workspace.enter_dev_mode(cx));
             assert!(!workspace.settings_open);
             assert!(workspace.mode_transition.is_some());
+        });
+    }
+
+    // SDTEST-1831
+    #[test]
+    fn workspace_context_removal_and_restart_flush_durable_retirement_custody() {
+        let mut cx = gpui::TestAppContext::single();
+        let workspace_entity = cx.update(|cx| {
+            let assistant = cx.new(|cx| {
+                AiAssistantView::new(
+                    AiContext::new(AiSurface::Global, "test", serde_json::json!({})),
+                    cx,
+                )
+            });
+            let mut config = AppConfig::default();
+            config.general.ui_font_family = crate::settings::normalize_ui_font_family("Inter", cx);
+            config.account = Some(AccountInfo {
+                email: "operator@example.test".into(),
+                name: "Operator".into(),
+                is_superadmin: true,
+                is_admin: true,
+                is_inklura_support: true,
+                roles: vec!["superadmin".into()],
+            });
+            config.cloud_sync.enabled = true;
+            config.cloud_sync.token = "fixture-sensitive-token".into();
+            config.cloud_sync.base_url = "https://manage.example.test".into();
+            config.cloud_sync.mode = AppMode::Dev;
+            cx.new(|cx| {
+                Workspace::new(
+                    cx,
+                    config,
+                    Vec::new(),
+                    ConnectionStore::default(),
+                    WorkspaceAiBindings {
+                        assistant,
+                        tasks: Vec::new(),
+                        config: Rc::new(RefCell::new(AiConfig::default())),
+                        clippy_config: Rc::new(RefCell::new(ClippyConfig::default())),
+                    },
+                )
+            })
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("private").join("local.json");
+        let catalog_workspace = CatalogWorkspaceId::from_uuid(Uuid::from_u128(1831));
+        let source = source("workspace-1");
+        let key = AttentionLocalKey::new(
+            inventory("project-1", "workspace-1").target().clone(),
+            AttentionItemKey::new(source.clone(), AttentionItemId::new("item-1").unwrap()),
+            Revision::FIRST,
+        );
+        let mut board = PlatformAttentionBoard::new(inventory("project-1", "workspace-1"));
+        board
+            .apply_authenticated_baseline_read(
+                &source,
+                AttentionReadResult::Snapshot(Box::new(snapshot(
+                    "project-1",
+                    "workspace-1",
+                    1,
+                    None,
+                ))),
+            )
+            .unwrap();
+        let mut store = AttentionLocalStateStore::open(path.clone(), 8).unwrap();
+        store.record_read(key.clone()).unwrap();
+        workspace_entity.update(&mut cx, |workspace, _cx| {
+            workspace.platform_attention_local = Some(store);
+            workspace
+                .platform_attention_boards
+                .insert(catalog_workspace, board);
+        });
+        let displaced = path.with_extension("before-fence");
+        std::fs::rename(&path, &displaced).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        workspace_entity.update(&mut cx, |workspace, cx| {
+            workspace.reconcile_platform_attention_context(None, cx);
+            let retained = workspace
+                .platform_attention_boards
+                .get(&catalog_workspace)
+                .expect("failed fence persistence keeps the board as an unavailable retry fence");
+            assert!(retained.visible_items().next().is_none());
+            assert!(!workspace.platform_attention_retirements_pending.is_empty());
+            let store = workspace.platform_attention_local.as_ref().unwrap();
+            assert!(store.state().is_read(&key));
+        });
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&displaced, &path).unwrap();
+        workspace_entity.update(&mut cx, |workspace, cx| {
+            workspace.reconcile_platform_attention_context(None, cx);
+            assert!(workspace.platform_attention_boards.is_empty());
+            assert!(!workspace
+                .platform_attention_local
+                .as_ref()
+                .unwrap()
+                .state()
+                .is_read(&key));
+        });
+
+        let mut crashed = AttentionLocalStateStore::open(path.clone(), 8).unwrap();
+        crashed.record_read(key.clone()).unwrap();
+        let retirement = AttentionRetirement::new(
+            inventory("project-1", "workspace-1").target().clone(),
+            source,
+        );
+        crashed.begin_retirement(retirement).unwrap();
+        drop(crashed);
+        workspace_entity.update(&mut cx, |workspace, cx| {
+            workspace.platform_attention_local =
+                Some(AttentionLocalStateStore::open(path.clone(), 8).unwrap());
+            workspace.reconcile_platform_attention_context(None, cx);
+            let store = workspace.platform_attention_local.as_ref().unwrap();
+            assert!(!store.state().is_read(&key));
+            assert!(store.pending_retirements().is_empty());
+        });
+    }
+
+    // SDTEST-1832
+    #[test]
+    fn inactive_workspace_revisit_preserves_distinct_board_and_overlay_custody() {
+        let mut boards = BTreeMap::new();
+        let workspace_one = CatalogWorkspaceId::from_uuid(Uuid::from_u128(18_321));
+        let workspace_two = CatalogWorkspaceId::from_uuid(Uuid::from_u128(18_322));
+        let board_one = PlatformAttentionBoard::new(inventory("project-1", "workspace-1"));
+        let board_two = PlatformAttentionBoard::new(inventory("project-2", "workspace-2"));
+        let target_one = board_one.inventory().target().clone();
+        let target_two = board_two.inventory().target().clone();
+        boards.insert(workspace_one, board_one);
+        boards.insert(workspace_two, board_two);
+
+        let context_one = (workspace_one, Some(target_one));
+        assert!(attention_context_retirements(&boards, Some(&context_one)).is_empty());
+        assert!(boards.contains_key(&workspace_two));
+        let context_two = (workspace_two, Some(target_two));
+        assert!(attention_context_retirements(&boards, Some(&context_two)).is_empty());
+        assert_eq!(
+            boards.len(),
+            2,
+            "switching active workspaces retires neither board"
+        );
+        assert_eq!(attention_context_retirements(&boards, None).len(), 2);
+    }
+
+    // SDTEST-1833
+    #[test]
+    fn real_workspace_waits_for_dev_visibility_across_modes_settings_and_inflight_transition() {
+        fn advance_all(cx: &gpui::TestAppContext) {
+            for _ in 0..8 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_secs(5));
+                while cx.executor().tick() {}
+            }
+        }
+
+        for initial_mode in [AppMode::User, AppMode::Support] {
+            let mut cx = gpui::TestAppContext::single();
+            let (workspace, activation, key, _temp) =
+                workspace_activation_fixture(&mut cx, initial_mode);
+            workspace.update(&mut cx, |workspace, cx| {
+                assert!(workspace.activate_platform_attention(activation, cx));
+                assert!(!workspace
+                    .platform_attention_local
+                    .as_ref()
+                    .unwrap()
+                    .state()
+                    .is_read(&key));
+                assert!(workspace.mode_transition.is_some());
+            });
+            advance_all(&cx);
+            workspace.read_with(&cx, |workspace, cx| {
+                assert_eq!(workspace.effective_mode(), AppMode::Dev);
+                assert!(workspace.mode_transition.is_none());
+                assert_eq!(workspace.active_view, ActiveView::Workspaces);
+                assert!(
+                    workspace.platform_attention_local.as_ref().unwrap().state().is_read(&key),
+                    "mode={:?} view={:?} pending={} confirmations={} settings={} board={} snapshot={} navigation={:?}",
+                    workspace.effective_mode(),
+                    workspace.active_view,
+                    workspace.platform_attention_pending_activations.len(),
+                    workspace.platform_attention_visible_confirmations.len(),
+                    workspace.settings_open,
+                    workspace.platform_attention_boards.contains_key(&activation.workspace),
+                    workspace.fleet_snapshot.is_some(),
+                    workspace.workspace_hub.read(cx).navigation().active(),
+                );
+            });
+        }
+
+        let mut cx = gpui::TestAppContext::single();
+        let (workspace, activation, key, _temp) =
+            workspace_activation_fixture(&mut cx, AppMode::Dev);
+        workspace.update(&mut cx, |workspace, cx| {
+            workspace.settings_open = true;
+            assert!(workspace.activate_platform_attention(activation, cx));
+            assert!(!workspace.settings_open);
+            assert!(!workspace
+                .platform_attention_local
+                .as_ref()
+                .unwrap()
+                .state()
+                .is_read(&key));
+        });
+        cx.refresh().unwrap();
+        workspace.update(&mut cx, |workspace, cx| {
+            assert_eq!(workspace.platform_attention_visible_confirmations.len(), 1);
+            workspace.confirm_visible_platform_attention_activation(cx);
+        });
+        assert!(workspace.read_with(&cx, |workspace, _| workspace
+            .platform_attention_local
+            .as_ref()
+            .unwrap()
+            .state()
+            .is_read(&key)));
+
+        let mut cx = gpui::TestAppContext::single();
+        let (workspace, activation, key, _temp) =
+            workspace_activation_fixture(&mut cx, AppMode::Support);
+        workspace.update(&mut cx, |workspace, cx| {
+            workspace.set_mode(AppMode::User, cx);
+            assert!(workspace.mode_transition.is_some());
+            assert!(workspace.activate_platform_attention(activation, cx));
+            assert!(!workspace
+                .platform_attention_local
+                .as_ref()
+                .unwrap()
+                .state()
+                .is_read(&key));
+        });
+        advance_all(&cx);
+        workspace.read_with(&cx, |workspace, _| {
+            assert_eq!(workspace.effective_mode(), AppMode::Dev);
+            assert!(workspace.mode_transition.is_none());
+            assert!(workspace
+                .platform_attention_local
+                .as_ref()
+                .unwrap()
+                .state()
+                .is_read(&key));
+        });
+    }
+
+    // SDTEST-1834
+    #[test]
+    fn authority_change_between_open_and_visible_confirmation_stays_unread() {
+        let mut cx = gpui::TestAppContext::single();
+        let (workspace, activation, key, _temp) =
+            workspace_activation_fixture(&mut cx, AppMode::Dev);
+        workspace.update(&mut cx, |workspace, cx| {
+            assert!(workspace.activate_platform_attention(activation, cx));
+            assert_eq!(workspace.platform_attention_visible_confirmations.len(), 1);
+            let board = workspace
+                .platform_attention_boards
+                .get_mut(&activation.workspace)
+                .unwrap();
+            let source = board.inventory().sources()[0].clone();
+            board
+                .mark_unavailable(&source, AttentionUnavailableReason::Transport)
+                .unwrap();
+            workspace.confirm_visible_platform_attention_activation(cx);
+            assert!(!workspace
+                .platform_attention_local
+                .as_ref()
+                .unwrap()
+                .state()
+                .is_read(&key));
+            assert!(workspace
+                .platform_attention_visible_confirmations
+                .is_empty());
         });
     }
 }

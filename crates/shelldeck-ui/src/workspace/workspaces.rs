@@ -673,6 +673,13 @@ impl WorkspaceHubView {
         self.switch_to_checked(workspace, cx)
     }
 
+    pub(super) fn platform_attention_surface_is_visible(
+        &self,
+        workspace: CatalogWorkspaceId,
+    ) -> bool {
+        self.navigation.active() == Some(workspace)
+    }
+
     pub(super) fn open_retained_provider_pane(
         &mut self,
         workspace: CatalogWorkspaceId,
@@ -731,6 +738,50 @@ impl WorkspaceHubView {
                 },
             )
             .is_ok()
+    }
+
+    pub(super) fn retained_provider_pane_is_visible(
+        &self,
+        workspace: CatalogWorkspaceId,
+        session: &ResourceCoordinate,
+        focus: shelldeck_core::workspace_navigation::WorkspaceFocus,
+        cx: &App,
+    ) -> bool {
+        if self.navigation.active() != Some(workspace) {
+            return false;
+        }
+        let Some(platform_user_workspace_id) = self
+            .catalog
+            .workspace(workspace)
+            .ok()
+            .and_then(|workspace| workspace.platform_mapping())
+            .filter(|mapping| mapping.is_exact())
+            .map(|mapping| mapping.user_workspace.id.as_str())
+        else {
+            return false;
+        };
+        let surface_matches = self
+            .navigation
+            .workspace(workspace)
+            .is_some_and(|retained| {
+                retained.surface.focus == Some(focus)
+                    && retained.surface.root.as_ref().is_some_and(|root| {
+                        provider_focus_matches(
+                            root,
+                            focus,
+                            platform_user_workspace_id,
+                            session.id.as_str(),
+                        )
+                    })
+            });
+        let native_matches = self.retained.get(&workspace).is_some_and(|retained| {
+            let terminal = retained.read(cx).terminal.read(cx);
+            terminal
+                .tabs
+                .get(terminal.active_tab_index())
+                .is_some_and(|tab| tab.id == focus.tab_id.as_uuid())
+        });
+        surface_matches && native_matches
     }
 
     pub(super) fn configure_terminals(
