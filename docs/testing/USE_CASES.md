@@ -2651,8 +2651,26 @@ layout without painting its configured overflow marker. Layout truncation remain
 as a second containment layer, while the source marker guarantees that the user
 can see that more text exists.
 
+### SDUC-489 — Bext Instance failures keep their service context
+
+Errors returned by the single-instance SDK never pass through the Manage portal
+error presenter. The raw HTTP status, internal SDK route, and loopback address
+remain in logs, while the UI identifies the Bext instance and gives guidance
+appropriate to the failure class. A 404 says that a resource or SDK route is
+missing on the targeted instance and suggests checking the target and version;
+it never claims that a portal item was deleted.
+
+The mapping distinguishes unreachable, timeout, rejected, not-found, server,
+bad-response, and fallback failures in both supported locales. The persistent
+Instance notice stays inset and rounded at compact widths and is capped on wide
+layouts, so a more useful message cannot overflow its owning view.
+
 ## Change log
 
+- **2026-08-28** — Added SDUC-489 and SDTEST-1740: Instance SDK failures now
+  use their own bilingual presentation instead of Manage semantics. The real
+  loopback 404 was replayed at 600 and 1,210 px, with a contained error notice
+  and the technical route/status retained only in logs.
 - **2026-08-28** — Added SDUC-488 and SDTEST-1739: long labels in the titlebar
   site chip, site rows, section heading, and Manage-area rows now show an
   explicit Unicode-safe ellipsis and expose their untouched value in tooltips.

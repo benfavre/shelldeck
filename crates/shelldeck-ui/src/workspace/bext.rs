@@ -336,7 +336,7 @@ impl Workspace {
                     cx.notify();
                 }),
                 Err(e) => ws.bext_view.update(cx, |v, cx| {
-                    v.set_error(crate::i18n::api_error_message(&e));
+                    v.set_error(crate::i18n::bext_instance_error_message(&e));
                     cx.notify();
                 }),
             });
@@ -372,7 +372,7 @@ impl Workspace {
                     Err(e) => ws.show_toast(
                         t!(
                             "toast.bext.instance_error",
-                            error = crate::i18n::api_error_message(&e)
+                            error = crate::i18n::bext_instance_error_message(&e)
                         )
                         .to_string(),
                         ToastLevel::Error,
