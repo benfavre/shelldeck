@@ -536,6 +536,18 @@ impl WorkspaceHubView {
 
     fn render_launcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
+        let selected_is_ssh = self.launcher.checkout.is_some_and(|selected| {
+            self.catalog.projects().any(|project| {
+                project.checkouts().any(|checkout| {
+                    checkout.id() == selected && matches!(checkout.host(), CheckoutHost::Ssh { .. })
+                })
+            })
+        });
+        let active_mode = if selected_is_ssh {
+            WorkspaceLaunchMode::Ssh
+        } else {
+            self.launcher.mode
+        };
         let mut intake_row = div().flex().items_center().flex_wrap().gap(px(6.0));
         for (intake_index, intake) in [
             LauncherIntakeKind::Manual,
@@ -588,8 +600,11 @@ impl WorkspaceHubView {
                     modes = modes.child(
                         Button::new(("workspace-launch-mode", index), label)
                             .size(ButtonSize::Sm)
-                            .disabled(mode == WorkspaceLaunchMode::Ssh)
-                            .variant(if self.launcher.mode == mode {
+                            .disabled(
+                                (selected_is_ssh && mode != WorkspaceLaunchMode::Ssh)
+                                    || (!selected_is_ssh && mode == WorkspaceLaunchMode::Ssh),
+                            )
+                            .variant(if active_mode == mode {
                                 ButtonVariant::Secondary
                             } else {
                                 ButtonVariant::Outline

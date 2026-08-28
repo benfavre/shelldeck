@@ -919,19 +919,10 @@ impl Workspace {
         });
 
         let terminal = cx.new(TerminalView::new);
-        let workspace_connections = connections
-            .iter()
-            .map(|connection| (connection.id, connection.display_name().to_string()))
-            .collect::<Vec<_>>();
         let workspace_catalog = shelldeck_core::config::workspace_catalog::ProjectCatalog::load()
             .map_err(|error| error.to_string());
         let workspace_hub = cx.new(|cx| {
-            workspaces::WorkspaceHubView::new(
-                workspace_catalog,
-                &workspace_connections,
-                terminal.clone(),
-                cx,
-            )
+            workspaces::WorkspaceHubView::new(workspace_catalog, &connections, terminal.clone(), cx)
         });
         let agent_console = cx.new(|cx| {
             let mut view = AgentConsoleView::new(cx);
