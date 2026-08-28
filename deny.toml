@@ -15,8 +15,7 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is transitive through image codecs used by GPUI and has no in-place maintained release" },
     { id = "RUSTSEC-2025-0052", reason = "async-std is transitive through the vendored GPUI HTTP and async-tar stack" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is transitive through zed-reqwest in the vendored GPUI HTTP client" },
-    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is transitive through stacksafe in the vendored GPUI renderer" },
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25 is transitive through cosmic-text/fontdb and lopdf; both are already on their latest compatible release" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25 is transitive through cosmic-text/fontdb; the latest cosmic-text still constrains fontdb below its maintained parser migration" },
 ]
 
 [bans]
