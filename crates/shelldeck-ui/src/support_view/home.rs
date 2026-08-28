@@ -327,7 +327,7 @@ impl SupportView {
             ))
     }
 
-    pub(super) fn render_home(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_home(&self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let tickets = Button::new(
             "support-home-tickets",
@@ -351,6 +351,49 @@ impl SupportView {
                 this.open_home_target(SupportHomeTarget::Requests, cx)
             });
         });
+
+        let triage_copy = div()
+            .flex()
+            .flex_col()
+            .min_w(px(0.0))
+            .flex_1()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(t!("support.home.priority_title").to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("support.home.priority_hint").to_string()),
+            );
+
+        let mut triage_actions = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.0))
+            .flex_shrink_0();
+        if compact {
+            triage_actions = triage_actions
+                .w_full()
+                .child(requests.min_w(px(180.0)).flex_1())
+                .child(tickets.min_w(px(180.0)).flex_1());
+        } else {
+            triage_actions = triage_actions.child(requests).child(tickets);
+        }
+
+        let mut triage_content = div().flex().gap(px(12.0));
+        if compact {
+            triage_content = triage_content.flex_col();
+        } else {
+            triage_content = triage_content.items_center().justify_between();
+        }
+        triage_content = triage_content.child(triage_copy).child(triage_actions);
 
         let attention_indices = attention_ticket_indices(&self.tickets, 4);
         let attention = if attention_indices.is_empty() {
@@ -491,42 +534,7 @@ impl SupportView {
                             cx,
                         )),
                 )
-                .child(
-                    Card::new().content(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(12.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(14.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(ShellDeckColors::text_primary())
-                                            .child(t!("support.home.priority_title").to_string()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.0))
-                                            .text_color(ShellDeckColors::text_muted())
-                                            .child(t!("support.home.priority_hint").to_string()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.0))
-                                    .child(requests)
-                                    .child(tickets),
-                            ),
-                    ),
-                )
+                .child(Card::new().content(triage_content))
                 .child(
                     div()
                         .flex()
