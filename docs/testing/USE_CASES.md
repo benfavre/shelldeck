@@ -2164,6 +2164,14 @@ panel-less activities.
 The panel header names the active activity, so the list below it does not
 repeat that name as its own section header.
 
+The Dev status bar follows the same compact vocabulary. Its three live activity
+counts render as distinct semantic Lucide icons plus numbers; hovering each
+20-pixel target reveals the complete localized meaning. Below the compact
+breakpoint, branch, palette hint, and default version metadata disappear. On a
+wide layout the Git branch is positioned at the geometric center independently
+of the left counters and right metadata, so either side can grow without moving
+or gluing it to a neighbor.
+
 The main Sites and Scripts surfaces also preserve this navigation contract at
 narrow Dev widths. Sites uses contained full-width cards and replaces the list
 with one fully scrollable detail view; Scripts shows either its full-width
@@ -2667,6 +2675,10 @@ layouts, so a more useful message cannot overflow its owning view.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-443 and added SDTEST-1741: status counters
+  now use semantic icons, numbers, 20 px hover targets, and localized tooltips;
+  the wide Git branch is anchored to the geometric center outside the flex
+  flow. Replayed at 600 and 1,210 px after catching the former flex regression.
 - **2026-08-28** — Added SDUC-489 and SDTEST-1740: Instance SDK failures now
   use their own bilingual presentation instead of Manage semantics. The real
   loopback 404 was replayed at 600 and 1,210 px, with a contained error notice
