@@ -100,6 +100,36 @@ impl WindowsTray {
         }
     }
 
+    // ShellDeck patch: SDPATCH-120 — Explorer discards notification-area
+    // registrations when it restarts. Re-add the retained HICON on the
+    // TaskbarCreated broadcast and make that exact NIM_ADD result authoritative.
+    pub(crate) fn handle_taskbar_created(&mut self) -> bool {
+        self.handle_taskbar_created_with(|nid| unsafe {
+            Shell_NotifyIconW(NIM_ADD, nid).as_bool()
+        })
+    }
+
+    fn handle_taskbar_created_with(
+        &mut self,
+        add_icon: impl FnOnce(&NOTIFYICONDATAW) -> bool,
+    ) -> bool {
+        self.icon_added = false;
+        let Some(hicon) = self.current_icon else {
+            return false;
+        };
+        let nid = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: self.hwnd,
+            uID: TRAY_ICON_ID,
+            uFlags: NIF_MESSAGE | NIF_SHOWTIP | NIF_ICON,
+            uCallbackMessage: WM_GPUI_TRAY_ICON,
+            hIcon: hicon,
+            ..Default::default()
+        };
+        self.icon_added = add_icon(&nid);
+        self.icon_added
+    }
+
     fn remove_icon(&mut self) {
         if self.icon_added {
             let nid = NOTIFYICONDATAW {
@@ -333,4 +363,100 @@ fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
 
 fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(data.get(offset..offset + 4)?.try_into().ok()?))
+}
+
+// ShellDeck patch: SDPATCH-120 — pin Explorer-restart custody, ICO selection,
+// and the real ICO-resource-to-HICON boundary on native Windows CI.
+#[cfg(test)]
+mod tests {
+    use std::mem::ManuallyDrop;
+
+    use super::*;
+
+    // SDTEST-1813
+    #[test]
+    fn sdtest_1813_explorer_restart_readd_is_authoritative_and_retains_icon() {
+        let hwnd = HWND(1usize as *mut core::ffi::c_void);
+        let hicon = HICON(2usize as *mut core::ffi::c_void);
+        let mut tray = ManuallyDrop::new(WindowsTray {
+            icon_added: true,
+            hwnd,
+            current_icon: Some(hicon),
+            menu_items: Vec::new(),
+            command_id_map: HashMap::new(),
+        });
+
+        assert!(!tray.handle_taskbar_created_with(|nid| {
+            assert_eq!(nid.hWnd, hwnd);
+            assert_eq!(nid.uID, TRAY_ICON_ID);
+            assert_eq!(nid.hIcon, hicon);
+            assert_eq!(nid.uCallbackMessage, WM_GPUI_TRAY_ICON);
+            assert_eq!(nid.uFlags, NIF_MESSAGE | NIF_SHOWTIP | NIF_ICON);
+            false
+        }));
+        assert!(!tray.is_available());
+        assert_eq!(tray.current_icon, Some(hicon));
+
+        assert!(tray.handle_taskbar_created_with(|_| true));
+        assert!(tray.is_available());
+        assert_eq!(tray.current_icon, Some(hicon));
+
+        tray.current_icon = None;
+        assert!(!tray.handle_taskbar_created_with(|_| panic!("no add without a retained HICON")));
+        assert!(!tray.is_available());
+    }
+
+    fn test_ico(entries: &[(u8, u8, u16, &[u8])]) -> Vec<u8> {
+        let directory_end = 6 + entries.len() * 16;
+        let mut bytes = Vec::with_capacity(
+            directory_end + entries.iter().map(|(_, _, _, data)| data.len()).sum::<usize>(),
+        );
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        let mut offset = directory_end;
+        for &(width, height, depth, data) in entries {
+            bytes.push(width);
+            bytes.push(height);
+            bytes.push(0);
+            bytes.push(0);
+            bytes.extend_from_slice(&1u16.to_le_bytes());
+            bytes.extend_from_slice(&depth.to_le_bytes());
+            bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+            offset += data.len();
+        }
+        for &(_, _, _, data) in entries {
+            bytes.extend_from_slice(data);
+        }
+        bytes
+    }
+
+    // SDTEST-1814
+    #[test]
+    fn sdtest_1814_ico_resource_selects_closest_then_highest_depth() {
+        let ico = test_ico(&[
+            (16, 16, 32, &[0x16]),
+            (32, 32, 8, &[0x08]),
+            (32, 32, 32, &[0x32]),
+            (48, 48, 32, &[0x48]),
+        ]);
+        assert_eq!(ico_resource(&ico, 32), Some(&[0x32][..]));
+
+        let mut overlapping = test_ico(&[(32, 32, 32, &[0x32])]);
+        overlapping[18..22].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(ico_resource(&overlapping, 32), None);
+        assert_eq!(ico_resource(&[0, 0, 2, 0, 0, 0], 32), None);
+    }
+
+    // SDTEST-1815
+    #[test]
+    fn sdtest_1815_shell_deck_ico_creates_a_native_hicon() {
+        let bytes = include_bytes!("../../../../../packaging/icons/shelldeck.ico");
+        let hicon = create_hicon_from_bytes(bytes).expect("CreateIconFromResourceEx accepts ICO");
+        assert_ne!(hicon, HICON::default());
+        unsafe {
+            DestroyIcon(hicon).expect("destroy test HICON");
+        }
+    }
 }

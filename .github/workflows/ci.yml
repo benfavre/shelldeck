@@ -128,6 +128,12 @@ jobs:
         shell: bash
         run: ./scripts/apply-crate-patches.sh
 
+      # The changed AppKit/GPUI tray path lives outside shelldeck-core. Keep a
+      # native macOS compile gate for the actual application binary.
+      - name: Check native macOS tray integration
+        if: runner.os == 'macOS'
+        run: cargo check -p shelldeck --bin shelldeck
+
       # ShellDeck's own PTY boundary must reject a vanished authorized cwd on
       # every supported OS before any native PTY or process side effect.
       - name: Test terminal cwd authority boundary
@@ -159,11 +165,24 @@ jobs:
           cargo update --manifest-path "$crate_dir/Cargo.toml"
           cargo test --manifest-path "$crate_dir/Cargo.toml" explicit_missing_cwd_is_forwarded_instead_of_falling_back_home
 
-      # SDPATCH-120 owns the Windows tray's ICO-to-HICON boundary. Exercise the
-      # exact asset selected by ShellDeck on the native Windows runner.
-      - name: Test native Windows tray icon decoder
+      # SDPATCH-120 owns the ICO selector, CreateIconFromResourceEx boundary,
+      # and fail-closed Explorer-restart custody. Run its vendored unit tests
+      # explicitly because dependency tests are not part of ShellDeck's suite.
+      - name: Test native Windows tray integration
         if: runner.os == 'Windows'
-        run: cargo test -p shelldeck --bin shelldeck sdtest_1812_windows_tray_asset_is_a_decodable_ico
+        shell: bash
+        run: |
+          # Path dependencies are intentionally outside the workspace, so copy
+          # the vendored crate into the disposable runner temp tree to execute
+          # its own unit tests without broadening `cargo test --workspace`.
+          gpui_test_root="${RUNNER_TEMP}/shelldeck-gpui-test"
+          mkdir -p "$gpui_test_root/patches" "$gpui_test_root/packaging/icons"
+          cp -R patches/adabraka-gpui "$gpui_test_root/patches/"
+          cp packaging/icons/shelldeck.ico "$gpui_test_root/packaging/icons/"
+          cp Cargo.lock "$gpui_test_root/patches/adabraka-gpui/Cargo.lock"
+          CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/target" \
+            cargo test --manifest-path "$gpui_test_root/patches/adabraka-gpui/Cargo.toml" --lib sdtest_181
+          cargo test -p shelldeck --bin shelldeck sdtest_1812_windows_tray_asset_is_a_decodable_ico
 
       - name: Test shelldeck-core
         run: cargo test -p shelldeck-core

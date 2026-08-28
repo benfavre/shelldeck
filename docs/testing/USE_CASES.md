@@ -1953,7 +1953,10 @@ Windows retain the colored app icon.
 when the system tray was created successfully. The default remains a visible
 start for old and fresh configurations. If the tray backend is unavailable,
 ShellDeck ignores the hidden-start preference and opens its main window so the
-process is always recoverable. Tray and deep-link show actions explicitly show
+process is always recoverable. On Windows, an Explorer restart authoritatively
+re-adds the retained icon; a failed re-add makes tray availability false rather
+than claiming a notification-area entry that no longer exists. Tray and
+deep-link show actions explicitly show
 the hidden window before activating it. A hidden start initially owns only a
 lightweight `CompanionRoot`: it does not construct `Workspace`, its views or
 its pollers until a tray, deep-link, palette, Dock or task-target command needs
@@ -2874,6 +2877,11 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-08-28** — Hardened SDUC-435 and added SDTEST-1813..1815: Windows now
+  handles Explorer's `TaskbarCreated` broadcast through an invisible top-level
+  tray owner, re-adds the retained HICON with fail-closed availability, and
+  exercises GPUI's ICO selector plus `CreateIconFromResourceEx` on native CI.
 
 - **2026-08-28** — Amended SDUC-434/435 after moving every desktop tray to
   GPUI's native backend: Linux no longer initializes GTK/AppIndicator, native

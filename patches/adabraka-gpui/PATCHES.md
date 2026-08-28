@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total marker occurrences in code: **160**
+Total marker occurrences in code: **166**
 (`rg "ShellDeck patch:" src/`; SDPATCH-103 and SDPATCH-119 are
 Cargo.toml-only and outside the src-scoped marker convention.)
 
@@ -23,8 +23,8 @@ Cargo.toml-only and outside the src-scoped marker convention.)
   - `src/platform/linux/tray.rs` — `LinuxTray::is_available`, label conversion
   - `src/platform/linux/{wayland,x11}/client.rs` — native tray delegation
   - `src/platform/mac/{platform,tray}.rs` — availability and label rendering
-  - `src/platform/windows/{platform,tray}.rs` — availability and label rendering
-- **Markers** (20):
+  - `src/platform/windows/{platform,tray}.rs` — availability, Explorer restart recovery, ICO decoding, and label rendering
+- **Markers** (27):
   - `src/app.rs` — `/// ShellDeck patch: SDPATCH-120 — expose native tray creation success so`
   - `src/platform.rs` — `/// ShellDeck patch: SDPATCH-120 — make tray availability part of the`
   - `src/platform.rs` — `/// ShellDeck patch: SDPATCH-120 — native tray counters need a portable,`
@@ -42,16 +42,24 @@ Cargo.toml-only and outside the src-scoped marker convention.)
   - `src/platform/mac/platform.rs` — `// ShellDeck patch: SDPATCH-120 — report the retained NSStatusItem.`
   - `src/platform/mac/tray.rs` — `// ShellDeck patch: SDPATCH-120 — retain the actual NSStatusItem result for`
   - `src/platform/mac/tray.rs` — `// ShellDeck patch: SDPATCH-120 — render informational rows disabled.`
-  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — report the retained Win32 tray owner.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — the tray owner must be an invisible`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — report the retained Win32 tray owner only`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — restore the exact retained tray icon`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — use Windows' registered broadcast ID as the`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — the native Windows test runner must prove`
   - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — create the shell entry only after a real`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — Explorer discards notification-area`
   - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — render informational rows disabled.`
   - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — decode a complete .ico file as an ICONDIR,`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — pin Explorer-restart custody, ICO selection,`
 - **Why**: ShellDeck now uses GPUI's native tray on every desktop instead of
   carrying a second `tray-icon`/GTK stack. The application must know whether
   tray creation actually succeeded before honoring start-hidden, needs
   disabled native rows for counters and signed-out actions, and must marshal
   Linux `ksni` service-thread callbacks onto GPUI's foreground executor before
-  invoking application code.
+  invoking application code. Windows uses an invisible top-level owner so it
+  receives Explorer's registered `TaskbarCreated` broadcast, then re-adds the
+  retained HICON and derives availability from that exact result.
 - **Upstream status**: not filed yet; the generic availability and label APIs
   are suitable for upstream, while the callback bridge fixes an existing
   Linux backend integration gap.
@@ -628,6 +636,11 @@ Cargo.toml-only and outside the src-scoped marker convention.)
 - **Upstream status**: not filed yet.
 
 ## Sync log
+
+- **2026-08-28** — Hardened SDPATCH-120 after independent review: the Windows
+  tray owner now receives `TaskbarCreated`, restores its retained HICON with
+  fail-closed availability, and carries native parser/HICON custody tests.
+  Added 6 markers, bringing the source total from 160 to 166.
 
 - **2026-08-28** — Added SDPATCH-120: made GPUI's native tray API sufficient
   for ShellDeck's cross-platform menu, fail-safe hidden-start decision, and
