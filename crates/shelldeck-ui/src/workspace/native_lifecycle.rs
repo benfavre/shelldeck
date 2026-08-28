@@ -1558,10 +1558,10 @@ fn file_identity(path: &Path) -> Result<FileIdentity, WorkspaceCreateFailure> {
         )
         .map_err(|_| workspace_fs_failure())?;
         let stat = fstat(&descriptor).map_err(|_| workspace_fs_failure())?;
-        return Ok(FileIdentity {
+        Ok(FileIdentity {
             volume: stat.st_dev as u64,
             file: stat.st_ino as u64,
-        });
+        })
     }
     #[cfg(windows)]
     {
@@ -1652,7 +1652,7 @@ fn open_regular_nofollow(path: &Path) -> Result<std::fs::File, WorkspaceCreateFa
                 "workspaces.launcher.target_authority_changed",
             ));
         }
-        return Ok(std::fs::File::from(descriptor));
+        Ok(std::fs::File::from(descriptor))
     }
     #[cfg(not(unix))]
     std::fs::File::open(path).map_err(|_| workspace_fs_failure())

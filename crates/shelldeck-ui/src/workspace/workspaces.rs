@@ -1410,10 +1410,10 @@ impl WorkspaceHubView {
         cx.spawn(async move |this, cx| {
             let cleanup = task.await;
             let _ = this.update(cx, |this, cx| {
-                if !this
+                if this
                     .pending_requests
                     .get(&workspace)
-                    .is_some_and(|pending| pending.operation == operation)
+                    .is_none_or(|pending| pending.operation != operation)
                 {
                     return;
                 }

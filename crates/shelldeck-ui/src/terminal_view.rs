@@ -5606,7 +5606,7 @@ impl AuthorizedLocalRoot {
                 identity,
             };
             authority.revalidate()?;
-            return Ok(authority);
+            Ok(authority)
         }
         #[cfg(not(unix))]
         #[cfg(windows)]
@@ -5645,11 +5645,11 @@ impl AuthorizedLocalRoot {
         #[cfg(target_os = "linux")]
         {
             use std::os::fd::AsRawFd as _;
-            return std::path::PathBuf::from(format!(
+            std::path::PathBuf::from(format!(
                 "/proc/{}/fd/{}",
                 std::process::id(),
                 self.directory.as_ref().as_raw_fd()
-            ));
+            ))
         }
         #[cfg(target_os = "macos")]
         {
