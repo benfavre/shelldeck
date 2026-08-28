@@ -1934,8 +1934,13 @@ off, and the main ShellDeck window remains hidden. Every visible tray label,
 including zero/one/many counter forms and the empty pinned-connections row,
 follows the selected French or English UI locale. A live language change
 republishes the tray snapshot so every desktop backend updates the native menu
-immediately. Counters and pinned connections follow the same owner-thread
-snapshot path. The Dock header and rail toolbox use keyboard-focusable controls
+immediately. Counters and pinned connections rebuild the same immutable GPUI
+native-menu snapshot on its foreground executor. Informational counters and
+signed-out session actions are native disabled labels, while command dispatch
+independently rechecks authentication. Linux uses GPUI's
+StatusNotifierItem/`ksni` backend without GTK or AppIndicator; its
+service-thread events are marshalled back to the GPUI foreground executor
+before application dispatch. The Dock header and rail toolbox use keyboard-focusable controls
 with visible localized names or tooltips; Escape remains an explicit hide
 action. On macOS, the tray uses a dedicated
 36 px black-and-alpha Monolith mark as an AppKit template image, so the system
@@ -2869,6 +2874,11 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-08-28** — Amended SDUC-434/435 after moving every desktop tray to
+  GPUI's native backend: Linux no longer initializes GTK/AppIndicator, native
+  availability remains authoritative for hidden start, and counters/signed-out
+  actions use portable disabled labels with foreground-thread event delivery.
 
 - **2026-08-28** — Amended SDUC-443 and added SDTEST-1808: status counters
   now use semantic icons, numbers, 20 px hover targets, and localized tooltips;

@@ -52,10 +52,13 @@ impl WindowsTray {
             uCallbackMessage: WM_GPUI_TRAY_ICON,
             ..Default::default()
         };
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_ADD, &nid);
-        }
-        self.icon_added = true;
+        // ShellDeck patch: SDPATCH-120 — retain the Win32 API result instead
+        // of treating an attempted registration as a live tray icon.
+        self.icon_added = unsafe { Shell_NotifyIconW(NIM_ADD, &nid).as_bool() };
+    }
+
+    pub(crate) fn is_available(&self) -> bool {
+        self.icon_added
     }
 
     pub fn set_icon(&mut self, icon_data: Option<&[u8]>, hwnd: HWND) {
@@ -172,6 +175,18 @@ impl WindowsTray {
                     unsafe {
                         let _ =
                             AppendMenuW(hmenu, MF_STRING, cmd_id as usize, PCWSTR(wide.as_ptr()));
+                    }
+                }
+                // ShellDeck patch: SDPATCH-120 — render informational rows disabled.
+                TrayMenuItem::Label { label } => {
+                    let wide: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+                    unsafe {
+                        let _ = AppendMenuW(
+                            hmenu,
+                            MF_STRING | MF_DISABLED,
+                            0,
+                            PCWSTR(wide.as_ptr()),
+                        );
                     }
                 }
                 TrayMenuItem::Separator => unsafe {

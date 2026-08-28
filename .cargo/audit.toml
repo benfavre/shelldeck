@@ -5,16 +5,7 @@
 ignore = [
     # GPUI / Linux platform stack. Track removal in
     # docs/security-advisory-baseline.md instead of one bot issue per crate.
-    "RUSTSEC-2024-0370", # proc-macro-error through GTK3 macros
     "RUSTSEC-2024-0384", # instant through GPUI's futures-lite 1 stack
-    "RUSTSEC-2024-0412", # GTK3 bindings required by the Linux tray
-    "RUSTSEC-2024-0413", # GTK3 bindings required by the Linux tray
-    "RUSTSEC-2024-0415", # GTK3 bindings required by the Linux tray
-    "RUSTSEC-2024-0416", # GTK3 bindings required by the Linux tray
-    "RUSTSEC-2024-0418", # GTK3 bindings required by the Linux tray
-    "RUSTSEC-2024-0419", # GTK3 bindings required by the Linux tray
-    "RUSTSEC-2024-0420", # GTK3 bindings required by the Linux tray
-    "RUSTSEC-2024-0429", # glib VariantStrIter path is unused by ShellDeck
     "RUSTSEC-2024-0436", # paste through image codecs
     "RUSTSEC-2025-0052", # async-std through GPUI's HTTP/tar stack
     "RUSTSEC-2025-0134", # rustls-pemfile through zed-reqwest

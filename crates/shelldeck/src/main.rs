@@ -1860,7 +1860,7 @@ fn main() -> Result<()> {
         // (cmd_rx, state_tx) — Some when the tray came up, None when
         // the backend refused. state_tx feeds the live-counter row
         // updates from the workspace side.
-        let tray_handles = match tray::TrayService::new() {
+        let tray_handles = match tray::TrayService::new(cx) {
             Ok(mut svc) => {
                 svc.start_state_updates(cx);
                 let cmd_rx = svc.take_receiver();

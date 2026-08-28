@@ -86,8 +86,7 @@ permissions described in
 sudo apt install \
   libssl-dev pkg-config libxkbcommon-dev libwayland-dev libvulkan-dev \
   libfontconfig1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
-  libxkbcommon-x11-dev libdbus-1-dev libgtk-3-dev libxdo-dev \
-  libayatana-appindicator3-dev
+  libxkbcommon-x11-dev libdbus-1-dev libxdo-dev
 ```
 
 ## Build & Run

@@ -1008,6 +1008,15 @@ impl App {
         self.platform.set_tray_icon(icon);
     }
 
+    /// ShellDeck patch: SDPATCH-120 — expose native tray creation success so
+    /// hidden-start applications cannot strand an invisible process.
+    /// Returns whether the platform accepted the tray icon and has a live
+    /// status-item backend. This lets applications avoid starting hidden when
+    /// a headless session or desktop environment has no tray service.
+    pub fn is_tray_available(&self) -> bool {
+        self.platform.is_tray_available()
+    }
+
     /// Set the system tray menu items.
     pub fn set_tray_menu(&self, menu: Vec<TrayMenuItem>) {
         self.platform.set_tray_menu(menu);

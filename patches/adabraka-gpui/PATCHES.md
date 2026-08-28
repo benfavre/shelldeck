@@ -8,11 +8,52 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total marker occurrences in code: **139**
+Total marker occurrences in code: **159**
 (`rg "ShellDeck patch:" src/`; SDPATCH-103 and SDPATCH-119 are
 Cargo.toml-only and outside the src-scoped marker convention.)
 
 ## Patches
+
+### SDPATCH-120 — Portable native tray availability, labels, and Linux callbacks
+
+- **Files / symbols**:
+  - `src/app.rs` — `App::is_tray_available`
+  - `src/platform.rs` — `Platform::is_tray_available`, `TrayMenuItem::Label`
+  - `src/platform/linux/platform.rs` — Linux tray availability and callback bridge
+  - `src/platform/linux/tray.rs` — `LinuxTray::is_available`, label conversion
+  - `src/platform/linux/{wayland,x11}/client.rs` — native tray delegation
+  - `src/platform/mac/{platform,tray}.rs` — availability and label rendering
+  - `src/platform/windows/{platform,tray}.rs` — availability and label rendering
+- **Markers** (20):
+  - `src/app.rs` — `/// ShellDeck patch: SDPATCH-120 — expose native tray creation success so`
+  - `src/platform.rs` — `/// ShellDeck patch: SDPATCH-120 — make tray availability part of the`
+  - `src/platform.rs` — `/// ShellDeck patch: SDPATCH-120 — native tray counters need a portable,`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: SDPATCH-120 — Linux clients report tray startup and`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: SDPATCH-120 — accept thread-safe service callbacks in`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: SDPATCH-120 — tray callbacks live in foreground`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: SDPATCH-120 — preserve the backend's actual startup`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: SDPATCH-120 — marshal ksni callbacks back onto GPUI's`
+  - `src/platform/linux/tray.rs` — `// ShellDeck patch: SDPATCH-120 — render informational rows disabled.`
+  - `src/platform/linux/tray.rs` — `// ShellDeck patch: SDPATCH-120 — a successful ksni handle is the native`
+  - `src/platform/linux/wayland/client.rs` — `// ShellDeck patch: SDPATCH-120 — thread tray availability through Wayland.`
+  - `src/platform/linux/wayland/client.rs` — `// ShellDeck patch: SDPATCH-120 — install thread-safe ksni event bridges.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: SDPATCH-120 — thread tray availability through X11.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: SDPATCH-120 — install thread-safe ksni event bridges.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: SDPATCH-120 — report the retained NSStatusItem.`
+  - `src/platform/mac/tray.rs` — `// ShellDeck patch: SDPATCH-120 — retain the actual NSStatusItem result for`
+  - `src/platform/mac/tray.rs` — `// ShellDeck patch: SDPATCH-120 — render informational rows disabled.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — report the retained Win32 tray owner.`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — retain the Win32 API result instead`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — render informational rows disabled.`
+- **Why**: ShellDeck now uses GPUI's native tray on every desktop instead of
+  carrying a second `tray-icon`/GTK stack. The application must know whether
+  tray creation actually succeeded before honoring start-hidden, needs
+  disabled native rows for counters and signed-out actions, and must marshal
+  Linux `ksni` service-thread callbacks onto GPUI's foreground executor before
+  invoking application code.
+- **Upstream status**: not filed yet; the generic availability and label APIs
+  are suitable for upstream, while the callback bridge fixes an existing
+  Linux backend integration gap.
 
 ### SDPATCH-119 — Keep GPUI test support free of unused Git fixtures
 
@@ -586,6 +627,11 @@ Cargo.toml-only and outside the src-scoped marker convention.)
 - **Upstream status**: not filed yet.
 
 ## Sync log
+
+- **2026-08-28** — Added SDPATCH-120: made GPUI's native tray API sufficient
+  for ShellDeck's cross-platform menu, fail-safe hidden-start decision, and
+  Linux event routing. 20 new markers, bringing the source total from 139 to
+  159.
 
 - **2026-08-28** — Added SDPATCH-119: narrowed GPUI's downstream
   `test-support` feature to the `adabraka_util` capability it actually uses,

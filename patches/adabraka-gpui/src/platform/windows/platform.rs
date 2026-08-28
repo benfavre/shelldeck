@@ -889,6 +889,16 @@ impl Platform for WindowsPlatform {
         super::active_window::get_focused_window_info()
     }
 
+    // ShellDeck patch: SDPATCH-120 — report the retained Win32 tray owner.
+    fn is_tray_available(&self) -> bool {
+        self.inner
+            .state
+            .borrow()
+            .tray
+            .as_ref()
+            .is_some_and(WindowsTray::is_available)
+    }
+
     // ShellDeck patch: expose visible external top-level Win32 window snapshots.
     fn visible_external_windows(&self) -> Vec<ExternalWindow> {
         let mut own_windows = self

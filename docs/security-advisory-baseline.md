@@ -36,7 +36,6 @@ three then-installed `ttf-parser` versions and the two then-installed
 
 | Owner / migration boundary | Advisory IDs | Current dependency path |
 | --- | --- | --- |
-| Linux GTK3 tray backend | RUSTSEC-2024-0370, RUSTSEC-2024-0412, RUSTSEC-2024-0413, RUSTSEC-2024-0415, RUSTSEC-2024-0416, RUSTSEC-2024-0418, RUSTSEC-2024-0419, RUSTSEC-2024-0420, RUSTSEC-2024-0429 | `tray-icon` / `libappindicator` still use GTK3. ShellDeck does not call the affected `glib::VariantStrIter`; removing the family requires a tray-backend migration rather than piecemeal crate bumps. |
 | Vendored GPUI runtime and HTTP stack | RUSTSEC-2024-0384, RUSTSEC-2025-0052, RUSTSEC-2025-0134, RUSTSEC-2026-0173 | `adabraka_util`, `adabraka_http_client`, `zed-reqwest`, and `stacksafe`. These require a coordinated GPUI fork sync or upstream dependency migration. |
 | Rendering and font stack | RUSTSEC-2024-0436, RUSTSEC-2026-0192 | `image` codecs still pull `paste`; current `cosmic-text`/`fontdb` and `lopdf` both use `ttf-parser` 0.25. The text and SVG shapers have already migrated to `skrifa` / `harfrust`. |
 | SSH compatibility | RUSTSEC-2023-0071 | `rsa` is transitive through `russh`; no patched RustSec release currently preserves the required RSA SSH-key path. |

@@ -942,12 +942,26 @@ impl LinuxClient for WaylandClient {
         self.0.borrow_mut().tray.set_icon(icon);
     }
 
+    // ShellDeck patch: SDPATCH-120 — thread tray availability through Wayland.
+    fn is_tray_available(&self) -> bool {
+        self.0.borrow().tray.is_available()
+    }
+
     fn set_tray_menu(&self, menu: Vec<crate::TrayMenuItem>) {
         self.0.borrow_mut().tray.set_menu(menu);
     }
 
     fn set_tray_tooltip(&self, tooltip: &str) {
         self.0.borrow_mut().tray.set_tooltip(tooltip);
+    }
+
+    // ShellDeck patch: SDPATCH-120 — install thread-safe ksni event bridges.
+    fn set_tray_icon_event_handler(&self, callback: Box<dyn Fn(crate::TrayIconEvent) + Send>) {
+        self.0.borrow().tray.set_on_click(callback);
+    }
+
+    fn set_tray_menu_action_handler(&self, callback: Box<dyn Fn(crate::SharedString) + Send>) {
+        self.0.borrow().tray.set_on_menu_action(callback);
     }
 
     // ShellDeck patch: expose the Wayland portal manager through LinuxClient.
