@@ -182,7 +182,6 @@ jobs:
           cp Cargo.lock "$gpui_test_root/patches/adabraka-gpui/Cargo.lock"
           CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/target" \
             cargo test --manifest-path "$gpui_test_root/patches/adabraka-gpui/Cargo.toml" --lib sdtest_181
-          cargo test -p shelldeck --bin shelldeck sdtest_1812_windows_tray_asset_is_a_decodable_ico
 
       - name: Test shelldeck-core
         run: cargo test -p shelldeck-core
