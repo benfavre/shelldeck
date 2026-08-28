@@ -60,6 +60,16 @@ they pin the transport `session.rs` composes with `new_with_jump`.
 | SDTEST-530 | `client.rs::proxy_jump_none_or_blank_means_direct_and_a_chain_uses_its_first_hop` | SDUC-053 | Green | Pure `first_jump_hop`: `none` (any case) and a blank value fall back to a direct connection; a comma-separated chain uses its **first** hop, never the last. |
 | SDTEST-529 | *to write* — ExecResult::stdout_string / stderr_string handle non-utf8 without panic | SDUC-045 | **Red / P1** | Lossy conversion; assert it doesn't panic on invalid utf-8 bytes. |
 | SDTEST-1413 | `session.rs::protocol_terminators_are_clean_but_unmarked_channel_loss_is_unexpected` | SDUC-044, SDUC-439 | Green | EOF, channel close, and an exit status followed by stream end classify as clean; disappearance without a protocol terminator classifies as unexpected transport loss. |
+| SDTEST-1786 | `session.rs::workspace_helper_uses_only_fixed_subsystem_and_raw_bounded_control_pty` | SDUC-491 | Green | The in-memory SSH server observes a PTY with raw control modes followed by the exact `shelldeck-workspace-v1` subsystem name, and no shell or arbitrary exec request. |
+
+## 2a. `workspace_helper.rs` — retained remote workspace authority
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1787 | `workspace_helper.rs::protocol_round_trips_exact_coordinates_and_receipt` + protocol rejection tests | SDUC-491 | Green | The 8-KiB framed codec retains exact operation/workspace coordinates and opaque receipt bytes, and refuses unknown, oversize, trailing, invalid-code, or diagnostic-channel input. |
+| SDTEST-1788 | `workspace_helper::remote::retained_descriptor_receipt_revalidates_clean_exact_lineage` | SDUC-491 | Green | A real clean Git repository is opened beneath the configured root, bound to directory identity/HEAD/branch, and a later untracked file makes resume fail closed. |
+| SDTEST-1789 | `workspace_helper::remote::root_walk_refuses_symlink_components_and_outside_paths` | SDUC-491 | Green | Component-by-component `openat(O_NOFOLLOW)` refuses a symlink and a path outside every administrator-fixed root. |
+| SDTEST-1790 | `workspace_helper::remote::exchange_refuses_wrong_receipt_without_starting_shell` | SDUC-491 | Green | A second frame with the wrong opaque token receives only the bounded stale-receipt code; the exchange never reaches shell resume. |
 
 ---
 
