@@ -199,8 +199,13 @@ enum LocalCwdScope {
     Unscoped,
     Required {
         intended: std::path::PathBuf,
-        canonical: Option<std::path::PathBuf>,
+        authority: Option<Arc<AuthorizedLocalRoot>>,
     },
+}
+
+pub(crate) struct PreparedLocalTerminal {
+    session: TerminalSession,
+    authority: AuthorizedLocalRoot,
 }
 
 pub struct TerminalView {
@@ -493,15 +498,12 @@ impl TerminalView {
         let intended = cwd.to_path_buf();
         self.default_cwd = LocalCwdScope::Required {
             intended: intended.clone(),
-            canonical: None,
+            authority: None,
         };
-        let canonical = std::fs::canonicalize(cwd).map_err(|error| error.to_string())?;
-        if !canonical.is_dir() {
-            return Err("terminal working directory is not a directory".into());
-        }
+        let authority = AuthorizedLocalRoot::capture(cwd)?;
         self.default_cwd = LocalCwdScope::Required {
             intended,
-            canonical: Some(canonical),
+            authority: Some(Arc::new(authority)),
         };
         Ok(())
     }
@@ -511,18 +513,18 @@ impl TerminalView {
     /// les actions utilisateur ne peuvent ainsi jamais retomber sur le cwd du
     /// processus. Si le dossier disparaît ensuite, la création du PTY échoue
     /// fermée avec cette racine au lieu d'utiliser un autre répertoire.
-    pub(crate) fn install_authorized_default_cwd(&mut self, canonical_cwd: &std::path::Path) {
-        debug_assert!(canonical_cwd.is_absolute());
+    pub(crate) fn install_authorized_default_cwd(&mut self, root: &AuthorizedLocalRoot) {
+        debug_assert!(root.path().is_absolute());
         self.default_cwd = LocalCwdScope::Required {
-            intended: canonical_cwd.to_path_buf(),
-            canonical: Some(canonical_cwd.to_path_buf()),
+            intended: root.path().to_path_buf(),
+            authority: Some(Arc::new(root.clone())),
         };
     }
 
     pub(crate) fn required_cwd_unavailable_message(&self) -> Option<String> {
         let LocalCwdScope::Required {
             intended,
-            canonical: None,
+            authority: None,
         } = &self.default_cwd
         else {
             return None;
@@ -554,16 +556,30 @@ impl TerminalView {
         rows: u16,
         cols: u16,
     ) -> shelldeck_terminal::Result<TerminalSession> {
-        let cwd = match &self.default_cwd {
+        let (authority_cwd, canonical_cwd, authority) = match &self.default_cwd {
             LocalCwdScope::Unscoped => {
                 return TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols);
             }
             LocalCwdScope::Required {
-                canonical: Some(cwd),
+                authority: Some(authority),
                 ..
-            } => cwd.clone(),
+            } => {
+                if authority.revalidate().is_err() {
+                    if let LocalCwdScope::Required { authority, .. } = &mut self.default_cwd {
+                        *authority = None;
+                    }
+                    return Err(shelldeck_terminal::TerminalError::Pty(
+                        "authorized terminal working directory changed".into(),
+                    ));
+                }
+                (
+                    authority.command_path(),
+                    authority.path().to_path_buf(),
+                    authority.clone(),
+                )
+            }
             LocalCwdScope::Required {
-                canonical: None, ..
+                authority: None, ..
             } => {
                 return Err(shelldeck_terminal::TerminalError::Pty(
                     "required workspace terminal directory is unavailable".into(),
@@ -574,15 +590,31 @@ impl TerminalView {
         // processus lorsque `cwd` disparaît. Refuser ici ferme cette course
         // pour tous les onglets, splits et lanceurs CLI, puis rend l'état
         // indisponible visible au prochain rendu.
-        if !cwd.is_dir() {
-            if let LocalCwdScope::Required { canonical, .. } = &mut self.default_cwd {
-                *canonical = None;
+        if !authority_cwd.is_dir() {
+            if let LocalCwdScope::Required { authority, .. } = &mut self.default_cwd {
+                *authority = None;
             }
             return Err(shelldeck_terminal::TerminalError::Pty(
                 "authorized terminal working directory is unavailable".into(),
             ));
         }
-        TerminalSession::spawn_local_at(self.default_shell.as_deref(), rows, cols, &cwd)
+        let session = TerminalSession::spawn_local_at_authorized(
+            self.default_shell.as_deref(),
+            rows,
+            cols,
+            &authority_cwd,
+            &canonical_cwd,
+        )?;
+        if authority.revalidate().is_err() {
+            drop(session);
+            if let LocalCwdScope::Required { authority, .. } = &mut self.default_cwd {
+                *authority = None;
+            }
+            return Err(shelldeck_terminal::TerminalError::Pty(
+                "authorized terminal working directory changed".into(),
+            ));
+        }
+        Ok(session)
     }
 
     /// Update the cursor style preference.
@@ -1530,25 +1562,49 @@ impl TerminalView {
         self.ensure_refresh_running(cx);
     }
 
-    /// Attach a real local PTY at an existing, canonicalized checkout root.
-    pub(crate) fn spawn_local_terminal_at(
+    /// Starts the PTY while keeping it detached from terminal/UI state. The
+    /// workspace catalog can then durably commit; dropping this value on a
+    /// failed catalog write closes the PTY and reaps its child.
+    pub(crate) fn prepare_authorized_local_terminal(
         &mut self,
-        cwd: &std::path::Path,
-        cx: &mut Context<Self>,
-    ) -> Result<Uuid, String> {
+        root: &AuthorizedLocalRoot,
+    ) -> Result<PreparedLocalTerminal, String> {
+        root.revalidate()?;
         let (rows, cols) = if self.last_grid_rows > 0 {
             (self.last_grid_rows, self.last_grid_cols)
         } else {
             (24, 80)
         };
-        self.set_default_cwd(cwd)?;
-        let session = self
-            .spawn_configured_local(rows, cols)
-            .map_err(|error| error.to_string())?;
+        let authority_cwd = root.command_path();
+        if !authority_cwd.is_dir() {
+            return Err("authorized terminal working directory is unavailable".into());
+        }
+        let session = TerminalSession::spawn_local_at_authorized(
+            self.default_shell.as_deref(),
+            rows,
+            cols,
+            &authority_cwd,
+            root.path(),
+        )
+        .map_err(|error| error.to_string())?;
+        root.revalidate()?;
+        Ok(PreparedLocalTerminal {
+            session,
+            authority: root.clone(),
+        })
+    }
+
+    pub(crate) fn commit_prepared_local_terminal(
+        &mut self,
+        prepared: PreparedLocalTerminal,
+        cx: &mut Context<Self>,
+    ) -> Uuid {
+        let PreparedLocalTerminal { session, authority } = prepared;
+        self.install_authorized_default_cwd(&authority);
         let id = session.id;
         self.add_session(session);
         self.ensure_refresh_running(cx);
-        Ok(id)
+        id
     }
 
     /// Run a local CLI in the active terminal, creating one when necessary.
@@ -5354,7 +5410,9 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_ai_command, PaneId, PaneNode, TerminalView};
+    use super::{
+        validate_ai_command, AuthorizedLocalRoot, LocalCwdScope, PaneId, PaneNode, TerminalView,
+    };
     use gpui::{AppContext, TestAppContext};
 
     // SDTEST-1333 / SDTEST-1334 retired 2026-08-06: command_available now
@@ -5483,4 +5541,262 @@ mod tests {
             terminal.close_all_sessions();
         });
     }
+
+    // SDTEST-1769 — SDUC-491
+    #[test]
+    fn prepared_workspace_pty_stays_detached_until_explicit_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(root.path()).unwrap();
+        let authority = AuthorizedLocalRoot::capture(&canonical).unwrap();
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            let abandoned = terminal
+                .prepare_authorized_local_terminal(&authority)
+                .unwrap();
+            assert_eq!(terminal.tab_count(), 0);
+            assert!(terminal.active_session().is_none());
+            assert!(matches!(terminal.default_cwd, LocalCwdScope::Unscoped));
+            drop(abandoned);
+            assert_eq!(terminal.tab_count(), 0);
+            assert!(matches!(terminal.default_cwd, LocalCwdScope::Unscoped));
+
+            let prepared = terminal
+                .prepare_authorized_local_terminal(&authority)
+                .unwrap();
+            terminal.commit_prepared_local_terminal(prepared, cx);
+            assert_eq!(terminal.tab_count(), 1);
+            assert!(matches!(
+                &terminal.default_cwd,
+                LocalCwdScope::Required { intended, .. } if intended == &canonical
+            ));
+            terminal.close_all_sessions();
+        });
+    }
+}
+/// Capability for one exact local directory. The open file identity prevents
+/// a path from being swapped between authorization and PTY creation.
+#[derive(Clone, Debug)]
+pub(crate) struct AuthorizedLocalRoot {
+    canonical: std::path::PathBuf,
+    #[cfg(unix)]
+    directory: Arc<std::os::fd::OwnedFd>,
+    #[cfg(unix)]
+    identity: (u64, u64),
+    #[cfg(windows)]
+    directory_chain: Arc<Vec<same_file::Handle>>,
+    #[cfg(not(any(unix, windows)))]
+    identity: Arc<same_file::Handle>,
+}
+
+impl AuthorizedLocalRoot {
+    pub(crate) fn capture(path: &std::path::Path) -> Result<Self, String> {
+        let canonical = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+        if !path.is_absolute() || canonical != path || !direct_directory_chain(path)? {
+            return Err("authorized local root changed or contains an alias".into());
+        }
+        #[cfg(unix)]
+        {
+            let directory = open_direct_directory(path)?;
+            let stat = rustix::fs::fstat(&directory).map_err(|error| error.to_string())?;
+            let identity = (stat.st_dev as u64, stat.st_ino as u64);
+            let authority = Self {
+                canonical,
+                directory: Arc::new(directory),
+                identity,
+            };
+            authority.revalidate()?;
+            Ok(authority)
+        }
+        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let directory_chain = open_windows_directory_chain(path)?;
+            let authority = Self {
+                canonical,
+                directory_chain: Arc::new(directory_chain),
+            };
+            authority.revalidate()?;
+            return Ok(authority);
+        }
+        #[cfg(not(any(unix, windows)))]
+        let identity =
+            same_file::Handle::from_path(&canonical).map_err(|error| error.to_string())?;
+        #[cfg(not(any(unix, windows)))]
+        Ok(Self {
+            canonical,
+            identity: Arc::new(identity),
+        })
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.canonical
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn unix_identity(&self) -> (u64, u64) {
+        self.identity
+    }
+
+    /// Stable command-line spelling for the already-open directory. Linux
+    /// resolves this through the parent process' descriptor, so a concurrent
+    /// rename or symlink replacement cannot redirect a spawned Git process.
+    pub(crate) fn command_path(&self) -> std::path::PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd as _;
+            std::path::PathBuf::from(format!(
+                "/proc/{}/fd/{}",
+                std::process::id(),
+                self.directory.as_ref().as_raw_fd()
+            ))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd as _;
+            return std::path::PathBuf::from(format!(
+                "/dev/fd/{}",
+                self.directory.as_ref().as_raw_fd()
+            ));
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        self.canonical.clone()
+    }
+
+    /// Stable path for an argument interpreted after `exec` (unlike
+    /// `current_dir`, which is resolved before it). macOS therefore inherits
+    /// one short-lived duplicate descriptor; the returned guard keeps the
+    /// parent's copy alive only until the child command finishes.
+    pub(crate) fn inherited_argument_path(
+        &self,
+    ) -> Result<(std::path::PathBuf, Option<std::fs::File>), String> {
+        #[cfg(target_os = "macos")]
+        {
+            use rustix::io::{dup, fcntl_setfd, FdFlags};
+            use std::os::fd::{AsRawFd as _, OwnedFd};
+
+            let descriptor: OwnedFd =
+                dup(self.directory.as_ref()).map_err(|error| error.to_string())?;
+            fcntl_setfd(&descriptor, FdFlags::empty()).map_err(|error| error.to_string())?;
+            let path = std::path::PathBuf::from(format!("/dev/fd/{}", descriptor.as_raw_fd()));
+            return Ok((path, Some(std::fs::File::from(descriptor))));
+        }
+        #[cfg(not(target_os = "macos"))]
+        Ok((self.command_path(), None))
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), String> {
+        if !direct_directory_chain(&self.canonical)? {
+            return Err("authorized local root is no longer a direct directory".into());
+        }
+        let canonical =
+            std::fs::canonicalize(&self.canonical).map_err(|error| error.to_string())?;
+        if canonical != self.canonical {
+            return Err("authorized local root identity changed".into());
+        }
+        #[cfg(unix)]
+        {
+            let current = open_direct_directory(&self.canonical)?;
+            let stat = rustix::fs::fstat(&current).map_err(|error| error.to_string())?;
+            let identity = (stat.st_dev as u64, stat.st_ino as u64);
+            if identity != self.identity {
+                return Err("authorized local root identity changed".into());
+            }
+        }
+        #[cfg(windows)]
+        {
+            let current = open_windows_directory_chain(&self.canonical)?;
+            if current.last() != self.directory_chain.last() {
+                return Err("authorized local root identity changed".into());
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let identity =
+                same_file::Handle::from_path(&canonical).map_err(|error| error.to_string())?;
+            if identity != *self.identity {
+                return Err("authorized local root identity changed".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn open_windows_directory_chain(path: &std::path::Path) -> Result<Vec<same_file::Handle>, String> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut cursor = std::path::PathBuf::new();
+    let mut handles = Vec::new();
+    for component in path.components() {
+        cursor.push(component.as_os_str());
+        let file = std::fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&cursor)
+            .map_err(|error| error.to_string())?;
+        let attributes = file
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .file_attributes();
+        if attributes & FILE_ATTRIBUTE_DIRECTORY == 0
+            || attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        {
+            return Err("authorized local root is not a direct directory".into());
+        }
+        handles.push(same_file::Handle::from_file(file).map_err(|error| error.to_string())?);
+    }
+    Ok(handles)
+}
+
+fn direct_directory_chain(path: &std::path::Path) -> Result<bool, String> {
+    if !path.is_absolute() {
+        return Ok(false);
+    }
+    let mut cursor = std::path::PathBuf::new();
+    for component in path.components() {
+        cursor.push(component.as_os_str());
+        let metadata = std::fs::symlink_metadata(&cursor).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() || is_windows_reparse(&metadata)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn open_direct_directory(path: &std::path::Path) -> Result<std::os::fd::OwnedFd, String> {
+    use rustix::fs::{open, openat, Mode, OFlags};
+    use std::path::Component;
+
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut directory = open("/", flags, Mode::empty()).map_err(|error| error.to_string())?;
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                directory = openat(&directory, name, flags, Mode::empty())
+                    .map_err(|error| error.to_string())?;
+            }
+            _ => return Err("authorized local root contains an invalid component".into()),
+        }
+    }
+    Ok(directory)
+}
+
+#[cfg(windows)]
+fn is_windows_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+fn is_windows_reparse(_metadata: &std::fs::Metadata) -> bool {
+    false
 }

@@ -3,13 +3,12 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::{
-        mutate_and_persist, workspace_card_presentation, AuthorizedLaunchHost,
-        ExistingFolderWorkspaceExecutor, LauncherIntakeKind, ProviderCardObservation,
+        mutate_and_persist, workspace_card_presentation, AuthorizedLaunchHost, GitWorktreeAdapter,
+        LauncherIntakeKind, NativeLaunchOutcome, NativeWorkspaceExecutor, ProviderCardObservation,
         WorkspaceCardAggregator, WorkspaceExecutionRequest, WorkspaceHubView,
         WorkspaceLaunchExecutor, WorkspaceLaunchMode, WorkspaceLauncherDraft,
         WorkspaceTerminalConfig,
     };
-    use crate::t;
     use crate::terminal_view::TerminalView;
     use gpui::{AppContext, TestAppContext};
     use shelldeck_core::config::themes::TerminalTheme;
@@ -21,11 +20,13 @@ mod tests {
     };
     use shelldeck_core::workspace_navigation::{
         BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState, WorkspaceAgentState,
-        WorkspaceCardState, WorkspaceCreateConflict, WorkspaceCreateEvent, WorkspaceCreateFailure,
+        WorkspaceCardState, WorkspaceCreateEvent, WorkspaceCreateFailure,
         WorkspaceCreateFailureKind, WorkspaceCreatePhase, WorkspaceCreateProgress,
         WorkspaceFreshness,
     };
     use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
@@ -140,6 +141,7 @@ mod tests {
         let hub = cx.update(|cx| {
             cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], initial_terminal.clone(), cx))
         });
+        cx.run_until_parked();
         let workspace_entity_before = hub.read_with(&cx, |hub, _| {
             hub.retained.get(&workspace_a).unwrap().entity_id()
         });
@@ -428,6 +430,24 @@ mod tests {
     }
 
     #[test]
+    fn failed_multi_step_catalog_mutation_rolls_back_before_persistence() {
+        let (mut catalog, workspace, ..) = fixture_catalog();
+        let before = catalog.clone();
+        let result = mutate_and_persist(
+            &mut catalog,
+            |catalog| {
+                catalog
+                    .archive_workspace(workspace)
+                    .map_err(|error| error.to_string())?;
+                Err::<(), _>("second mutation refused".to_string())
+            },
+            |_| panic!("a failed mutation must not be persisted"),
+        );
+        assert_eq!(result.unwrap_err(), "second mutation refused");
+        assert_eq!(catalog, before);
+    }
+
+    #[test]
     fn explicit_catalog_store_round_trips_an_existing_folder_checkout() {
         let temp = tempfile::tempdir().unwrap();
         let catalog_path = temp.path().join("catalog.json");
@@ -460,6 +480,7 @@ mod tests {
         assert!(loaded.checkout_in_project(project_id, checkout_id).is_ok());
     }
 
+    // SDTEST-1737
     #[tokio::test]
     async fn existing_folder_executor_streams_intermediate_progress() {
         let temp = tempfile::tempdir().unwrap();
@@ -467,18 +488,21 @@ mod tests {
         let operation = CreationOperationId::new();
         let request = WorkspaceExecutionRequest {
             workspace,
+            project: CatalogProjectId::new(),
+            source_checkout: CatalogCheckoutId::new(),
             checkout: CatalogCheckoutId::new(),
+            created_checkout: None,
             operation,
             catalog_revision: 7,
             name: "Attach".into(),
             intake: WorkspaceLaunchIntake::Manual,
-            host: AuthorizedLaunchHost::Local {
-                canonical_root: temp.path().to_path_buf(),
+            host: AuthorizedLaunchHost::LocalExisting {
+                authority: crate::terminal_view::AuthorizedLocalRoot::capture(temp.path()).unwrap(),
             },
             mode: WorkspaceLaunchMode::ExistingFolder,
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
-        ExistingFolderWorkspaceExecutor
+        NativeWorkspaceExecutor::default()
             .launch(request, tx)
             .await
             .unwrap();
@@ -502,6 +526,100 @@ mod tests {
                 WorkspaceCreatePhase::BindingRuntime,
             ]
         );
+    }
+
+    #[derive(Default)]
+    struct RecordingGitAdapter {
+        call: parking_lot::Mutex<Option<(PathBuf, PathBuf, String, String)>>,
+    }
+
+    impl GitWorktreeAdapter for RecordingGitAdapter {
+        fn prepare(
+            &self,
+            request: WorkspaceExecutionRequest,
+            _cancelled: Arc<super::super::native_lifecycle::LaunchCancellation>,
+        ) -> super::super::native_lifecycle::ExecutorFuture<
+            Result<NativeLaunchOutcome, WorkspaceCreateFailure>,
+        > {
+            let AuthorizedLaunchHost::LocalWorktree {
+                source_authority,
+                target_root,
+                branch,
+                start_point,
+            } = request.host
+            else {
+                unreachable!()
+            };
+            *self.call.lock() = Some((
+                source_authority.path().to_path_buf(),
+                target_root.clone(),
+                branch,
+                start_point,
+            ));
+            std::fs::create_dir_all(&target_root).unwrap();
+            Box::pin(async move { Ok(NativeLaunchOutcome::test_ready(&target_root)) })
+        }
+    }
+
+    #[tokio::test]
+    async fn native_worktree_executor_uses_exact_typed_arguments_and_completes_all_phases() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = std::fs::canonicalize(temp.path()).unwrap();
+        let target = source.join("owned-worktree");
+        let workspace = CatalogWorkspaceId::new();
+        let operation = CreationOperationId::new();
+        let git = Arc::new(RecordingGitAdapter::default());
+        let request = WorkspaceExecutionRequest {
+            workspace,
+            project: CatalogProjectId::new(),
+            source_checkout: CatalogCheckoutId::new(),
+            checkout: CatalogCheckoutId::new(),
+            created_checkout: None,
+            operation,
+            catalog_revision: 11,
+            name: "Issue 127".into(),
+            intake: WorkspaceLaunchIntake::Manual,
+            host: AuthorizedLaunchHost::LocalWorktree {
+                source_authority: crate::terminal_view::AuthorizedLocalRoot::capture(&source)
+                    .unwrap(),
+                target_root: target.clone(),
+                branch: "fix/issue-127".into(),
+                start_point: "origin/main".into(),
+            },
+            mode: WorkspaceLaunchMode::GitWorktree,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        NativeWorkspaceExecutor::with_git(git.clone())
+            .launch(request, tx)
+            .await
+            .unwrap();
+        let mut phases = Vec::new();
+        let mut completed = false;
+        while let Some(event) = rx.recv().await {
+            match event {
+                WorkspaceCreateEvent::Progress { progress, .. } => phases.push(progress.phase),
+                WorkspaceCreateEvent::Completed { workspace: id, .. } => {
+                    assert_eq!(id, workspace);
+                    completed = true;
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        assert_eq!(
+            git.call.lock().clone().unwrap(),
+            (source, target, "fix/issue-127".into(), "origin/main".into())
+        );
+        assert_eq!(
+            phases,
+            vec![
+                WorkspaceCreatePhase::Queued,
+                WorkspaceCreatePhase::ResolvingHost,
+                WorkspaceCreatePhase::PreparingCheckout,
+                WorkspaceCreatePhase::CreatingWorkspace,
+                WorkspaceCreatePhase::BindingRuntime,
+            ]
+        );
+        assert!(completed);
     }
 
     #[test]
@@ -613,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_change_before_completion_prevents_native_attach() {
+    fn uncorroborated_completion_after_catalog_change_prevents_native_attach() {
         let mut app = TestAppContext::single();
         let (catalog, workspace, other, checkout, ..) = fixture_catalog();
         let terminal = app.update(|cx| cx.new(TerminalView::new));
@@ -638,13 +756,17 @@ mod tests {
                 workspace,
                 WorkspaceExecutionRequest {
                     workspace,
+                    project: hub.catalog.workspace(workspace).unwrap().project_id(),
+                    source_checkout: checkout,
                     checkout,
+                    created_checkout: None,
                     operation,
                     catalog_revision: starting_revision,
                     name: "Attach".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
-                        canonical_root: root.path().to_path_buf(),
+                    host: AuthorizedLaunchHost::LocalExisting {
+                        authority: crate::terminal_view::AuthorizedLocalRoot::capture(root.path())
+                            .unwrap(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
                 },
@@ -660,10 +782,7 @@ mod tests {
             );
             assert!(matches!(
                 hub.creation.state(workspace),
-                Some(BackgroundWorkspaceCreateState::Conflict {
-                    conflict: WorkspaceCreateConflict::CatalogRevisionChanged { .. },
-                    ..
-                })
+                Some(BackgroundWorkspaceCreateState::Running { .. })
             ));
             assert_eq!(terminal.read(cx).tab_count(), 0);
             assert!(hub.pending_requests.contains_key(&workspace));
@@ -671,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_disappearing_before_attach_reports_only_localized_unavailability() {
+    fn uncorroborated_completion_for_vanished_folder_has_no_side_effect() {
         let mut app = TestAppContext::single();
         let (catalog, workspace, _, checkout, ..) = fixture_catalog();
         let terminal = app.update(|cx| cx.new(TerminalView::new));
@@ -680,6 +799,8 @@ mod tests {
         });
         let root = tempfile::tempdir().unwrap();
         let vanished = root.path().to_path_buf();
+        let vanished_authority =
+            crate::terminal_view::AuthorizedLocalRoot::capture(&vanished).unwrap();
         root.close().unwrap();
         hub.update(&mut app, |hub, cx| {
             let operation = CreationOperationId::new();
@@ -697,19 +818,22 @@ mod tests {
                 workspace,
                 WorkspaceExecutionRequest {
                     workspace,
+                    project: hub.catalog.workspace(workspace).unwrap().project_id(),
+                    source_checkout: checkout,
                     checkout,
+                    created_checkout: None,
                     operation,
                     catalog_revision: revision,
                     name: "Vanished".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
-                        canonical_root: vanished.clone(),
+                    host: AuthorizedLaunchHost::LocalExisting {
+                        authority: vanished_authority.clone(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
                 },
             );
             terminal.update(cx, |terminal, cx| {
-                terminal.install_authorized_default_cwd(&vanished);
+                assert!(terminal.set_default_cwd(&vanished).is_err());
                 terminal.spawn_local_terminal(cx);
             });
             // L'action interactive précédant la complétion échoue fermée:
@@ -735,21 +859,14 @@ mod tests {
             assert_eq!(terminal.read(cx).tab_count(), 0);
             assert!(matches!(
                 hub.creation.state(workspace),
-                Some(BackgroundWorkspaceCreateState::Failed {
-                    failure: WorkspaceCreateFailure {
-                        message,
-                        retryable: true,
-                        ..
-                    },
-                    ..
-                }) if message == &t!("workspaces.launcher.folder_unavailable").to_string()
+                Some(BackgroundWorkspaceCreateState::Running { .. })
             ));
             assert!(hub.pending_requests.contains_key(&workspace));
         });
     }
 
     #[test]
-    fn pending_interaction_and_completion_use_only_the_authorized_checkout_cwd() {
+    fn uncorroborated_completion_cannot_spawn_a_second_authorized_terminal() {
         let mut app = TestAppContext::single();
         let (catalog, workspace, _, checkout, ..) = fixture_catalog();
         let terminal = app.update(|cx| cx.new(TerminalView::new));
@@ -774,19 +891,27 @@ mod tests {
                 workspace,
                 WorkspaceExecutionRequest {
                     workspace,
+                    project: hub.catalog.workspace(workspace).unwrap().project_id(),
+                    source_checkout: checkout,
                     checkout,
+                    created_checkout: None,
                     operation,
                     catalog_revision: revision,
                     name: "Authorized".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
-                        canonical_root: canonical_root.clone(),
+                    host: AuthorizedLaunchHost::LocalExisting {
+                        authority: crate::terminal_view::AuthorizedLocalRoot::capture(
+                            &canonical_root,
+                        )
+                        .unwrap(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
                 },
             );
+            let authority =
+                crate::terminal_view::AuthorizedLocalRoot::capture(&canonical_root).unwrap();
             terminal.update(cx, |terminal, cx| {
-                terminal.install_authorized_default_cwd(&canonical_root);
+                terminal.install_authorized_default_cwd(&authority);
                 terminal.spawn_local_terminal(cx);
             });
             assert_eq!(terminal.read(cx).tab_count(), 1);
@@ -812,7 +937,7 @@ mod tests {
                 },
                 cx,
             );
-            assert_eq!(terminal.read(cx).tab_count(), 2);
+            assert_eq!(terminal.read(cx).tab_count(), 1);
             assert_eq!(
                 terminal
                     .read(cx)
@@ -822,9 +947,9 @@ mod tests {
             );
             assert!(matches!(
                 hub.creation.state(workspace),
-                Some(BackgroundWorkspaceCreateState::Completed { .. })
+                Some(BackgroundWorkspaceCreateState::Running { .. })
             ));
-            assert!(!hub.pending_requests.contains_key(&workspace));
+            assert!(hub.pending_requests.contains_key(&workspace));
         });
     }
 
@@ -878,13 +1003,17 @@ mod tests {
                 workspace,
                 WorkspaceExecutionRequest {
                     workspace,
+                    project: hub.catalog.workspace(workspace).unwrap().project_id(),
+                    source_checkout: checkout,
                     checkout,
+                    created_checkout: None,
                     operation: operation_b,
                     catalog_revision: revision,
                     name: "Retry".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
-                        canonical_root: root.path().to_path_buf(),
+                    host: AuthorizedLaunchHost::LocalExisting {
+                        authority: crate::terminal_view::AuthorizedLocalRoot::capture(root.path())
+                            .unwrap(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
                 },
@@ -943,13 +1072,17 @@ mod tests {
                 workspace,
                 WorkspaceExecutionRequest {
                     workspace,
+                    project: hub.catalog.workspace(workspace).unwrap().project_id(),
+                    source_checkout: checkout,
                     checkout,
+                    created_checkout: None,
                     operation,
                     catalog_revision: revision,
                     name: "Cancel".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
-                        canonical_root: root.path().to_path_buf(),
+                    host: AuthorizedLaunchHost::LocalExisting {
+                        authority: crate::terminal_view::AuthorizedLocalRoot::capture(root.path())
+                            .unwrap(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
                 },
@@ -996,13 +1129,17 @@ mod tests {
                 workspace,
                 WorkspaceExecutionRequest {
                     workspace,
+                    project: hub.catalog.workspace(workspace).unwrap().project_id(),
+                    source_checkout: checkout,
                     checkout,
+                    created_checkout: None,
                     operation,
                     catalog_revision: revision,
                     name: "Too soon".into(),
                     intake: WorkspaceLaunchIntake::Manual,
-                    host: AuthorizedLaunchHost::Local {
-                        canonical_root: root.path().to_path_buf(),
+                    host: AuthorizedLaunchHost::LocalExisting {
+                        authority: crate::terminal_view::AuthorizedLocalRoot::capture(root.path())
+                            .unwrap(),
                     },
                     mode: WorkspaceLaunchMode::ExistingFolder,
                 },

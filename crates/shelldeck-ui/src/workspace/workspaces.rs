@@ -19,175 +19,23 @@ use shelldeck_core::workspace_navigation::{
     TerminalAuthority, TerminalBinding, TerminalBindingId, TerminalSurface, TerminalViewport,
     WorkspaceAgentState, WorkspaceCardState, WorkspaceCreateConflict, WorkspaceCreateEvent,
     WorkspaceCreateFailure, WorkspaceCreateFailureKind, WorkspaceCreatePhase,
-    WorkspaceCreateProgress, WorkspaceCreationReducer, WorkspaceFreshness,
-    WorkspaceNavigationAction, WorkspaceNavigationState, WorkspaceSurfaceState, WorkspaceTab,
-    WorkspaceTabContent, WorkspaceTabId,
+    WorkspaceCreationReducer, WorkspaceFreshness, WorkspaceNavigationAction,
+    WorkspaceNavigationState, WorkspaceSurfaceState, WorkspaceTab, WorkspaceTabContent,
+    WorkspaceTabId,
 };
 use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-type ExecutorFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum WorkspaceLaunchMode {
-    #[default]
-    ExistingFolder,
-    GitWorktree,
-    Ssh,
-}
-
-/// Autorité immuable résolue avant de quitter le catalogue.
-#[derive(Clone, Debug)]
-pub(super) enum AuthorizedLaunchHost {
-    Local {
-        canonical_root: PathBuf,
-    },
-    Ssh {
-        connection_id: Uuid,
-        remote_root: String,
-    },
-}
-
-/// Requête riche et immuable livrée à l'adaptateur d'effets.
-#[derive(Clone, Debug)]
-pub(super) struct WorkspaceExecutionRequest {
-    pub workspace: CatalogWorkspaceId,
-    pub checkout: CatalogCheckoutId,
-    pub operation: CreationOperationId,
-    pub catalog_revision: u64,
-    pub name: String,
-    pub intake: WorkspaceLaunchIntake,
-    pub host: AuthorizedLaunchHost,
-    mode: WorkspaceLaunchMode,
-}
-
-/// Frontière non bloquante du futur adaptateur d'effets.
-///
-/// L'implémentation de production reste volontairement indisponible dans ce
-/// lot. Un adaptateur devra faire le travail hors du thread GPUI et retourner
-/// des événements typés du réducteur, jamais des mutations directes de la vue.
-pub(super) trait WorkspaceLaunchExecutor: Send + Sync {
-    fn launch(
-        &self,
-        request: WorkspaceExecutionRequest,
-        events: mpsc::UnboundedSender<WorkspaceCreateEvent>,
-    ) -> ExecutorFuture<Result<(), WorkspaceCreateFailure>>;
-    fn cancel(
-        &self,
-        request: WorkspaceExecutionRequest,
-    ) -> ExecutorFuture<Result<WorkspaceCreateEvent, WorkspaceCreateFailure>>;
-}
-
-#[derive(Default)]
-struct ExistingFolderWorkspaceExecutor;
-
-impl WorkspaceLaunchExecutor for ExistingFolderWorkspaceExecutor {
-    fn launch(
-        &self,
-        request: WorkspaceExecutionRequest,
-        events: mpsc::UnboundedSender<WorkspaceCreateEvent>,
-    ) -> ExecutorFuture<Result<(), WorkspaceCreateFailure>> {
-        Box::pin(async move {
-            tracing::debug!(
-                checkout = %request.checkout,
-                intake = ?request.intake,
-                revision = request.catalog_revision,
-                "launching authorized workspace attach"
-            );
-            if request.mode == WorkspaceLaunchMode::GitWorktree {
-                return Err(WorkspaceCreateFailure {
-                    kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
-                    message: t!("workspaces.launcher.worktree_unavailable").to_string(),
-                    retryable: false,
-                });
-            }
-            if request.mode == WorkspaceLaunchMode::Ssh {
-                return Err(WorkspaceCreateFailure {
-                    kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
-                    message: t!("workspaces.launcher.ssh_executor_unavailable").to_string(),
-                    retryable: false,
-                });
-            }
-            if let AuthorizedLaunchHost::Ssh {
-                connection_id,
-                remote_root,
-            } = &request.host
-            {
-                tracing::debug!(%connection_id, remote_root, "SSH attach adapter unavailable");
-            }
-            let AuthorizedLaunchHost::Local { canonical_root } = &request.host else {
-                return Err(WorkspaceCreateFailure {
-                    kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
-                    message: t!("workspaces.launcher.ssh_executor_unavailable").to_string(),
-                    retryable: false,
-                });
-            };
-            if !canonical_root.is_dir() {
-                return Err(WorkspaceCreateFailure {
-                    kind: WorkspaceCreateFailureKind::Filesystem,
-                    message: t!("workspaces.launcher.folder_unavailable").to_string(),
-                    retryable: true,
-                });
-            }
-            let phases = [
-                WorkspaceCreatePhase::Queued,
-                WorkspaceCreatePhase::ResolvingHost,
-                WorkspaceCreatePhase::PreparingCheckout,
-                WorkspaceCreatePhase::CreatingWorkspace,
-                WorkspaceCreatePhase::BindingRuntime,
-            ];
-            for phase in phases {
-                events
-                    .send(WorkspaceCreateEvent::Progress {
-                        workspace: request.workspace,
-                        operation: request.operation,
-                        progress: WorkspaceCreateProgress {
-                            phase,
-                            // Le reducer mesure l'avancement à l'intérieur de
-                            // chaque phase; une nouvelle phase ne peut débuter
-                            // que lorsque la précédente est terminée.
-                            completed_steps: 1,
-                            total_steps: 1,
-                            detail: request.name.clone(),
-                        },
-                    })
-                    .map_err(|_| WorkspaceCreateFailure {
-                        kind: WorkspaceCreateFailureKind::Unknown,
-                        message: "workspace progress receiver closed".into(),
-                        retryable: true,
-                    })?;
-                tokio::task::yield_now().await;
-            }
-            events
-                .send(WorkspaceCreateEvent::Completed {
-                    workspace: request.workspace,
-                    operation: request.operation,
-                })
-                .map_err(|_| WorkspaceCreateFailure {
-                    kind: WorkspaceCreateFailureKind::Unknown,
-                    message: "workspace progress receiver closed".into(),
-                    retryable: true,
-                })?;
-            Ok(())
-        })
-    }
-
-    fn cancel(
-        &self,
-        request: WorkspaceExecutionRequest,
-    ) -> ExecutorFuture<Result<WorkspaceCreateEvent, WorkspaceCreateFailure>> {
-        Box::pin(async move {
-            Ok(WorkspaceCreateEvent::Cancelled {
-                workspace: request.workspace,
-                operation: request.operation,
-            })
-        })
-    }
-}
+#[path = "native_lifecycle.rs"]
+mod native_lifecycle;
+use native_lifecycle::{
+    AuthorizedLaunchHost, NativeWorkspaceExecutor, WorkspaceExecutionRequest,
+    WorkspaceLaunchExecutor, WorkspaceLaunchMode,
+};
+#[cfg(test)]
+use native_lifecycle::{GitWorktreeAdapter, NativeLaunchOutcome};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum LauncherIntakeKind {
@@ -230,6 +78,8 @@ struct WorkspaceLauncherDraft {
     key: String,
     title: String,
     url: String,
+    branch: String,
+    start_point: String,
 }
 
 impl Default for WorkspaceLauncherDraft {
@@ -244,6 +94,8 @@ impl Default for WorkspaceLauncherDraft {
             key: String::new(),
             title: String::new(),
             url: String::new(),
+            branch: String::new(),
+            start_point: "HEAD".into(),
         }
     }
 }
@@ -280,7 +132,13 @@ fn mutate_and_persist<T>(
     persist: impl FnOnce(&mut ProjectCatalog) -> Result<(), String>,
 ) -> Result<T, String> {
     let before = catalog.clone();
-    let value = mutate(catalog)?;
+    let value = match mutate(catalog) {
+        Ok(value) => value,
+        Err(error) => {
+            *catalog = before;
+            return Err(error);
+        }
+    };
     if let Err(error) = persist(catalog) {
         *catalog = before;
         return Err(error);
@@ -691,9 +549,12 @@ pub(super) struct WorkspaceHubView {
     key_state: Entity<InputState>,
     title_state: Entity<InputState>,
     url_state: Entity<InputState>,
+    branch_state: Entity<InputState>,
+    start_point_state: Entity<InputState>,
     checkout_select: Entity<Select<CatalogCheckoutId>>,
     error: Option<String>,
     load_error: Option<String>,
+    recovery_pending: bool,
     pending_requests: BTreeMap<CatalogWorkspaceId, WorkspaceExecutionRequest>,
 }
 
@@ -729,7 +590,7 @@ impl WorkspaceHubView {
             catalog,
             connections,
             initial_terminal,
-            Arc::new(ExistingFolderWorkspaceExecutor),
+            Arc::new(NativeWorkspaceExecutor::default()),
             cx,
         )
     }
@@ -810,6 +671,32 @@ impl WorkspaceHubView {
         }
         let onboarding_open = catalog.projects().len() == 0;
         let onboarding_connection = connections.keys().next().copied();
+        let retained_roots = catalog
+            .projects()
+            .flat_map(ProjectRecord::checkouts)
+            .filter_map(|checkout| match checkout.host() {
+                CheckoutHost::Local { root, .. } => Some(root.clone()),
+                CheckoutHost::Ssh { .. } => None,
+            })
+            .collect();
+        let recovery = cx
+            .background_executor()
+            .spawn(executor.clone().recover_orphans(retained_roots));
+        cx.spawn(async move |this, cx| {
+            let result = recovery.await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => this.recovery_pending = false,
+                    Err(failure) => {
+                        this.error = Some(failure.message);
+                        // Keep the gate closed: an unvalidated retained
+                        // worktree must never become terminal authority.
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         Self {
             catalog,
             navigation,
@@ -838,14 +725,22 @@ impl WorkspaceHubView {
             key_state: cx.new(InputState::new),
             title_state: cx.new(InputState::new),
             url_state: cx.new(InputState::new),
+            branch_state: cx.new(InputState::new),
+            start_point_state: cx.new(InputState::new),
             checkout_select,
             error: None,
             load_error,
+            recovery_pending: true,
             pending_requests: BTreeMap::new(),
         }
     }
 
     fn switch_to(&mut self, id: CatalogWorkspaceId, cx: &mut Context<Self>) {
+        if self.recovery_pending {
+            self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+            cx.notify();
+            return;
+        }
         if let Some(outgoing) = self.navigation.active() {
             if let Some(surface) = self.retained.get(&outgoing) {
                 let state = {
@@ -982,6 +877,11 @@ impl WorkspaceHubView {
         self.launcher.key = self.key_state.read(cx).content().trim().to_owned();
         self.launcher.title = self.title_state.read(cx).content().trim().to_owned();
         self.launcher.url = self.url_state.read(cx).content().trim().to_owned();
+        self.launcher.branch = self.branch_state.read(cx).content().trim().to_owned();
+        self.launcher.start_point = self.start_point_state.read(cx).content().trim().to_owned();
+        if self.launcher.start_point.is_empty() {
+            self.launcher.start_point = "HEAD".into();
+        }
     }
 
     fn submit_onboarding(&mut self, cx: &mut Context<Self>) {
@@ -1125,6 +1025,11 @@ impl WorkspaceHubView {
     }
 
     fn submit_launcher(&mut self, cx: &mut Context<Self>) {
+        if self.recovery_pending {
+            self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+            cx.notify();
+            return;
+        }
         self.sync_launcher(cx);
         let Some(checkout_id) = self.launcher.checkout else {
             self.error = Some(t!("workspaces.launcher.error.checkout_required").to_string());
@@ -1158,74 +1063,91 @@ impl WorkspaceHubView {
                 return;
             }
         };
-        let host = match self
+        let selected_checkout = match self
             .catalog
             .checkout_in_project(project_id, checkout_id)
-            .map(ProjectCheckout::host)
+            .cloned()
         {
-            Ok(CheckoutHost::Local { root, .. }) => match std::fs::canonicalize(root) {
-                Ok(canonical_root) if canonical_root.is_dir() => {
-                    AuthorizedLaunchHost::Local { canonical_root }
-                }
-                _ => {
-                    self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
-                    cx.notify();
-                    return;
-                }
-            },
-            Ok(CheckoutHost::Ssh {
-                connection_id,
-                root,
-            }) => AuthorizedLaunchHost::Ssh {
-                connection_id: *connection_id,
-                remote_root: root.as_str().to_owned(),
-            },
+            Ok(checkout) => checkout,
             Err(error) => {
                 self.error = Some(error.to_string());
                 cx.notify();
                 return;
             }
         };
-        let mode = if matches!(host, AuthorizedLaunchHost::Ssh { .. }) {
+        let mode = if matches!(selected_checkout.host(), CheckoutHost::Ssh { .. }) {
             WorkspaceLaunchMode::Ssh
         } else {
             self.launcher.mode
         };
-        if mode != WorkspaceLaunchMode::ExistingFolder {
-            self.error = Some(match mode {
-                WorkspaceLaunchMode::GitWorktree => {
-                    t!("workspaces.launcher.worktree_unavailable").to_string()
-                }
-                WorkspaceLaunchMode::Ssh => {
-                    t!("workspaces.launcher.ssh_executor_unavailable").to_string()
-                }
-                WorkspaceLaunchMode::ExistingFolder => unreachable!(),
-            });
+        if mode == WorkspaceLaunchMode::Ssh {
+            self.error = Some(t!("workspaces.launcher.ssh_executor_unavailable").to_string());
             cx.notify();
             return;
         }
         let workspace = CatalogWorkspaceId::new();
-        let launch_name = self.launcher.name.clone();
-        let launch_intake = intake.clone();
-        if let Err(error) = mutate_and_save(&mut self.catalog, |catalog| {
-            catalog
-                .create_workspace(WorkspaceLaunchRequest {
-                    id: workspace,
-                    project_id,
-                    checkout_id,
-                    name: launch_name.clone(),
-                    intake: launch_intake.clone(),
-                })
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        }) {
-            self.error = Some(error.to_string());
-            cx.notify();
-            return;
-        }
+        let (host, workspace_checkout, created_checkout) = match (mode, selected_checkout.host()) {
+            (WorkspaceLaunchMode::ExistingFolder, CheckoutHost::Local { root, .. }) => {
+                match crate::terminal_view::AuthorizedLocalRoot::capture(root) {
+                    Ok(authority) => (
+                        AuthorizedLaunchHost::LocalExisting { authority },
+                        checkout_id,
+                        None,
+                    ),
+                    _ => {
+                        self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+            (WorkspaceLaunchMode::GitWorktree, CheckoutHost::Local { root, device_label }) => {
+                if self.launcher.branch.is_empty() || self.launcher.start_point.is_empty() {
+                    self.error =
+                        Some(t!("workspaces.launcher.worktree_fields_required").to_string());
+                    cx.notify();
+                    return;
+                }
+                let source_authority =
+                    match crate::terminal_view::AuthorizedLocalRoot::capture(root) {
+                        Ok(source_authority) => source_authority,
+                        _ => {
+                            self.error =
+                                Some(t!("workspaces.launcher.folder_unavailable").to_string());
+                            cx.notify();
+                            return;
+                        }
+                    };
+                let owned_parent =
+                    shelldeck_core::config::AppConfig::config_dir().join("workspace-checkouts");
+                let target_root = owned_parent.join(workspace.to_string());
+                let generated_checkout = CatalogCheckoutId::new();
+                let checkout = ProjectCheckout::new(
+                    generated_checkout,
+                    self.launcher.name.clone(),
+                    CheckoutHost::Local {
+                        device_label: device_label.clone(),
+                        root: target_root.clone(),
+                    },
+                    selected_checkout.repository().clone(),
+                );
+                (
+                    AuthorizedLaunchHost::LocalWorktree {
+                        source_authority,
+                        target_root,
+                        branch: self.launcher.branch.clone(),
+                        start_point: self.launcher.start_point.clone(),
+                    },
+                    generated_checkout,
+                    Some(checkout),
+                )
+            }
+            _ => unreachable!("SSH mode was refused above"),
+        };
         let operation = CreationOperationId::new();
+        let catalog_revision = self.catalog.revision();
         if let Err(error) = self.creation.reduce(
-            self.catalog.revision(),
+            catalog_revision,
             WorkspaceCreateEvent::Start {
                 workspace,
                 operation,
@@ -1235,43 +1157,14 @@ impl WorkspaceHubView {
             cx.notify();
             return;
         }
-        let surface = WorkspaceSurfaceState::default();
-        if let Err(error) = self.navigation.reduce(
-            &self.catalog,
-            WorkspaceNavigationAction::Retain {
-                id: workspace,
-                surface: surface.clone(),
-                card: WorkspaceCardState::default(),
-            },
-        ) {
-            self.error = Some(error.to_string());
-            cx.notify();
-            return;
-        }
-        let terminal = self
-            .unclaimed_terminal
-            .take()
-            .unwrap_or_else(|| cx.new(TerminalView::new));
-        if let Some(config) = self.terminal_config.as_ref() {
-            apply_terminal_config(&terminal, config, cx);
-        }
-        if let AuthorizedLaunchHost::Local { canonical_root } = &host {
-            // `host` a été canonisé et autorisé avant la mutation du
-            // catalogue. Cette installation ne touche pas au disque et doit
-            // précéder l'exposition de la surface interactive.
-            terminal.update(cx, |terminal, _| {
-                terminal.install_authorized_default_cwd(canonical_root)
-            });
-        }
-        self.retained.insert(
-            workspace,
-            cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
-        );
         let request = WorkspaceExecutionRequest {
             workspace,
-            checkout: checkout_id,
+            project: project_id,
+            source_checkout: checkout_id,
+            checkout: workspace_checkout,
+            created_checkout,
             operation,
-            catalog_revision: self.catalog.revision(),
+            catalog_revision,
             name: self.launcher.name.clone(),
             intake,
             host,
@@ -1279,13 +1172,12 @@ impl WorkspaceHubView {
         };
         self.pending_requests.insert(workspace, request.clone());
         self.launcher_open = false;
-        self.switch_to(workspace, cx);
 
         let executor = self.executor.clone();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let task = cx
             .background_executor()
-            .spawn(executor.launch(request, event_tx));
+            .spawn(executor.launch(request.clone(), event_tx));
         cx.spawn(async move |this, cx| {
             while let Some(event) = event_rx.recv().await {
                 let _ = this.update(cx, |this, cx| {
@@ -1295,7 +1187,11 @@ impl WorkspaceHubView {
             let result = task.await;
             if let Err(failure) = result {
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(request) = this.pending_requests.get(&workspace) {
+                    if this
+                        .pending_requests
+                        .get(&workspace)
+                        .is_some_and(|pending| pending.operation == request.operation)
+                    {
                         this.apply_executor_event(
                             workspace,
                             WorkspaceCreateEvent::Failed {
@@ -1321,6 +1217,13 @@ impl WorkspaceHubView {
         let Some(request) = self.pending_requests.get(&workspace).cloned() else {
             return;
         };
+        let (event_workspace, event_operation) = create_event_coordinates(&event);
+        if event_workspace != workspace
+            || event_workspace != request.workspace
+            || event_operation != request.operation
+        {
+            return;
+        }
         let event = if let WorkspaceCreateEvent::Completed {
             workspace: event_workspace,
             operation: event_operation,
@@ -1335,45 +1238,95 @@ impl WorkspaceHubView {
             );
             if !attachable {
                 // Les événements retardés, prématurés ou reçus pendant une
-                // annulation ne doivent jamais atteindre le PTY. Le reducer
-                // conserve déjà l'état canonique; ignorer est donc sûr.
+                // annulation ne doivent jamais atteindre le PTY. Un reçu natif
+                // reste toutefois une preuve d'effet et doit être compensé;
+                // le reducer conserve son état canonique actuel.
+                if let Some(receipt) = self.executor.take_receipt(event_operation) {
+                    self.compensate_rejected_receipt(request, receipt, cx);
+                }
                 return;
             }
             if self.catalog.revision() != request.catalog_revision {
-                WorkspaceCreateEvent::Conflict {
+                let event = WorkspaceCreateEvent::Conflict {
                     workspace: event_workspace,
                     operation: event_operation,
                     conflict: WorkspaceCreateConflict::CatalogRevisionChanged {
                         expected: request.catalog_revision,
                         actual: self.catalog.revision(),
                     },
-                }
-            } else {
-                let attach = match &request.host {
-                    AuthorizedLaunchHost::Local { canonical_root } => self
-                        .retained
-                        .get(&event_workspace)
-                        .ok_or_else(|| t!("workspaces.launcher.terminal_owner_missing").to_string())
-                        .and_then(|surface| {
-                            let terminal = surface.read(cx).terminal.clone();
-                            terminal
-                                .update(cx, |terminal, cx| {
-                                    terminal.spawn_local_terminal_at(canonical_root, cx)
-                                })
-                                .map_err(|_| {
-                                    t!("workspaces.launcher.folder_unavailable").to_string()
-                                })
-                        }),
-                    AuthorizedLaunchHost::Ssh { .. } => {
-                        Err(t!("workspaces.launcher.ssh_executor_unavailable").to_string())
-                    }
                 };
-                match attach {
-                    Ok(_) => WorkspaceCreateEvent::Completed {
+                let Some(receipt) = self.executor.take_receipt(event_operation) else {
+                    return;
+                };
+                self.compensate_then_apply(request, receipt, event, cx);
+                return;
+            } else {
+                let Some(receipt) = self.executor.take_receipt(event_operation) else {
+                    return;
+                };
+                if receipt.authority.revalidate().is_err() {
+                    let event = WorkspaceCreateEvent::Failed {
                         workspace: event_workspace,
                         operation: event_operation,
-                    },
-                    Err(message) => WorkspaceCreateEvent::Failed {
+                        failure: WorkspaceCreateFailure {
+                            kind: WorkspaceCreateFailureKind::Authorization,
+                            message: t!("workspaces.launcher.authority_changed").to_string(),
+                            retryable: false,
+                        },
+                    };
+                    self.compensate_then_apply(request, receipt, event, cx);
+                    return;
+                }
+                let using_unclaimed_terminal = self.unclaimed_terminal.is_some();
+                let terminal = self
+                    .unclaimed_terminal
+                    .clone()
+                    .unwrap_or_else(|| cx.new(TerminalView::new));
+                if let Some(config) = self.terminal_config.as_ref() {
+                    apply_terminal_config(&terminal, config, cx);
+                }
+                let prepared = terminal.update(cx, |terminal, _cx| {
+                    terminal.prepare_authorized_local_terminal(&receipt.authority)
+                });
+                let prepared = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(message) => {
+                        let event = WorkspaceCreateEvent::Failed {
+                            workspace: event_workspace,
+                            operation: event_operation,
+                            failure: WorkspaceCreateFailure {
+                                kind: WorkspaceCreateFailureKind::Filesystem,
+                                message,
+                                retryable: true,
+                            },
+                        };
+                        self.compensate_then_apply(request, receipt, event, cx);
+                        return;
+                    }
+                };
+                let created_checkout = request.created_checkout.clone();
+                let launch_name = request.name.clone();
+                let launch_intake = request.intake.clone();
+                let commit = mutate_and_save(&mut self.catalog, |catalog| {
+                    if let Some(checkout) = created_checkout {
+                        catalog
+                            .add_checkout(request.project, checkout)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    catalog
+                        .create_workspace(WorkspaceLaunchRequest {
+                            id: request.workspace,
+                            project_id: request.project,
+                            checkout_id: request.checkout,
+                            name: launch_name,
+                            intake: launch_intake,
+                        })
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                });
+                if let Err(message) = commit {
+                    drop(prepared);
+                    let event = WorkspaceCreateEvent::Failed {
                         workspace: event_workspace,
                         operation: event_operation,
                         failure: WorkspaceCreateFailure {
@@ -1381,13 +1334,50 @@ impl WorkspaceHubView {
                             message,
                             retryable: true,
                         },
+                    };
+                    self.compensate_then_apply(request, receipt, event, cx);
+                    return;
+                }
+                if using_unclaimed_terminal {
+                    self.unclaimed_terminal.take();
+                }
+                terminal.update(cx, |terminal, cx| {
+                    terminal.commit_prepared_local_terminal(prepared, cx);
+                });
+                let surface = WorkspaceSurfaceState::default();
+                if let Err(error) = self.navigation.reduce(
+                    &self.catalog,
+                    WorkspaceNavigationAction::Retain {
+                        id: workspace,
+                        surface,
+                        card: WorkspaceCardState::default(),
                     },
+                ) {
+                    self.error = Some(error.to_string());
+                }
+                self.retained.insert(
+                    workspace,
+                    cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
+                );
+                let executor = self.executor.clone();
+                let acknowledge = cx
+                    .background_executor()
+                    .spawn(executor.acknowledge(request.clone()));
+                cx.spawn(async move |_this, _cx| {
+                    if let Err(error) = acknowledge.await {
+                        tracing::warn!(message = %error.message, "workspace journal acknowledgement deferred to recovery");
+                    }
+                })
+                .detach();
+                WorkspaceCreateEvent::Completed {
+                    workspace: event_workspace,
+                    operation: event_operation,
                 }
             }
         } else {
             event
         };
-        if let Err(error) = self.creation.reduce(self.catalog.revision(), event) {
+        if let Err(error) = self.creation.reduce(request.catalog_revision, event) {
             self.error = Some(error.to_string());
             cx.notify();
             return;
@@ -1397,9 +1387,72 @@ impl WorkspaceHubView {
             Some(BackgroundWorkspaceCreateState::Completed { .. })
         ) {
             self.pending_requests.remove(&workspace);
+            self.switch_to(workspace, cx);
             self.observe_local_card(workspace, cx);
         }
         cx.notify();
+    }
+
+    fn compensate_then_apply(
+        &mut self,
+        request: WorkspaceExecutionRequest,
+        receipt: native_lifecycle::WorkspaceLaunchReceipt,
+        event: WorkspaceCreateEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = request.workspace;
+        let operation = request.operation;
+        let revision = request.catalog_revision;
+        let executor = self.executor.clone();
+        let task = cx
+            .background_executor()
+            .spawn(executor.compensate(request, receipt));
+        cx.spawn(async move |this, cx| {
+            let cleanup = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if this
+                    .pending_requests
+                    .get(&workspace)
+                    .is_none_or(|pending| pending.operation != operation)
+                {
+                    return;
+                }
+                let event = match cleanup {
+                    Ok(()) => event,
+                    Err(failure) => WorkspaceCreateEvent::Failed {
+                        workspace,
+                        operation,
+                        failure,
+                    },
+                };
+                if let Err(error) = this.creation.reduce(revision, event) {
+                    this.error = Some(error.to_string());
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn compensate_rejected_receipt(
+        &mut self,
+        request: WorkspaceExecutionRequest,
+        receipt: native_lifecycle::WorkspaceLaunchReceipt,
+        cx: &mut Context<Self>,
+    ) {
+        let executor = self.executor.clone();
+        let task = cx
+            .background_executor()
+            .spawn(executor.compensate(request, receipt));
+        cx.spawn(async move |this, cx| {
+            if let Err(failure) = task.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.error = Some(failure.message);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn request_cancel(&mut self, workspace: CatalogWorkspaceId, cx: &mut Context<Self>) {
@@ -1461,6 +1514,11 @@ impl WorkspaceHubView {
             ) => *catalog_revision,
             _ => return,
         };
+        if !request_matches_catalog(&self.catalog, &prior) {
+            self.error = Some(t!("workspaces.launcher.authority_changed").to_string());
+            cx.notify();
+            return;
+        }
         let operation = CreationOperationId::new();
         if let Err(error) = self.creation.reduce(
             catalog_revision,
@@ -1516,6 +1574,53 @@ impl WorkspaceHubView {
             .workspace(workspace)
             .is_ok_and(|item| item.lifecycle() == UserWorkspaceLifecycle::Archived);
         let was_active = self.navigation.active() == Some(workspace);
+        if !archived
+            && matches!(
+                self.creation.state(workspace),
+                Some(
+                    BackgroundWorkspaceCreateState::Running { .. }
+                        | BackgroundWorkspaceCreateState::Cancelling { .. }
+                )
+            )
+        {
+            self.error = Some(t!("workspaces.lifecycle.cancel_before_archive").to_string());
+            cx.notify();
+            return;
+        }
+        if archived {
+            let root = self.catalog.workspace(workspace).ok().and_then(|record| {
+                self.catalog
+                    .checkout_in_project(record.project_id(), record.checkout_id())
+                    .ok()
+            });
+            let Some(CheckoutHost::Local { root, .. }) = root.map(ProjectCheckout::host) else {
+                self.error = Some(t!("workspaces.launcher.ssh_executor_unavailable").to_string());
+                cx.notify();
+                return;
+            };
+            let Ok(canonical) = std::fs::canonicalize(root) else {
+                self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+                cx.notify();
+                return;
+            };
+            if canonical != *root || !canonical.is_dir() {
+                self.error = Some(t!("workspaces.launcher.authority_changed").to_string());
+                cx.notify();
+                return;
+            }
+            let Ok(authority) = crate::terminal_view::AuthorizedLocalRoot::capture(&canonical)
+            else {
+                self.error = Some(t!("workspaces.launcher.authority_changed").to_string());
+                cx.notify();
+                return;
+            };
+            if let Some(surface) = self.retained.get(&workspace) {
+                let terminal = surface.read(cx).terminal.clone();
+                terminal.update(cx, |terminal, _| {
+                    terminal.install_authorized_default_cwd(&authority)
+                });
+            }
+        }
         if !archived && was_active {
             if let Some(surface) = self.retained.get(&workspace) {
                 let state = {
@@ -1562,6 +1667,77 @@ impl WorkspaceHubView {
             }
         }
         cx.notify();
+    }
+}
+
+fn request_matches_catalog(catalog: &ProjectCatalog, request: &WorkspaceExecutionRequest) -> bool {
+    let Ok(checkout) = catalog.checkout_in_project(request.project, request.source_checkout) else {
+        return false;
+    };
+    match (&request.host, checkout.host()) {
+        (AuthorizedLaunchHost::LocalExisting { authority }, CheckoutHost::Local { root, .. }) => {
+            root == authority.path() && authority.revalidate().is_ok()
+        }
+        (
+            AuthorizedLaunchHost::LocalWorktree {
+                source_authority, ..
+            },
+            CheckoutHost::Local { root, .. },
+        ) => root == source_authority.path() && source_authority.revalidate().is_ok(),
+        (
+            AuthorizedLaunchHost::Ssh {
+                connection_id,
+                remote_root,
+            },
+            CheckoutHost::Ssh {
+                connection_id: catalog_connection,
+                root,
+            },
+        ) => connection_id == catalog_connection && remote_root == root.as_str(),
+        _ => false,
+    }
+}
+
+fn create_event_coordinates(
+    event: &WorkspaceCreateEvent,
+) -> (CatalogWorkspaceId, CreationOperationId) {
+    match event {
+        WorkspaceCreateEvent::Start {
+            workspace,
+            operation,
+        }
+        | WorkspaceCreateEvent::Progress {
+            workspace,
+            operation,
+            ..
+        }
+        | WorkspaceCreateEvent::RequestCancel {
+            workspace,
+            operation,
+        }
+        | WorkspaceCreateEvent::Cancelled {
+            workspace,
+            operation,
+        }
+        | WorkspaceCreateEvent::Conflict {
+            workspace,
+            operation,
+            ..
+        }
+        | WorkspaceCreateEvent::Failed {
+            workspace,
+            operation,
+            ..
+        }
+        | WorkspaceCreateEvent::Completed {
+            workspace,
+            operation,
+        } => (*workspace, *operation),
+        WorkspaceCreateEvent::Retry {
+            workspace,
+            operation,
+            ..
+        } => (*workspace, *operation),
     }
 }
 
@@ -1734,6 +1910,9 @@ fn create_conflict_label(conflict: &WorkspaceCreateConflict) -> String {
         }
         WorkspaceCreateConflict::WorktreeLocked { .. } => {
             t!("workspaces.create.conflict_worktree").to_string()
+        }
+        WorkspaceCreateConflict::BranchAlreadyExists { branch } => {
+            t!("workspaces.create.conflict_branch_exists", branch = branch).to_string()
         }
         WorkspaceCreateConflict::BranchAlreadyCheckedOut { branch } => {
             t!("workspaces.create.conflict_branch", branch = branch).to_string()

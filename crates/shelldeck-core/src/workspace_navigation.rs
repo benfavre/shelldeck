@@ -703,6 +703,7 @@ impl Default for WorkspaceCreateProgress {
 pub enum WorkspaceCreateConflict {
     CheckoutAlreadyExists { root: String },
     WorktreeLocked { root: String },
+    BranchAlreadyExists { branch: String },
     BranchAlreadyCheckedOut { branch: String },
     HostUnavailable,
     CatalogRevisionChanged { expected: u64, actual: u64 },
