@@ -509,6 +509,14 @@ parallel `cargo test`.
 
 ---
 
+## 8h. `shelldeck-ui/fleet_view.rs` — canonical review rendering
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1779 | `fleet_view.rs::review_render_tests::canonical_semantic_keys_drive_the_actual_review_badge_words` | SDUC-494 | Green | The exact semantic keys exercised by the shared corpus drive the visible native Fleet badge words for all five attention states and every review, check/required, pull-request/readiness, delivery, preview/sanitization and freshness case. The render path remains presentation-only. |
+
+---
+
 ## 9. Cross-platform coverage (referenced from everywhere)
 
 CI matrix already runs `cargo check` on all three targets. The SDTEST

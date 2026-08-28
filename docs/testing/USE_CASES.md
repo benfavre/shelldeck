@@ -2673,6 +2673,10 @@ model. Its presentation seam preserves attention state, reason, source
 revision and unread count; review, check, pull-request and delivery freshness
 plus authority; and the complete bounded file, hunk, preview, conflict,
 comment and proposal meaning. `needs_you` is a visual inspection prompt only.
+The native Fleet UI projects the shared render-corpus keys for every declared
+attention, review, check, pull-request/readiness, delivery, preview and
+freshness state without losing source revisions above JavaScript's safe
+integer ceiling.
 Stale, unavailable and refused projections remain explicitly non-actionable,
 and neither provider-session presence nor any remote review observation grants
 filesystem, Git, CI, review, pull-request or delivery mutation authority.
@@ -2680,11 +2684,12 @@ The persisted local workspace-review schema remains independent and unmigrated.
 
 ## Change log
 
-- **2026-08-28** — Added SDUC-494 and SDTEST-1772..1777 for the exact shared
+- **2026-08-28** — Added SDUC-494 and SDTEST-1772..1779 for the exact shared
   Platform v2 review fixture, semantic projection, stale/unavailable behavior,
   exact-mapping target admission, negotiated typed read lane, and apply-time
   rejection of review observations attributed to a switched workspace or a
-  replaced Platform endpoint/credential generation.
+  replaced Platform endpoint/credential generation, plus byte-exact render
+  corpus parity and actual native badge semantics for every declared case.
 - **2026-08-28** — Hardened SDUC-491 and added SDTEST-1763..1771 for durable
   restart journals, immutable OID/repository/clean-state adoption, no-follow
   root/target authority, leaf-bound Git cleanup with post-quarantine identity,

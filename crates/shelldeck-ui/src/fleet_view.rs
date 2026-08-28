@@ -19,7 +19,9 @@ use shelldeck_core::config::platform::{
     PlatformRefresh, PlatformSnapshot, PlatformText, ResourceCoordinate, ResourceKind,
     ResourceRecord, RetainedSessionRead, RetainedSessionUpdate, SessionHistoryEvent, SessionRecord,
 };
-use shelldeck_core::config::platform_review::{PlatformReviewLoad, PlatformReviewSemantic};
+use shelldeck_core::config::platform_review::{
+    PlatformReviewLoad, PlatformReviewRenderSemantic, PlatformReviewSemantic,
+};
 
 use crate::icons::lucide_icon;
 use crate::scale::px;
@@ -440,6 +442,7 @@ impl FleetView {
 
     fn render_available_review(review: &PlatformReviewSemantic) -> AnyElement {
         let attention = &review.attention;
+        let render = PlatformReviewRenderSemantic::from(review);
         let attention_variant = if attention.needs_user_action {
             BadgeVariant::Warning
         } else {
@@ -470,25 +473,44 @@ impl FleetView {
             .iter()
             .filter(|comment| comment.unread)
             .count();
-        let source_revision = attention
+        let source_revision = render
+            .attention
             .source_revision
             .map_or_else(|| "—".to_owned(), |revision| revision.get().to_string());
-        let reason = attention.reason.map_or("—", |reason| reason.as_str());
+        let reason = render
+            .attention
+            .reason_key
+            .as_deref()
+            .map_or_else(|| "—".to_owned(), semantic_words);
         let authority =
             |value: &shelldeck_core::config::platform_review::ReviewAuthoritySemantic| {
                 format!("{}:{}", value.kind.as_str(), value.id)
             };
-        let checks = review
+        let checks = render
             .checks
             .iter()
-            .map(|check| {
+            .zip(review.checks.iter())
+            .map(|(semantic, check)| {
                 format!(
                     "{}={} · {}@{} · {}",
-                    check.id,
-                    check.state.as_str(),
-                    check.freshness.state.as_str(),
-                    check.freshness.observed_revision.get(),
+                    semantic.id,
+                    semantic_words(&semantic.semantic.semantic_key),
+                    semantic_words(&semantic.semantic.freshness_key),
+                    semantic.semantic.source_revision.get(),
                     authority(&check.authority)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let previews = render
+            .previews
+            .iter()
+            .map(|preview| {
+                format!(
+                    "{}={}@{}",
+                    preview.id,
+                    semantic_words(&preview.semantic_key),
+                    preview.source_revision.get()
                 )
             })
             .collect::<Vec<_>>()
@@ -507,7 +529,7 @@ impl FleetView {
                 Badge::new(
                     t!(
                         "fleet.review.attention",
-                        state = attention.state.as_str(),
+                        state = semantic_words(&render.attention.semantic_key),
                         reason = reason,
                         revision = source_revision,
                         unread = attention.unread
@@ -520,9 +542,9 @@ impl FleetView {
                 Badge::new(
                     t!(
                         "fleet.review.status",
-                        decision = review.review.decision.as_str(),
-                        freshness = review.review.freshness.state.as_str(),
-                        revision = review.review.freshness.observed_revision.get(),
+                        decision = semantic_words(&render.review.semantic_key),
+                        freshness = semantic_words(&render.review.freshness_key),
+                        revision = render.review.source_revision.get(),
                         authority = authority(&review.review.authority)
                     )
                     .to_string(),
@@ -533,10 +555,9 @@ impl FleetView {
                 Badge::new(
                     t!(
                         "fleet.review.pull_request",
-                        state = review.pull_request.state.as_str(),
-                        readiness = review.pull_request.readiness.as_str(),
-                        freshness = review.pull_request.freshness.state.as_str(),
-                        revision = review.pull_request.freshness.observed_revision.get(),
+                        semantic = semantic_words(&render.pull_request.semantic_key),
+                        freshness = semantic_words(&render.pull_request.freshness_key),
+                        revision = render.pull_request.source_revision.get(),
                         authority = authority(&review.pull_request.authority)
                     )
                     .to_string(),
@@ -547,9 +568,9 @@ impl FleetView {
                 Badge::new(
                     t!(
                         "fleet.review.delivery",
-                        state = review.delivery.state.as_str(),
-                        freshness = review.delivery.freshness.state.as_str(),
-                        revision = review.delivery.freshness.observed_revision.get(),
+                        state = semantic_words(&render.delivery.semantic_key),
+                        freshness = semantic_words(&render.delivery.freshness_key),
+                        revision = render.delivery.source_revision.get(),
                         authority = authority(&review.delivery.authority)
                     )
                     .to_string(),
@@ -562,6 +583,17 @@ impl FleetView {
                         "fleet.review.checks",
                         count = review.checks.len(),
                         checks = checks
+                    )
+                    .to_string(),
+                )
+                .variant(BadgeVariant::Secondary),
+            )
+            .child(
+                Badge::new(
+                    t!(
+                        "fleet.review.previews",
+                        count = render.previews.len(),
+                        previews = previews
                     )
                     .to_string(),
                 )
@@ -1644,6 +1676,70 @@ impl FleetView {
             .child(content)
             .child(transcript)
             .child(composer)
+    }
+}
+
+fn semantic_words(key: &str) -> String {
+    key.split('.')
+        .skip(1)
+        .map(|part| part.replace('_', " "))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+#[cfg(test)]
+mod review_render_tests {
+    use super::semantic_words;
+
+    // SDTEST-1779
+    #[test]
+    fn canonical_semantic_keys_drive_the_actual_review_badge_words() {
+        let cases = [
+            ("attention.idle", "idle"),
+            ("attention.needs_you", "needs you"),
+            ("attention.working", "working"),
+            ("attention.blocked", "blocked"),
+            ("attention.done", "done"),
+            ("attention_reason.review_requested", "review requested"),
+            ("attention_reason.check_running", "check running"),
+            ("attention_reason.external_blocker", "external blocker"),
+            ("attention_reason.complete", "complete"),
+            ("review.dismissed", "dismissed"),
+            ("review.pending", "pending"),
+            ("review.changes_requested", "changes requested"),
+            ("review.approved", "approved"),
+            ("check.cancelled.optional", "cancelled · optional"),
+            ("check.unavailable.required", "unavailable · required"),
+            ("check.failed.required", "failed · required"),
+            ("check.queued.optional", "queued · optional"),
+            ("check.running.required", "running · required"),
+            ("check.passed.required", "passed · required"),
+            ("pull_request.absent.unknown", "absent · unknown"),
+            ("pull_request.open.blocked", "open · blocked"),
+            ("pull_request.draft.stale", "draft · stale"),
+            ("pull_request.closed.blocked", "closed · blocked"),
+            ("pull_request.merged.ready", "merged · ready"),
+            ("delivery.not_delivered", "not delivered"),
+            ("delivery.pending", "pending"),
+            ("delivery.failed", "failed"),
+            ("delivery.delivered", "delivered"),
+            ("preview.none.raw", "none · raw"),
+            ("preview.text.sanitized", "text · sanitized"),
+            ("preview.image.sanitized", "image · sanitized"),
+            ("preview.binary.raw", "binary · raw"),
+            ("preview.html.sanitized", "html · sanitized"),
+            ("freshness.unknown", "unknown"),
+            ("freshness.stale", "stale"),
+            ("freshness.fresh", "fresh"),
+        ];
+
+        for (semantic_key, visible_words) in cases {
+            assert_eq!(
+                semantic_words(semantic_key),
+                visible_words,
+                "{semantic_key}"
+            );
+        }
     }
 }
 
