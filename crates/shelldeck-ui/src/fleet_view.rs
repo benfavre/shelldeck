@@ -1,9 +1,9 @@
 //! Native cockpit for the shared Automonique platform contract.
 //!
 //! The workspace performs typed client calls and returns attachments, leases,
-//! or review receipts. This view can prepare only canonical local-review
-//! comment/approval actions; no provider, Git, CI, pull-request, or job runtime
-//! exists in ShellDeck.
+//! or review receipts. This view prepares only actions present in the exact
+//! review snapshot; the server remains the sole authority for review, Git, CI,
+//! pull-request, provider-session, and delivery effects.
 
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::icon_source::IconSource;
@@ -12,7 +12,7 @@ use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use adabraka_ui::prelude::Alert;
 use gpui::prelude::*;
 use gpui::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use shelldeck_core::config::platform::{
     ActionResult, Attachment, ControlClaimResult, ControlLease, PaneStreamState, PlatformAction,
@@ -22,9 +22,10 @@ use shelldeck_core::config::platform::{
     SessionHistoryEvent, SessionRecord,
 };
 use shelldeck_core::config::platform_review::{
-    DiffSide, PlatformReviewActionPreview, PlatformReviewLoad, PlatformReviewRenderSemantic,
+    CommentAgentState, ConflictResolution, DiffSide, PlatformReviewActionPreview,
+    PlatformReviewConfirmationCoordinates, PlatformReviewLoad, PlatformReviewRenderSemantic,
     PlatformReviewSemantic, PlatformReviewTarget, ReviewAction, ReviewAnchorSemantic,
-    ReviewReceiptOutcome,
+    ReviewProposalKind, ReviewReceiptOutcome,
 };
 
 use crate::icons::lucide_icon;
@@ -72,6 +73,131 @@ fn exact_review_target_index<T>(
     items.iter().position(|item| target_of(item) == target)
 }
 
+fn same_exact_review_snapshot(
+    current_target: Option<&PlatformReviewTarget>,
+    current_revision: Option<u64>,
+    next_target: Option<&PlatformReviewTarget>,
+    next_revision: Option<u64>,
+) -> bool {
+    current_target == next_target && current_revision.is_some() && current_revision == next_revision
+}
+
+fn localized_review_proposal_kind(kind: ReviewProposalKind) -> String {
+    match kind {
+        ReviewProposalKind::Stage => t!("fleet.review.action_stage").to_string(),
+        ReviewProposalKind::Unstage => t!("fleet.review.action_unstage").to_string(),
+        ReviewProposalKind::Commit => t!("fleet.review.action_commit").to_string(),
+        ReviewProposalKind::ResolveConflict => {
+            t!("fleet.review.action_resolve_conflict").to_string()
+        }
+    }
+}
+
+fn localized_conflict_resolution(value: ConflictResolution) -> String {
+    match value {
+        ConflictResolution::KeepCurrent => t!("fleet.review.resolution_keep_current").to_string(),
+        ConflictResolution::KeepIncoming => t!("fleet.review.resolution_keep_incoming").to_string(),
+    }
+}
+
+fn localized_external_review_coordinates(
+    value: PlatformReviewConfirmationCoordinates,
+) -> (String, String) {
+    match value {
+        PlatformReviewConfirmationCoordinates::Comment {
+            comment_id,
+            revision,
+        } => (
+            t!("fleet.review.action_send_comment").to_string(),
+            t!(
+                "fleet.review.coordinate_comment",
+                id = comment_id,
+                revision = revision.get()
+            )
+            .to_string(),
+        ),
+        PlatformReviewConfirmationCoordinates::CommentBatch { comments } => (
+            t!("fleet.review.action_send_comments").to_string(),
+            comments
+                .into_iter()
+                .map(|(id, revision)| {
+                    t!(
+                        "fleet.review.coordinate_comment",
+                        id = id,
+                        revision = revision.get()
+                    )
+                    .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        PlatformReviewConfirmationCoordinates::Proposal { kind, proposal_id } => (
+            localized_review_proposal_kind(kind),
+            t!("fleet.review.coordinate_proposal", id = proposal_id).to_string(),
+        ),
+        PlatformReviewConfirmationCoordinates::ConflictResolution {
+            proposal_id,
+            file_id,
+            resolution,
+        } => (
+            t!("fleet.review.action_resolve_conflict").to_string(),
+            t!(
+                "fleet.review.coordinate_conflict",
+                proposal = proposal_id,
+                file = file_id,
+                resolution = localized_conflict_resolution(resolution)
+            )
+            .to_string(),
+        ),
+        PlatformReviewConfirmationCoordinates::Check { check_id, revision } => (
+            t!("fleet.review.action_rerun_check").to_string(),
+            t!(
+                "fleet.review.coordinate_check",
+                id = check_id,
+                revision = revision.get()
+            )
+            .to_string(),
+        ),
+        PlatformReviewConfirmationCoordinates::PullRequestOpen { revision, title } => (
+            t!("fleet.review.action_open_pull_request").to_string(),
+            t!(
+                "fleet.review.coordinate_pull_request_open",
+                revision = revision.get(),
+                title = title
+            )
+            .to_string(),
+        ),
+        PlatformReviewConfirmationCoordinates::PullRequestUpdate {
+            pull_request_id,
+            revision,
+            title,
+        } => (
+            t!("fleet.review.action_update_pull_request").to_string(),
+            t!(
+                "fleet.review.coordinate_pull_request_update",
+                id = pull_request_id,
+                revision = revision.get(),
+                title = title
+            )
+            .to_string(),
+        ),
+        PlatformReviewConfirmationCoordinates::PullRequestMerge {
+            pull_request_id,
+            revision,
+            head_revision,
+        } => (
+            t!("fleet.review.action_merge_pull_request").to_string(),
+            t!(
+                "fleet.review.coordinate_pull_request_merge",
+                id = pull_request_id,
+                revision = revision.get(),
+                head = head_revision
+            )
+            .to_string(),
+        ),
+    }
+}
+
 pub struct FleetView {
     snapshot: Option<PlatformSnapshot>,
     review: Option<PlatformReviewLoad>,
@@ -84,6 +210,7 @@ pub struct FleetView {
     review_comment_state: Entity<InputState>,
     review_comment_value: String,
     selected_review_anchor: Option<ReviewAnchorSemantic>,
+    selected_review_comments: BTreeSet<String>,
     pending_review_preview: Option<PlatformReviewActionPreview>,
     unresolved_review_actions: Vec<PlatformReviewActionPreview>,
     review_receipt: Option<(String, String)>,
@@ -110,6 +237,7 @@ impl FleetView {
             review_comment_state: cx.new(InputState::new),
             review_comment_value: String::new(),
             selected_review_anchor: None,
+            selected_review_comments: BTreeSet::new(),
             pending_review_preview: None,
             unresolved_review_actions: Vec::new(),
             review_receipt: None,
@@ -143,6 +271,24 @@ impl FleetView {
         target: Option<PlatformReviewTarget>,
         review: Option<PlatformReviewLoad>,
     ) {
+        let prior_revision = match &self.review {
+            Some(PlatformReviewLoad::Available(review)) => Some(review.revision.get()),
+            _ => None,
+        };
+        let next_revision = match &review {
+            Some(PlatformReviewLoad::Available(review)) => Some(review.revision.get()),
+            _ => None,
+        };
+        let same_exact_snapshot = same_exact_review_snapshot(
+            self.review_target.as_ref(),
+            prior_revision,
+            target.as_ref(),
+            next_revision,
+        );
+        if !same_exact_snapshot {
+            self.selected_review_anchor = None;
+            self.selected_review_comments.clear();
+        }
         let selected_is_current = match (&review, &self.selected_review_anchor) {
             (Some(PlatformReviewLoad::Available(review)), Some(anchor)) => review
                 .files
@@ -155,6 +301,13 @@ impl FleetView {
         };
         if !selected_is_current {
             self.selected_review_anchor = None;
+        }
+        match &review {
+            Some(PlatformReviewLoad::Available(review)) => {
+                self.selected_review_comments
+                    .retain(|id| review.comment_is_batch_actionable(id));
+            }
+            _ => self.selected_review_comments.clear(),
         }
         if self.pending_review_preview.as_ref().is_some_and(|preview| {
             target.as_ref() != Some(preview.target())
@@ -411,6 +564,61 @@ impl FleetView {
         Ok(())
     }
 
+    fn prepare_review_comment_batch(&mut self) -> Result<(), &'static str> {
+        let target = self
+            .review_target
+            .clone()
+            .ok_or("exact review target is unavailable")?;
+        let selected = self
+            .selected_review_comments
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let preview = PlatformReviewActionPreview::batch_send_comments(
+            target,
+            self.available_review()?,
+            &selected,
+        )?;
+        self.pending_review_preview = Some(preview);
+        Ok(())
+    }
+
+    fn prepare_review_proposal(&mut self, proposal_id: &str) -> Result<(), &'static str> {
+        let target = self
+            .review_target
+            .clone()
+            .ok_or("exact review target is unavailable")?;
+        let preview = PlatformReviewActionPreview::apply_proposal(
+            target,
+            self.available_review()?,
+            proposal_id,
+        )?;
+        self.pending_review_preview = Some(preview);
+        Ok(())
+    }
+
+    fn prepare_review_check_rerun(&mut self, check_id: &str) -> Result<(), &'static str> {
+        let target = self
+            .review_target
+            .clone()
+            .ok_or("exact review target is unavailable")?;
+        let preview =
+            PlatformReviewActionPreview::rerun_check(target, self.available_review()?, check_id)?;
+        self.pending_review_preview = Some(preview);
+        Ok(())
+    }
+
+    fn prepare_review_merge(&mut self) -> Result<(), &'static str> {
+        let target = self
+            .review_target
+            .clone()
+            .ok_or("exact review target is unavailable")?;
+        let preview =
+            PlatformReviewActionPreview::merge_pull_request(target, self.available_review()?)?;
+        self.pending_review_preview = Some(preview);
+        Ok(())
+    }
+
     fn dispatch_review_preview(&mut self) -> Option<PlatformReviewActionPreview> {
         let has_unresolved = self.current_unresolved_review_action().is_some();
         if self.operation_busy
@@ -452,6 +660,14 @@ impl FleetView {
                     self.review_comment_value.clear();
                     self.review_comment_state
                         .update(cx, |state, cx| state.reset(cx));
+                }
+                if matches!(receipt.outcome(), ReviewReceiptOutcome::Completed)
+                    && matches!(
+                        preview.action(),
+                        ReviewAction::BatchSendCommentsToAgent { .. }
+                    )
+                {
+                    self.selected_review_comments.clear();
                 }
             }
             PlatformReviewActionResult::Refused {
@@ -503,6 +719,7 @@ impl FleetView {
         self.pending_action = None;
         self.review_comment_value.clear();
         self.selected_review_anchor = None;
+        self.selected_review_comments.clear();
         self.pending_review_preview = None;
         self.unresolved_review_actions.clear();
         self.review_receipt = None;
@@ -942,23 +1159,64 @@ impl FleetView {
 
         let mut comments = div().flex().flex_col().gap(px(4.0));
         for comment in &review.comments {
+            let selectable = matches!(
+                comment.agent_state,
+                CommentAgentState::NotSent | CommentAgentState::Refused
+            ) && review.comment_is_batch_actionable(&comment.id);
+            let selected = self.selected_review_comments.contains(&comment.id);
+            let select_entity = entity.clone();
+            let comment_id = comment.id.clone();
             comments = comments.child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
                     .min_w(px(0.0))
                     .overflow_hidden()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
                     .child(
-                        t!(
-                            "fleet.review.comment",
-                            actor = comment.actor.as_str(),
-                            file = comment.anchor.file_id.as_str(),
-                            side = comment.anchor.side.as_str(),
-                            line = comment.anchor.line,
-                            revision = comment.revision.get(),
-                            body = comment.body.as_str()
+                        div().flex_1().min_w(px(0.0)).child(
+                            t!(
+                                "fleet.review.comment",
+                                actor = comment.actor.as_str(),
+                                file = comment.anchor.file_id.as_str(),
+                                side = comment.anchor.side.as_str(),
+                                line = comment.anchor.line,
+                                revision = comment.revision.get(),
+                                body = comment.body.as_str()
+                            )
+                            .to_string(),
+                        ),
+                    )
+                    .child(
+                        Button::new(
+                            ElementId::from(SharedString::from(format!(
+                                "select-review-comment-{}",
+                                comment.id
+                            ))),
+                            if selected {
+                                t!("fleet.review.comment_selected").to_string()
+                            } else {
+                                t!("fleet.review.comment_select").to_string()
+                            },
                         )
-                        .to_string(),
+                        .size(ButtonSize::Sm)
+                        .variant(if selected {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Ghost
+                        })
+                        .disabled(!can_prepare || !selectable)
+                        .on_click(move |_, _, cx| {
+                            select_entity.update(cx, |this, cx| {
+                                if !this.selected_review_comments.remove(&comment_id) {
+                                    this.selected_review_comments.insert(comment_id.clone());
+                                }
+                                this.pending_review_preview = None;
+                                cx.notify();
+                            });
+                        }),
                     ),
             );
         }
@@ -986,6 +1244,7 @@ impl FleetView {
 
         let comment_entity = entity.clone();
         let approve_entity = entity.clone();
+        let batch_entity = entity.clone();
         let can_comment = can_prepare
             && selected_anchor.is_some()
             && !self.review_comment_value.trim().is_empty();
@@ -1002,6 +1261,120 @@ impl FleetView {
                 .to_string()
             },
         );
+        let mut effect_controls = div().flex().flex_wrap().gap(px(6.0)).child(
+            Button::new(
+                "prepare-review-comment-batch",
+                t!(
+                    "fleet.review.prepare_comment_batch",
+                    count = self.selected_review_comments.len()
+                )
+                .to_string(),
+            )
+            .size(ButtonSize::Sm)
+            .variant(ButtonVariant::Outline)
+            .disabled(!can_prepare || self.selected_review_comments.is_empty())
+            .on_click(move |_, _, cx| {
+                batch_entity.update(cx, |this, cx| {
+                    if this.prepare_review_comment_batch().is_err() {
+                        this.review_receipt = Some((
+                            t!("fleet.review.state_refused").to_string(),
+                            t!("fleet.review.invalid_preview").to_string(),
+                        ));
+                    }
+                    cx.notify();
+                });
+            }),
+        );
+        for proposal in review
+            .proposals
+            .iter()
+            .filter(|proposal| review.proposal_is_actionable(&proposal.id))
+        {
+            let proposal_entity = entity.clone();
+            let proposal_id = proposal.id.clone();
+            effect_controls = effect_controls.child(
+                Button::new(
+                    ElementId::from(SharedString::from(format!(
+                        "prepare-review-proposal-{}",
+                        proposal.id
+                    ))),
+                    t!(
+                        "fleet.review.prepare_proposal",
+                        action = localized_review_proposal_kind(proposal.kind),
+                        files = proposal.files.len()
+                    )
+                    .to_string(),
+                )
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Outline)
+                .disabled(!can_prepare)
+                .on_click(move |_, _, cx| {
+                    proposal_entity.update(cx, |this, cx| {
+                        if this.prepare_review_proposal(&proposal_id).is_err() {
+                            this.review_receipt = Some((
+                                t!("fleet.review.state_refused").to_string(),
+                                t!("fleet.review.invalid_preview").to_string(),
+                            ));
+                        }
+                        cx.notify();
+                    });
+                }),
+            );
+        }
+        for check in review
+            .checks
+            .iter()
+            .filter(|check| review.check_is_rerunnable(&check.id))
+        {
+            let check_entity = entity.clone();
+            let check_id = check.id.clone();
+            effect_controls = effect_controls.child(
+                Button::new(
+                    ElementId::from(SharedString::from(format!(
+                        "prepare-review-check-{}",
+                        check.id
+                    ))),
+                    t!("fleet.review.prepare_check", check = check.id.as_str()).to_string(),
+                )
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Outline)
+                .disabled(!can_prepare)
+                .on_click(move |_, _, cx| {
+                    check_entity.update(cx, |this, cx| {
+                        if this.prepare_review_check_rerun(&check_id).is_err() {
+                            this.review_receipt = Some((
+                                t!("fleet.review.state_refused").to_string(),
+                                t!("fleet.review.invalid_preview").to_string(),
+                            ));
+                        }
+                        cx.notify();
+                    });
+                }),
+            );
+        }
+        if review.pull_request_is_mergeable() {
+            let merge_entity = entity.clone();
+            effect_controls = effect_controls.child(
+                Button::new(
+                    "prepare-review-merge",
+                    t!("fleet.review.prepare_merge").to_string(),
+                )
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Outline)
+                .disabled(!can_prepare)
+                .on_click(move |_, _, cx| {
+                    merge_entity.update(cx, |this, cx| {
+                        if this.prepare_review_merge().is_err() {
+                            this.review_receipt = Some((
+                                t!("fleet.review.state_refused").to_string(),
+                                t!("fleet.review.invalid_preview").to_string(),
+                            ));
+                        }
+                        cx.notify();
+                    });
+                }),
+            );
+        }
         let controls = div()
             .flex()
             .flex_col()
@@ -1071,7 +1444,7 @@ impl FleetView {
                         )
                         .size(ButtonSize::Sm)
                         .variant(ButtonVariant::Outline)
-                        .disabled(!can_prepare)
+                        .disabled(!can_prepare || !review.approval_is_actionable())
                         .on_click(move |_, _, cx| {
                             approve_entity.update(cx, |this, cx| {
                                 if this.prepare_review_approval().is_err() {
@@ -1085,6 +1458,7 @@ impl FleetView {
                         }),
                     ),
             )
+            .child(effect_controls)
             .child(self.render_review_confirmation(cx));
 
         div()
@@ -1154,6 +1528,8 @@ impl FleetView {
             let action = match preview.action() {
                 ReviewAction::AddComment { anchor, body, .. } => t!(
                     "fleet.review.confirm_comment",
+                    project = preview.target().project.as_str(),
+                    workspace = preview.target().workspace.id(),
                     file = anchor.file_id().as_str(),
                     hunk = anchor.hunk_id().as_str(),
                     side = anchor.side().as_str(),
@@ -1166,11 +1542,28 @@ impl FleetView {
                     expected_review_revision,
                 } => t!(
                     "fleet.review.confirm_approval",
+                    project = preview.target().project.as_str(),
+                    workspace = preview.target().workspace.id(),
                     review_revision = expected_review_revision.get(),
                     revision = preview.expected_revision().get()
                 )
                 .to_string(),
-                _ => t!("fleet.review.unsupported_action").to_string(),
+                _ => preview.confirmation_coordinates().map_or_else(
+                    || t!("fleet.review.unsupported_action").to_string(),
+                    |coordinates| {
+                        let (action, coordinates) =
+                            localized_external_review_coordinates(coordinates);
+                        t!(
+                            "fleet.review.confirm_external",
+                            action = action,
+                            project = preview.target().project.as_str(),
+                            workspace = preview.target().workspace.id(),
+                            revision = preview.expected_revision().get(),
+                            coordinates = coordinates
+                        )
+                        .to_string()
+                    },
+                ),
             };
             return div()
                 .flex()
@@ -2420,8 +2813,8 @@ impl Render for FleetView {
 #[cfg(test)]
 mod review_render_tests {
     use super::{
-        exact_review_target_index, review_dispatch_directive, semantic_words,
-        ReviewDispatchDirective,
+        exact_review_target_index, review_dispatch_directive, same_exact_review_snapshot,
+        semantic_words, ReviewDispatchDirective,
     };
     use shelldeck_core::config::platform_review::PlatformReviewTarget;
     use shelldeck_core::config::workspace_catalog::{
@@ -2536,5 +2929,32 @@ mod review_render_tests {
         );
         assert!(exact_review_target_index(&actions, Some(&second), |target| target).is_none());
         assert!(exact_review_target_index(&actions, None, |target| target).is_none());
+    }
+
+    // SDTEST-1792
+    #[test]
+    fn review_selections_survive_only_the_same_exact_target_and_revision() {
+        let first = target("project-1", "wc_user_1");
+        let second = target("project-1", "wc_user_2");
+
+        assert!(same_exact_review_snapshot(
+            Some(&first),
+            Some(41),
+            Some(&first),
+            Some(41)
+        ));
+        assert!(!same_exact_review_snapshot(
+            Some(&first),
+            Some(41),
+            Some(&first),
+            Some(42)
+        ));
+        assert!(!same_exact_review_snapshot(
+            Some(&first),
+            Some(41),
+            Some(&second),
+            Some(41)
+        ));
+        assert!(!same_exact_review_snapshot(None, None, None, None));
     }
 }
