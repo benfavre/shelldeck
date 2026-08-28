@@ -6,11 +6,16 @@ use serde::{Deserialize, Serialize};
 use shelldeck_core::config::workspace_catalog::{
     CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, ProjectCheckout, WorkspaceLaunchIntake,
 };
+use shelldeck_core::models::connection::Connection;
 use shelldeck_core::workspace_navigation::{
     CreationOperationId, WorkspaceCreateConflict, WorkspaceCreateEvent, WorkspaceCreateFailure,
     WorkspaceCreateFailureKind, WorkspaceCreatePhase, WorkspaceCreateProgress,
 };
-use std::collections::{BTreeMap, HashSet};
+use shelldeck_ssh::client::SshClient;
+use shelldeck_ssh::session::{SshChannel, SshChannelData};
+use shelldeck_ssh::workspace_helper::WorkspacePrepareRequest;
+use shelldeck_terminal::session::TerminalSession;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -60,16 +65,44 @@ pub(super) struct WorkspaceExecutionRequest {
     pub name: String,
     pub intake: WorkspaceLaunchIntake,
     pub host: AuthorizedLaunchHost,
+    #[allow(dead_code)]
     pub mode: WorkspaceLaunchMode,
 }
 
-pub(super) struct WorkspaceLaunchReceipt {
-    pub authority: AuthorizedLocalRoot,
-    cleanup: Option<WorktreeEffect>,
+pub(super) enum WorkspaceLaunchReceipt {
+    Local {
+        authority: AuthorizedLocalRoot,
+        cleanup: Option<WorktreeEffect>,
+    },
+    Ssh(PreparedSshWorkspace),
+}
+
+pub(super) struct PreparedSshTerminal {
+    pub session: TerminalSession,
+    pub connection_id: uuid::Uuid,
+    controller: tokio::sync::mpsc::UnboundedSender<SshControllerCommand>,
+}
+
+impl PreparedSshTerminal {
+    pub(super) fn shutdown(&self) {
+        let _ = self.controller.send(SshControllerCommand::Shutdown);
+    }
+}
+
+pub(super) struct PreparedSshWorkspace {
+    connection_id: uuid::Uuid,
+    title: String,
+    controller: tokio::sync::mpsc::UnboundedSender<SshControllerCommand>,
+}
+
+enum SshControllerCommand {
+    Resume(tokio::sync::oneshot::Sender<Result<SshChannel, &'static str>>),
+    Release(tokio::sync::oneshot::Sender<Result<(), &'static str>>),
+    Shutdown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct WorktreeEffect {
+pub(super) struct WorktreeEffect {
     source: PathBuf,
     target: PathBuf,
     branch: String,
@@ -216,6 +249,7 @@ pub(super) struct NativeWorkspaceExecutor {
     cancellations: Arc<parking_lot::Mutex<BTreeMap<CreationOperationId, Arc<LaunchCancellation>>>>,
     receipts: Arc<parking_lot::Mutex<BTreeMap<CreationOperationId, WorkspaceLaunchReceipt>>>,
     git: Arc<dyn GitWorktreeAdapter>,
+    connections: Arc<HashMap<uuid::Uuid, Connection>>,
 }
 
 pub(super) enum NativeLaunchOutcome {
@@ -227,10 +261,20 @@ pub(super) enum NativeLaunchOutcome {
 #[cfg(test)]
 impl NativeLaunchOutcome {
     pub(super) fn test_ready(path: &Path) -> Self {
-        Self::Ready(WorkspaceLaunchReceipt {
+        Self::Ready(WorkspaceLaunchReceipt::Local {
             authority: AuthorizedLocalRoot::capture(path).unwrap(),
             cleanup: None,
         })
+    }
+}
+
+#[cfg(test)]
+impl WorkspaceLaunchReceipt {
+    fn into_local_cleanup(self) -> Option<WorktreeEffect> {
+        match self {
+            Self::Local { cleanup, .. } => cleanup,
+            Self::Ssh(_) => panic!("expected a local workspace receipt"),
+        }
     }
 }
 
@@ -281,6 +325,7 @@ impl Default for NativeWorkspaceExecutor {
             cancellations: Arc::default(),
             receipts: Arc::default(),
             git: Arc::new(SystemGitWorktreeAdapter),
+            connections: Arc::default(),
         }
     }
 }
@@ -292,6 +337,21 @@ impl NativeWorkspaceExecutor {
             cancellations: Arc::default(),
             receipts: Arc::default(),
             git,
+            connections: Arc::default(),
+        }
+    }
+
+    pub(super) fn with_connections(connections: Vec<Connection>) -> Self {
+        Self {
+            cancellations: Arc::default(),
+            receipts: Arc::default(),
+            git: Arc::new(SystemGitWorktreeAdapter),
+            connections: Arc::new(
+                connections
+                    .into_iter()
+                    .map(|connection| (connection.id, connection))
+                    .collect(),
+            ),
         }
     }
 
@@ -314,17 +374,13 @@ impl WorkspaceLaunchExecutor for NativeWorkspaceExecutor {
         let registry = self.cancellations.clone();
         let receipts = self.receipts.clone();
         let git = self.git.clone();
+        let connections = self.connections.clone();
         Box::pin(async move {
             let _finish = LaunchFinishGuard {
                 operation: request.operation,
                 cancellation: cancellation.clone(),
                 registry,
             };
-            if request.mode == WorkspaceLaunchMode::Ssh {
-                return Err(runtime_unavailable(
-                    "workspaces.launcher.ssh_executor_unavailable",
-                ));
-            }
             let phases = [
                 WorkspaceCreatePhase::Queued,
                 WorkspaceCreatePhase::ResolvingHost,
@@ -332,6 +388,61 @@ impl WorkspaceLaunchExecutor for NativeWorkspaceExecutor {
                 WorkspaceCreatePhase::CreatingWorkspace,
                 WorkspaceCreatePhase::BindingRuntime,
             ];
+            if let AuthorizedLaunchHost::Ssh {
+                connection_id,
+                remote_root,
+            } = &request.host
+            {
+                let connection = connections.get(connection_id).cloned().ok_or_else(|| {
+                    runtime_unavailable("workspaces.launcher.ssh_executor_unavailable")
+                })?;
+                let receipt = match prepare_ssh_workspace(
+                    connection,
+                    remote_root.clone(),
+                    request.operation,
+                    request.workspace,
+                    cancellation.clone(),
+                )
+                .await
+                {
+                    Err(error)
+                        if cancellation.requested.load(Ordering::Acquire)
+                            && error.message == CANCELLED_MESSAGE =>
+                    {
+                        return Ok(())
+                    }
+                    result => result?,
+                };
+                if cancellation.requested.load(Ordering::Acquire) {
+                    compensate_receipt(receipt).await?;
+                    return Ok(());
+                }
+                for phase in phases {
+                    if cancellation.requested.load(Ordering::Acquire) {
+                        compensate_receipt(receipt).await?;
+                        return Ok(());
+                    }
+                    if let Err(error) = send_progress(&events, &request, phase) {
+                        compensate_receipt(receipt).await?;
+                        return Err(error);
+                    }
+                }
+                receipts.lock().insert(request.operation, receipt);
+                if events
+                    .send(WorkspaceCreateEvent::Completed {
+                        workspace: request.workspace,
+                        operation: request.operation,
+                    })
+                    .is_err()
+                {
+                    let receipt = { receipts.lock().remove(&request.operation) };
+                    if let Some(receipt) = receipt {
+                        compensate_receipt(receipt).await?;
+                    }
+                    return Err(receiver_closed());
+                }
+                return Ok(());
+            }
             for phase in phases.into_iter().take(3) {
                 if cancellation.requested.load(Ordering::Acquire) {
                     return Ok(());
@@ -342,7 +453,7 @@ impl WorkspaceLaunchExecutor for NativeWorkspaceExecutor {
             let outcome = match &request.host {
                 AuthorizedLaunchHost::LocalExisting { authority } => {
                     authority.revalidate().map_err(|_| workspace_fs_failure())?;
-                    NativeLaunchOutcome::Ready(WorkspaceLaunchReceipt {
+                    NativeLaunchOutcome::Ready(WorkspaceLaunchReceipt::Local {
                         authority: authority.clone(),
                         cleanup: None,
                     })
@@ -486,6 +597,263 @@ fn send_progress(
         .map_err(|_| receiver_closed())
 }
 
+async fn wait_for_ssh_cancellation(cancellation: &AtomicBool) {
+    while !cancellation.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+async fn prepare_ssh_workspace(
+    connection: Connection,
+    remote_root: String,
+    operation: CreationOperationId,
+    workspace: CatalogWorkspaceId,
+    cancellation: Arc<LaunchCancellation>,
+) -> Result<WorkspaceLaunchReceipt, WorkspaceCreateFailure> {
+    let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
+    let thread_cancellation = cancellation.clone();
+    std::thread::Builder::new()
+        .name(format!("workspace-ssh-{operation}"))
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(_) => {
+                    let _ = prepared_tx.send(Err("runtime"));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let client = SshClient::new();
+                let session = tokio::select! {
+                    _ = wait_for_ssh_cancellation(&thread_cancellation.requested) => return,
+                    result = client.connect(&connection) => match result {
+                        Ok(session) => session,
+                        Err(_) => {
+                            let _ = prepared_tx.send(Err("connect"));
+                            return;
+                        }
+                    },
+                };
+                let mut helper = tokio::select! {
+                    _ = wait_for_ssh_cancellation(&thread_cancellation.requested) => {
+                        let _ = session.disconnect().await;
+                        return;
+                    }
+                    result = session.open_workspace_helper(24, 80) => match result {
+                        Ok(helper) => helper,
+                        Err(_) => {
+                            let _ = prepared_tx.send(Err("helper"));
+                            let _ = session.disconnect().await;
+                            return;
+                        }
+                    },
+                };
+                let request = WorkspacePrepareRequest {
+                    operation: operation.as_uuid(),
+                    workspace: workspace.as_uuid(),
+                    remote_root,
+                };
+                let receipt = tokio::select! {
+                    _ = wait_for_ssh_cancellation(&thread_cancellation.requested) => {
+                        let _ = session.disconnect().await;
+                        return;
+                    }
+                    result = helper.prepare(request) => match result {
+                        Ok(receipt) => receipt,
+                        Err(_) => {
+                            let _ = prepared_tx.send(Err("prepare"));
+                            let _ = session.disconnect().await;
+                            return;
+                        }
+                    },
+                };
+                let (controller, mut commands) = tokio::sync::mpsc::unbounded_channel();
+                let prepared = PreparedSshWorkspace {
+                    connection_id: connection.id,
+                    title: connection.display_name().to_string(),
+                    controller,
+                };
+                if prepared_tx.send(Ok(prepared)).is_err() {
+                    let _ = helper.release(&receipt).await;
+                    let _ = session.disconnect().await;
+                    return;
+                }
+
+                let mut helper = Some(helper);
+                let mut resumed = false;
+                while let Some(command) = commands.recv().await {
+                    match command {
+                        SshControllerCommand::Resume(reply) => {
+                            let result = match helper.take() {
+                                Some(channel) => match channel.resume(&receipt).await {
+                                    Ok(channel) => {
+                                        resumed = true;
+                                        Ok(channel)
+                                    }
+                                    Err(_) => Err("resume"),
+                                },
+                                None => Err("state"),
+                            };
+                            let failed = result.is_err();
+                            let _ = reply.send(result);
+                            if failed {
+                                break;
+                            }
+                        }
+                        SshControllerCommand::Release(reply) => {
+                            let result = match helper.take() {
+                                Some(channel) => {
+                                    channel.release(&receipt).await.map_err(|_| "release")
+                                }
+                                None => Err("state"),
+                            };
+                            let _ = reply.send(result);
+                            break;
+                        }
+                        SshControllerCommand::Shutdown => break,
+                    }
+                }
+                if !resumed {
+                    if let Some(channel) = helper {
+                        let _ = channel.release(&receipt).await;
+                    }
+                }
+                let _ = session.disconnect().await;
+            });
+        })
+        .map_err(|_| runtime_unavailable("workspaces.launcher.ssh_executor_unavailable"))?;
+
+    tokio::select! {
+        _ = wait_for_ssh_cancellation(&cancellation.requested) => Err(cancelled_failure()),
+        result = prepared_rx => match result {
+            Ok(Ok(prepared)) => Ok(WorkspaceLaunchReceipt::Ssh(prepared)),
+            _ if cancellation.requested.load(Ordering::Acquire) => Err(cancelled_failure()),
+            _ => Err(runtime_unavailable("workspaces.launcher.ssh_executor_unavailable")),
+        }
+    }
+}
+
+async fn release_ssh_workspace(
+    prepared: PreparedSshWorkspace,
+) -> Result<(), WorkspaceCreateFailure> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    prepared
+        .controller
+        .send(SshControllerCommand::Release(reply_tx))
+        .map_err(|_| runtime_unavailable("workspaces.launcher.ssh_executor_unavailable"))?;
+    match reply_rx.await {
+        Ok(Ok(())) => Ok(()),
+        _ => Err(runtime_unavailable(
+            "workspaces.launcher.ssh_executor_unavailable",
+        )),
+    }
+}
+
+pub(super) async fn prepare_ssh_terminal(
+    prepared: PreparedSshWorkspace,
+) -> Result<PreparedSshTerminal, WorkspaceCreateFailure> {
+    let (mut terminal, data_tx, mut input_rx) =
+        match TerminalSession::spawn_ssh(prepared.title.clone(), 24, 80) {
+            Ok(spawn) => spawn,
+            Err(_) => {
+                let _ = prepared.controller.send(SshControllerCommand::Shutdown);
+                return Err(runtime_unavailable(
+                    "workspaces.launcher.ssh_executor_unavailable",
+                ));
+            }
+        };
+    let PreparedSshWorkspace {
+        connection_id,
+        controller,
+        ..
+    } = prepared;
+    let (resize_tx, mut resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
+    terminal.set_resize_fn(Box::new(move |rows, cols| {
+        let _ = resize_tx.send((rows, cols));
+    }));
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    controller
+        .send(SshControllerCommand::Resume(reply_tx))
+        .map_err(|_| runtime_unavailable("workspaces.launcher.ssh_executor_unavailable"))?;
+    let channel = match reply_rx.await {
+        Ok(Ok(channel)) => channel,
+        _ => {
+            let _ = controller.send(SshControllerCommand::Shutdown);
+            return Err(runtime_unavailable(
+                "workspaces.launcher.ssh_executor_unavailable",
+            ));
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(_) => {
+            let _ = controller.send(SshControllerCommand::Shutdown);
+            return Err(runtime_unavailable(
+                "workspaces.launcher.ssh_executor_unavailable",
+            ));
+        }
+    };
+    let shutdown = controller.clone();
+    if std::thread::Builder::new()
+        .name(format!("workspace-terminal-{connection_id}"))
+        .spawn(move || {
+            runtime.block_on(async move {
+                let (mut reader, writer) = channel.split();
+                let write_task = tokio::spawn(async move {
+                    let mut resize_open = true;
+                    loop {
+                        tokio::select! {
+                            input = input_rx.recv() => {
+                                let Some(input) = input else { break };
+                                if writer.write_all(&input).await.is_err() { break }
+                            }
+                            resize = resize_rx.recv(), if resize_open => {
+                                match resize {
+                                    Some((rows, cols)) => {
+                                        if writer.resize(rows as u32, cols as u32).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    None => resize_open = false,
+                                }
+                            }
+                        }
+                    }
+                });
+                let read_task = tokio::spawn(async move {
+                    while let SshChannelData::Data(data) = reader.read().await {
+                        if data_tx.send(data).is_err() {
+                            break;
+                        }
+                    }
+                });
+                tokio::select! {
+                    _ = write_task => {}
+                    _ = read_task => {}
+                }
+                let _ = shutdown.send(SshControllerCommand::Shutdown);
+            });
+        })
+        .is_err()
+    {
+        let _ = controller.send(SshControllerCommand::Shutdown);
+        return Err(runtime_unavailable(
+            "workspaces.launcher.ssh_executor_unavailable",
+        ));
+    }
+    Ok(PreparedSshTerminal {
+        session: terminal,
+        connection_id,
+        controller,
+    })
+}
+
 async fn prepare_git_worktree(
     request: &WorkspaceExecutionRequest,
     cancelled: &AtomicBool,
@@ -558,7 +926,7 @@ async fn prepare_git_worktree(
         {
             let authority =
                 AuthorizedLocalRoot::capture(target_root).map_err(|_| workspace_fs_failure())?;
-            return Ok(NativeLaunchOutcome::Ready(WorkspaceLaunchReceipt {
+            return Ok(NativeLaunchOutcome::Ready(WorkspaceLaunchReceipt::Local {
                 authority,
                 cleanup: Some(effect),
             }));
@@ -698,7 +1066,7 @@ async fn prepare_git_worktree(
             return Err(workspace_fs_failure());
         }
     };
-    Ok(NativeLaunchOutcome::Ready(WorkspaceLaunchReceipt {
+    Ok(NativeLaunchOutcome::Ready(WorkspaceLaunchReceipt::Local {
         authority,
         cleanup: Some(effect),
     }))
@@ -900,8 +1268,15 @@ async fn repository_identity(
 }
 
 async fn compensate_receipt(receipt: WorkspaceLaunchReceipt) -> Result<(), WorkspaceCreateFailure> {
-    if let Some(effect) = receipt.cleanup {
-        cleanup_owned_effect(effect).await?;
+    match receipt {
+        WorkspaceLaunchReceipt::Local {
+            cleanup: Some(effect),
+            ..
+        } => cleanup_owned_effect(effect).await?,
+        WorkspaceLaunchReceipt::Local { cleanup: None, .. } => {}
+        WorkspaceLaunchReceipt::Ssh(prepared) => {
+            release_ssh_workspace(prepared).await?;
+        }
     }
     Ok(())
 }
@@ -1709,6 +2084,14 @@ fn receiver_closed() -> WorkspaceCreateFailure {
     }
 }
 
+fn cancelled_failure() -> WorkspaceCreateFailure {
+    WorkspaceCreateFailure {
+        kind: WorkspaceCreateFailureKind::Unknown,
+        message: CANCELLED_MESSAGE.into(),
+        retryable: true,
+    }
+}
+
 fn workspace_fs_failure() -> WorkspaceCreateFailure {
     filesystem_failure("workspaces.launcher.folder_unavailable", true)
 }
@@ -1933,7 +2316,7 @@ mod tests {
         else {
             panic!("worktree was not prepared")
         };
-        let effect = receipt.cleanup.unwrap();
+        let effect = receipt.into_local_cleanup().unwrap();
 
         git(&target, &["checkout", "--detach", &first]);
         assert!(!exact_complete_worktree(
@@ -2064,7 +2447,7 @@ mod tests {
         let NativeLaunchOutcome::Ready(receipt) = outcome else {
             panic!("expected a ready worktree");
         };
-        let effect = receipt.cleanup.unwrap();
+        let effect = receipt.into_local_cleanup().unwrap();
         let (bound, _authority, _inherited) = bound_worktree_argument(&effect).unwrap();
         let moved = private.join("moved-owned-worktree");
         std::fs::rename(&target, &moved).unwrap();

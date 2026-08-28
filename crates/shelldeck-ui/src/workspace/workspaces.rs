@@ -15,6 +15,7 @@ use shelldeck_core::config::workspace_catalog::{
     RepositoryIdentity, UserWorkspaceLifecycle, UserWorkspaceRecord, WorkspaceLaunchIntake,
     WorkspaceLaunchRequest,
 };
+use shelldeck_core::models::connection::Connection;
 use shelldeck_core::workspace_navigation::{
     BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState, PaneId, PaneLeaf,
     TerminalAuthority, TerminalBinding, TerminalBindingId, TerminalSurface, TerminalViewport,
@@ -591,15 +592,21 @@ impl WorkspaceHubView {
 
     pub(super) fn new(
         catalog: Result<ProjectCatalog, String>,
-        connections: &[(Uuid, String)],
+        connections: &[Connection],
         initial_terminal: Entity<TerminalView>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let labels = connections
+            .iter()
+            .map(|connection| (connection.id, connection.display_name().to_string()))
+            .collect::<Vec<_>>();
         Self::new_with_executor(
             catalog,
-            connections,
+            &labels,
             initial_terminal,
-            Arc::new(NativeWorkspaceExecutor::default()),
+            Arc::new(NativeWorkspaceExecutor::with_connections(
+                connections.to_vec(),
+            )),
             cx,
         )
     }
@@ -1089,11 +1096,6 @@ impl WorkspaceHubView {
         } else {
             self.launcher.mode
         };
-        if mode == WorkspaceLaunchMode::Ssh {
-            self.error = Some(t!("workspaces.launcher.ssh_executor_unavailable").to_string());
-            cx.notify();
-            return;
-        }
         let workspace = CatalogWorkspaceId::new();
         let (host, workspace_checkout, created_checkout) = match (mode, selected_checkout.host()) {
             (WorkspaceLaunchMode::ExistingFolder, CheckoutHost::Local { root, .. }) => {
@@ -1151,7 +1153,21 @@ impl WorkspaceHubView {
                     Some(checkout),
                 )
             }
-            _ => unreachable!("SSH mode was refused above"),
+            (
+                WorkspaceLaunchMode::Ssh,
+                CheckoutHost::Ssh {
+                    connection_id,
+                    root,
+                },
+            ) => (
+                AuthorizedLaunchHost::Ssh {
+                    connection_id: *connection_id,
+                    remote_root: root.as_str().to_string(),
+                },
+                checkout_id,
+                None,
+            ),
+            _ => unreachable!("launch mode must match the selected checkout host"),
         };
         let operation = CreationOperationId::new();
         let catalog_revision = self.catalog.revision();
@@ -1273,7 +1289,22 @@ impl WorkspaceHubView {
                 let Some(receipt) = self.executor.take_receipt(event_operation) else {
                     return;
                 };
-                if receipt.authority.revalidate().is_err() {
+                let (authority, cleanup) = match receipt {
+                    native_lifecycle::WorkspaceLaunchReceipt::Local { authority, cleanup } => {
+                        (authority, cleanup)
+                    }
+                    native_lifecycle::WorkspaceLaunchReceipt::Ssh(prepared) => {
+                        self.resume_ssh_then_complete(request, prepared, cx);
+                        return;
+                    }
+                };
+                let receipt =
+                    native_lifecycle::WorkspaceLaunchReceipt::Local { authority, cleanup };
+                let native_lifecycle::WorkspaceLaunchReceipt::Local { authority, .. } = &receipt
+                else {
+                    unreachable!()
+                };
+                if authority.revalidate().is_err() {
                     let event = WorkspaceCreateEvent::Failed {
                         workspace: event_workspace,
                         operation: event_operation,
@@ -1295,7 +1326,7 @@ impl WorkspaceHubView {
                     apply_terminal_config(&terminal, config, cx);
                 }
                 let prepared = terminal.update(cx, |terminal, _cx| {
-                    terminal.prepare_authorized_local_terminal(&receipt.authority)
+                    terminal.prepare_authorized_local_terminal(authority)
                 });
                 let prepared = match prepared {
                     Ok(prepared) => prepared,
@@ -1399,6 +1430,171 @@ impl WorkspaceHubView {
             self.switch_to(workspace, cx);
             self.observe_local_card(workspace, cx);
         }
+        cx.notify();
+    }
+
+    fn resume_ssh_then_complete(
+        &mut self,
+        request: WorkspaceExecutionRequest,
+        prepared: native_lifecycle::PreparedSshWorkspace,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = request.workspace;
+        let operation = request.operation;
+        let task = cx
+            .background_executor()
+            .spawn(native_lifecycle::prepare_ssh_terminal(prepared));
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                let still_attachable = this
+                    .pending_requests
+                    .get(&workspace)
+                    .is_some_and(|pending| pending.operation == operation)
+                    && completion_can_attach(
+                        workspace,
+                        workspace,
+                        operation,
+                        &request,
+                        this.creation.state(workspace),
+                    );
+                if !still_attachable {
+                    if let Ok(prepared) = &result {
+                        prepared.shutdown();
+                    }
+                    drop(result);
+                    return;
+                }
+                if this.catalog.revision() != request.catalog_revision {
+                    if let Ok(prepared) = &result {
+                        prepared.shutdown();
+                    }
+                    drop(result);
+                    this.apply_executor_event(
+                        workspace,
+                        WorkspaceCreateEvent::Conflict {
+                            workspace,
+                            operation,
+                            conflict: WorkspaceCreateConflict::CatalogRevisionChanged {
+                                expected: request.catalog_revision,
+                                actual: this.catalog.revision(),
+                            },
+                        },
+                        cx,
+                    );
+                    return;
+                }
+                let prepared = match result {
+                    Ok(prepared) => prepared,
+                    Err(failure) => {
+                        this.apply_executor_event(
+                            workspace,
+                            WorkspaceCreateEvent::Failed {
+                                workspace,
+                                operation,
+                                failure,
+                            },
+                            cx,
+                        );
+                        return;
+                    }
+                };
+                this.commit_prepared_ssh(request, prepared, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn commit_prepared_ssh(
+        &mut self,
+        request: WorkspaceExecutionRequest,
+        prepared: native_lifecycle::PreparedSshTerminal,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = request.workspace;
+        let operation = request.operation;
+        let using_unclaimed_terminal = self.unclaimed_terminal.is_some();
+        let terminal = self
+            .unclaimed_terminal
+            .clone()
+            .unwrap_or_else(|| cx.new(TerminalView::new));
+        if let Some(config) = self.terminal_config.as_ref() {
+            apply_terminal_config(&terminal, config, cx);
+        }
+        let created_checkout = request.created_checkout.clone();
+        let launch_name = request.name.clone();
+        let launch_intake = request.intake.clone();
+        let commit = mutate_and_save(&mut self.catalog, |catalog| {
+            if let Some(checkout) = created_checkout {
+                catalog
+                    .add_checkout(request.project, checkout)
+                    .map_err(|error| error.to_string())?;
+            }
+            catalog
+                .create_workspace(WorkspaceLaunchRequest {
+                    id: workspace,
+                    project_id: request.project,
+                    checkout_id: request.checkout,
+                    name: launch_name,
+                    intake: launch_intake,
+                })
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+        if let Err(message) = commit {
+            prepared.shutdown();
+            drop(prepared);
+            self.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Failed {
+                    workspace,
+                    operation,
+                    failure: WorkspaceCreateFailure {
+                        kind: WorkspaceCreateFailureKind::Filesystem,
+                        message,
+                        retryable: true,
+                    },
+                },
+                cx,
+            );
+            return;
+        }
+        if using_unclaimed_terminal {
+            self.unclaimed_terminal.take();
+        }
+        terminal.update(cx, |terminal, cx| {
+            terminal.add_session_with_connection(prepared.session, Some(prepared.connection_id));
+            terminal.ensure_refresh_running(cx);
+            cx.notify();
+        });
+        let surface = WorkspaceSurfaceState::default();
+        if let Err(error) = self.navigation.reduce(
+            &self.catalog,
+            WorkspaceNavigationAction::Retain {
+                id: workspace,
+                surface,
+                card: WorkspaceCardState::default(),
+            },
+        ) {
+            self.error = Some(error.to_string());
+        }
+        self.retained.insert(
+            workspace,
+            cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
+        );
+        if let Err(error) = self.creation.reduce(
+            request.catalog_revision,
+            WorkspaceCreateEvent::Completed {
+                workspace,
+                operation,
+            },
+        ) {
+            self.error = Some(error.to_string());
+            cx.notify();
+            return;
+        }
+        self.pending_requests.remove(&workspace);
+        self.switch_to(workspace, cx);
         cx.notify();
     }
 
