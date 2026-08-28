@@ -2167,6 +2167,12 @@ with one fully scrollable detail view; Scripts shows either its full-width
 master list or the selected editor with an explicit return action. At wide
 widths their table and side-by-side master/detail layouts remain unchanged.
 
+The Dev status bar follows the same scale-aware containment rule. Below 800
+logical pixels it keeps the three live activity counters, hides the secondary
+Git branch, palette hint, and default version, and still gives an update or
+notification the remaining bounded space. Wide windows retain the complete
+metadata row.
+
 ### SDUC-444 — A global shortcut that cannot register says why
 
 A global shortcut whose registration is refused reports it instead of looking
@@ -2621,6 +2627,10 @@ compact button plus secondary count badge as the neighboring Tickets queue.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-443 and added SDTEST-1736: the compact Dev
+  status bar prioritizes live counters and bounded notifications, suppressing
+  branch, shortcut hint, and default version metadata below 800 scale-aware
+  logical pixels while preserving the complete wide row.
 - **2026-08-28** — Amended SDUC-409/443 and added SDTEST-1733/1734/1735: at
   narrow Dev widths, Recent Activity stacks actions below wrapping titles,
   Sites uses contained cards plus one scrollable detail view, and Scripts uses
