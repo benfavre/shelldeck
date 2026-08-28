@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total marker occurrences in code: **130**
+Total marker occurrences in code: **139**
 (`rg "ShellDeck patch:" src/`; SDPATCH-103 is Cargo.toml-only and outside
 the src-scoped marker convention.)
 
@@ -495,6 +495,44 @@ the src-scoped marker convention.)
 - **Upstream status**: not filed yet; suitable for a focused text-wrapping bug
   report and PR.
 
+### SDPATCH-117 — Migrate the Linux status item to `ksni` 0.3
+
+- **Files / symbols**:
+  - `Cargo.toml` — Linux/FreeBSD `ksni` dependency
+  - `src/platform/linux/tray.rs` — `GpuiTray`, `LinuxTray`
+- **Markers** (5):
+  - `src/platform/linux/tray.rs` — `// ShellDeck patch: SDPATCH-117 — ksni 0.3 moved synchronous tray handles`
+  - `src/platform/linux/tray.rs` — `// ShellDeck patch: SDPATCH-117 — ksni 0.3 requires a stable service id.`
+  - `src/platform/linux/tray.rs` — `// ShellDeck patch: SDPATCH-117 — store the synchronous 0.3 adapter.`
+  - `src/platform/linux/tray.rs` — `// ShellDeck patch: SDPATCH-117 — the 0.3 blocking adapter owns the`
+  - `src/platform/linux/tray.rs` — `// ShellDeck patch: SDPATCH-117 — 0.3 shutdown is an awaiter even`
+- **Why**: `ksni` 0.2 builds its D-Bus bindings through `dbus-codegen` and
+  Clap 2, retaining the unmaintained `ansi_term` and the unsound/unmaintained
+  `atty`. Version 0.3 uses zbus 5 and exposes synchronous integration through
+  an explicit blocking adapter over the already-compatible `async-io` engine.
+  GPUI's platform tray contract is synchronous, so the adapter preserves its
+  behavior while removing both advisories.
+- **Upstream status**: not filed yet; suitable for the vendored GPUI upstream.
+
+### SDPATCH-118 — Move Linux text and SVG rendering off unmaintained parsers
+
+- **Files / symbols**:
+  - `Cargo.toml` — `cosmic-text`, `resvg`, and `usvg` dependencies
+  - `src/platform/linux/text_system.rs` — `LoadedFont`,
+    `CosmicTextSystemState::{load_family,raster_bounds,rasterize_glyph,font_id_for_cosmic_id,layout_line}`
+- **Markers** (4):
+  - `src/platform/linux/text_system.rs` — `// ShellDeck patch: SDPATCH-118 — cosmic-text 0.19 keys variable fonts by`
+  - `src/platform/linux/text_system.rs` — `// ShellDeck patch: SDPATCH-118 — pass the face weight required by`
+  - `src/platform/linux/text_system.rs` — `// ShellDeck patch: SDPATCH-118 — fallback glyphs also carry their`
+  - `src/platform/linux/text_system.rs` — `// ShellDeck patch: SDPATCH-118 — retain the pre-0.19 subpixel`
+- **Why**: `cosmic-text` 0.14 retained `rustybuzz` plus two old
+  `ttf-parser` releases, while `usvg` 0.45 retained another `rustybuzz`.
+  `cosmic-text` 0.19 and `resvg`/`usvg` 0.48 use `harfrust` and `skrifa`.
+  The newer text API makes font weight and layout hinting explicit; keep each
+  face's actual weight in the glyph cache and leave metrics hinting disabled
+  to preserve GPUI's existing subpixel layout.
+- **Upstream status**: not filed yet; suitable for the vendored GPUI upstream.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -533,6 +571,16 @@ the src-scoped marker convention.)
 - **Upstream status**: not filed yet.
 
 ## Sync log
+
+- **2026-08-28** — Added SDPATCH-118: upgraded Linux text/SVG rendering to
+  `cosmic-text` 0.19 and `resvg`/`usvg` 0.48, removing both `rustybuzz`
+  branches and two obsolete `ttf-parser` branches. 4 new markers, bringing
+  the source marker total from 135 to 139.
+
+- **2026-08-28** — Added SDPATCH-117: migrated the Linux status item from
+  `ksni` 0.2 to 0.3's blocking adapter, removing the Clap 2 → `ansi_term` /
+  `atty` dependency chain. 5 new markers, bringing the source marker total
+  from 130 to 135.
 
 - **2026-08-24** — Added SDPATCH-116 with 2 markers, bringing the source
   marker total from 128 to 130. SDPATCH-115 was already assigned to the

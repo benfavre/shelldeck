@@ -346,7 +346,7 @@ version = "0.5.1"
 package = "adabraka_refineable"
 
 [dependencies.resvg]
-version = "0.45.0"
+version = "0.48.1"
 features = [
     "text",
     "system-fonts",
@@ -413,7 +413,7 @@ version = "=0.9.0"
 version = "2.0.12"
 
 [dependencies.usvg]
-version = "0.45.0"
+version = "0.48.1"
 default-features = false
 
 [dependencies.util]
@@ -505,7 +505,7 @@ version = "0.3.0"
 optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.cosmic-text]
-version = "0.14.0"
+version = "0.19.0"
 optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.filedescriptor]
@@ -522,7 +522,9 @@ optional = true
 package = "zed-font-kit"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.ksni]
-version = "0.2"
+version = "0.3"
+features = ["async-io", "blocking"]
+default-features = false
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.notify-rust]
 version = "4"
