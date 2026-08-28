@@ -180,6 +180,11 @@ jobs:
           cp -R patches/adabraka-gpui "$gpui_test_root/patches/"
           cp packaging/icons/shelldeck.ico "$gpui_test_root/packaging/icons/"
           cp Cargo.lock "$gpui_test_root/patches/adabraka-gpui/Cargo.lock"
+          native_tray_tests="$(CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/target" cargo test --manifest-path "$gpui_test_root/patches/adabraka-gpui/Cargo.toml" --lib -- --list | tr -d '\r')"
+          grep -Fqx 'platform::windows::platform::tests::sdtest_1813_taskbar_created_message_registration_is_live: test' <<<"$native_tray_tests"
+          grep -Fqx 'platform::windows::tray::tests::sdtest_1813_explorer_restart_readd_is_authoritative_and_retains_icon: test' <<<"$native_tray_tests"
+          grep -Fqx 'platform::windows::tray::tests::sdtest_1814_ico_resource_selects_closest_then_highest_depth: test' <<<"$native_tray_tests"
+          grep -Fqx 'platform::windows::tray::tests::sdtest_1815_shell_deck_ico_creates_a_native_hicon: test' <<<"$native_tray_tests"
           CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/target" \
             cargo test --manifest-path "$gpui_test_root/patches/adabraka-gpui/Cargo.toml" --lib sdtest_181
 
