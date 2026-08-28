@@ -84,8 +84,8 @@ sha2 = "0.10"
 base64 = "0.22"
 ed25519-dalek = "2"
 criterion = "0.5"
-automonique-platform-client = { git = "https://github.com/bext-stack/automonique", rev = "72a0c3cd50362f25472a1da92a10e9d8e14b2985" }
-automonique-protocol = { git = "https://github.com/bext-stack/automonique", rev = "72a0c3cd50362f25472a1da92a10e9d8e14b2985" }
+automonique-platform-client = { git = "https://github.com/bext-stack/automonique", rev = "e666adc3ad67e7d5861c93b9f3e8cd8978dd29c5" }
+automonique-protocol = { git = "https://github.com/bext-stack/automonique", rev = "e666adc3ad67e7d5861c93b9f3e8cd8978dd29c5" }
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
     "Win32_Security",
