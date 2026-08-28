@@ -2841,10 +2841,17 @@ capacity, parse, or write failure suppresses new custody instead of evicting an
 older tuple. A private no-follow/reparse-fenced storage boundary and an
 exclusive sidecar lock serialize reload/compare/persist across independent
 processes, so only one process may reserve a notification tuple. The serialized
-document must fit its read bound before replacement. Navigation and OS
-notification activation remain separate native integration milestones. The
-retained native workspace surface continues to mark local items read only after
-exact native focus succeeds.
+document must fit its read bound before replacement. The native Workspace and
+Fleet surfaces now consume the same authoritative board. Every activation
+re-resolves the current exact catalog mapping, full authority-qualified session
+directory, and retained provider pane: missing, duplicate, foreign, or stale
+coordinates refuse without consuming unread state. Review and orchestration
+items open only their exact workspace attention surface; provider items open
+only an exact authorized current session or unique retained pane. Same-process
+OS notification handles remain alive through activation/dismissal and route the
+same tuple back through that current-catalog resolver. A failed durable
+notification reservation suppresses the toast. Native cold-launch/OS launch
+protocol remains intentionally outside this milestone.
 Delivery checks, review status, merge readiness, and delivery state carry their
 observed authority and freshness. Once Fresh, they cannot be overwritten by a
 Stale or Unknown projection even if that projection claims a higher revision.

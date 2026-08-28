@@ -24,7 +24,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::app_config::AppConfig;
+use super::platform::{ResourceAuthority, ResourceCoordinate, ResourceKind, SessionRecord};
 use super::workspace_catalog::PlatformV2Mapping;
+use super::workspace_catalog::{CatalogWorkspaceId, ProjectCatalog};
+use crate::workspace_navigation::{
+    PaneNode, WorkspaceFocus, WorkspaceNavigationState, WorkspaceTabContent,
+};
 use crate::workspace_review::storage::{
     bounded_descriptor_read, ensure_private_directory_io, lock_path, open_lock_file,
     secure_atomic_write,
@@ -321,6 +326,156 @@ pub struct PlatformAttentionBoard {
     inventory: AttentionSourceInventory,
     slots: BTreeMap<AttentionSource, AttentionSourceSlot>,
     ui_index: BTreeMap<AttentionUiItemId, AttentionItemKey>,
+}
+
+/// Stable same-process activation request. It deliberately carries the
+/// authoritative presentation identity and revision, not a previously
+/// resolved pane/session. Every click is resolved again against the current
+/// authorized catalogues.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlatformAttentionActivation {
+    pub workspace: CatalogWorkspaceId,
+    pub item: AttentionUiItemId,
+    pub item_revision: Revision,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlatformAttentionDestination {
+    WorkspaceAttention {
+        workspace: CatalogWorkspaceId,
+    },
+    FleetSession {
+        workspace: CatalogWorkspaceId,
+        session: ResourceCoordinate,
+    },
+    RetainedProviderPane {
+        workspace: CatalogWorkspaceId,
+        session: ResourceCoordinate,
+        focus: WorkspaceFocus,
+    },
+}
+
+/// Resolve an activation through the complete current catalogue.
+///
+/// Provider coordinates must be exact authorized Automonique sessions. A
+/// retained provider pane, when present, must also be unique. Review and
+/// orchestration items intentionally resolve only to the mapped workspace's
+/// attention surface and cannot acquire provider authority.
+pub fn resolve_platform_attention_activation(
+    activation: PlatformAttentionActivation,
+    board: &PlatformAttentionBoard,
+    catalog: &ProjectCatalog,
+    navigation: &WorkspaceNavigationState,
+    sessions: &[SessionRecord],
+) -> Result<PlatformAttentionDestination, AttentionActivationError> {
+    let item = board
+        .item_by_ui_id(activation.item)
+        .ok_or(AttentionActivationError::ItemMissing)?;
+    if item.value().revision() != activation.item_revision {
+        return Err(AttentionActivationError::ItemStale);
+    }
+
+    let matches = catalog
+        .workspaces()
+        .filter(|workspace| {
+            workspace.platform_mapping().is_some_and(|mapping| {
+                PlatformAttentionTarget::from_exact_mapping(mapping)
+                    .is_ok_and(|target| &target == board.inventory().target())
+            })
+        })
+        .map(|workspace| workspace.id())
+        .collect::<Vec<_>>();
+    if matches.as_slice() != [activation.workspace] {
+        return Err(AttentionActivationError::WorkspaceMissingOrAmbiguous);
+    }
+    let retained = navigation
+        .workspace(activation.workspace)
+        .ok_or(AttentionActivationError::WorkspaceMissingOrAmbiguous)?;
+
+    let source_kind = item.key().source().kind();
+    if source_kind != AttentionSourceKind::ProviderSession {
+        if item.value().platform_session().is_some() {
+            return Err(AttentionActivationError::CoordinateInvalid);
+        }
+        return Ok(PlatformAttentionDestination::WorkspaceAttention {
+            workspace: activation.workspace,
+        });
+    }
+
+    let coordinate = item
+        .value()
+        .platform_session()
+        .map(|session| session.coordinate())
+        .ok_or(AttentionActivationError::CoordinateInvalid)?;
+    if coordinate.authority != ResourceAuthority::Automonique
+        || coordinate.kind != ResourceKind::Session
+    {
+        return Err(AttentionActivationError::CoordinateInvalid);
+    }
+    if sessions
+        .iter()
+        .filter(|record| &record.session.resource == coordinate)
+        .count()
+        != 1
+    {
+        return Err(AttentionActivationError::SessionMissingOrAmbiguous);
+    }
+
+    let mapping = catalog
+        .workspace(activation.workspace)
+        .ok()
+        .and_then(|workspace| workspace.platform_mapping())
+        .filter(|mapping| mapping.is_exact())
+        .ok_or(AttentionActivationError::WorkspaceMissingOrAmbiguous)?;
+    let mut pane_matches = Vec::new();
+    collect_provider_panes(
+        retained.surface.root.as_ref(),
+        &mapping.user_workspace.id,
+        coordinate,
+        &mut pane_matches,
+    );
+    match pane_matches.as_slice() {
+        [] => Ok(PlatformAttentionDestination::FleetSession {
+            workspace: activation.workspace,
+            session: coordinate.clone(),
+        }),
+        [focus] => Ok(PlatformAttentionDestination::RetainedProviderPane {
+            workspace: activation.workspace,
+            session: coordinate.clone(),
+            focus: *focus,
+        }),
+        _ => Err(AttentionActivationError::PaneAmbiguous),
+    }
+}
+
+fn collect_provider_panes(
+    node: Option<&PaneNode>,
+    user_workspace: &str,
+    coordinate: &ResourceCoordinate,
+    output: &mut Vec<WorkspaceFocus>,
+) {
+    let Some(node) = node else { return };
+    match node {
+        PaneNode::Leaf(leaf) => {
+            for tab in &leaf.tabs {
+                if matches!(
+                    &tab.content,
+                    WorkspaceTabContent::ProviderSession(binding)
+                        if binding.platform_user_workspace_id == user_workspace
+                            && binding.session_id == coordinate.id.as_str()
+                ) {
+                    output.push(WorkspaceFocus {
+                        pane_id: leaf.id,
+                        tab_id: tab.id,
+                    });
+                }
+            }
+        }
+        PaneNode::Split { first, second, .. } => {
+            collect_provider_panes(Some(first), user_workspace, coordinate, output);
+            collect_provider_panes(Some(second), user_workspace, coordinate, output);
+        }
+    }
 }
 
 impl PlatformAttentionBoard {
@@ -1028,6 +1183,22 @@ pub enum AttentionError {
     UiIdentityCollision,
 }
 
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum AttentionActivationError {
+    #[error("attention item is no longer present")]
+    ItemMissing,
+    #[error("attention item revision is stale")]
+    ItemStale,
+    #[error("attention workspace is missing or ambiguous in the current catalog")]
+    WorkspaceMissingOrAmbiguous,
+    #[error("attention provider coordinate is invalid")]
+    CoordinateInvalid,
+    #[error("attention provider session is missing or ambiguous")]
+    SessionMissingOrAmbiguous,
+    #[error("attention provider session is retained by multiple panes")]
+    PaneAmbiguous,
+}
+
 #[derive(Debug, Error)]
 pub enum AttentionLocalStateError {
     #[error("attention local-state capacity is invalid")]
@@ -1047,13 +1218,24 @@ pub enum AttentionLocalStateError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::workspace_catalog::{
+        CatalogCheckoutId, CatalogProjectId, CheckoutHost, PlatformContextRef,
+        PlatformMappingReconciliation, ProjectCheckout, ProjectRecord, RepositoryIdentity,
+        WorkspaceLaunchIntake, WorkspaceLaunchRequest,
+    };
+    use crate::workspace_navigation::{
+        PaneId, PaneLeaf, ProviderSessionBinding, WorkspaceCardState, WorkspaceNavigationAction,
+        WorkspaceSurfaceState, WorkspaceTab, WorkspaceTabContent, WorkspaceTabId,
+    };
     use automonique_protocol::platform::{
-        ResourceAuthority, ResourceCoordinate, ResourceId, ResourceKind,
+        Freshness, FreshnessState, ResourceAuthority, ResourceCoordinate, ResourceId, ResourceKind,
+        ResourceRecord,
     };
     use automonique_protocol::platform_v2::{
         AttemptWorkspaceId, CheckoutId, V1SessionRef, WorkContextAttributes, WorkContextLabel,
         WorkContextLifecycle, WorkContextRelation, WorkSessionId,
     };
+    use automonique_protocol::primitives::EpochMillis;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
@@ -1907,5 +2089,230 @@ mod tests {
         assert!(AttentionLocalStateStore::open(linked_path, 2).is_err());
         std::fs::remove_dir(private_root).ok();
         std::fs::remove_dir_all(base).ok();
+    }
+
+    fn activation_catalog() -> (ProjectCatalog, CatalogWorkspaceId, CatalogCheckoutId) {
+        let project = CatalogProjectId::from_uuid(Uuid::from_u128(900));
+        let checkout = CatalogCheckoutId::from_uuid(Uuid::from_u128(901));
+        let workspace = CatalogWorkspaceId::from_uuid(Uuid::from_u128(902));
+        let mut project_record = ProjectRecord::new(project, "Attention project");
+        project_record.add_checkout(ProjectCheckout::new(
+            checkout,
+            "main",
+            CheckoutHost::Local {
+                device_label: "local".into(),
+                root: std::env::temp_dir().join("shelldeck-attention-activation"),
+            },
+            RepositoryIdentity {
+                slug: "bext/shelldeck".into(),
+                canonical_url: None,
+            },
+        ));
+        let mut catalog = ProjectCatalog::default();
+        catalog.insert_project(project_record).unwrap();
+        catalog
+            .create_workspace(WorkspaceLaunchRequest {
+                id: workspace,
+                project_id: project,
+                checkout_id: checkout,
+                name: "Attention".into(),
+                intake: WorkspaceLaunchIntake::Manual,
+            })
+            .unwrap();
+        catalog
+            .set_platform_mapping(
+                workspace,
+                None,
+                PlatformV2Mapping {
+                    reconciliation_revision: 1,
+                    project: PlatformContextRef {
+                        id: "project-1".into(),
+                        revision: 1,
+                    },
+                    checkout: PlatformContextRef {
+                        id: "checkout-1".into(),
+                        revision: 1,
+                    },
+                    user_workspace: PlatformContextRef {
+                        id: "workspace-1".into(),
+                        revision: 1,
+                    },
+                    reconciliation: PlatformMappingReconciliation::Exact {
+                        reconciled_at_millis: 1,
+                    },
+                },
+            )
+            .unwrap();
+        (catalog, workspace, checkout)
+    }
+
+    fn provider_surface(count: usize) -> WorkspaceSurfaceState {
+        let tabs = (0..count)
+            .map(|index| WorkspaceTab {
+                id: WorkspaceTabId::from_uuid(Uuid::from_u128(920 + index as u128)),
+                title: "Provider".into(),
+                content: WorkspaceTabContent::ProviderSession(ProviderSessionBinding {
+                    platform_user_workspace_id: "workspace-1".into(),
+                    session_id: "platform-session-1".into(),
+                    run_id: None,
+                }),
+            })
+            .collect::<Vec<_>>();
+        let active_tab = tabs.first().map(|tab| tab.id);
+        WorkspaceSurfaceState {
+            root: Some(PaneNode::Leaf(PaneLeaf {
+                id: PaneId::from_uuid(Uuid::from_u128(919)),
+                tabs,
+                active_tab,
+            })),
+            focus: active_tab.map(|tab_id| WorkspaceFocus {
+                pane_id: PaneId::from_uuid(Uuid::from_u128(919)),
+                tab_id,
+            }),
+        }
+    }
+
+    fn authorized_session() -> SessionRecord {
+        SessionRecord {
+            session: ResourceRecord {
+                resource: ResourceCoordinate::new(
+                    ResourceAuthority::Automonique,
+                    ResourceKind::Session,
+                    ResourceId::new("platform-session-1").unwrap(),
+                ),
+                freshness: Freshness {
+                    state: FreshnessState::Fresh,
+                    observed_at: EpochMillis::from_millis(1),
+                    revision: Revision::FIRST,
+                },
+                summary: automonique_protocol::platform::PlatformText::new("session").unwrap(),
+            },
+            run: None,
+            attachable: true,
+            controllable: false,
+        }
+    }
+
+    // SDTEST-1822
+    #[test]
+    fn sdtest_1822_activation_re_resolves_exact_current_catalogues_and_refuses_ambiguity() {
+        let (catalog, workspace, _) = activation_catalog();
+        let mut navigation = WorkspaceNavigationState::default();
+        navigation
+            .reduce(
+                &catalog,
+                WorkspaceNavigationAction::Retain {
+                    id: workspace,
+                    surface: provider_surface(0),
+                    card: WorkspaceCardState::default(),
+                },
+            )
+            .unwrap();
+        let provider = source(AttentionSourceKind::ProviderSession, "session-1");
+        let mut board = PlatformAttentionBoard::new(inventory(ReviewAttentionPresence::Present));
+        board
+            .apply_authenticated_baseline_read(
+                &provider,
+                AttentionReadResult::Snapshot(Box::new(snapshot(
+                    provider.clone(),
+                    1,
+                    None,
+                    vec![provider_item("provider", 1)],
+                ))),
+            )
+            .unwrap();
+        let visible = board.visible_items().next().unwrap();
+        let activation = PlatformAttentionActivation {
+            workspace,
+            item: visible.ui_id(),
+            item_revision: visible.value().revision(),
+        };
+        let sessions = vec![authorized_session()];
+        assert!(matches!(
+            resolve_platform_attention_activation(
+                activation,
+                &board,
+                &catalog,
+                &navigation,
+                &sessions,
+            ),
+            Ok(PlatformAttentionDestination::FleetSession { .. })
+        ));
+        assert_eq!(
+            resolve_platform_attention_activation(activation, &board, &catalog, &navigation, &[],),
+            Err(AttentionActivationError::SessionMissingOrAmbiguous)
+        );
+        let duplicate = vec![authorized_session(), authorized_session()];
+        assert_eq!(
+            resolve_platform_attention_activation(
+                activation,
+                &board,
+                &catalog,
+                &navigation,
+                &duplicate,
+            ),
+            Err(AttentionActivationError::SessionMissingOrAmbiguous)
+        );
+
+        navigation
+            .reduce(
+                &catalog,
+                WorkspaceNavigationAction::UpdateSurface {
+                    id: workspace,
+                    surface: provider_surface(1),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            resolve_platform_attention_activation(
+                activation,
+                &board,
+                &catalog,
+                &navigation,
+                &sessions,
+            ),
+            Ok(PlatformAttentionDestination::RetainedProviderPane { .. })
+        ));
+        navigation
+            .reduce(
+                &catalog,
+                WorkspaceNavigationAction::UpdateSurface {
+                    id: workspace,
+                    surface: provider_surface(2),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_platform_attention_activation(
+                activation,
+                &board,
+                &catalog,
+                &navigation,
+                &sessions,
+            ),
+            Err(AttentionActivationError::PaneAmbiguous)
+        );
+
+        board
+            .apply_read(
+                &provider,
+                AttentionReadResult::Snapshot(Box::new(snapshot(
+                    provider.clone(),
+                    2,
+                    Some(1),
+                    vec![provider_item("provider", 2)],
+                ))),
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_platform_attention_activation(
+                activation,
+                &board,
+                &catalog,
+                &navigation,
+                &sessions,
+            ),
+            Err(AttentionActivationError::ItemStale)
+        );
     }
 }
