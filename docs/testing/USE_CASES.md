@@ -2704,24 +2704,36 @@ and neither provider-session presence nor any remote review observation grants
 filesystem, Git, CI, review, pull-request or delivery mutation authority.
 The persisted local workspace-review schema remains independent and unmigrated.
 
-### SDUC-495 — Native Platform review comments and approvals are exact and replay-safe
+### SDUC-495 — Native Platform review effects are exact and replay-safe
 
 For an exactly reconciled Platform project/workspace, ShellDeck expands the
 canonical review snapshot into bounded files, hunks, conflicts, safe preview
 metadata, attributed comments, and attention chronology. A user may select an
-exact hunk line and prepare either one typed `AddComment` or one typed
-`ApproveReview`; the confirmation names the exact workspace and captured
-snapshot/review revisions before dispatch.
+exact hunk line and prepare one typed comment or review approval. Comments in
+`not_sent`/`refused` state can be selected into one batch-to-agent action.
+Server-projected Git proposals, terminal CI checks, and a fresh ready pull
+request can prepare their corresponding stage/unstage/commit, rerun, or merge
+action. Every confirmation names the exact workspace and captured snapshot or
+target revision before dispatch.
 
 The client dispatches that canonical SDK `ReviewAction` at most once. Accepted,
 unknown, or transport-ambiguous outcomes retain the original idempotency key and
 use receipt lookup only. Async results are admitted only if both the complete
 captured authenticated connection and `PlatformReviewTarget` still match the
-active context. Provider-session, Git, CI, and pull-request action families are
-not constructible through this surface and remain inert.
+active context. A missing proposal, wrong authority kind, unresolved-conflict
+proposal, stale check, duplicate comment selection, or non-ready pull request
+cannot construct a preview. Remote observation still grants nothing by itself:
+the Automonique host may execute only after the exact separately configured
+review, provider-session, Git, CI, or pull-request adapter resolves the action;
+an unavailable adapter refuses before any effect.
 
 ## Change log
 
+- **2026-08-28** — Added SDTEST-1792 so line and comment selections cannot
+  cross a project/workspace switch or review-snapshot revision boundary.
+- **2026-08-28** — Expanded SDUC-495 and added SDTEST-1791 for exact
+  batch-to-agent, Git proposal, CI rerun, and pull-request merge previews while
+  preserving the existing dispatch-once and receipt-lookup-only lane.
 - **2026-08-28** — Amended SDUC-491 and added SDTEST-1780 after auditing the
   SSH/SFTP boundary: remote lifecycle stays fail-closed before progress while
   no beneath/no-follow helper exists, and the minimum fixed-subsystem,

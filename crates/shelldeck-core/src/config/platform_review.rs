@@ -1,21 +1,23 @@
-//! Read-only presentation of the shared Automonique Platform v2 review contract.
+//! Typed presentation and mutation previews for the shared Automonique Platform v2 review contract.
 //!
 //! This module does not replace [`crate::workspace_review`], which remains the
 //! persisted local workflow. Platform review values are authenticated remote
-//! observations for display only; they never authorize filesystem, git, CI,
-//! pull-request, review, or delivery mutations in ShellDeck.
+//! observations. Mutation previews retain their exact snapshot coordinates;
+//! only the server can resolve them against separately configured authority.
 
 use automonique_protocol::platform::IdempotencyKey;
 use automonique_protocol::platform_v2::{ProjectId, WorkContextIdentity, WorkContextTargetKind};
 pub use automonique_protocol::platform_v2_review::{
     AttentionOriginKind, AttentionReason, AttentionState, CheckState, CommentAgentState,
-    ConflictState, DeliveryState, DiffChangeKind, DiffSide, MergeReadiness, PreviewKind,
-    PullRequestState, ReviewAction, ReviewActionReceipt, ReviewAnchor, ReviewAuthority,
-    ReviewAuthorityKind, ReviewCommentId, ReviewDecision, ReviewFile, ReviewFreshness,
-    ReviewFreshnessState, ReviewProposalKind, ReviewReceiptOutcome, ReviewReconciliation,
+    ConflictResolution, ConflictState, DeliveryState, DiffChangeKind, DiffSide, MergeReadiness,
+    PreviewKind, PullRequestId, PullRequestState, ReviewAction, ReviewActionReceipt, ReviewAnchor,
+    ReviewAuthority, ReviewAuthorityKind, ReviewCheckId, ReviewCommentId, ReviewCommentTarget,
+    ReviewDecision, ReviewField, ReviewFile, ReviewFreshness, ReviewFreshnessState,
+    ReviewProposalId, ReviewProposalKind, ReviewReceiptOutcome, ReviewReconciliation,
     ReviewSchemaVersion, ReviewSnapshot, ReviewText, WorktreeFileState,
 };
 use automonique_protocol::primitives::Revision;
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,11 +46,49 @@ impl PlatformReviewTarget {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlatformReviewConfirmationCoordinates {
+    Comment {
+        comment_id: String,
+        revision: Revision,
+    },
+    CommentBatch {
+        comments: Vec<(String, Revision)>,
+    },
+    Proposal {
+        kind: ReviewProposalKind,
+        proposal_id: String,
+    },
+    ConflictResolution {
+        proposal_id: String,
+        file_id: String,
+        resolution: ConflictResolution,
+    },
+    Check {
+        check_id: String,
+        revision: Revision,
+    },
+    PullRequestOpen {
+        revision: Revision,
+        title: String,
+    },
+    PullRequestUpdate {
+        pull_request_id: String,
+        revision: Revision,
+        title: String,
+    },
+    PullRequestMerge {
+        pull_request_id: String,
+        revision: Revision,
+        head_revision: String,
+    },
+}
+
 /// One native review mutation prepared against an exact workspace snapshot.
 ///
-/// Construction is deliberately restricted to the two review-authority
-/// actions ShellDeck exposes. Provider-session, Git, CI, and pull-request
-/// action families cannot enter this client seam.
+/// Construction is restricted to actions represented by an exact fresh
+/// snapshot. The preview never manufactures authority: the host resolves the
+/// action against its independently configured review, Git, CI, or PR adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlatformReviewActionPreview {
     target: PlatformReviewTarget,
@@ -90,7 +130,7 @@ impl PlatformReviewActionPreview {
         review: &PlatformReviewSemantic,
     ) -> Result<Self, &'static str> {
         validate_review_target(&target, review)?;
-        if review.review.freshness.state != ReviewFreshnessState::Fresh {
+        if !review.approval_is_actionable() {
             return Err("review status is not fresh");
         }
         let nonce = review_nonce();
@@ -104,20 +144,133 @@ impl PlatformReviewActionPreview {
         )
     }
 
+    pub fn batch_send_comments(
+        target: PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+        comment_ids: &[String],
+    ) -> Result<Self, &'static str> {
+        validate_review_target(&target, review)?;
+        if review.review.freshness.state != ReviewFreshnessState::Fresh || comment_ids.is_empty() {
+            return Err("review comments are not actionable");
+        }
+        let selected = comment_ids.iter().collect::<BTreeSet<_>>();
+        if selected.len() != comment_ids.len() {
+            return Err("review comment selection is duplicated");
+        }
+        let comments = comment_ids
+            .iter()
+            .map(|id| {
+                let comment = review
+                    .comments
+                    .iter()
+                    .find(|comment| &comment.id == id)
+                    .filter(|comment| review.comment_is_batch_actionable(&comment.id))
+                    .ok_or("review comment is not actionable")?;
+                Ok(ReviewCommentTarget::new(
+                    ReviewCommentId::new(comment.id.clone())
+                        .map_err(|_| "review comment identity is invalid")?,
+                    comment.revision,
+                ))
+            })
+            .collect::<Result<Vec<_>, &'static str>>()?;
+        let nonce = review_nonce();
+        Self::review_action(
+            target,
+            review.revision,
+            ReviewAction::BatchSendCommentsToAgent { comments },
+            &nonce,
+        )
+    }
+
+    pub fn apply_proposal(
+        target: PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+        proposal_id: &str,
+    ) -> Result<Self, &'static str> {
+        validate_review_target(&target, review)?;
+        let proposal = review
+            .proposals
+            .iter()
+            .find(|proposal| proposal.id == proposal_id)
+            .filter(|proposal| review.proposal_is_actionable(&proposal.id))
+            .ok_or("review proposal is not actionable")?;
+        let proposal_id = ReviewProposalId::new(proposal.id.clone())
+            .map_err(|_| "review proposal identity is invalid")?;
+        let action = match proposal.kind {
+            ReviewProposalKind::Stage => ReviewAction::Stage { proposal_id },
+            ReviewProposalKind::Unstage => ReviewAction::Unstage { proposal_id },
+            ReviewProposalKind::Commit => ReviewAction::Commit { proposal_id },
+            ReviewProposalKind::ResolveConflict => {
+                return Err("conflict resolution requires an explicit resolution")
+            }
+        };
+        let nonce = review_nonce();
+        Self::review_action(target, review.revision, action, &nonce)
+    }
+
+    pub fn rerun_check(
+        target: PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+        check_id: &str,
+    ) -> Result<Self, &'static str> {
+        validate_review_target(&target, review)?;
+        let check = review
+            .checks
+            .iter()
+            .find(|check| check.id == check_id)
+            .filter(|check| review.check_is_rerunnable(&check.id))
+            .ok_or("review check is not actionable")?;
+        let nonce = review_nonce();
+        Self::review_action(
+            target,
+            review.revision,
+            ReviewAction::RerunCheck {
+                check_id: ReviewCheckId::new(check.id.clone())
+                    .map_err(|_| "review check identity is invalid")?,
+                expected_check_revision: check.freshness.observed_revision,
+            },
+            &nonce,
+        )
+    }
+
+    pub fn merge_pull_request(
+        target: PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+    ) -> Result<Self, &'static str> {
+        validate_review_target(&target, review)?;
+        let pull = &review.pull_request;
+        if !review.pull_request_is_mergeable() {
+            return Err("pull request is not mergeable");
+        }
+        let id = pull
+            .id
+            .as_ref()
+            .ok_or("pull request identity is unavailable")?;
+        let head = pull
+            .head_revision
+            .as_ref()
+            .ok_or("pull request head revision is unavailable")?;
+        let nonce = review_nonce();
+        Self::review_action(
+            target,
+            review.revision,
+            ReviewAction::MergePullRequest {
+                pull_request_id: PullRequestId::new(id.clone())
+                    .map_err(|_| "pull request identity is invalid")?,
+                expected_pull_request_revision: pull.freshness.observed_revision,
+                expected_head_revision: ReviewField::new(head.clone())
+                    .map_err(|_| "pull request head revision is invalid")?,
+            },
+            &nonce,
+        )
+    }
+
     fn review_action(
         target: PlatformReviewTarget,
         expected_revision: Revision,
         action: ReviewAction,
         nonce: &str,
     ) -> Result<Self, &'static str> {
-        if action.required_authority() != ReviewAuthorityKind::Review
-            || !matches!(
-                action,
-                ReviewAction::AddComment { .. } | ReviewAction::ApproveReview { .. }
-            )
-        {
-            return Err("review action family is unsupported");
-        }
         action
             .validate_client_shape()
             .map_err(|_| "review action is invalid")?;
@@ -155,8 +308,100 @@ impl PlatformReviewActionPreview {
     pub const fn kind(&self) -> &'static str {
         match self.action {
             ReviewAction::AddComment { .. } => "add_comment",
+            ReviewAction::SendCommentToAgent { .. } => "send_comment_to_agent",
+            ReviewAction::BatchSendCommentsToAgent { .. } => "batch_send_comments_to_agent",
+            ReviewAction::Stage { .. } => "stage",
+            ReviewAction::Unstage { .. } => "unstage",
+            ReviewAction::Commit { .. } => "commit",
+            ReviewAction::ResolveConflict { .. } => "resolve_conflict",
             ReviewAction::ApproveReview { .. } => "approve_review",
-            _ => "unsupported",
+            ReviewAction::RerunCheck { .. } => "rerun_check",
+            ReviewAction::OpenPullRequest { .. } => "open_pull_request",
+            ReviewAction::UpdatePullRequest { .. } => "update_pull_request",
+            ReviewAction::MergePullRequest { .. } => "merge_pull_request",
+        }
+    }
+
+    /// Exact action coordinates rendered in the confirmation surface.
+    /// Local comment and approval actions use their richer localized forms.
+    #[must_use]
+    pub fn confirmation_coordinates(&self) -> Option<PlatformReviewConfirmationCoordinates> {
+        match &self.action {
+            ReviewAction::AddComment { .. } | ReviewAction::ApproveReview { .. } => None,
+            ReviewAction::SendCommentToAgent {
+                comment_id,
+                expected_comment_revision,
+            } => Some(PlatformReviewConfirmationCoordinates::Comment {
+                comment_id: comment_id.as_str().to_owned(),
+                revision: *expected_comment_revision,
+            }),
+            ReviewAction::BatchSendCommentsToAgent { comments } => {
+                Some(PlatformReviewConfirmationCoordinates::CommentBatch {
+                    comments: comments
+                        .iter()
+                        .map(|comment| {
+                            (
+                                comment.comment_id().as_str().to_owned(),
+                                comment.expected_revision(),
+                            )
+                        })
+                        .collect(),
+                })
+            }
+            ReviewAction::Stage { proposal_id }
+            | ReviewAction::Unstage { proposal_id }
+            | ReviewAction::Commit { proposal_id } => {
+                Some(PlatformReviewConfirmationCoordinates::Proposal {
+                    kind: match &self.action {
+                        ReviewAction::Stage { .. } => ReviewProposalKind::Stage,
+                        ReviewAction::Unstage { .. } => ReviewProposalKind::Unstage,
+                        ReviewAction::Commit { .. } => ReviewProposalKind::Commit,
+                        _ => unreachable!(),
+                    },
+                    proposal_id: proposal_id.as_str().to_owned(),
+                })
+            }
+            ReviewAction::ResolveConflict {
+                proposal_id,
+                file_id,
+                resolution,
+            } => Some(PlatformReviewConfirmationCoordinates::ConflictResolution {
+                proposal_id: proposal_id.as_str().to_owned(),
+                file_id: file_id.as_str().to_owned(),
+                resolution: *resolution,
+            }),
+            ReviewAction::RerunCheck {
+                check_id,
+                expected_check_revision,
+            } => Some(PlatformReviewConfirmationCoordinates::Check {
+                check_id: check_id.as_str().to_owned(),
+                revision: *expected_check_revision,
+            }),
+            ReviewAction::OpenPullRequest {
+                expected_pull_request_revision,
+                title,
+            } => Some(PlatformReviewConfirmationCoordinates::PullRequestOpen {
+                revision: *expected_pull_request_revision,
+                title: title.as_str().to_owned(),
+            }),
+            ReviewAction::UpdatePullRequest {
+                pull_request_id,
+                expected_pull_request_revision,
+                title,
+            } => Some(PlatformReviewConfirmationCoordinates::PullRequestUpdate {
+                pull_request_id: pull_request_id.as_str().to_owned(),
+                revision: *expected_pull_request_revision,
+                title: title.as_str().to_owned(),
+            }),
+            ReviewAction::MergePullRequest {
+                pull_request_id,
+                expected_pull_request_revision,
+                expected_head_revision,
+            } => Some(PlatformReviewConfirmationCoordinates::PullRequestMerge {
+                pull_request_id: pull_request_id.as_str().to_owned(),
+                revision: *expected_pull_request_revision,
+                head_revision: expected_head_revision.as_str().to_owned(),
+            }),
         }
     }
 }
@@ -241,6 +486,80 @@ pub struct PlatformReviewSemantic {
     pub files: Vec<ReviewFileSemantic>,
     pub comments: Vec<ReviewCommentSemantic>,
     pub proposals: Vec<ReviewProposalSemantic>,
+}
+
+impl PlatformReviewSemantic {
+    #[must_use]
+    pub fn approval_is_actionable(&self) -> bool {
+        self.review.authority.kind == ReviewAuthorityKind::Review
+            && self.review.freshness.state == ReviewFreshnessState::Fresh
+            && matches!(
+                self.review.decision,
+                ReviewDecision::Pending | ReviewDecision::ChangesRequested
+            )
+    }
+
+    #[must_use]
+    pub fn comment_is_batch_actionable(&self, comment_id: &str) -> bool {
+        self.review.authority.kind == ReviewAuthorityKind::Review
+            && self.review.freshness.state == ReviewFreshnessState::Fresh
+            && self.comments.iter().any(|comment| {
+                comment.id == comment_id
+                    && matches!(
+                        comment.agent_state,
+                        CommentAgentState::NotSent | CommentAgentState::Refused
+                    )
+            })
+    }
+
+    #[must_use]
+    pub fn proposal_is_actionable(&self, proposal_id: &str) -> bool {
+        self.proposals
+            .iter()
+            .find(|proposal| proposal.id == proposal_id)
+            .is_some_and(|proposal| {
+                matches!(
+                    proposal.kind,
+                    ReviewProposalKind::Stage
+                        | ReviewProposalKind::Unstage
+                        | ReviewProposalKind::Commit
+                ) && proposal
+                    .authority
+                    .as_ref()
+                    .is_some_and(|authority| authority.kind == ReviewAuthorityKind::Git)
+                    && !(matches!(
+                        proposal.kind,
+                        ReviewProposalKind::Stage | ReviewProposalKind::Commit
+                    ) && proposal.files.iter().any(|id| {
+                        self.files.iter().any(|file| {
+                            file.id == *id && file.conflict == ConflictState::Unresolved
+                        })
+                    }))
+            })
+    }
+
+    #[must_use]
+    pub fn check_is_rerunnable(&self, check_id: &str) -> bool {
+        self.checks.iter().any(|check| {
+            check.id == check_id
+                && check.authority.kind == ReviewAuthorityKind::Ci
+                && check.freshness.state == ReviewFreshnessState::Fresh
+                && matches!(
+                    check.state,
+                    CheckState::Passed | CheckState::Failed | CheckState::Cancelled
+                )
+        })
+    }
+
+    #[must_use]
+    pub fn pull_request_is_mergeable(&self) -> bool {
+        self.pull_request.authority.kind == ReviewAuthorityKind::PullRequest
+            && self.pull_request.freshness.state == ReviewFreshnessState::Fresh
+            && self.pull_request.state == PullRequestState::Open
+            && self.pull_request.readiness == MergeReadiness::Ready
+            && self.pull_request.id.is_some()
+            && self.pull_request.head_revision.is_some()
+    }
 }
 
 impl From<&ReviewSnapshot> for PlatformReviewSemantic {
@@ -996,6 +1315,236 @@ mod tests {
             explanation: "review projection is not available".to_owned(),
         });
         assert!(!unavailable.needs_user_action());
+    }
+
+    // SDTEST-1791
+    #[test]
+    fn exact_snapshot_coordinates_prepare_each_supported_external_action_family() {
+        let snapshot = decode_review_snapshot(CANONICAL_FIXTURE).unwrap();
+        let mut semantic = PlatformReviewSemantic::from(&snapshot);
+        semantic.comments[0].agent_state = CommentAgentState::NotSent;
+        let target = PlatformReviewTarget {
+            project: ProjectId::new("project-1").unwrap(),
+            workspace: snapshot.workspace().clone(),
+        };
+        assert!(semantic.approval_is_actionable());
+        let mut non_actionable_approval = semantic.clone();
+        non_actionable_approval.review.decision = ReviewDecision::Approved;
+        assert!(!non_actionable_approval.approval_is_actionable());
+        non_actionable_approval.review.decision = ReviewDecision::Pending;
+        non_actionable_approval.review.freshness.state = ReviewFreshnessState::Stale;
+        assert!(!non_actionable_approval.approval_is_actionable());
+
+        let batch = PlatformReviewActionPreview::batch_send_comments(
+            target.clone(),
+            &semantic,
+            &[semantic.comments[0].id.clone()],
+        )
+        .unwrap();
+        assert_eq!(batch.target(), &target);
+        assert_eq!(batch.expected_revision(), semantic.revision);
+        assert_eq!(
+            batch.action().required_authority(),
+            ReviewAuthorityKind::Review
+        );
+        let ReviewAction::BatchSendCommentsToAgent { comments } = batch.action() else {
+            panic!("batch preview changed action family");
+        };
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].comment_id().as_str(), semantic.comments[0].id);
+        assert_eq!(
+            comments[0].expected_revision(),
+            semantic.comments[0].revision
+        );
+        assert_eq!(
+            batch.confirmation_coordinates(),
+            Some(PlatformReviewConfirmationCoordinates::CommentBatch {
+                comments: vec![(
+                    semantic.comments[0].id.clone(),
+                    semantic.comments[0].revision,
+                )],
+            })
+        );
+
+        let proposal = PlatformReviewActionPreview::apply_proposal(
+            target.clone(),
+            &semantic,
+            &semantic.proposals[0].id,
+        )
+        .unwrap();
+        assert_eq!(proposal.target(), &target);
+        assert_eq!(proposal.expected_revision(), semantic.revision);
+        assert_eq!(
+            proposal.action().required_authority(),
+            ReviewAuthorityKind::Git
+        );
+        let ReviewAction::Commit { proposal_id } = proposal.action() else {
+            panic!("proposal preview changed action family");
+        };
+        assert_eq!(proposal_id.as_str(), semantic.proposals[0].id);
+        assert_eq!(
+            proposal.confirmation_coordinates(),
+            Some(PlatformReviewConfirmationCoordinates::Proposal {
+                kind: ReviewProposalKind::Commit,
+                proposal_id: semantic.proposals[0].id.clone(),
+            })
+        );
+
+        let rerun = PlatformReviewActionPreview::rerun_check(
+            target.clone(),
+            &semantic,
+            &semantic.checks[0].id,
+        )
+        .unwrap();
+        assert_eq!(rerun.target(), &target);
+        assert_eq!(rerun.expected_revision(), semantic.revision);
+        assert_eq!(rerun.action().required_authority(), ReviewAuthorityKind::Ci);
+        let ReviewAction::RerunCheck {
+            check_id,
+            expected_check_revision,
+        } = rerun.action()
+        else {
+            panic!("check preview changed action family");
+        };
+        assert_eq!(check_id.as_str(), semantic.checks[0].id);
+        assert_eq!(
+            *expected_check_revision,
+            semantic.checks[0].freshness.observed_revision
+        );
+        assert_eq!(
+            rerun.confirmation_coordinates(),
+            Some(PlatformReviewConfirmationCoordinates::Check {
+                check_id: semantic.checks[0].id.clone(),
+                revision: semantic.checks[0].freshness.observed_revision,
+            })
+        );
+
+        let merge =
+            PlatformReviewActionPreview::merge_pull_request(target.clone(), &semantic).unwrap();
+        assert_eq!(merge.target(), &target);
+        assert_eq!(merge.expected_revision(), semantic.revision);
+        assert_eq!(
+            merge.action().required_authority(),
+            ReviewAuthorityKind::PullRequest
+        );
+        let ReviewAction::MergePullRequest {
+            pull_request_id,
+            expected_pull_request_revision,
+            expected_head_revision,
+        } = merge.action()
+        else {
+            panic!("merge preview changed action family");
+        };
+        assert_eq!(
+            pull_request_id.as_str(),
+            semantic.pull_request.id.as_deref().unwrap()
+        );
+        assert_eq!(
+            *expected_pull_request_revision,
+            semantic.pull_request.freshness.observed_revision
+        );
+        assert_eq!(
+            expected_head_revision.as_str(),
+            semantic.pull_request.head_revision.as_deref().unwrap()
+        );
+        assert_eq!(
+            merge.confirmation_coordinates(),
+            Some(PlatformReviewConfirmationCoordinates::PullRequestMerge {
+                pull_request_id: semantic.pull_request.id.clone().unwrap(),
+                revision: semantic.pull_request.freshness.observed_revision,
+                head_revision: semantic.pull_request.head_revision.clone().unwrap(),
+            })
+        );
+
+        let mut stale = semantic.clone();
+        stale.pull_request.freshness.state = ReviewFreshnessState::Stale;
+        assert!(PlatformReviewActionPreview::merge_pull_request(target.clone(), &stale).is_err());
+        stale = semantic.clone();
+        stale.checks[0].freshness.state = ReviewFreshnessState::Stale;
+        assert!(PlatformReviewActionPreview::rerun_check(
+            target.clone(),
+            &stale,
+            &stale.checks[0].id,
+        )
+        .is_err());
+        let mut conflicted = semantic.clone();
+        let proposal_file = conflicted.proposals[0].files[0].clone();
+        conflicted
+            .files
+            .iter_mut()
+            .find(|file| file.id == proposal_file)
+            .unwrap()
+            .conflict = ConflictState::Unresolved;
+        assert!(PlatformReviewActionPreview::apply_proposal(
+            target.clone(),
+            &conflicted,
+            &conflicted.proposals[0].id,
+        )
+        .is_err());
+        let mut wrong_authority = semantic.clone();
+        wrong_authority.review.authority.kind = ReviewAuthorityKind::Git;
+        wrong_authority.proposals[0]
+            .authority
+            .as_mut()
+            .unwrap()
+            .kind = ReviewAuthorityKind::Review;
+        wrong_authority.checks[0].authority.kind = ReviewAuthorityKind::Review;
+        wrong_authority.pull_request.authority.kind = ReviewAuthorityKind::Review;
+        assert!(!wrong_authority.approval_is_actionable());
+        assert!(PlatformReviewActionPreview::batch_send_comments(
+            target.clone(),
+            &wrong_authority,
+            &[wrong_authority.comments[0].id.clone()],
+        )
+        .is_err());
+        assert!(PlatformReviewActionPreview::apply_proposal(
+            target.clone(),
+            &wrong_authority,
+            &wrong_authority.proposals[0].id,
+        )
+        .is_err());
+        assert!(PlatformReviewActionPreview::rerun_check(
+            target.clone(),
+            &wrong_authority,
+            &wrong_authority.checks[0].id,
+        )
+        .is_err());
+        assert!(
+            PlatformReviewActionPreview::merge_pull_request(target.clone(), &wrong_authority,)
+                .is_err()
+        );
+        let foreign_target = PlatformReviewTarget {
+            project: target.project.clone(),
+            workspace: WorkContextIdentity::parse_local(
+                WorkContextTargetKind::UserWorkspace,
+                "wc_user_foreign",
+            )
+            .unwrap(),
+        };
+        assert!(
+            PlatformReviewActionPreview::merge_pull_request(foreign_target, &semantic).is_err()
+        );
+        assert!(PlatformReviewActionPreview::apply_proposal(
+            target.clone(),
+            &semantic,
+            "proposal-missing",
+        )
+        .is_err());
+        assert!(PlatformReviewActionPreview::rerun_check(
+            target.clone(),
+            &semantic,
+            "check-missing",
+        )
+        .is_err());
+        assert!(PlatformReviewActionPreview::batch_send_comments(
+            target,
+            &semantic,
+            &[
+                semantic.comments[0].id.clone(),
+                semantic.comments[0].id.clone()
+            ],
+        )
+        .is_err());
     }
 
     // SDTEST-1778
