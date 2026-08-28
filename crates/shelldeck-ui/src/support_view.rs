@@ -1630,7 +1630,7 @@ impl Render for SupportView {
         left = left.child(self.render_filters(cx)).child(list);
 
         let content = match self.section {
-            SupportSection::Home => self.render_home(cx).into_any_element(),
+            SupportSection::Home => self.render_home(compact, cx).into_any_element(),
             SupportSection::Tickets if compact && self.selected_id.is_some() => div()
                 .flex_1()
                 .flex()
