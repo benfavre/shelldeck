@@ -182,6 +182,127 @@ impl From<&ReviewSnapshot> for PlatformReviewSemantic {
     }
 }
 
+/// Canonical cross-client keys consumed by the read-only review UI.
+///
+/// The keys deliberately contain no localized copy and no action capability.
+/// They are a lossless presentation projection of the typed protocol enums.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformReviewRenderSemantic {
+    pub source_revision: Revision,
+    pub attention: ReviewAttentionRenderSemantic,
+    pub review: ReviewFreshRenderSemantic,
+    pub checks: Vec<ReviewIdentifiedFreshRenderSemantic>,
+    pub pull_request: ReviewFreshRenderSemantic,
+    pub delivery: ReviewFreshRenderSemantic,
+    pub previews: Vec<ReviewIdentifiedRenderSemantic>,
+}
+
+impl From<&PlatformReviewSemantic> for PlatformReviewRenderSemantic {
+    fn from(review: &PlatformReviewSemantic) -> Self {
+        Self {
+            source_revision: review.revision,
+            attention: ReviewAttentionRenderSemantic {
+                semantic_key: format!("attention.{}", review.attention.state.as_str()),
+                reason_key: review
+                    .attention
+                    .reason
+                    .map(|reason| format!("attention_reason.{}", reason.as_str())),
+                source_revision: review.attention.source_revision,
+            },
+            review: fresh_render(
+                format!("review.{}", review.review.decision.as_str()),
+                review.review.freshness,
+            ),
+            checks: review
+                .checks
+                .iter()
+                .map(|check| ReviewIdentifiedFreshRenderSemantic {
+                    id: check.id.clone(),
+                    semantic: fresh_render(
+                        format!(
+                            "check.{}.{}",
+                            check.state.as_str(),
+                            if check.required {
+                                "required"
+                            } else {
+                                "optional"
+                            }
+                        ),
+                        check.freshness,
+                    ),
+                })
+                .collect(),
+            pull_request: fresh_render(
+                format!(
+                    "pull_request.{}.{}",
+                    review.pull_request.state.as_str(),
+                    review.pull_request.readiness.as_str()
+                ),
+                review.pull_request.freshness,
+            ),
+            delivery: fresh_render(
+                format!("delivery.{}", review.delivery.state.as_str()),
+                review.delivery.freshness,
+            ),
+            previews: review
+                .files
+                .iter()
+                .map(|file| ReviewIdentifiedRenderSemantic {
+                    id: file.id.clone(),
+                    semantic_key: format!(
+                        "preview.{}.{}",
+                        file.preview.kind.as_str(),
+                        if file.preview.sanitized {
+                            "sanitized"
+                        } else {
+                            "raw"
+                        }
+                    ),
+                    source_revision: review.revision,
+                })
+                .collect(),
+        }
+    }
+}
+
+fn fresh_render(
+    semantic_key: String,
+    freshness: ReviewFreshnessSemantic,
+) -> ReviewFreshRenderSemantic {
+    ReviewFreshRenderSemantic {
+        semantic_key,
+        freshness_key: format!("freshness.{}", freshness.state.as_str()),
+        source_revision: freshness.observed_revision,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewAttentionRenderSemantic {
+    pub semantic_key: String,
+    pub reason_key: Option<String>,
+    pub source_revision: Option<Revision>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewFreshRenderSemantic {
+    pub semantic_key: String,
+    pub freshness_key: String,
+    pub source_revision: Revision,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewIdentifiedFreshRenderSemantic {
+    pub id: String,
+    pub semantic: ReviewFreshRenderSemantic,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewIdentifiedRenderSemantic {
+    pub id: String,
+    pub semantic_key: String,
+    pub source_revision: Revision,
+}
+
 fn file(file: &ReviewFile) -> ReviewFileSemantic {
     ReviewFileSemantic {
         id: file.id().as_str().to_owned(),
@@ -361,9 +482,234 @@ pub struct ReviewProposalSemantic {
 mod tests {
     use super::*;
     use automonique_protocol::platform_v2_review_api::decode_review_snapshot;
+    use serde::Deserialize;
+    use std::collections::BTreeSet;
 
     const CANONICAL_FIXTURE: &[u8] =
         include_bytes!("../../tests/fixtures/platform-v2-review-v2.json");
+    const RENDER_CORPUS: &[u8] =
+        include_bytes!("../../tests/fixtures/platform-v2-render-conformance-v1.json");
+
+    #[derive(Deserialize)]
+    struct RenderCorpus {
+        schema: String,
+        version: String,
+        cases: Vec<RenderCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderCase {
+        id: String,
+        input: RenderInput,
+        expected: RenderExpected,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderInput {
+        revision: String,
+        attention: RenderAttentionInput,
+        review: RenderReviewInput,
+        checks: Vec<RenderCheckInput>,
+        pull_request: RenderPullRequestInput,
+        delivery: RenderDeliveryInput,
+        files: Vec<RenderFileInput>,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderAttentionInput {
+        state: String,
+        reason: Option<String>,
+        unread: String,
+        source_revision: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderReviewInput {
+        decision: String,
+        freshness: RenderFreshnessInput,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderCheckInput {
+        id: String,
+        state: String,
+        required: bool,
+        freshness: RenderFreshnessInput,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderPullRequestInput {
+        state: String,
+        readiness: String,
+        freshness: RenderFreshnessInput,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderDeliveryInput {
+        state: String,
+        freshness: RenderFreshnessInput,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderFileInput {
+        id: String,
+        preview: RenderPreviewInput,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderPreviewInput {
+        kind: String,
+        sanitized: bool,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderFreshnessInput {
+        state: String,
+        observed_revision: String,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderExpected {
+        source_revision: String,
+        attention: RenderAttentionExpected,
+        review: RenderFreshExpected,
+        checks: Vec<RenderIdentifiedFreshExpected>,
+        pull_request: RenderFreshExpected,
+        delivery: RenderFreshExpected,
+        previews: Vec<RenderIdentifiedExpected>,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderAttentionExpected {
+        semantic_key: String,
+        reason_key: Option<String>,
+        source_revision: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderFreshExpected {
+        semantic_key: String,
+        freshness_key: String,
+        source_revision: String,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderIdentifiedFreshExpected {
+        id: String,
+        #[serde(flatten)]
+        semantic: RenderFreshExpected,
+    }
+
+    #[derive(Deserialize)]
+    struct RenderIdentifiedExpected {
+        id: String,
+        semantic_key: String,
+        source_revision: String,
+    }
+
+    fn revision(value: &str) -> Revision {
+        Revision::new(value.parse().unwrap()).unwrap()
+    }
+
+    fn render_freshness(value: &RenderFreshnessInput) -> ReviewFreshnessSemantic {
+        ReviewFreshnessSemantic {
+            state: ReviewFreshnessState::parse(&value.state).unwrap(),
+            observed_revision: revision(&value.observed_revision),
+            observed_at_ms: 0,
+        }
+    }
+
+    fn render_authority(kind: ReviewAuthorityKind) -> ReviewAuthoritySemantic {
+        ReviewAuthoritySemantic {
+            kind,
+            id: "render-corpus".to_owned(),
+        }
+    }
+
+    fn semantic_from_render_input(input: &RenderInput) -> PlatformReviewSemantic {
+        let state = AttentionState::parse(&input.attention.state).unwrap();
+        PlatformReviewSemantic {
+            schema: ReviewSchemaVersion::V2,
+            workspace_kind: WorkContextTargetKind::UserWorkspace,
+            workspace_id: "wc_render_corpus".to_owned(),
+            revision: revision(&input.revision),
+            attention: ReviewAttentionSemantic {
+                state,
+                reason: input
+                    .attention
+                    .reason
+                    .as_deref()
+                    .map(AttentionReason::parse)
+                    .transpose()
+                    .unwrap(),
+                source_revision: input.attention.source_revision.as_deref().map(revision),
+                unread: input.attention.unread.parse().unwrap(),
+                needs_user_action: state == AttentionState::NeedsYou,
+            },
+            attention_events: Vec::new(),
+            review: ReviewStatusSemantic {
+                decision: ReviewDecision::parse(&input.review.decision).unwrap(),
+                authority: render_authority(ReviewAuthorityKind::Review),
+                freshness: render_freshness(&input.review.freshness),
+            },
+            checks: input
+                .checks
+                .iter()
+                .map(|check| ReviewCheckSemantic {
+                    id: check.id.clone(),
+                    state: CheckState::parse(&check.state).unwrap(),
+                    required: check.required,
+                    authority: render_authority(ReviewAuthorityKind::Ci),
+                    freshness: render_freshness(&check.freshness),
+                })
+                .collect(),
+            pull_request: PullRequestSemantic {
+                id: None,
+                state: PullRequestState::parse(&input.pull_request.state).unwrap(),
+                readiness: MergeReadiness::parse(&input.pull_request.readiness).unwrap(),
+                head_revision: None,
+                authority: render_authority(ReviewAuthorityKind::PullRequest),
+                freshness: render_freshness(&input.pull_request.freshness),
+            },
+            delivery: DeliverySemantic {
+                id: None,
+                state: DeliveryState::parse(&input.delivery.state).unwrap(),
+                authority: render_authority(ReviewAuthorityKind::Delivery),
+                freshness: render_freshness(&input.delivery.freshness),
+            },
+            files: input
+                .files
+                .iter()
+                .map(|file| ReviewFileSemantic {
+                    id: file.id.clone(),
+                    path: file.id.clone(),
+                    change: DiffChangeKind::Modified,
+                    worktree: WorktreeFileState::Unstaged,
+                    conflict: ConflictState::None,
+                    preview: ReviewPreviewSemantic {
+                        kind: PreviewKind::parse(&file.preview.kind).unwrap(),
+                        media_type: None,
+                        byte_size: None,
+                        width: None,
+                        height: None,
+                        sanitized: file.preview.sanitized,
+                    },
+                    hunks: Vec::new(),
+                })
+                .collect(),
+            comments: Vec::new(),
+            proposals: Vec::new(),
+        }
+    }
+
+    fn assert_fresh_render(actual: &ReviewFreshRenderSemantic, expected: &RenderFreshExpected) {
+        assert_eq!(actual.semantic_key, expected.semantic_key);
+        assert_eq!(actual.freshness_key, expected.freshness_key);
+        assert_eq!(
+            actual.source_revision.get().to_string(),
+            expected.source_revision
+        );
+    }
 
     // SDTEST-1772
     #[test]
@@ -483,5 +829,141 @@ mod tests {
             explanation: "review projection is not available".to_owned(),
         });
         assert!(!unavailable.needs_user_action());
+    }
+
+    // SDTEST-1778
+    #[test]
+    fn canonical_render_corpus_projects_every_cross_client_semantic_key() {
+        let canonical = automonique_protocol::wire::parse_canonical(RENDER_CORPUS).unwrap();
+        assert_eq!(canonical.to_canonical_bytes(), RENDER_CORPUS);
+        let corpus: RenderCorpus = serde_json::from_slice(RENDER_CORPUS).unwrap();
+        assert_eq!(corpus.schema, "automonique.render-conformance/v1");
+        assert_eq!(corpus.version, "1");
+
+        let mut attention = BTreeSet::new();
+        let mut review = BTreeSet::new();
+        let mut checks = BTreeSet::new();
+        let mut pull_requests = BTreeSet::new();
+        let mut readiness = BTreeSet::new();
+        let mut deliveries = BTreeSet::new();
+        let mut previews = BTreeSet::new();
+        let mut freshness = BTreeSet::new();
+
+        for case in corpus.cases {
+            assert_eq!(case.id, case.input.attention.state);
+            let semantic = semantic_from_render_input(&case.input);
+            let actual = PlatformReviewRenderSemantic::from(&semantic);
+
+            assert_eq!(
+                actual.source_revision.get().to_string(),
+                case.expected.source_revision
+            );
+            assert_eq!(
+                actual.attention.semantic_key,
+                case.expected.attention.semantic_key
+            );
+            assert_eq!(
+                actual.attention.reason_key,
+                case.expected.attention.reason_key
+            );
+            assert_eq!(
+                actual
+                    .attention
+                    .source_revision
+                    .map(|value| value.get().to_string()),
+                case.expected.attention.source_revision
+            );
+            assert_fresh_render(&actual.review, &case.expected.review);
+            assert_eq!(actual.checks.len(), case.expected.checks.len());
+            for (actual, expected) in actual.checks.iter().zip(case.expected.checks.iter()) {
+                assert_eq!(actual.id, expected.id);
+                assert_fresh_render(&actual.semantic, &expected.semantic);
+            }
+            assert_fresh_render(&actual.pull_request, &case.expected.pull_request);
+            assert_fresh_render(&actual.delivery, &case.expected.delivery);
+            assert_eq!(actual.previews.len(), case.expected.previews.len());
+            for (actual, expected) in actual.previews.iter().zip(case.expected.previews.iter()) {
+                assert_eq!(actual.id, expected.id);
+                assert_eq!(actual.semantic_key, expected.semantic_key);
+                assert_eq!(
+                    actual.source_revision.get().to_string(),
+                    expected.source_revision
+                );
+            }
+
+            attention.insert(case.input.attention.state);
+            review.insert(case.input.review.decision);
+            checks.extend(case.input.checks.iter().map(|value| value.state.clone()));
+            pull_requests.insert(case.input.pull_request.state);
+            readiness.insert(case.input.pull_request.readiness);
+            deliveries.insert(case.input.delivery.state);
+            previews.extend(case.input.files.into_iter().map(|value| value.preview.kind));
+            freshness.insert(case.input.review.freshness.state);
+            freshness.extend(
+                case.input
+                    .checks
+                    .iter()
+                    .map(|value| value.freshness.state.clone()),
+            );
+            freshness.insert(case.input.pull_request.freshness.state);
+            freshness.insert(case.input.delivery.freshness.state);
+        }
+
+        assert_eq!(
+            attention,
+            AttentionState::ALL
+                .map(AttentionState::as_str)
+                .map(str::to_owned)
+                .into()
+        );
+        assert_eq!(
+            review,
+            ReviewDecision::ALL
+                .map(ReviewDecision::as_str)
+                .map(str::to_owned)
+                .into()
+        );
+        assert_eq!(
+            checks,
+            CheckState::ALL
+                .map(CheckState::as_str)
+                .map(str::to_owned)
+                .into()
+        );
+        assert_eq!(
+            pull_requests,
+            PullRequestState::ALL
+                .map(PullRequestState::as_str)
+                .map(str::to_owned)
+                .into()
+        );
+        assert_eq!(
+            readiness,
+            MergeReadiness::ALL
+                .map(MergeReadiness::as_str)
+                .map(str::to_owned)
+                .into()
+        );
+        assert_eq!(
+            deliveries,
+            DeliveryState::ALL
+                .map(DeliveryState::as_str)
+                .map(str::to_owned)
+                .into()
+        );
+        assert_eq!(
+            previews,
+            PreviewKind::ALL
+                .map(PreviewKind::as_str)
+                .map(str::to_owned)
+                .into()
+        );
+        assert_eq!(
+            freshness,
+            ReviewFreshnessState::ALL
+                .map(ReviewFreshnessState::as_str)
+                .map(str::to_owned)
+                .into()
+        );
     }
 }
