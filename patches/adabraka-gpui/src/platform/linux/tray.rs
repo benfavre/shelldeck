@@ -2,6 +2,11 @@
 
 use std::sync::{Arc, Mutex};
 
+// ShellDeck patch: SDPATCH-117 — ksni 0.3 moved synchronous tray handles
+// behind its explicit blocking adapter; keep GPUI's existing synchronous
+// platform contract without retaining ksni 0.2's Clap 2 build chain.
+use ksni::blocking::{Handle as BlockingHandle, TrayMethods as _};
+
 use crate::platform::TrayMenuItem;
 use crate::{SharedString, TrayIconEvent};
 
@@ -17,6 +22,11 @@ struct GpuiTray {
 }
 
 impl ksni::Tray for GpuiTray {
+    // ShellDeck patch: SDPATCH-117 — ksni 0.3 requires a stable service id.
+    fn id(&self) -> String {
+        "gpui-tray".to_string()
+    }
+
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         if self.icon_data.is_empty() {
             return vec![];
@@ -131,7 +141,8 @@ fn convert_menu_item(
 }
 
 pub struct LinuxTray {
-    handle: Option<ksni::Handle<GpuiTray>>,
+    // ShellDeck patch: SDPATCH-117 — store the synchronous 0.3 adapter.
+    handle: Option<BlockingHandle<GpuiTray>>,
     action_callback: TrayActionCallback,
     click_callback: TrayClickCallback,
 }
@@ -156,9 +167,9 @@ impl LinuxTray {
             action_callback: self.action_callback.clone(),
             click_callback: self.click_callback.clone(),
         };
-        let service = ksni::TrayService::new(tray);
-        self.handle = Some(service.handle());
-        service.spawn();
+        // ShellDeck patch: SDPATCH-117 — the 0.3 blocking adapter owns the
+        // service thread and returns its handle directly.
+        self.handle = tray.spawn().ok();
     }
 
     pub fn set_icon(&mut self, icon_data: Option<&[u8]>) {
@@ -204,7 +215,9 @@ impl LinuxTray {
 
     pub fn shutdown(&mut self) {
         if let Some(handle) = self.handle.take() {
-            handle.shutdown();
+            // ShellDeck patch: SDPATCH-117 — 0.3 shutdown is an awaiter even
+            // through the blocking adapter, so finish it before dropping.
+            handle.shutdown().wait();
         }
     }
 }
