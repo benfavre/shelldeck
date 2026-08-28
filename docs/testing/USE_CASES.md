@@ -2637,8 +2637,26 @@ Changing the active Dev destination also clears those dropdown owners, so an
 action selected from the palette cannot leave its former menu attached to the
 new surface.
 
+### SDUC-488 — Site scope labels disclose every truncation
+
+The titlebar site chip, site-switcher rows, and Manage-area links remain bounded
+inside their available flex space. A label that cannot fit ends with a visible
+ellipsis rather than an unexplained fragment. The complete unmodified label is
+retained as the tooltip for every interactive row; the titlebar chip keeps the
+same full-scope tooltip. Short labels remain unchanged, and truncation follows
+Unicode scalar boundaries instead of slicing encoded text.
+
+The explicit source-level ellipsis is intentional: GPUI can clip flex text after
+layout without painting its configured overflow marker. Layout truncation remains
+as a second containment layer, while the source marker guarantees that the user
+can see that more text exists.
+
 ## Change log
 
+- **2026-08-28** — Added SDUC-488 and SDTEST-1739: long labels in the titlebar
+  site chip, site rows, section heading, and Manage-area rows now show an
+  explicit Unicode-safe ellipsis and expose their untouched value in tooltips.
+  The switcher was replayed at 600 and 1,210 px on the real Manage directory.
 - **2026-08-28** — Amended SDUC-414 and added SDTEST-1738: compact Assistant
   Sheet titles gain a source-level visible ellipsis because GPUI can clip a
   multi-run `StyledText` without painting its CSS ellipsis; short and wide

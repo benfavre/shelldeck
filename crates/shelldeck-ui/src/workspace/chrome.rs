@@ -6,6 +6,16 @@ fn close_titlebar_menu_flags(account: &mut bool, mode: &mut bool, site: &mut boo
     *site = false;
 }
 
+fn ellipsize_site_switcher_label(label: &str, max_chars: usize) -> String {
+    if label.chars().count() <= max_chars {
+        return label.to_string();
+    }
+
+    let mut visible: String = label.chars().take(max_chars.saturating_sub(1)).collect();
+    visible.push('\u{2026}');
+    visible
+}
+
 impl Workspace {
     pub(super) fn close_titlebar_menus(&mut self) {
         close_titlebar_menu_flags(
@@ -305,15 +315,17 @@ impl Workspace {
                     cx.notify();
                 }));
             if let Some(label) = active_site_label {
+                let visible_label = ellipsize_site_switcher_label(&label, 18);
                 chip = chip
                     .child(
                         div()
                             .max_w(px(120.0))
-                            .overflow_hidden()
+                            .min_w(px(0.0))
+                            .truncate()
                             .text_size(px(11.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(title_color)
-                            .child(label),
+                            .child(visible_label),
                     )
                     .child(
                         svg()
@@ -950,6 +962,11 @@ impl Workspace {
 
         let row =
             |id: ElementId, label: String, active: bool, badge: Option<String>| -> Stateful<Div> {
+                let tooltip_label: SharedString = label.clone().into();
+                let visible_label = ellipsize_site_switcher_label(
+                    &label,
+                    if badge.is_some() || active { 29 } else { 39 },
+                );
                 let mut r = div()
                     .id(id)
                     .flex()
@@ -959,18 +976,25 @@ impl Workspace {
                     .py(px(6.0))
                     .rounded(px(6.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(ShellDeckColors::hover_bg()));
+                    .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| WorkspaceTooltip {
+                            label: tooltip_label.clone(),
+                        })
+                        .into()
+                    });
                 if active {
                     r = r.bg(ShellDeckColors::selected_bg());
                 }
                 r = r.child(
                     div()
                         .flex_1()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
+                        .min_w(px(0.0))
+                        .w_full()
+                        .truncate()
                         .text_size(px(12.0))
                         .text_color(ShellDeckColors::text_primary())
-                        .child(label),
+                        .child(visible_label),
                 );
                 if let Some(b) = badge {
                     r = r.child(
@@ -1085,12 +1109,16 @@ impl Workspace {
         // "Ouvrir dans Manage" — area links for the active site.
         if let Some(active_site) = self.active_site_info() {
             if !payload.areas.is_empty() {
+                let active_label = ellipsize_site_switcher_label(&active_site.display_label(), 20);
                 panel = panel.child(Self::render_site_section_header(&format!(
                     "OUVRIR DANS MANAGE — {}",
-                    active_site.display_label()
+                    active_label
                 )));
                 for area in &payload.areas {
                     let path = area.path.clone();
+                    let area_label = area.label.clone();
+                    let area_tooltip: SharedString = area_label.clone().into();
+                    let visible_area_label = ellipsize_site_switcher_label(&area_label, 39);
                     panel = panel.child(
                         div()
                             .id(ElementId::from(SharedString::from(format!(
@@ -1105,14 +1133,21 @@ impl Workspace {
                             .rounded(px(6.0))
                             .cursor_pointer()
                             .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| WorkspaceTooltip {
+                                    label: area_tooltip.clone(),
+                                })
+                                .into()
+                            })
                             .child(
                                 div()
                                     .flex_1()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
+                                    .min_w(px(0.0))
+                                    .w_full()
+                                    .truncate()
                                     .text_size(px(12.0))
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child(area.label.clone()),
+                                    .child(visible_area_label),
                             )
                             .child(
                                 div()
@@ -1327,7 +1362,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::close_titlebar_menu_flags;
+    use super::{close_titlebar_menu_flags, ellipsize_site_switcher_label};
 
     // SDTEST-1737 — NAV-07 / SDUC-487. Opening a global overlay or changing
     // destination clears every titlebar popover owner in one operation.
@@ -1340,5 +1375,22 @@ mod tests {
             close_titlebar_menu_flags(&mut account, &mut mode, &mut site);
             assert!(!account && !mode && !site);
         }
+    }
+
+    // SDTEST-1739 — NAV-08. GPUI's flex clipping can hide its paint-time
+    // ellipsis, so the visible switcher label carries an explicit marker while
+    // the untouched source remains available to the row tooltip.
+    #[test]
+    fn site_switcher_labels_keep_an_explicit_ellipsis() {
+        let full = "ACTIV Communication — Company manager";
+        assert_eq!(
+            ellipsize_site_switcher_label(full, 29),
+            "ACTIV Communication — Compan…"
+        );
+        assert_eq!(
+            ellipsize_site_switcher_label("Site principal", 29),
+            "Site principal"
+        );
+        assert_eq!(ellipsize_site_switcher_label("ééé", 2), "é…");
     }
 }
