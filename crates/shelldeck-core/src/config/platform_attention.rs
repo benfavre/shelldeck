@@ -6,7 +6,6 @@
 //! pane, tab, terminal, path, or other client-local target.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use automonique_platform_client::platform_v2_client::AttentionReadResult;
@@ -26,6 +25,10 @@ use uuid::Uuid;
 
 use super::app_config::AppConfig;
 use super::workspace_catalog::PlatformV2Mapping;
+use crate::workspace_review::storage::{
+    bounded_descriptor_read, ensure_private_directory_io, lock_path, open_lock_file,
+    secure_atomic_write,
+};
 
 /// Same per-workspace ceiling as the authoritative hosted cockpit.
 pub const MAX_ATTENTION_SOURCES_PER_WORKSPACE: usize = 64;
@@ -35,6 +38,7 @@ pub const MAX_ATTENTION_INVENTORY_RECORDS: usize = 512;
 pub const MAX_ATTENTION_LOCAL_ENTRIES: usize = 4_096;
 const MAX_ATTENTION_LOCAL_FILE_BYTES: u64 = 1024 * 1024;
 const ATTENTION_LOCAL_SCHEMA: u16 = 1;
+static ATTENTION_LOCAL_STORE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Namespace reserved for ShellDeck's presentation-only attention UUIDs.
 ///
@@ -306,6 +310,12 @@ pub enum AttentionApplyOutcome {
     Refused,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AttentionReplacementMode {
+    Continuous,
+    AuthenticatedCompleteBaseline,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlatformAttentionBoard {
     inventory: AttentionSourceInventory,
@@ -394,17 +404,62 @@ impl PlatformAttentionBoard {
         }
     }
 
+    /// Install a complete snapshot returned directly by an authenticated
+    /// Platform attention read as a fresh baseline or an explicit gap resync.
+    ///
+    /// Unlike [`Self::apply_read`], this operation may begin above revision one
+    /// and may bridge a missed predecessor. It still rejects rollback,
+    /// conflicting replay, regressing observation/item revisions, wrong
+    /// source/target, and presentation identity collisions. Callers must not
+    /// pass cached, synthesized, or locally assembled snapshots here.
+    pub fn apply_authenticated_baseline_read(
+        &mut self,
+        requested_source: &AttentionSource,
+        result: AttentionReadResult,
+    ) -> Result<AttentionApplyOutcome, AttentionError> {
+        match result {
+            AttentionReadResult::Snapshot(snapshot) => {
+                if snapshot.source() != requested_source {
+                    return Err(AttentionError::SourceMismatch);
+                }
+                self.replace_source_with_mode(
+                    *snapshot,
+                    AttentionUiItemId::from_authoritative_key,
+                    AttentionReplacementMode::AuthenticatedCompleteBaseline,
+                )
+            }
+            AttentionReadResult::Refused(refusal) => {
+                self.mark_refused(requested_source, &refusal)?;
+                Ok(AttentionApplyOutcome::Refused)
+            }
+        }
+    }
+
     pub fn replace_source(
         &mut self,
         snapshot: AttentionSourceSnapshot,
     ) -> Result<AttentionApplyOutcome, AttentionError> {
-        self.replace_source_with(snapshot, AttentionUiItemId::from_authoritative_key)
+        self.replace_source_with_mode(
+            snapshot,
+            AttentionUiItemId::from_authoritative_key,
+            AttentionReplacementMode::Continuous,
+        )
     }
 
+    #[cfg(test)]
     fn replace_source_with(
         &mut self,
         snapshot: AttentionSourceSnapshot,
         projector: impl Fn(&AttentionItemKey) -> AttentionUiItemId,
+    ) -> Result<AttentionApplyOutcome, AttentionError> {
+        self.replace_source_with_mode(snapshot, projector, AttentionReplacementMode::Continuous)
+    }
+
+    fn replace_source_with_mode(
+        &mut self,
+        snapshot: AttentionSourceSnapshot,
+        projector: impl Fn(&AttentionItemKey) -> AttentionUiItemId,
+        mode: AttentionReplacementMode,
     ) -> Result<AttentionApplyOutcome, AttentionError> {
         let source = snapshot.source().clone();
         let current_slot = self
@@ -436,11 +491,18 @@ impl PlatformAttentionBoard {
                 self.ui_index = ui_index;
                 return Ok(AttentionApplyOutcome::AvailabilityRestored);
             }
-            current
-                .snapshot
-                .validate_successor(&snapshot)
-                .map_err(|_| AttentionError::InvalidSuccessor)?;
-        } else if snapshot.revision() != Revision::FIRST {
+            match mode {
+                AttentionReplacementMode::Continuous => current
+                    .snapshot
+                    .validate_successor(&snapshot)
+                    .map_err(|_| AttentionError::InvalidSuccessor)?,
+                AttentionReplacementMode::AuthenticatedCompleteBaseline => {
+                    validate_baseline_advance(&current.snapshot, &snapshot)?;
+                }
+            }
+        } else if mode == AttentionReplacementMode::Continuous
+            && snapshot.revision() != Revision::FIRST
+        {
             return Err(AttentionError::InitialRevisionRequired);
         }
 
@@ -553,6 +615,37 @@ impl PlatformAttentionBoard {
             .items
             .get(key)
     }
+}
+
+fn validate_baseline_advance(
+    current: &AttentionSourceSnapshot,
+    next: &AttentionSourceSnapshot,
+) -> Result<(), AttentionError> {
+    if next.source() != current.source()
+        || next.project() != current.project()
+        || next.user_workspace() != current.user_workspace()
+        || next.revision() <= current.revision()
+        || next
+            .previous_revision()
+            .is_none_or(|previous| previous < current.revision())
+        || next.observed_at_ms() < current.observed_at_ms()
+    {
+        return Err(AttentionError::InvalidBaseline);
+    }
+    for next_item in next.items() {
+        let current_item = current
+            .items()
+            .iter()
+            .find(|item| item.id() == next_item.id());
+        if current_item.is_some_and(|current_item| {
+            next_item.revision() < current_item.revision()
+                || next_item.observed_at_ms() < current_item.observed_at_ms()
+                || (next_item.revision() == current_item.revision() && next_item != current_item)
+        }) {
+            return Err(AttentionError::InvalidBaseline);
+        }
+    }
+    Ok(())
 }
 
 fn build_ui_index(
@@ -695,12 +788,20 @@ pub struct AttentionLocalStateStore {
 impl AttentionLocalStateStore {
     pub fn open_default() -> Result<Self, AttentionLocalStateError> {
         Self::open(
-            AppConfig::config_dir().join("platform-attention-local-v1.json"),
+            AppConfig::config_dir()
+                .join("platform-attention")
+                .join("state")
+                .join("local-v1.json"),
             MAX_ATTENTION_LOCAL_ENTRIES,
         )
     }
 
     pub fn open(path: PathBuf, capacity: usize) -> Result<Self, AttentionLocalStateError> {
+        AttentionLocalState::with_capacity(capacity)?;
+        let _process_guard = ATTENTION_LOCAL_STORE_LOCK.lock();
+        prepare_local_storage(&path)?;
+        let lock = open_lock_file(&lock_path(&path))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
         let state = load_local_state(&path, capacity)?;
         Ok(Self { path, state })
     }
@@ -725,11 +826,13 @@ impl AttentionLocalStateStore {
         if !authoritative_unread {
             return Ok(NotificationReservation::Ineligible);
         }
-        if self.state.is_notified(&key) {
-            return Ok(NotificationReservation::AlreadyReserved);
-        }
-        self.transact(|state| state.mark_notified(key))?;
-        Ok(NotificationReservation::Reserved)
+        self.transact(|state| {
+            if state.is_notified(&key) {
+                return Ok(NotificationReservation::AlreadyReserved);
+            }
+            state.mark_notified(key)?;
+            Ok(NotificationReservation::Reserved)
+        })
     }
 
     /// Prune superseded/removed revisions only after accepting a complete
@@ -759,12 +862,17 @@ impl AttentionLocalStateStore {
         &mut self,
         update: impl FnOnce(&mut AttentionLocalState) -> Result<T, AttentionLocalStateError>,
     ) -> Result<T, AttentionLocalStateError> {
-        let mut candidate = self.state.clone();
+        let _process_guard = ATTENTION_LOCAL_STORE_LOCK.lock();
+        prepare_local_storage(&self.path)?;
+        let lock = open_lock_file(&lock_path(&self.path))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        let disk = load_local_state(&self.path, self.state.capacity)?;
+        let mut candidate = disk.clone();
         let outcome = update(&mut candidate)?;
-        if candidate != self.state {
+        if candidate != disk {
             persist_local_state(&self.path, &candidate)?;
-            self.state = candidate;
         }
+        self.state = candidate;
         Ok(outcome)
     }
 }
@@ -792,17 +900,9 @@ fn load_local_state(
     capacity: usize,
 ) -> Result<AttentionLocalState, AttentionLocalStateError> {
     let mut state = AttentionLocalState::with_capacity(capacity)?;
-    if !path.exists() {
+    let Some(bytes) = bounded_descriptor_read(path, MAX_ATTENTION_LOCAL_FILE_BYTES)? else {
         return Ok(state);
-    }
-    let metadata = std::fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() || metadata.len() > MAX_ATTENTION_LOCAL_FILE_BYTES {
-        return Err(AttentionLocalStateError::DocumentInvalid);
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(MAX_ATTENTION_LOCAL_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)?;
+    };
     if bytes.len() as u64 > MAX_ATTENTION_LOCAL_FILE_BYTES {
         return Err(AttentionLocalStateError::DocumentInvalid);
     }
@@ -850,11 +950,12 @@ fn persist_local_state(
     path: &Path,
     state: &AttentionLocalState,
 ) -> Result<(), AttentionLocalStateError> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
+    let bytes = encode_local_state(state)?;
+    secure_atomic_write(path, &bytes)?;
+    Ok(())
+}
+
+fn encode_local_state(state: &AttentionLocalState) -> Result<Vec<u8>, AttentionLocalStateError> {
     let entries = state
         .entries
         .iter()
@@ -872,7 +973,20 @@ fn persist_local_state(
         entries,
     };
     let bytes = serde_json::to_vec_pretty(&document)?;
-    crate::util::atomic_write(path, &bytes)?;
+    if bytes.len() as u64 > MAX_ATTENTION_LOCAL_FILE_BYTES {
+        return Err(AttentionLocalStateError::DocumentInvalid);
+    }
+    Ok(bytes)
+}
+
+fn prepare_local_storage(path: &Path) -> Result<(), AttentionLocalStateError> {
+    let parent = path.parent().ok_or_else(|| {
+        AttentionLocalStateError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "attention local-state path has no parent",
+        ))
+    })?;
+    ensure_private_directory_io(parent)?;
     Ok(())
 }
 
@@ -906,6 +1020,8 @@ pub enum AttentionError {
     InitialRevisionRequired,
     #[error("attention source successor is stale or discontinuous")]
     InvalidSuccessor,
+    #[error("attention complete baseline rolls back retained source or item custody")]
+    InvalidBaseline,
     #[error("same attention revision has different content")]
     ConflictingReplay,
     #[error("attention UI identity collides with another raw source/item tuple")]
@@ -1103,13 +1219,12 @@ mod tests {
     }
 
     fn temp_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
+        let base = std::env::temp_dir().join(format!(
             "shelldeck-platform-attention-{}-{}",
             std::process::id(),
             TEMP_NONCE.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join(name)
+        base.join("private").join("state").join(name)
     }
 
     // SDTEST-1816 — SDUC-493
@@ -1168,6 +1283,45 @@ mod tests {
     #[test]
     fn sdtest_1817_snapshot_replacement_is_atomic_and_retains_revision_custody() {
         let orchestration = source(AttentionSourceKind::Orchestration, "workspace-1");
+        let current_after_restart = snapshot(
+            orchestration.clone(),
+            7,
+            Some(6),
+            vec![item("restart-baseline", 7, true)],
+        );
+        let mut fresh = PlatformAttentionBoard::new(inventory(ReviewAttentionPresence::Present));
+        assert!(matches!(
+            fresh.apply_read(
+                &orchestration,
+                AttentionReadResult::Snapshot(Box::new(current_after_restart.clone())),
+            ),
+            Err(AttentionError::InitialRevisionRequired)
+        ));
+        assert_eq!(
+            fresh
+                .apply_authenticated_baseline_read(
+                    &orchestration,
+                    AttentionReadResult::Snapshot(Box::new(current_after_restart.clone())),
+                )
+                .unwrap(),
+            AttentionApplyOutcome::Inserted
+        );
+        let mut restarted =
+            PlatformAttentionBoard::new(inventory(ReviewAttentionPresence::Present));
+        restarted
+            .apply_authenticated_baseline_read(
+                &orchestration,
+                AttentionReadResult::Snapshot(Box::new(current_after_restart)),
+            )
+            .unwrap();
+        assert_eq!(
+            restarted
+                .retained_snapshot(&orchestration)
+                .unwrap()
+                .revision(),
+            Revision::new(7).unwrap()
+        );
+
         let mut board = PlatformAttentionBoard::new(inventory(ReviewAttentionPresence::Present));
         assert_eq!(
             board
@@ -1188,10 +1342,52 @@ mod tests {
             vec![item("old", 2, true)],
         );
         assert!(matches!(
-            board.replace_source(discontinuous),
+            board.replace_source(discontinuous.clone()),
             Err(AttentionError::InvalidSuccessor)
         ));
         assert_eq!(board, before, "rejected replacement changes nothing");
+        assert_eq!(
+            board
+                .apply_authenticated_baseline_read(
+                    &orchestration,
+                    AttentionReadResult::Snapshot(Box::new(discontinuous)),
+                )
+                .unwrap(),
+            AttentionApplyOutcome::Replaced
+        );
+        assert_eq!(
+            board.retained_snapshot(&orchestration).unwrap().revision(),
+            Revision::new(3).unwrap()
+        );
+        let before_regression = board.clone();
+        let regressing_baseline = snapshot(
+            orchestration.clone(),
+            4,
+            Some(3),
+            vec![item("old", 1, true)],
+        );
+        assert!(matches!(
+            board.apply_authenticated_baseline_read(
+                &orchestration,
+                AttentionReadResult::Snapshot(Box::new(regressing_baseline)),
+            ),
+            Err(AttentionError::InvalidBaseline)
+        ));
+        assert_eq!(board, before_regression);
+        let forked_baseline = snapshot(
+            orchestration.clone(),
+            6,
+            Some(1),
+            vec![item("forked", 6, true)],
+        );
+        assert!(matches!(
+            board.apply_authenticated_baseline_read(
+                &orchestration,
+                AttentionReadResult::Snapshot(Box::new(forked_baseline)),
+            ),
+            Err(AttentionError::InvalidBaseline)
+        ));
+        assert_eq!(board, before_regression);
 
         let first = board.retained_snapshot(&orchestration).unwrap().clone();
         assert_eq!(
@@ -1204,10 +1400,10 @@ mod tests {
         assert_eq!(board.visible_items().count(), 0);
         assert_eq!(
             board.retained_snapshot(&orchestration).unwrap().revision(),
-            Revision::FIRST
+            Revision::new(3).unwrap()
         );
 
-        let empty = snapshot(orchestration.clone(), 2, Some(1), Vec::new());
+        let empty = snapshot(orchestration.clone(), 4, Some(3), Vec::new());
         assert_eq!(
             board.replace_source(empty).unwrap(),
             AttentionApplyOutcome::Replaced
@@ -1216,9 +1412,9 @@ mod tests {
 
         let new_incarnation = snapshot(
             orchestration.clone(),
-            3,
-            Some(2),
-            vec![item("new-incarnation", 3, true)],
+            5,
+            Some(4),
+            vec![item("new-incarnation", 5, true)],
         );
         board.replace_source(new_incarnation).unwrap();
         let visible = board.visible_items().next().unwrap();
@@ -1231,8 +1427,8 @@ mod tests {
                 &review,
                 AttentionReadResult::Snapshot(Box::new(snapshot(
                     orchestration.clone(),
-                    4,
-                    Some(3),
+                    6,
+                    Some(5),
                     Vec::new(),
                 ))),
             ),
@@ -1250,7 +1446,7 @@ mod tests {
         assert_eq!(board.visible_items().count(), 0);
         assert_eq!(
             board.retained_snapshot(&orchestration).unwrap().revision(),
-            Revision::new(3).unwrap()
+            Revision::new(5).unwrap()
         );
         let replay = board.retained_snapshot(&orchestration).unwrap().clone();
         assert_eq!(
@@ -1281,6 +1477,34 @@ mod tests {
         board.replace_inventory(new_inventory).unwrap();
         assert!(board.retained_snapshot(&provider).is_none());
         assert!(board.item_by_ui_id(provider_ui_id).is_none());
+
+        board
+            .replace_inventory(inventory(ReviewAttentionPresence::Present))
+            .unwrap();
+        assert!(matches!(
+            board.replace_source(snapshot(
+                provider.clone(),
+                5,
+                Some(4),
+                vec![provider_item("provider-current", 5)],
+            )),
+            Err(AttentionError::InitialRevisionRequired)
+        ));
+        board
+            .apply_authenticated_baseline_read(
+                &provider,
+                AttentionReadResult::Snapshot(Box::new(snapshot(
+                    provider.clone(),
+                    5,
+                    Some(4),
+                    vec![provider_item("provider-current", 5)],
+                ))),
+            )
+            .unwrap();
+        assert_eq!(
+            board.retained_snapshot(&provider).unwrap().revision(),
+            Revision::new(5).unwrap()
+        );
     }
 
     // SDTEST-1818 — SDUC-493
@@ -1402,6 +1626,7 @@ mod tests {
         assert!(!failing.state().is_read(&first));
 
         let invalid_path = temp_path("invalid.json");
+        prepare_local_storage(&invalid_path).unwrap();
         std::fs::write(
             &invalid_path,
             br#"{"schema":1,"entries":[],"invented":true}"#,
@@ -1412,7 +1637,275 @@ mod tests {
             Err(AttentionLocalStateError::Serialization(_))
         ));
 
+        let stale_handle_path = temp_path("stale-handles.json");
+        let stale_key = local_key("workspace-1", "stale-handle-item", 1);
+        let mut first_handle =
+            AttentionLocalStateStore::open(stale_handle_path.clone(), 2).unwrap();
+        let mut second_handle =
+            AttentionLocalStateStore::open(stale_handle_path.clone(), 2).unwrap();
+        assert_eq!(
+            first_handle
+                .reserve_notification(stale_key.clone(), true)
+                .unwrap(),
+            NotificationReservation::Reserved
+        );
+        assert_eq!(
+            second_handle
+                .reserve_notification(stale_key.clone(), true)
+                .unwrap(),
+            NotificationReservation::AlreadyReserved
+        );
+        assert!(second_handle.state().is_notified(&stale_key));
+
+        let oversized_path = temp_path("oversized.json");
+        prepare_local_storage(&oversized_path).unwrap();
+        let oversized_source = source(
+            AttentionSourceKind::Orchestration,
+            &"s".repeat(automonique_protocol::platform_v2_attention::MAX_ATTENTION_FIELD_BYTES),
+        );
+        let large_state = |count: usize| {
+            let mut state =
+                AttentionLocalState::with_capacity(MAX_ATTENTION_LOCAL_ENTRIES).unwrap();
+            for index in 0..count {
+                let item_id = format!("{index:04}{}", "i".repeat(252));
+                state.entries.insert(
+                    AttentionLocalKey::new(
+                        AttentionItemKey::new(
+                            oversized_source.clone(),
+                            AttentionItemId::new(item_id).unwrap(),
+                        ),
+                        Revision::FIRST,
+                    ),
+                    AttentionLocalFlags {
+                        read: true,
+                        notified: false,
+                    },
+                );
+            }
+            state
+        };
+        let mut fits = 0;
+        let mut exceeds = MAX_ATTENTION_LOCAL_ENTRIES;
+        assert!(encode_local_state(&large_state(exceeds)).is_err());
+        while fits + 1 < exceeds {
+            let candidate = fits + (exceeds - fits) / 2;
+            if encode_local_state(&large_state(candidate)).is_ok() {
+                fits = candidate;
+            } else {
+                exceeds = candidate;
+            }
+        }
+        let accepted_large = large_state(fits);
+        persist_local_state(&oversized_path, &accepted_large).unwrap();
+        let durable_large = std::fs::read(&oversized_path).unwrap();
+        let mut size_fenced =
+            AttentionLocalStateStore::open(oversized_path.clone(), MAX_ATTENTION_LOCAL_ENTRIES)
+                .unwrap();
+        let overflow_key = AttentionLocalKey::new(
+            AttentionItemKey::new(
+                oversized_source,
+                AttentionItemId::new(format!("{fits:04}{}", "i".repeat(252))).unwrap(),
+            ),
+            Revision::FIRST,
+        );
+        assert!(matches!(
+            size_fenced.record_read(overflow_key.clone()),
+            Err(AttentionLocalStateError::DocumentInvalid)
+        ));
+        assert!(!size_fenced.state().is_read(&overflow_key));
+        assert_eq!(std::fs::read(&oversized_path).unwrap(), durable_large);
+
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
         std::fs::remove_dir_all(failing_path.parent().unwrap()).ok();
+    }
+
+    // SDTEST-1820 — SDUC-493
+    #[test]
+    fn sdtest_1820_notification_reservation_is_locked_across_processes() {
+        const CHILD_PATH: &str = "SHELLDECK_ATTENTION_CHILD_PATH";
+        const CHILD_READY: &str = "SHELLDECK_ATTENTION_CHILD_READY";
+        const CHILD_START: &str = "SHELLDECK_ATTENTION_CHILD_START";
+        const CHILD_RESULT: &str = "SHELLDECK_ATTENTION_CHILD_RESULT";
+        const TEST_NAME: &str = "config::platform_attention::tests::sdtest_1820_notification_reservation_is_locked_across_processes";
+
+        fn wait_for(path: &Path) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !path.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {}",
+                    path.display()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            let path = PathBuf::from(path);
+            let ready = PathBuf::from(std::env::var_os(CHILD_READY).unwrap());
+            let start = PathBuf::from(std::env::var_os(CHILD_START).unwrap());
+            let result = PathBuf::from(std::env::var_os(CHILD_RESULT).unwrap());
+            let mut store = AttentionLocalStateStore::open(path, 2).unwrap();
+            std::fs::write(&ready, b"ready").unwrap();
+            wait_for(&start);
+            let outcome = store
+                .reserve_notification(local_key("workspace-1", "process-race", 1), true)
+                .unwrap();
+            let value = match outcome {
+                NotificationReservation::Reserved => "reserved",
+                NotificationReservation::AlreadyReserved => "already",
+                NotificationReservation::Ineligible => panic!("unread item became ineligible"),
+            };
+            std::fs::write(result, value).unwrap();
+            return;
+        }
+
+        let path = temp_path("process-race.json");
+        let base = path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf();
+        std::fs::create_dir_all(&base).unwrap();
+        let start = base.join("start");
+        let executable = std::env::current_exe().unwrap();
+        let mut children = Vec::new();
+        for index in 0..2 {
+            let ready = base.join(format!("ready-{index}"));
+            let result = base.join(format!("result-{index}"));
+            let child = std::process::Command::new(&executable)
+                .arg("--exact")
+                .arg(TEST_NAME)
+                .arg("--nocapture")
+                .env(CHILD_PATH, &path)
+                .env(CHILD_READY, &ready)
+                .env(CHILD_START, &start)
+                .env(CHILD_RESULT, &result)
+                .spawn()
+                .unwrap();
+            children.push((child, ready, result));
+        }
+        for (_, ready, _) in &children {
+            wait_for(ready);
+        }
+        std::fs::write(&start, b"start").unwrap();
+
+        let mut outcomes = Vec::new();
+        for (mut child, _, result) in children {
+            assert!(child.wait().unwrap().success());
+            outcomes.push(std::fs::read_to_string(result).unwrap());
+        }
+        outcomes.sort();
+        assert_eq!(outcomes, vec!["already".to_owned(), "reserved".to_owned()]);
+
+        let restarted = AttentionLocalStateStore::open(path, 2).unwrap();
+        assert!(restarted
+            .state()
+            .is_notified(&local_key("workspace-1", "process-race", 1)));
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    // SDTEST-1821 — SDUC-493
+    #[cfg(unix)]
+    #[test]
+    fn sdtest_1821_attention_storage_refuses_links_and_reads_one_descriptor() {
+        use std::os::unix::fs::symlink;
+
+        let linked_path = temp_path("linked.json");
+        prepare_local_storage(&linked_path).unwrap();
+        let base = linked_path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf();
+        let outside = base.join("outside.json");
+        std::fs::write(&outside, br#"{"not":"attention custody"}"#).unwrap();
+
+        symlink(&outside, &linked_path).unwrap();
+        assert!(AttentionLocalStateStore::open(linked_path.clone(), 2).is_err());
+        std::fs::remove_file(&linked_path).unwrap();
+        symlink(base.join("missing.json"), &linked_path).unwrap();
+        assert!(AttentionLocalStateStore::open(linked_path.clone(), 2).is_err());
+        std::fs::remove_file(&linked_path).unwrap();
+
+        let lock_attack_path = temp_path("linked-lock.json");
+        let lock_attack_base = lock_attack_path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf();
+        prepare_local_storage(&lock_attack_path).unwrap();
+        symlink(&outside, lock_path(&lock_attack_path)).unwrap();
+        assert!(AttentionLocalStateStore::open(lock_attack_path.clone(), 2).is_err());
+        std::fs::remove_file(lock_path(&lock_attack_path)).unwrap();
+
+        let key = local_key("workspace-1", "descriptor", 1);
+        let mut store = AttentionLocalStateStore::open(linked_path.clone(), 2).unwrap();
+        store.record_read(key).unwrap();
+        let accepted = std::fs::read(&linked_path).unwrap();
+        let moved = base.join("accepted.json");
+        let bytes = crate::workspace_review::storage::bounded_descriptor_read_after_open(
+            &linked_path,
+            MAX_ATTENTION_LOCAL_FILE_BYTES,
+            || {
+                std::fs::rename(&linked_path, &moved).unwrap();
+                symlink(&outside, &linked_path).unwrap();
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(bytes, accepted);
+        std::fs::remove_file(&linked_path).unwrap();
+        std::fs::rename(&moved, &linked_path).unwrap();
+
+        let linked_parent_path = temp_path("parent-link.json");
+        let private_root = linked_parent_path
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let parent_base = private_root.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&parent_base).unwrap();
+        let outside_root = parent_base.join("outside-root");
+        std::fs::create_dir_all(outside_root.join("state")).unwrap();
+        symlink(&outside_root, &private_root).unwrap();
+        assert!(AttentionLocalStateStore::open(linked_parent_path, 2).is_err());
+
+        std::fs::remove_dir_all(base).ok();
+        std::fs::remove_dir_all(lock_attack_base).ok();
+        std::fs::remove_file(&private_root).ok();
+        std::fs::remove_dir_all(&parent_base).ok();
+    }
+
+    // Windows release runners exercise the same no-follow path using native
+    // reparse-point metadata and FILE_FLAG_OPEN_REPARSE_POINT.
+    #[cfg(windows)]
+    #[test]
+    fn sdtest_1821_attention_storage_refuses_windows_reparse_points() {
+        let linked_path = temp_path("parent-reparse.json");
+        let private_root = linked_path
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf();
+        let base = private_root.parent().unwrap().to_path_buf();
+        let outside = base.join("outside-root");
+        std::fs::create_dir_all(outside.join("state")).unwrap();
+        let status = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&private_root)
+            .arg(&outside)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to create test junction");
+        assert!(AttentionLocalStateStore::open(linked_path, 2).is_err());
+        std::fs::remove_dir(private_root).ok();
+        std::fs::remove_dir_all(base).ok();
     }
 }
