@@ -19,6 +19,7 @@ auto-launch = { workspace = true }
 ssh2-config = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
+fs2 = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 base64 = { workspace = true }
 url = { workspace = true }
@@ -32,6 +33,9 @@ futures = { workspace = true }
 # `gethostname(2)` in util::hostname (env vars alone are unreliable on
 # macOS/Linux — HOSTNAME is a shell variable, often not exported).
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
 
 [features]
 default = []

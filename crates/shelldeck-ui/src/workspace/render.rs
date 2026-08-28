@@ -192,6 +192,9 @@ impl Render for Workspace {
 
                     match self.active_view {
                         ActiveView::Dashboard => content = content.child(self.dashboard.clone()),
+                        ActiveView::Workspaces => {
+                            content = content.child(self.workspace_hub.clone())
+                        }
                         ActiveView::Terminal => content = content.child(self.terminal.clone()),
                         ActiveView::Agents => content = content.child(self.agent_console.clone()),
                         ActiveView::Scripts => content = content.child(self.scripts.clone()),

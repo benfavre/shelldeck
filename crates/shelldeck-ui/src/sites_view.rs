@@ -24,7 +24,7 @@ fn sites_uses_compact_layout(viewport_width: Pixels, rem_size: Pixels) -> bool {
 mod tests {
     use super::sites_uses_compact_layout;
 
-    // SDTEST-1734 — D-09 / SDUC-443. Sites switches to its contained card
+    // SDTEST-1801 — D-09 / SDUC-443. Sites switches to its contained card
     // layout at the same logical width regardless of the active UI scale.
     #[test]
     fn sites_compact_layout_breakpoint_is_scale_aware() {

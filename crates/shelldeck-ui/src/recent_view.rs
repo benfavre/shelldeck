@@ -397,7 +397,7 @@ impl RecentView {
 mod tests {
     use super::{recent_uses_compact_layout, RecentView};
 
-    // SDTEST-1733 — D-09 / SDUC-409. The activity view's breakpoint follows
+    // SDTEST-1800 — D-09 / SDUC-409. The activity view's breakpoint follows
     // the logical UI scale, and compact rows reserve enough room for a wrapped
     // title plus their separate action row.
     #[test]

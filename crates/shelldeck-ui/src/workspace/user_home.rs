@@ -1997,7 +1997,7 @@ mod tests {
         assert!(!welcome_uses_compact_flow(1_120.0, 28.0));
     }
 
-    // SDTEST-1728 — SDUC-440. The account header and dashboard banner enter
+    // SDTEST-1795 — SDUC-440. The account header and dashboard banner enter
     // their compact compositions together, and the threshold follows scale.
     #[test]
     fn user_home_compact_breakpoint_tracks_ui_scale() {

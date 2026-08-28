@@ -1893,7 +1893,7 @@ impl Render for ScriptEditorView {
 mod tests {
     use super::scripts_use_compact_layout;
 
-    // SDTEST-1735 — D-09 / SDUC-443. The Scripts master/detail switch uses
+    // SDTEST-1802 — D-09 / SDUC-443. The Scripts master/detail switch uses
     // logical pixels so UI zoom cannot reintroduce a clipped two-pane view.
     #[test]
     fn scripts_compact_layout_breakpoint_is_scale_aware() {

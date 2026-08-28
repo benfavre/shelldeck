@@ -284,6 +284,7 @@ impl Workspace {
                 } else if let Some(theme) = action.as_any().downcast_ref::<ApplyTerminalTheme>() {
                     self.revert_theme_preview(cx);
                     self.terminal_theme_before_preview = None;
+                    self.terminal_theme_preview = None;
                     if self.enter_dev_mode(cx) {
                         self.apply_terminal_theme_by_name(&theme.name, cx);
                     }

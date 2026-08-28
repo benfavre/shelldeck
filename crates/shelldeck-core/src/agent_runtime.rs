@@ -348,9 +348,15 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// Put a local agent in its own process group so Stop can also terminate tool
-/// subprocesses that inherited the CLI's output pipes.
+/// Prepare a local child for owned tree supervision.
+///
+/// Unix uses a dedicated process group. Windows starts the child suspended so
+/// [`LocalProcessTree::capture`] can attach its Job Object before any tool
+/// subprocess is able to start.
 pub fn configure_local_process(command: &mut Command) {
+    #[cfg(not(any(unix, windows)))]
+    let _ = command;
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -367,29 +373,201 @@ pub fn configure_local_process(command: &mut Command) {
             });
         }
     }
-}
-
-/// Terminate a local agent and its subprocess tree, then reap the CLI process.
-pub fn terminate_local_process(child: &mut Child) -> std::io::Result<ExitStatus> {
-    #[cfg(unix)]
-    {
-        let process_group = -(child.id() as i32);
-        // SAFETY: the child was placed in a process group whose id is its pid;
-        // a negative pid targets only that group.
-        unsafe {
-            libc::kill(process_group, libc::SIGKILL);
-        }
-    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
+        use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let _ = Command::new("taskkill")
-            .args(["/PID", &child.id().to_string(), "/T", "/F"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
+        // `LocalProcessTree::capture` assigns the inert child to its Job
+        // Object before resuming the primary thread. This closes the spawn to
+        // assignment window in which an unowned descendant could escape.
+        command.creation_flags(CREATE_SUSPENDED);
     }
+}
+
+/// Owned authority for one local subprocess tree.
+///
+/// Unix children are placed in a dedicated process group before `exec`.
+/// Windows children are assigned immediately after spawn to a Job Object with
+/// `KILL_ON_JOB_CLOSE`, so ownership survives the direct process exiting while
+/// a descendant still owns its output pipes.
+pub struct LocalProcessTree {
+    _process_id: u32,
+    armed: bool,
+    #[cfg(windows)]
+    job: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+// SAFETY: a Job Object HANDLE may be used and closed from any thread. This
+// value owns the handle and never exposes it to callers.
+unsafe impl Send for LocalProcessTree {}
+
+impl LocalProcessTree {
+    /// Capture the process tree immediately after spawning the direct child.
+    pub fn capture(process_id: u32) -> std::io::Result<Self> {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{CloseHandle, FALSE};
+            use windows_sys::Win32::System::JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            };
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+            };
+
+            // SAFETY: all pointers are null or point to initialized values for
+            // the duration of each call. Every acquired handle is closed on
+            // every error path or transferred into `Self`.
+            unsafe {
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    (&raw const limits).cast(),
+                    std::mem::size_of_val(&limits) as u32,
+                ) == 0
+                {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(job);
+                    return Err(error);
+                }
+                let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, process_id);
+                if process.is_null() {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(job);
+                    return Err(error);
+                }
+                if AssignProcessToJobObject(job, process) == 0 {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(process);
+                    CloseHandle(job);
+                    return Err(error);
+                }
+                if let Err(error) = resume_suspended_process(process_id) {
+                    windows_sys::Win32::System::JobObjects::TerminateJobObject(job, 1);
+                    CloseHandle(process);
+                    CloseHandle(job);
+                    return Err(error);
+                }
+                CloseHandle(process);
+                return Ok(Self {
+                    _process_id: process_id,
+                    armed: true,
+                    job,
+                });
+            }
+        }
+        #[cfg(not(windows))]
+        Ok(Self {
+            _process_id: process_id,
+            armed: true,
+        })
+    }
+
+    /// Terminate every process still owned by this tree authority.
+    pub fn terminate(&mut self) {
+        if !self.armed {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            let process_group = -(self._process_id as i32);
+            // SAFETY: `configure_local_process` assigned the child a process
+            // group whose id is its pid; a negative pid targets only it.
+            unsafe {
+                libc::kill(process_group, libc::SIGKILL);
+            }
+        }
+        #[cfg(windows)]
+        {
+            // SAFETY: `job` is an owned live Job Object handle.
+            unsafe {
+                windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job, 1);
+            }
+        }
+        self.armed = false;
+    }
+
+    /// The direct child and all pipe-owning descendants have completed.
+    pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(windows)]
+fn resume_suspended_process(process_id: u32) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FALSE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    // SAFETY: the snapshot and thread handles are owned here and closed on
+    // every branch; `entry` has the size required by the ToolHelp contract.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut has_entry = Thread32First(snapshot, &mut entry) != 0;
+        while has_entry {
+            if entry.th32OwnerProcessID == process_id {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, entry.th32ThreadID);
+                if thread.is_null() {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(snapshot);
+                    return Err(error);
+                }
+                let resumed = ResumeThread(thread);
+                CloseHandle(thread);
+                CloseHandle(snapshot);
+                if resumed == u32::MAX {
+                    return Err(std::io::Error::last_os_error());
+                }
+                return Ok(());
+            }
+            has_entry = Thread32Next(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "suspended child thread was not found",
+        ))
+    }
+}
+
+impl Drop for LocalProcessTree {
+    fn drop(&mut self) {
+        self.terminate();
+        #[cfg(windows)]
+        {
+            // Closing a KILL_ON_JOB_CLOSE job is the final fail-safe against a
+            // descendant escaping after its direct parent exited.
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.job);
+            }
+        }
+    }
+}
+
+/// Terminate a local agent and its subprocess tree, then reap the CLI process.
+pub fn terminate_local_process(
+    child: &mut Child,
+    process_tree: &mut LocalProcessTree,
+) -> std::io::Result<ExitStatus> {
+    process_tree.terminate();
     let _ = child.kill();
     child.wait()
 }
@@ -805,5 +983,20 @@ mod tests {
         assert_eq!(fs::read_to_string(&capture).unwrap(), prompt);
         assert!(!marker.exists(), "prompt text became remote shell syntax");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    // SDTEST-1771 — SDUC-491
+    #[cfg(windows)]
+    #[test]
+    fn sdtest_1771_windows_job_object_terminates_owned_process_tree() {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/C", "start \"\" /B /WAIT ping.exe -n 30 127.0.0.1 >NUL"]);
+        configure_local_process(&mut command);
+        let mut child = command.spawn().unwrap();
+        let mut process_tree = LocalProcessTree::capture(child.id()).unwrap();
+        let started = std::time::Instant::now();
+        let status = terminate_local_process(&mut child, &mut process_tree).unwrap();
+        assert!(!status.success());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

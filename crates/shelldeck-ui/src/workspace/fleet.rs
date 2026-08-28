@@ -2,7 +2,11 @@ use super::*;
 
 use shelldeck_core::config::platform::{
     stable_client_id, ActionResult, Attachment, ControlClaimResult, PlatformConnection,
-    PlatformRefresh, PlatformSnapshot, ResourceCoordinate,
+    PlatformFollowUpResult, PlatformRefresh, PlatformReviewActionResult, PlatformSnapshot,
+    ResourceCoordinate, RetainedSessionUpdate,
+};
+use shelldeck_core::config::platform_review::{
+    PlatformReviewLoad, PlatformReviewTarget, PlatformReviewUnavailable,
 };
 
 enum PlatformActionResult {
@@ -11,11 +15,92 @@ enum PlatformActionResult {
     ControlClaimed(ControlClaimResult),
     ControlReleased(ResourceCoordinate),
     Executed(ActionResult),
+    Review(AttributedPlatformReviewActionResult),
+    FollowedUp(PlatformFollowUpResult),
 }
 
 enum PlatformLoadResult {
-    Snapshot(PlatformSnapshot),
-    Refresh(PlatformRefresh),
+    Snapshot {
+        snapshot: PlatformSnapshot,
+        review: Option<AttributedPlatformReview>,
+    },
+    Refresh {
+        refresh: PlatformRefresh,
+        retained: Vec<RetainedSessionUpdate>,
+        reconciled: Vec<PlatformFollowUpResult>,
+        review: Option<AttributedPlatformReview>,
+        review_action: Option<Box<AttributedPlatformReviewActionResult>>,
+    },
+}
+
+struct AttributedPlatformReview {
+    target: PlatformReviewTarget,
+    load: PlatformReviewLoad,
+}
+
+struct AttributedPlatformReviewActionResult {
+    target: PlatformReviewTarget,
+    result: PlatformReviewActionResult,
+}
+
+fn load_review(
+    connection: &PlatformConnection,
+    target: Option<PlatformReviewTarget>,
+) -> Option<AttributedPlatformReview> {
+    target.map(|target| {
+        let load = connection
+            .review(&target)
+            .unwrap_or_else(|error| unavailable_review(&error));
+        AttributedPlatformReview { target, load }
+    })
+}
+
+/// Admit a remote observation only when it is still attributed to the exact
+/// active catalog mapping that requested it. A switched or now-unmapped
+/// workspace clears the strip instead of inheriting foreign review state.
+fn review_for_active_target(
+    active: Option<&PlatformReviewTarget>,
+    attributed: Option<AttributedPlatformReview>,
+) -> Option<PlatformReviewLoad> {
+    attributed
+        .and_then(|attributed| (Some(&attributed.target) == active).then_some(attributed.load))
+}
+
+fn platform_connection_is_current(
+    current: Option<&PlatformConnection>,
+    captured: &PlatformConnection,
+) -> bool {
+    current == Some(captured)
+}
+
+fn review_for_active_context(
+    current_connection: Option<&PlatformConnection>,
+    captured_connection: &PlatformConnection,
+    active_target: Option<&PlatformReviewTarget>,
+    attributed: Option<AttributedPlatformReview>,
+) -> Option<PlatformReviewLoad> {
+    platform_connection_is_current(current_connection, captured_connection)
+        .then(|| review_for_active_target(active_target, attributed))
+        .flatten()
+}
+
+fn review_action_for_active_context(
+    current_connection: Option<&PlatformConnection>,
+    captured_connection: &PlatformConnection,
+    active_target: Option<&PlatformReviewTarget>,
+    attributed: AttributedPlatformReviewActionResult,
+) -> Option<PlatformReviewActionResult> {
+    (platform_connection_is_current(current_connection, captured_connection)
+        && active_target == Some(&attributed.target)
+        && attributed.result.preview().target() == &attributed.target)
+        .then_some(attributed.result)
+}
+
+fn unavailable_review(error: &shelldeck_core::error::ShellDeckError) -> PlatformReviewLoad {
+    PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+        category: "transport_error".to_owned(),
+        explanation: error.to_string(),
+    })
 }
 
 const FLEET_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
@@ -83,6 +168,7 @@ impl Workspace {
         let Some(connection) = self.platform_connection() else {
             return;
         };
+        let request_connection = connection.clone();
         self.fleet_refresh_in_flight = true;
         let request_epoch = self.fleet_request_epoch;
         self.fleet_view.update(cx, |view, cx| {
@@ -91,16 +177,46 @@ impl Workspace {
         });
         let previous = self.fleet_snapshot.clone();
         let attachments = self.fleet_view.update(cx, |view, _cx| view.attachments());
+        let retained_reads = self
+            .fleet_view
+            .update(cx, |view, _cx| view.retained_reads());
+        let pending_follow_ups = self
+            .fleet_view
+            .update(cx, |view, _cx| view.pending_follow_ups());
+        let pending_review_action = self
+            .fleet_view
+            .update(cx, |view, _cx| view.pending_review_reconciliation());
+        let review_target = self.workspace_hub.read(cx).active_platform_review_target();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     if let Some(previous) = previous.as_ref() {
-                        connection
-                            .refresh(previous, &attachments)
-                            .map(PlatformLoadResult::Refresh)
+                        let refresh = connection.refresh(previous, &attachments)?;
+                        let retained = connection.refresh_retained_sessions(&retained_reads)?;
+                        let reconciled = pending_follow_ups
+                            .into_iter()
+                            .map(|follow_up| connection.reconcile_follow_up(follow_up))
+                            .collect();
+                        let review_action = pending_review_action.map(|preview| {
+                            let target = preview.target().clone();
+                            Box::new(AttributedPlatformReviewActionResult {
+                                target,
+                                result: connection.reconcile_review_action(preview),
+                            })
+                        });
+                        let review = load_review(&connection, review_target);
+                        Ok(PlatformLoadResult::Refresh {
+                            refresh,
+                            retained,
+                            reconciled,
+                            review,
+                            review_action,
+                        })
                     } else {
-                        connection.snapshot().map(PlatformLoadResult::Snapshot)
+                        let snapshot = connection.snapshot()?;
+                        let review = load_review(&connection, review_target);
+                        Ok(PlatformLoadResult::Snapshot { snapshot, review })
                     }
                 })
                 .await;
@@ -109,11 +225,32 @@ impl Workspace {
                     return;
                 }
                 workspace.fleet_refresh_in_flight = false;
-                if workspace.platform_connection().is_none() {
+                let current_connection = workspace.platform_connection();
+                if !platform_connection_is_current(current_connection.as_ref(), &request_connection)
+                {
+                    // Endpoint or credential replacement invalidates every
+                    // observation from the captured connection, not only the
+                    // review strip. Never relabel one Platform origin as
+                    // another when project/workspace IDs happen to match.
+                    workspace.fleet_snapshot = None;
+                    workspace.fleet_view.update(cx, |view, cx| {
+                        view.reset();
+                        cx.notify();
+                    });
                     return;
                 }
+                let active_review_target = workspace
+                    .workspace_hub
+                    .read(cx)
+                    .active_platform_review_target();
                 match result {
-                    Ok(PlatformLoadResult::Snapshot(snapshot)) => {
+                    Ok(PlatformLoadResult::Snapshot { snapshot, review }) => {
+                        let review = review_for_active_context(
+                            current_connection.as_ref(),
+                            &request_connection,
+                            active_review_target.as_ref(),
+                            review,
+                        );
                         let recovered = workspace.fleet_refresh_failures > 0;
                         workspace.fleet_refresh_failures = 0;
                         workspace.fleet_retry_not_before = None;
@@ -123,11 +260,32 @@ impl Workspace {
                         workspace.fleet_snapshot = Some(snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.set_snapshot(snapshot);
+                            view.set_review(active_review_target.clone(), review);
                             cx.notify();
                         });
                         workspace.focus_pending_fleet_session(cx);
                     }
-                    Ok(PlatformLoadResult::Refresh(refresh)) => {
+                    Ok(PlatformLoadResult::Refresh {
+                        refresh,
+                        retained,
+                        reconciled,
+                        review,
+                        review_action,
+                    }) => {
+                        let review = review_for_active_context(
+                            current_connection.as_ref(),
+                            &request_connection,
+                            active_review_target.as_ref(),
+                            review,
+                        );
+                        let review_action = review_action.and_then(|result| {
+                            review_action_for_active_context(
+                                current_connection.as_ref(),
+                                &request_connection,
+                                active_review_target.as_ref(),
+                                *result,
+                            )
+                        });
                         let recovered = workspace.fleet_refresh_failures > 0;
                         workspace.fleet_refresh_failures = 0;
                         workspace.fleet_retry_not_before = None;
@@ -137,6 +295,14 @@ impl Workspace {
                         workspace.fleet_snapshot = Some(refresh.snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.apply_refresh(refresh);
+                            for result in reconciled {
+                                view.set_follow_up_result(result, cx);
+                            }
+                            view.apply_retained_updates(retained);
+                            view.set_review(active_review_target.clone(), review);
+                            if let Some(result) = review_action {
+                                view.set_review_action_result(result, cx);
+                            }
                             cx.notify();
                         });
                         workspace.focus_pending_fleet_session(cx);
@@ -226,8 +392,12 @@ impl Workspace {
                 .update(cx, |view, _cx| view.attachment(session)),
             _ => None,
         };
+        let operation_already_started = matches!(
+            event,
+            FleetViewEvent::FollowUp(_) | FleetViewEvent::ExecuteReview(_)
+        );
         let started = self.fleet_view.update(cx, |view, cx| {
-            let started = view.begin_operation();
+            let started = operation_already_started || view.begin_operation();
             cx.notify();
             started
         });
@@ -235,6 +405,7 @@ impl Workspace {
             return;
         }
         let request_epoch = self.fleet_request_epoch;
+        let request_connection = connection.clone();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -256,6 +427,20 @@ impl Workspace {
                         FleetViewEvent::Execute(preview) => connection
                             .execute_reconciled(preview)
                             .map(PlatformActionResult::Executed),
+                        FleetViewEvent::ExecuteReview(preview) => {
+                            let target = preview.target().clone();
+                            Ok(PlatformActionResult::Review(
+                                AttributedPlatformReviewActionResult {
+                                    target,
+                                    result: connection.execute_review_action(preview),
+                                },
+                            ))
+                        }
+                        FleetViewEvent::FollowUp(follow_up) => {
+                            Ok(PlatformActionResult::FollowedUp(
+                                connection.follow_up_reconciled(follow_up),
+                            ))
+                        }
                     }
                 })
                 .await;
@@ -269,7 +454,7 @@ impl Workspace {
                             snapshot.view.track_attachment(&attachment);
                         }
                         workspace.fleet_view.update(cx, |view, cx| {
-                            view.set_attached(attachment);
+                            view.set_attached(attachment, cx);
                             view.set_loading(false);
                             cx.notify();
                         });
@@ -312,6 +497,42 @@ impl Workspace {
                             cx.notify();
                         });
                     }
+                    Ok(PlatformActionResult::Review(attributed)) => {
+                        let current_connection = workspace.platform_connection();
+                        let active_target = workspace
+                            .workspace_hub
+                            .read(cx)
+                            .active_platform_review_target();
+                        if let Some(result) = review_action_for_active_context(
+                            current_connection.as_ref(),
+                            &request_connection,
+                            active_target.as_ref(),
+                            attributed,
+                        ) {
+                            workspace.fleet_view.update(cx, |view, cx| {
+                                view.set_review_action_result(result, cx);
+                                cx.notify();
+                            });
+                            workspace.refresh_fleet_view(cx);
+                        } else {
+                            workspace.fleet_view.update(cx, |view, cx| {
+                                view.reset_review_action_for_context_change();
+                                cx.notify();
+                            });
+                        }
+                    }
+                    Ok(PlatformActionResult::FollowedUp(result)) => {
+                        if let PlatformFollowUpResult::Receipt { receipt, .. } = &result {
+                            if let Some(snapshot) = workspace.fleet_snapshot.as_mut() {
+                                snapshot.view.apply_receipt(receipt.clone());
+                                snapshot.resources = snapshot.view.resources().cloned().collect();
+                            }
+                        }
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.set_follow_up_result(result, cx);
+                            cx.notify();
+                        });
+                    }
                     Err(error) => workspace.fleet_view.update(cx, |view, cx| {
                         view.set_operation_error(crate::i18n::platform_error_message(&error, true));
                         cx.notify();
@@ -342,10 +563,270 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{fleet_retry_delay, fleet_should_log_failure, FLEET_POLL_INTERVAL};
+    use super::{
+        fleet_retry_delay, fleet_should_log_failure, platform_connection_is_current,
+        review_action_for_active_context, review_for_active_context, review_for_active_target,
+        AttributedPlatformReview, AttributedPlatformReviewActionResult, FLEET_POLL_INTERVAL,
+    };
+    use shelldeck_core::config::platform::{PlatformConnection, PlatformReviewActionResult};
+    use shelldeck_core::config::platform_review::{
+        AttentionState, ConflictState, DeliverySemantic, DeliveryState, DiffChangeKind, DiffSide,
+        MergeReadiness, PlatformReviewActionPreview, PlatformReviewLoad, PlatformReviewSemantic,
+        PlatformReviewTarget, PlatformReviewUnavailable, PreviewKind, PullRequestSemantic,
+        PullRequestState, ReviewAnchorSemantic, ReviewAttentionSemantic, ReviewAuthorityKind,
+        ReviewAuthoritySemantic, ReviewDecision, ReviewFileSemantic, ReviewFreshnessSemantic,
+        ReviewFreshnessState, ReviewHunkSemantic, ReviewPreviewSemantic, ReviewSchemaVersion,
+        ReviewStatusSemantic, WorktreeFileState,
+    };
+    use shelldeck_core::config::workspace_catalog::{
+        PlatformContextRef, PlatformMappingReconciliation, PlatformV2Mapping,
+    };
     use std::time::Duration;
 
-    // SDTEST-1732 — Platform polling must remain useful while healthy without
+    fn target(project: &str, workspace: &str) -> PlatformReviewTarget {
+        PlatformReviewTarget::from_exact_mapping(&PlatformV2Mapping {
+            reconciliation_revision: 1,
+            project: PlatformContextRef {
+                id: project.to_owned(),
+                revision: 1,
+            },
+            checkout: PlatformContextRef {
+                id: "checkout-1".to_owned(),
+                revision: 1,
+            },
+            user_workspace: PlatformContextRef {
+                id: workspace.to_owned(),
+                revision: 1,
+            },
+            reconciliation: PlatformMappingReconciliation::Exact {
+                reconciled_at_millis: 1,
+            },
+        })
+        .unwrap()
+    }
+
+    fn refused(target: PlatformReviewTarget) -> AttributedPlatformReview {
+        AttributedPlatformReview {
+            target,
+            load: PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+                category: "not_available".to_owned(),
+                explanation: "review projection is not available".to_owned(),
+            }),
+        }
+    }
+
+    // SDTEST-1776
+    #[test]
+    fn review_apply_rechecks_target_and_preserves_same_target_refusal() {
+        let requested = target("project-1", "wc_user_1");
+        let switched = target("project-1", "wc_user_2");
+
+        let admitted = review_for_active_target(Some(&requested), Some(refused(requested.clone())));
+        assert!(matches!(admitted, Some(PlatformReviewLoad::Unavailable(_))));
+
+        assert!(
+            review_for_active_target(Some(&switched), Some(refused(requested.clone()))).is_none()
+        );
+        assert!(review_for_active_target(None, Some(refused(requested))).is_none());
+    }
+
+    // SDTEST-1777
+    #[test]
+    fn review_apply_rejects_changed_endpoint_or_credential_without_debugging_tokens() {
+        let captured = PlatformConnection::new_at_endpoint(
+            "https://manage-one.example/api/manage/automonique/platform",
+            "captured-secret-token",
+        )
+        .unwrap();
+        let same = captured.clone();
+        let changed_endpoint = PlatformConnection::new_at_endpoint(
+            "https://manage-two.example/api/manage/automonique/platform",
+            "captured-secret-token",
+        )
+        .unwrap();
+        let changed_credential = PlatformConnection::new_at_endpoint(
+            "https://manage-one.example/api/manage/automonique/platform",
+            "replacement-secret-token",
+        )
+        .unwrap();
+
+        assert!(platform_connection_is_current(Some(&same), &captured));
+        assert!(!platform_connection_is_current(
+            Some(&changed_endpoint),
+            &captured
+        ));
+        assert!(!platform_connection_is_current(
+            Some(&changed_credential),
+            &captured
+        ));
+        assert!(!platform_connection_is_current(None, &captured));
+
+        let exact_target = target("project-1", "wc_user_1");
+        assert!(review_for_active_context(
+            Some(&changed_endpoint),
+            &captured,
+            Some(&exact_target),
+            Some(refused(exact_target.clone())),
+        )
+        .is_none());
+        assert!(review_for_active_context(
+            Some(&changed_credential),
+            &captured,
+            Some(&exact_target),
+            Some(refused(exact_target.clone())),
+        )
+        .is_none());
+
+        let debug = format!("{captured:?} {changed_credential:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("captured-secret-token"));
+        assert!(!debug.contains("replacement-secret-token"));
+    }
+
+    // SDTEST-1782
+    #[test]
+    fn review_mutation_result_rechecks_connection_target_and_original_action_attribution() {
+        let exact_target = target("project-1", "wc_user_1");
+        let authority = |kind| ReviewAuthoritySemantic {
+            kind,
+            id: format!("{}-authority", kind.as_str()),
+        };
+        let freshness = ReviewFreshnessSemantic {
+            state: ReviewFreshnessState::Fresh,
+            observed_revision: shelldeck_core::config::platform::Revision::new(8).unwrap(),
+            observed_at_ms: 1,
+        };
+        let semantic = PlatformReviewSemantic {
+            schema: ReviewSchemaVersion::V2,
+            workspace_kind: exact_target.workspace.kind(),
+            workspace_id: exact_target.workspace.id().to_owned(),
+            revision: shelldeck_core::config::platform::Revision::new(9).unwrap(),
+            attention: ReviewAttentionSemantic {
+                state: AttentionState::Idle,
+                reason: None,
+                source_revision: None,
+                unread: 0,
+                needs_user_action: false,
+            },
+            attention_events: Vec::new(),
+            review: ReviewStatusSemantic {
+                decision: ReviewDecision::Pending,
+                authority: authority(ReviewAuthorityKind::Review),
+                freshness,
+            },
+            checks: Vec::new(),
+            pull_request: PullRequestSemantic {
+                id: None,
+                state: PullRequestState::Absent,
+                readiness: MergeReadiness::Unknown,
+                head_revision: None,
+                authority: authority(ReviewAuthorityKind::PullRequest),
+                freshness,
+            },
+            delivery: DeliverySemantic {
+                id: None,
+                state: DeliveryState::NotDelivered,
+                authority: authority(ReviewAuthorityKind::Delivery),
+                freshness,
+            },
+            files: vec![ReviewFileSemantic {
+                id: "file-1".to_owned(),
+                path: "src/main.rs".to_owned(),
+                change: DiffChangeKind::Modified,
+                worktree: WorktreeFileState::Unstaged,
+                conflict: ConflictState::None,
+                preview: ReviewPreviewSemantic {
+                    kind: PreviewKind::Text,
+                    media_type: Some("text/plain".to_owned()),
+                    byte_size: Some(10),
+                    width: None,
+                    height: None,
+                    sanitized: true,
+                },
+                hunks: vec![ReviewHunkSemantic {
+                    id: "hunk-1".to_owned(),
+                    old_start: 10,
+                    old_lines: 2,
+                    new_start: 11,
+                    new_lines: 2,
+                    preview: "+ exact".to_owned(),
+                }],
+            }],
+            comments: Vec::new(),
+            proposals: Vec::new(),
+        };
+        let preview = PlatformReviewActionPreview::add_comment(
+            exact_target.clone(),
+            &semantic,
+            &ReviewAnchorSemantic {
+                file_id: "file-1".to_owned(),
+                hunk_id: "hunk-1".to_owned(),
+                side: DiffSide::New,
+                line: 11,
+            },
+            "Exact line comment.",
+        )
+        .unwrap();
+        let original_key = preview.idempotency_key().clone();
+        let attributed = || AttributedPlatformReviewActionResult {
+            target: exact_target.clone(),
+            result: PlatformReviewActionResult::ReconciliationPending {
+                preview: preview.clone(),
+                category: "transport_uncertain".to_owned(),
+            },
+        };
+        let connection = PlatformConnection::new_at_endpoint(
+            "https://manage.example/api/manage/automonique/platform",
+            "captured-token",
+        )
+        .unwrap();
+
+        let admitted = review_action_for_active_context(
+            Some(&connection),
+            &connection,
+            Some(&exact_target),
+            attributed(),
+        )
+        .unwrap();
+        assert_eq!(admitted.preview().idempotency_key(), &original_key);
+        assert!(admitted.requires_lookup());
+
+        let changed_connection = PlatformConnection::new_at_endpoint(
+            "https://manage.example/api/manage/automonique/platform",
+            "replacement-token",
+        )
+        .unwrap();
+        assert!(review_action_for_active_context(
+            Some(&changed_connection),
+            &connection,
+            Some(&exact_target),
+            attributed(),
+        )
+        .is_none());
+        let switched = target("project-1", "wc_user_2");
+        assert!(review_action_for_active_context(
+            Some(&connection),
+            &connection,
+            Some(&switched),
+            attributed(),
+        )
+        .is_none());
+
+        let foreign_target = target("project-1", "wc_user_2");
+        let foreign_attribution = AttributedPlatformReviewActionResult {
+            target: foreign_target,
+            result: attributed().result,
+        };
+        assert!(review_action_for_active_context(
+            Some(&connection),
+            &connection,
+            Some(&exact_target),
+            foreign_attribution,
+        )
+        .is_none());
+    }
+
+    // SDTEST-1799 — Platform polling must remain useful while healthy without
     // hammering or repeating diagnostics throughout one outage.
     #[test]
     fn platform_failure_policy_backs_off_and_logs_once_per_outage() {

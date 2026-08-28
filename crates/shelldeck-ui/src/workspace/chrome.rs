@@ -1364,7 +1364,7 @@ impl Workspace {
 mod tests {
     use super::{close_titlebar_menu_flags, ellipsize_site_switcher_label};
 
-    // SDTEST-1737 — NAV-07 / SDUC-487. Opening a global overlay or changing
+    // SDTEST-1804 — NAV-07 / SDUC-496. Opening a global overlay or changing
     // destination clears every titlebar popover owner in one operation.
     #[test]
     fn global_overlay_transition_closes_all_titlebar_menus() {
@@ -1377,7 +1377,7 @@ mod tests {
         }
     }
 
-    // SDTEST-1739 — NAV-08. GPUI's flex clipping can hide its paint-time
+    // SDTEST-1806 — NAV-08. GPUI's flex clipping can hide its paint-time
     // ellipsis, so the visible switcher label carries an explicit marker while
     // the untouched source remains available to the row tooltip.
     #[test]

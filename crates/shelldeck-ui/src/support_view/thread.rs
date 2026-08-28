@@ -343,7 +343,7 @@ fn styled_body(
 
 fn attachment_basename(filename: &str) -> &str {
     filename
-        .rsplit(|character| character == '/' || character == '\\')
+        .rsplit(['/', '\\'])
         .next()
         .unwrap_or(filename)
         .trim()
@@ -386,9 +386,9 @@ pub(crate) fn cid_safe_text(source: &str, attachments: &[IssueAttachment]) -> St
             .flatten();
 
         if let Some(filename) = matching_filename {
-            rendered.push_str(&t!("support.thread.cid.attached", filename = filename).to_string());
+            rendered.push_str(t!("support.thread.cid.attached", filename = filename).as_ref());
         } else {
-            rendered.push_str(&t!("support.thread.cid.unavailable").to_string());
+            rendered.push_str(t!("support.thread.cid.unavailable").as_ref());
         }
         cursor = end + 1;
     }
@@ -1038,7 +1038,7 @@ mod tests {
         assert!(markdown_blocks("  \n", &[]).is_empty());
     }
 
-    // SDTEST-1730 — Content-ID transport markers never escape into visible
+    // SDTEST-1797 — Content-ID transport markers never escape into visible
     // conversation prose. A same-message attachment resolves by basename;
     // an unresolved image remains explicit without exposing its opaque id.
     #[test]

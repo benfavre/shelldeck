@@ -3284,7 +3284,7 @@ mod tests {
     };
     use gpui::Keystroke;
 
-    // SDTEST-1729 — SDUC-310. Settings replaces its fixed side rail at the
+    // SDTEST-1796 — SDUC-310. Settings replaces its fixed side rail at the
     // same logical compact width used by the User surface and follows UI
     // scale, so controls never become unreachable behind intrinsic content.
     #[test]

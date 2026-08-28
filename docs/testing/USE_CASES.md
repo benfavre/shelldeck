@@ -2636,7 +2636,7 @@ the returned list is capped to a smaller loaded page; the virtual list still
 renders only the rows actually received. The four visible filters use the same
 compact button plus secondary count badge as the neighboring Tickets queue.
 
-### SDUC-487 — Global Workspace overlays have one visible owner
+### SDUC-496 — Global Workspace overlays have one visible owner
 
 Opening the in-window command palette closes every titlebar dropdown — account,
 mode, and site — before its backdrop renders. The shortcut action, application
@@ -2645,7 +2645,7 @@ Changing the active Dev destination also clears those dropdown owners, so an
 action selected from the palette cannot leave its former menu attached to the
 new surface.
 
-### SDUC-488 — Site scope labels disclose every truncation
+### SDUC-497 — Site scope labels disclose every truncation
 
 The titlebar site chip, site-switcher rows, and Manage-area links remain bounded
 inside their available flex space. A label that cannot fit ends with a visible
@@ -2659,7 +2659,7 @@ layout without painting its configured overflow marker. Layout truncation remain
 as a second containment layer, while the source marker guarantees that the user
 can see that more text exists.
 
-### SDUC-489 — Bext Instance failures keep their service context
+### SDUC-498 — Bext Instance failures keep their service context
 
 Errors returned by the single-instance SDK never pass through the Manage portal
 error presenter. The raw HTTP status, internal SDK route, and loopback address
@@ -2673,44 +2673,232 @@ bad-response, and fallback failures in both supported locales. The persistent
 Instance notice stays inset and rounded at compact widths and is capped on wide
 layouts, so a more useful message cannot overflow its owning view.
 
+### SDUC-487 — Retained Automonique sessions continue through an exact native pane
+
+An attached Fleet session owns an independent sanitized-history cursor, command
+state, draft, and receipt obligation. A retention gap replaces only that exact
+transcript from a fresh bounded snapshot and preserves the draft. Messages,
+run/tool summaries, unknown projections, evidence class, truncation, freshness,
+and pending approvals remain typed and contain no raw provider payload.
+
+Observation remains available without control. A follow-up is enabled only for
+the exact attached session with its matching control client and a fresh session
+revision. ShellDeck prepares one durable idempotency key, uses the dedicated
+session follow-up method, and never replays text after an ambiguous response;
+it reconciles the original key until a receipt is known. An admitted receipt
+fences the next mutation until a later command-state read advances the exact
+session revision. Detach, lease loss, sign-out, directory disappearance, and
+late responses remove or ignore only the affected session state. Provider
+session authority never implies terminal, repository, or filesystem authority.
+
+### SDUC-488 — Projects group portable local and SSH checkouts without credentials
+
+The revisioned project catalog groups one repository's checkouts under explicit
+local-device or existing ShellDeck SSH-connection hosts. Local roots use the
+native path representation; SSH roots use a validated absolute POSIX path and
+store only the connection ID. Passwords, private-key paths, and Automonique
+grants never enter this file. Compare-and-swap persistence rejects stale
+writers through an OS-level interprocess lock and native atomic replacement,
+and schema-v1 and schema-v2 records migrate explicitly to schema v3 without
+silently losing legacy run display metadata. A workspace
+launcher selects an already-catalogued checkout instead of admitting an
+arbitrary path, so local and SSH workspaces share one model without widening
+host or filesystem authority.
+
+### SDUC-489 — Manual and external-task intake share one workspace lifecycle
+
+Manual creation and issue, pull-request, or task-prefilled creation enter the
+same validated launcher and produce the same resumable local workspace record.
+Local UUIDs are never treated as Platform identities: a durable project,
+checkout, and user-workspace mapping carries the authoritative Platform v2 IDs
+and revisions plus a monotonic, expected-prior-fenced reconciliation revision.
+Pending evidence cannot demote an exact mapping, and identity changes must pass
+through an explicit diverged transition. Archive and resume have one catalog
+owner. An external tracker item and an internal Automonique orchestration run
+remain separate typed identities, and no session may bind until the mapping is
+exact and names that same authoritative user workspace.
+
+### SDUC-490 — Workspace switching preserves one exact retained work surface
+
+Navigation keys pane trees, tab order, active tabs, focus, editor and terminal
+drafts, terminal viewport positions, and stable live-terminal bindings by user
+workspace. Switching or archiving changes visibility only. Hidden workspace
+state stays retained, so resuming restores the exact coherent surface instead
+of opening disconnected Fleet and terminal views. Invalid split ratios,
+ambiguous focus, duplicate tabs, authority-mismatched checkout/SSH bindings,
+cross-workspace terminal reuse, and stale card observations are refused before
+they can replace valid state. Live GPUI entity retention remains release-blocking
+integration coverage rather than an inference from snapshot equality.
+
+### SDUC-491 — Background workspace creation has a typed cancellable lifecycle
+
+Create operations report monotonic phases and bounded step progress without
+blocking the UI. Cancellation, host/worktree/branch/catalog conflicts,
+classified failures, completion, and retry are distinct states. Every event is
+fenced by its operation ID and starting catalog revision. Phase transitions and
+step totals are monotonic, completion requires the finished final phase, and
+Start cannot bypass retryability. Once retry starts, a late completion or
+failure from the earlier attempt is rejected and cannot overwrite the new
+operation.
+
+For local creation, the production adapter either revalidates an exact existing
+catalog folder or creates a new Git worktree below ShellDeck's private
+application-data root. The selected checkout must be the repository top-level;
+branch and start-point arguments are separately validated, the start point is
+resolved once to an immutable commit OID, and fixed Git subcommands receive
+typed arguments without shell parsing. Before creating a target, ShellDeck
+durably journals the source repository identity, OID, branch, reserved target
+identity, and catalog commit state below an opened no-follow private root.
+Restart either validates the exact same repository/worktree registration,
+symbolic branch, OID, target identity, and clean status or fails closed without
+deleting substituted or dirty user data. A retry adopts only that exact state.
+Cancellations and bounded pipe-drain deadlines terminate and reap the in-flight
+process group, so a descendant cannot keep completion blocked by retaining an
+output pipe. Cleanup removes only the exact journal-owned worktree. Closed UI receivers
+compensate the effect. Catalog, retained UI, and terminal-tab publication occur
+only after the effect journal is durable; a prepared PTY remains detached and
+is dropped if the atomic catalog save fails. Resume finishes journal
+reconciliation and revalidates opened directory authority before the retained
+terminal becomes interactive. SSH creation is admitted only through the
+installed `shelldeck-workspace-v1` subsystem; a host without that helper stays
+unavailable. The general SSH layer's shell and arbitrary-command channels are
+never used as a workspace-path substitute. Adding a standard path-based SFTP
+client would not provide the missing
+authority: it cannot carry an opened directory descriptor across the protocol,
+and a remote canonicalize/lstat check followed by a pathname operation would
+retain the same substitution race as a local check-then-use implementation.
+
+The remote contract is a fixed, versioned SSH subsystem (not an interpolated
+command) with 8-KiB typed frames. sshd supplies one or more administrator-fixed
+catalog roots to the helper. It opens every root and relative component through
+retained no-follow directory descriptors and never accepts `.` or `..`.
+Prepare binds the operation and workspace IDs, directory device/inode,
+immutable HEAD OID, symbolic branch and clean status into a random opaque
+receipt. Resume on that same channel rechecks the descriptor, OID, branch and
+cleanliness immediately before descriptor-based `fchdir`, restores the PTY,
+and replaces the helper process with the fixed administrator-selected shell.
+Release must carry the same token and starts no process. Closing the channel
+before resume exits the only helper process; after resume sshd owns the
+shell/process group directly. Missing helper support, a dirty/detached/replaced
+checkout, a symlink component, or a stale token produces a bounded error code
+and no catalog or terminal publication. Installation and compatibility rules
+are in [`ssh-workspace-helper.md`](../ssh-workspace-helper.md).
+
+### SDUC-492 — Workspace review mutations remain previewed, scoped, and exactly once
+
+A workspace review combines staged, unstaged, untracked, and conflict state at
+one observed repository revision. Text and recognized bounded images may be
+previewed; HTML is escaped and displayed only as inert source, while oversized
+or unknown binary content is refused. The core draft ledger persists line
+comments against their exact file, section, unique hunk, side, line, and review
+revision; its pre-anchor schema is refused rather than guessed, and only
+explicitly selected current comments with unique comment IDs form a send batch.
+Stage, approval, check, and delivery mutations are
+separately scoped: provider-session control cannot grant repository, CI, or
+pull-request authority. A crate-private grant can prepare only a workflow-owned
+capability. Durable submit rechecks the current grant (including revocation,
+supersession, actor and scope) and the exact fresh local-review,
+provider-session/approval, Platform user-workspace identity plus reconciliation
+revision, catalog-validated workspace surface, or delivery target fence.
+Receipts echo the actor,
+authority revision, typed target and one idempotency key. An in-flight operation
+reloaded after restart becomes reconciliation-only work with that original key.
+Prepared and terminal records remain enumerable after operation-ID loss; only
+explicit abandonment and terminal acknowledgement release a bounded ledger slot.
+Forced-process and real-adapter no-replay evidence remains a Red release gate.
+
+### SDUC-493 — Agent attention always returns to its authoritative work context
+
+Needs You, Working, Blocked, Done, and Idle are typed observations with unread
+state and a nested-agent path. Each item names one local user workspace and
+pane; provider-session items additionally name the exact session in that pane.
+Older or conflicting same-revision observations are refused. Opening an item in
+the core resolves only through retained state keyed by the authoritative local
+workspace and validates all coordinates against that workspace surface,
+refuses duplicate pane/session coordinates, returns only that exact tab, and
+records local read state separately from the authoritative observation revision.
+Delivery checks, review status, merge readiness, and delivery state carry their
+observed authority and freshness. Once Fresh, they cannot be overwritten by a
+Stale or Unknown projection even if that projection claims a higher revision.
+
+### SDUC-494 — Shared Platform review meaning remains canonical and read-only
+
+For an exactly reconciled catalog workspace, ShellDeck negotiates Platform v2
+and reads the shared typed review snapshot without inventing a second wire
+model. Its presentation seam preserves attention state, reason, source
+revision and unread count; review, check, pull-request and delivery freshness
+plus authority; and the complete bounded file, hunk, preview, conflict,
+comment and proposal meaning. `needs_you` is a visual inspection prompt only.
+The native Fleet UI projects the shared render-corpus keys for every declared
+attention, review, check, pull-request/readiness, delivery, preview and
+freshness state without losing source revisions above JavaScript's safe
+integer ceiling.
+Stale, unavailable and refused projections remain explicitly non-actionable,
+and neither provider-session presence nor any remote review observation grants
+filesystem, Git, CI, review, pull-request or delivery mutation authority.
+The persisted local workspace-review schema remains independent and unmigrated.
+
+### SDUC-495 — Native Platform review effects are exact and replay-safe
+
+For an exactly reconciled Platform project/workspace, ShellDeck expands the
+canonical review snapshot into bounded files, hunks, conflicts, safe preview
+metadata, attributed comments, and attention chronology. A user may select an
+exact hunk line and prepare one typed comment or review approval. Comments in
+`not_sent`/`refused` state can be selected into one batch-to-agent action.
+Server-projected Git proposals, terminal CI checks, and a fresh ready pull
+request can prepare their corresponding stage/unstage/commit, rerun, or merge
+action. Every confirmation names the exact workspace and captured snapshot or
+target revision before dispatch.
+
+The client dispatches that canonical SDK `ReviewAction` at most once. Accepted,
+unknown, or transport-ambiguous outcomes retain the original idempotency key and
+use receipt lookup only. Async results are admitted only if both the complete
+captured authenticated connection and `PlatformReviewTarget` still match the
+active context. A missing proposal, wrong authority kind, unresolved-conflict
+proposal, stale check, duplicate comment selection, or non-ready pull request
+cannot construct a preview. Remote observation still grants nothing by itself:
+the Automonique host may execute only after the exact separately configured
+review, provider-session, Git, CI, or pull-request adapter resolves the action;
+an unavailable adapter refuses before any effect.
+
 ## Change log
 
-- **2026-08-28** — Amended SDUC-443 and added SDTEST-1741: status counters
+- **2026-08-28** — Amended SDUC-443 and added SDTEST-1808: status counters
   now use semantic icons, numbers, 20 px hover targets, and localized tooltips;
   the wide Git branch is anchored to the geometric center outside the flex
   flow. Replayed at 600 and 1,210 px after catching the former flex regression.
-- **2026-08-28** — Added SDUC-489 and SDTEST-1740: Instance SDK failures now
+- **2026-08-28** — Added SDUC-498 and SDTEST-1807: Instance SDK failures now
   use their own bilingual presentation instead of Manage semantics. The real
   loopback 404 was replayed at 600 and 1,210 px, with a contained error notice
   and the technical route/status retained only in logs.
-- **2026-08-28** — Added SDUC-488 and SDTEST-1739: long labels in the titlebar
+- **2026-08-28** — Added SDUC-497 and SDTEST-1806: long labels in the titlebar
   site chip, site rows, section heading, and Manage-area rows now show an
   explicit Unicode-safe ellipsis and expose their untouched value in tooltips.
   The switcher was replayed at 600 and 1,210 px on the real Manage directory.
-- **2026-08-28** — Amended SDUC-414 and added SDTEST-1738: compact Assistant
+- **2026-08-28** — Amended SDUC-414 and added SDTEST-1805: compact Assistant
   Sheet titles gain a source-level visible ellipsis because GPUI can clip a
   multi-run `StyledText` without painting its CSS ellipsis; short and wide
   titles remain unchanged beside the intrinsic task/actions chrome.
-- **2026-08-28** — Added SDUC-487 and SDTEST-1737: account, mode, and site
+- **2026-08-28** — Added SDUC-496 and SDTEST-1804: account, mode, and site
   dropdowns close before the command palette opens through any entry point and
   are reset again on destination changes, preventing stacked or surviving
   global chrome overlays.
-- **2026-08-28** — Amended SDUC-443 and added SDTEST-1736: the compact Dev
+- **2026-08-28** — Amended SDUC-443 and added SDTEST-1803: the compact Dev
   status bar prioritizes live counters and bounded notifications, suppressing
   branch, shortcut hint, and default version metadata below 800 scale-aware
   logical pixels while preserving the complete wide row.
-- **2026-08-28** — Amended SDUC-409/443 and added SDTEST-1733/1734/1735: at
+- **2026-08-28** — Amended SDUC-409/443 and added SDTEST-1800/1801/1802: at
   narrow Dev widths, Recent Activity stacks actions below wrapping titles,
   Sites uses contained cards plus one scrollable detail view, and Scripts uses
   an explicit list/editor master-detail switch. All three breakpoints follow
   the UI scale and preserve their wide layouts.
-- **2026-08-28** — Amended SDUC-476 and added SDTEST-1732: Platform polling
+- **2026-08-28** — Amended SDUC-476 and added SDTEST-1799: Platform polling
   uses a bounded failure backoff with one diagnostic per outage, while its
   persistent error notice reserves layout space instead of covering sessions.
-- **2026-08-28** — Amended SDUC-476 and added SDTEST-1731: the Platform
+- **2026-08-28** — Amended SDUC-476 and added SDTEST-1798: the Platform
   cockpit switches from fixed desktop columns to explicit full-width Resources
   and Sessions views below a scale-aware 1,000 logical pixels.
-- **2026-08-28** — Amended SDUC-460 and added SDTEST-1730: Outlook Content-ID
+- **2026-08-28** — Amended SDUC-460 and added SDTEST-1797: Outlook Content-ID
   image markers resolve against same-message attachments or become a localized
   unavailable-image label across all request/ticket conversation surfaces.
 - **2026-08-28** — Amended SDUC-486 and SDTEST-1725: Support navigation and
@@ -2720,13 +2908,65 @@ layouts, so a more useful message cannot overflow its owning view.
   Sheet's two-column breakpoint, history now swaps with the conversation as a
   full panel instead of collapsing into a clipped 94 px rail that steals width
   from messages and the Composer.
-- **2026-08-27** — Amended SDUC-440 and SDTEST-1728: compact User site and
+- **2026-08-27** — Amended SDUC-440 and SDTEST-1795: compact User site and
   request rows now place identity above actions or metadata, with explicit
   inter-item and inter-row spacing; the wide rows keep their original layout.
-- **2026-08-27** — Amended SDUC-440 and SDTEST-1728: the User home header and
+- **2026-08-27** — Amended SDUC-440 and SDTEST-1795: the User home header and
   illustrated banner now share a scale-aware 600 px compact breakpoint. The
   banner keeps its counter and localized copy inside a measured safe zone
   without changing the wide composition.
+- **2026-08-28** — Added SDTEST-1792 so line and comment selections cannot
+  cross a project/workspace switch or review-snapshot revision boundary.
+- **2026-08-28** — Expanded SDUC-495 and added SDTEST-1791 for exact
+  batch-to-agent, Git proposal, CI rerun, and pull-request merge previews while
+  preserving the existing dispatch-once and receipt-lookup-only lane.
+- **2026-08-28** — Amended SDUC-491 and added SDTEST-1780 after auditing the
+  SSH/SFTP boundary: remote lifecycle stays fail-closed before progress while
+  no beneath/no-follow helper exists, and the minimum fixed-subsystem,
+  descriptor-retained receipt protocol is now explicit.
+- **2026-08-28** — Added SDUC-495 and SDTEST-1781..1785 for the exact native
+  review comment/approval preview seam, captured connection/target revalidation,
+  typed dispatch/lookup client lanes, the execute-once then lookup-only reducer,
+  and workspace-bound ambiguous receipt lookup.
+- **2026-08-28** — Added SDUC-494 and SDTEST-1772..1779 for the exact shared
+  Platform v2 review fixture, semantic projection, stale/unavailable behavior,
+  exact-mapping target admission, negotiated typed read lane, and apply-time
+  rejection of review observations attributed to a switched workspace or a
+  replaced Platform endpoint/credential generation, plus byte-exact render
+  corpus parity and actual native badge semantics for every declared case.
+- **2026-08-28** — Hardened SDUC-491 and added SDTEST-1763..1771 for durable
+  restart journals, immutable OID/repository/clean-state adoption, no-follow
+  root/target authority, leaf-bound Git cleanup with post-quarantine identity,
+  closed-receiver compensation, and owned process-tree cancellation/reaping
+  including Windows Job Objects and a descendant-held-pipe deadline, plus
+  detached PTY publication after the durable catalog boundary.
+- **2026-08-28** — Amended SDUC-489/491 with the production local-folder and
+  ShellDeck-owned Git-worktree adapter, exact repository/branch/path adoption,
+  operation-scoped cancellation cleanup, transactional catalog rollback, and
+  resume-time root revalidation. SSH effects remain explicitly unavailable.
+- **2026-08-27** — Bound comment/approval receipts to exact Platform mapping
+  identity/revision and made attention resolve through workspace-keyed retained
+  navigation, including same-checkout Browser isolation.
+- **2026-08-27** — Hardened SDUC-492/493 and added SDTEST-1759..1762 with
+  section/hunk-bound anchors,
+  current-grant and exact-workspace revalidation, recoverable terminal ledger
+  acknowledgement, no-follow maximum-plus-one persistence reads,
+  catalog-validated attention surfaces, and Fresh-preserving delivery state.
+- **2026-08-27** — Added SDUC-492/493 and SDTEST-1751..1758 for combined
+  workspace review state, bounded inert previews, workspace-keyed draft CAS,
+  separately scoped typed revision fences, durable reconciliation obligations,
+  local-read-separated attention targets, nested-agent state, and stale-fenced
+  delivery evidence. Native process, adapter, decoder, and retained-GPUI proof
+  is explicitly tracked Red/Yellow rather than inferred from reducer tests.
+- **2026-08-27** — Added SDUC-488..491 and SDTEST-1729..1742 for the revisioned
+  local/SSH project catalog, Platform v2 reconciliation mapping, portable path
+  and authority admission, interprocess/Windows-safe persistence, canonical
+  local and delegated SSH-beneath path admission, shared manual/task launcher,
+  stale-fenced navigation and creation reducers, plus explicit Red
+  GPUI/executor/card integration gates.
+- **2026-08-27** — Added SDUC-487 and SDTEST-1726..1728 for the native retained
+  transcript/composer, retention-gap replacement, exact revision fence, and
+  no-replay receipt reconciliation contract.
 - **2026-08-26** — Added SDUC-486 and SDTEST-1725: Manage returns privacy-safe
   request status counts before the selected status slice, and Support renders
   them with the same pill/badge structure as Tickets.

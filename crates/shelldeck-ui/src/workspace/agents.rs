@@ -1,7 +1,7 @@
 use super::*;
 use shelldeck_core::agent_runtime::{
     configure_local_process, parse_stream_line, terminate_local_process, AgentCommandSpec,
-    AgentRunRequest, AgentStreamEvent, AgentTarget,
+    AgentRunRequest, AgentStreamEvent, AgentTarget, LocalProcessTree,
 };
 use shelldeck_ssh::client::SshClient;
 use std::io::{BufRead, BufReader, Write};
@@ -322,9 +322,18 @@ fn spawn_local_agent(
                     return;
                 }
             };
+            let mut process_tree = match LocalProcessTree::capture(child.id()) {
+                Ok(process_tree) => process_tree,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = done_tx.send((None, Some(error.to_string())));
+                    return;
+                }
+            };
             if let (Some(input), Some(mut stdin)) = (spec.stdin, child.stdin.take()) {
                 if let Err(error) = stdin.write_all(&input) {
-                    let _ = terminate_local_process(&mut child);
+                    let _ = terminate_local_process(&mut child, &mut process_tree);
                     let _ = done_tx.send((None, Some(error.to_string())));
                     return;
                 }
@@ -353,6 +362,7 @@ fn spawn_local_agent(
             loop {
                 match child.try_wait() {
                     Ok(Some(status)) => {
+                        process_tree.terminate();
                         let _ = stdout_thread.join();
                         let _ = stderr_thread.join();
                         let _ = done_tx.send((status.code(), None));
@@ -360,13 +370,14 @@ fn spawn_local_agent(
                     }
                     Ok(None) => {}
                     Err(error) => {
+                        let _ = terminate_local_process(&mut child, &mut process_tree);
                         let _ = done_tx.send((None, Some(error.to_string())));
                         return;
                     }
                 }
                 match shutdown_rx.try_recv() {
                     Ok(()) | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                        let _ = terminate_local_process(&mut child);
+                        let _ = terminate_local_process(&mut child, &mut process_tree);
                         let _ = stdout_thread.join();
                         let _ = stderr_thread.join();
                         let _ = done_tx.send((None, None));

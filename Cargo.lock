@@ -19,6 +19,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "ashpd 0.11.1",
  "async-task",
+ "backtrace",
  "bindgen",
  "blade-graphics",
  "blade-macros",
@@ -227,6 +228,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffbfa3de35b2b2d300986e728d6f3d3e436d166453ebd6b8fe721712e563d7b0"
 dependencies = [
  "adabraka_collections",
+ "adabraka_util_macros",
  "anyhow",
  "async-fs",
  "async_zip",
@@ -235,11 +237,13 @@ dependencies = [
  "dunce",
  "futures",
  "futures-lite 1.13.0",
+ "git2",
  "globset",
  "itertools 0.14.0",
  "libc",
  "log",
  "nix 0.29.0",
+ "rand 0.9.4",
  "regex",
  "rust-embed",
  "schemars 1.2.1",
@@ -264,6 +268,15 @@ checksum = "b6e236eab1388e8e0e3f02f7603671a6d0faada2e792b0b765d0d9e08947c651"
 dependencies = [
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "addr2line"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
+dependencies = [
+ "gimli",
 ]
 
 [[package]]
@@ -893,9 +906,10 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "automonique-platform-client"
 version = "0.1.0"
-source = "git+https://github.com/bext-stack/automonique?rev=d79b69fe596d61d68d859ff8d9efe68ec4d8fae2#d79b69fe596d61d68d859ff8d9efe68ec4d8fae2"
+source = "git+https://github.com/bext-stack/automonique?rev=1dd5c13f7a53aac9e28d3cd004bf73789ca66bb7#1dd5c13f7a53aac9e28d3cd004bf73789ca66bb7"
 dependencies = [
  "automonique-protocol",
+ "base64 0.22.1",
  "ureq",
  "zeroize",
 ]
@@ -903,7 +917,7 @@ dependencies = [
 [[package]]
 name = "automonique-protocol"
 version = "0.1.0"
-source = "git+https://github.com/bext-stack/automonique?rev=d79b69fe596d61d68d859ff8d9efe68ec4d8fae2#d79b69fe596d61d68d859ff8d9efe68ec4d8fae2"
+source = "git+https://github.com/bext-stack/automonique?rev=1dd5c13f7a53aac9e28d3cd004bf73789ca66bb7#1dd5c13f7a53aac9e28d3cd004bf73789ca66bb7"
 
 [[package]]
 name = "av-scenechange"
@@ -970,6 +984,21 @@ dependencies = [
  "dunce",
  "fs_extra",
  "pkg-config",
+]
+
+[[package]]
+name = "backtrace"
+version = "0.3.76"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
+dependencies = [
+ "addr2line",
+ "cfg-if",
+ "libc",
+ "miniz_oxide",
+ "object",
+ "rustc-demangle",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -3100,6 +3129,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3411,6 +3450,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "gimli"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
+
+[[package]]
 name = "gio"
 version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3440,6 +3485,19 @@ dependencies = [
  "libc",
  "system-deps",
  "winapi",
+]
+
+[[package]]
+name = "git2"
+version = "0.20.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b"
+dependencies = [
+ "bitflags 2.13.0",
+ "libc",
+ "libgit2-sys",
+ "log",
+ "url",
 ]
 
 [[package]]
@@ -4651,6 +4709,18 @@ checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
 dependencies = [
  "arbitrary",
  "cc",
+]
+
+[[package]]
+name = "libgit2-sys"
+version = "0.18.8+1.9.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f7c568b25d7489bc3fb2988ed69ab111d2944d2f5fec3d5c987fe545ea97b50"
+dependencies = [
+ "cc",
+ "libc",
+ "libz-sys",
+ "pkg-config",
 ]
 
 [[package]]
@@ -7075,6 +7145,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7718,6 +7794,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "directories",
+ "fs2",
  "futures",
  "keyring",
  "libc",
@@ -7732,6 +7809,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7746,6 +7824,7 @@ dependencies = [
  "parking_lot",
  "rand 0.10.2",
  "russh",
+ "rustix 0.38.44",
  "shelldeck-core",
  "thiserror 2.0.18",
  "tokio",
@@ -7781,7 +7860,10 @@ dependencies = [
  "adabraka-gpui",
  "adabraka-ui",
  "anyhow",
+ "async-io",
+ "async-process",
  "chrono",
+ "futures-lite 2.6.1",
  "image",
  "lopdf",
  "once_cell",
@@ -7790,12 +7872,16 @@ dependencies = [
  "pulldown-cmark",
  "ropey",
  "rust-i18n",
+ "rustix 0.38.44",
+ "same-file",
+ "serde",
  "serde_json",
  "shelldeck-core",
  "shelldeck-ssh",
  "shelldeck-terminal",
  "shelldeck-update",
  "smallvec",
+ "smol",
  "sys-locale",
  "tempfile",
  "tokio",
@@ -7816,6 +7902,7 @@ dependencies = [
  "tree-sitter-yaml",
  "url",
  "uuid",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -8516,7 +8603,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand 2.4.1",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

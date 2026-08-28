@@ -149,7 +149,7 @@ Existing: **1 Unix integration test.**
 
 ## 5. `pty.rs` — local PTY spawn
 
-Existing: **0 tests.**
+Existing: **10 tests.**
 
 **Critical:** PTY is the cross-platform hotspot. Every SDTEST here
 must run on all three targets or be gated with a target-cfg reason.
@@ -161,6 +161,9 @@ must run on all three targets or be gated with a target-cfg reason.
 | SDTEST-1579 | `pty.rs::shell_fallback_tests::unix_prefers_explicit_then_shell_env_then_bin_bash` | SDUC-022, SDUC-455 | Green | Added 2026-08-06. Pure `resolve_shell_from` precedence on Unix: explicit → `$SHELL` → `/bin/bash`. No cfg gate — `cfg!()` keeps both platform branches type-checked and runnable from Linux. |
 | SDTEST-1580 | `pty.rs::shell_fallback_tests::windows_prefers_explicit_then_powershell_then_comspec_then_cmd` | SDUC-455 | Green | Added 2026-08-06. Windows chain: explicit → `powershell.exe` when on `PATH` → `%COMSPEC%` → `cmd.exe`; `$SHELL` deliberately ignored (MSYS/Git-Bash leakage). Pure fn, so the Windows branch is asserted from Linux CI. |
 | SDTEST-1581 | `pty.rs::shell_fallback_tests::blank_explicit_shell_falls_through_to_platform_default` | SDUC-455 | Green | Added 2026-08-06. Blank/whitespace candidates (explicit setting, env vars) fall through to the next candidate instead of spawning an empty shell. |
+| SDTEST-1743 | `pty.rs::shell_fallback_tests::missing_cwd_is_rejected_at_the_pty_boundary` | SDUC-022, SDUC-490 | Green | `LocalPty::spawn_at` rejects a vanished authorized cwd before `native_pty_system`, `openpty`, or child creation. The Linux workspace suite and the macOS/Windows `platform-core-tests` matrix run this exact test. |
+| SDTEST-1744 | `portable-pty::cmdbuilder::tests::explicit_missing_cwd_is_forwarded_instead_of_falling_back_home` (`#[cfg(windows)]`, SDPATCH-117) | SDUC-022, SDUC-490 | Yellow | The Windows CI runner applies the lightweight dependency patch and runs the focused unit directly, proving the cfg-gated `current_directory` branch retains the explicit path. It does not execute a live `CreateProcessW` disappearance race, so this is not Green runtime coverage. |
+| SDTEST-1745 | `portable-pty::cmdbuilder::tests::explicit_missing_unix_cwd_is_forwarded_instead_of_falling_back_home` (`#[cfg(unix)]`, SDPATCH-117) | SDUC-022, SDUC-490 | Yellow | Linux and macOS CI apply the lightweight dependency patch and run the focused unit directly, proving `as_command` gives the vanished explicit path to `std::process::Command::current_dir` instead of substituting `HOME`. It does not execute a live disappearance race between validation and `spawn`, so this is not Green runtime coverage. |
 | SDTEST-962 | `pty.rs::write_and_read_echo_round_trip` (`#[cfg(all(test, unix))]`) | SDUC-022, SDUC-023 | Green | Added 2026-07-09 (cluster K). Sentinel + `exit` + 3s timeout cap on the read loop. |
 | SDTEST-963 | `pty.rs::resize_returns_ok` (`#[cfg(all(test, unix))]`) | SDUC-024 | Green | Added 2026-07-09 (cluster K). |
 | SDTEST-964 | *to write* — resize triggers SIGWINCH on Unix (verify via `stty size`) | SDUC-024 | **Red / P2** | Portable_pty handles the syscall — verifying SIGWINCH delivery adds fragility for a low-value assertion. |

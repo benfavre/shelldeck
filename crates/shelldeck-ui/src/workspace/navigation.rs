@@ -1,6 +1,31 @@
 use super::*;
 
 impl Workspace {
+    /// Réapplique tout le contexte mutable qui appartient à la fenêtre, et
+    /// non au workspace retenu. L'entité PTY reste identique; seuls ses
+    /// réglages, intégrations et aperçus sont remis à jour.
+    pub(super) fn hydrate_active_terminal_runtime(&mut self, cx: &mut Context<Self>) {
+        let theme_name = self
+            .terminal_theme_preview
+            .as_deref()
+            .unwrap_or(&self.app_config.terminal.theme);
+        let config = workspaces::WorkspaceTerminalConfig {
+            theme: TerminalTheme::by_name(theme_name),
+            font_size: self.app_config.terminal.font_size,
+            font_family: self.app_config.terminal.font_family.clone(),
+            default_shell: self.app_config.terminal.default_shell.clone(),
+            cursor_style: self.app_config.terminal.cursor_style.clone(),
+            cursor_blink: self.app_config.terminal.cursor_blink,
+            scrollback_lines: self.app_config.terminal.scrollback_lines,
+            // `total_width` inclut le rail et respecte l'état replié courant.
+            sidebar_width: self.sidebar.read(cx).total_width(),
+            menu_bar_visible: self.app_config.general.menu_bar_visible,
+        };
+        workspaces::apply_terminal_config(&self.terminal, &config, cx);
+        self.sync_scripts_to_terminal_toolbar(cx);
+        self.sync_ai_affordances(cx);
+    }
+
     pub(super) fn update_dashboard_stats(&mut self, cx: &mut Context<Self>) {
         let terminal_count = self.terminal.read(cx).tab_count();
         let active_forwards = self.active_tunnels.len();
@@ -396,6 +421,7 @@ impl Workspace {
         self.close_titlebar_menus();
         self.active_view = match section {
             SidebarSection::Connections => ActiveView::Dashboard,
+            SidebarSection::Workspaces => ActiveView::Workspaces,
             SidebarSection::Terminals => ActiveView::Terminal,
             SidebarSection::Agents => ActiveView::Agents,
             SidebarSection::Scripts => ActiveView::Scripts,
