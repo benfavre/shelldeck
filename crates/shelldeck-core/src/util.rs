@@ -1,6 +1,9 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ATOMIC_WRITE_NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// Atomically write `contents` to `path`.
 ///
@@ -9,21 +12,31 @@ use std::path::{Path, PathBuf};
 /// disk, then renames it over `path`. If anything fails, the temporary file is
 /// removed on a best-effort basis so no partial/leftover files are left behind.
 ///
-/// Uniqueness of the temp file name is derived from the process id and the
-/// target file name only — no randomness or clock is used, so it works even
-/// when those facilities are unavailable.
+/// Temporary files are opened with `create_new`, and a process-local nonce
+/// prevents concurrent writers to the same target from sharing an inode.
 pub fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("shelldeck");
-    let tmp_name = format!(".{}.tmp-{}", file_name, std::process::id());
-    let tmp_path = dir.join(tmp_name);
+    let (mut file, tmp_path) = loop {
+        let nonce = ATOMIC_WRITE_NONCE.fetch_add(1, Ordering::Relaxed);
+        let tmp_name = format!(".{}.tmp-{}-{nonce}", file_name, std::process::id());
+        let tmp_path = dir.join(tmp_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => break (file, tmp_path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
 
     // Write + flush the temp file, cleaning it up on any error.
     let write_result = (|| {
-        let mut file = std::fs::File::create(&tmp_path)?;
         file.write_all(contents)?;
         file.flush()?;
         file.sync_all()?;
@@ -34,14 +47,105 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }
+    drop(file);
 
-    // Atomic replace.
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
+    // Atomic replace. `std::fs::rename` cannot replace an existing destination
+    // on Windows, so the platform seam uses MoveFileExW there. Keeping the
+    // replacement in one helper also means the same overwrite tests exercise
+    // the native primitive on every release runner.
+    if let Err(e) = atomic_replace(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }
 
+    // On Unix, syncing the file is not enough to make the directory entry
+    // durable across a power loss. Windows does not allow opening directories
+    // through `File::open`, so its replace primitive remains the durability
+    // boundary there.
+    #[cfg(unix)]
+    if let Ok(directory) = std::fs::File::open(dir) {
+        if let Err(error) = directory.sync_all() {
+            // Some Unix filesystems do not support directory fsync. The file
+            // and rename are still complete there; do not make every save
+            // fail on an unsupported durability enhancement.
+            if !matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidInput | std::io::ErrorKind::PermissionDenied
+            ) {
+                return Err(error);
+            }
+        }
+    }
+
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::time::Duration;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // Two writers replacing the same destination can briefly observe a
+    // sharing/access/lock violation even though both source handles are
+    // already closed. Retry only those documented Win32 contention errors;
+    // every other failure remains immediate and fail-closed. The bound keeps
+    // an externally held file from stalling a save indefinitely.
+    const MAX_ATTEMPTS: usize = 8;
+    for attempt in 0..MAX_ATTEMPTS {
+        // SAFETY: both paths are owned, NUL-terminated UTF-16 buffers that
+        // remain alive for the duration of the call. The flags request a
+        // same-volume replacement and make the move wait for filesystem
+        // write-through.
+        let replaced = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if replaced != 0 {
+            return Ok(());
+        }
+
+        let error = std::io::Error::last_os_error();
+        if attempt + 1 == MAX_ATTEMPTS || !is_windows_file_contention(&error) {
+            return Err(error);
+        }
+        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    unreachable!("bounded replacement loop always returns")
+}
+
+/// Win32 reports both non-blocking file locks and short replacement races
+/// through raw system codes instead of consistently mapping them to
+/// `ErrorKind::WouldBlock`.
+#[cfg(windows)]
+pub(crate) fn is_windows_file_contention(error: &std::io::Error) -> bool {
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+    };
+
+    error.raw_os_error().is_some_and(|code| {
+        matches!(
+            code as u32,
+            ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION
+        )
+    })
 }
 
 /// Shell-escape a string for safe embedding in single-quoted shell arguments.
@@ -303,6 +407,57 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"null");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // SDTEST-1735
+    #[test]
+    fn concurrent_atomic_writers_use_distinct_temporary_files() {
+        let dir = unique_temp_dir("concurrent");
+        let path = dir.join("catalog.json");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let writers: Vec<_> = [b"first".as_slice(), b"second".as_slice()]
+            .into_iter()
+            .map(|payload| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    atomic_write(&path, payload)
+                })
+            })
+            .collect();
+
+        barrier.wait();
+        for writer in writers {
+            writer.join().expect("writer thread").expect("atomic write");
+        }
+        let result = std::fs::read(&path).expect("final payload");
+        assert!(result == b"first" || result == b"second");
+        assert_eq!(count_tmp_files(&dir), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // SDTEST-1742
+    #[cfg(windows)]
+    #[test]
+    fn windows_atomic_replace_retries_only_file_contention_errors() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_LOCK_VIOLATION,
+            ERROR_SHARING_VIOLATION,
+        };
+
+        for code in [
+            ERROR_ACCESS_DENIED,
+            ERROR_SHARING_VIOLATION,
+            ERROR_LOCK_VIOLATION,
+        ] {
+            assert!(is_windows_file_contention(
+                &std::io::Error::from_raw_os_error(code as i32)
+            ));
+        }
+        assert!(!is_windows_file_contention(
+            &std::io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32)
+        ));
     }
 
     // ------------------------------------------------------------------

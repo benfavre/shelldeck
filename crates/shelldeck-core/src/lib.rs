@@ -7,6 +7,8 @@ pub mod error;
 pub mod git;
 pub mod models;
 pub mod util;
+pub mod workspace_navigation;
+pub mod workspace_review;
 
 pub use error::{Result, ShellDeckError};
 pub use models::*;

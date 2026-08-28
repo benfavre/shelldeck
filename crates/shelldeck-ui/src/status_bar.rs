@@ -311,7 +311,7 @@ impl Render for StatusBar {
 mod tests {
     use super::{status_bar_uses_compact_layout, StatusMetric};
 
-    // SDTEST-1736 — D-07 / SDUC-443. Compact status metadata must disappear
+    // SDTEST-1803 — D-07 / SDUC-443. Compact status metadata must disappear
     // at a logical breakpoint, not at an accidental device-pixel width.
     #[test]
     fn status_bar_compact_breakpoint_tracks_ui_scale() {
@@ -333,7 +333,7 @@ mod tests {
         ));
     }
 
-    // SDTEST-1741 — D-07. Each compact counter keeps a distinct semantic
+    // SDTEST-1808 — D-07. Each compact counter keeps a distinct semantic
     // Lucide glyph; its localized prose is exposed by the runtime tooltip.
     #[test]
     fn status_metrics_have_distinct_semantic_icons() {

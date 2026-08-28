@@ -213,7 +213,7 @@ mod tests {
         );
     }
 
-    /// SDTEST-1740 — reste dans le scénario bilingue unique car la locale
+    /// SDTEST-1807 — reste dans le scénario bilingue unique car la locale
     /// rust-i18n est globale au processus.
     fn assert_bext_instance_failures_keep_sdk_context(language: &str, expected_404: &str) {
         use shelldeck_core::error::ShellDeckError;
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(crate::t!("sidebar.nav.recent"), crate::t!("recent.title"));
     }
 
-    /// SDTEST-1726 — appelé dans le scénario bilingue unique, car la locale
+    /// SDTEST-1793 — appelé dans le scénario bilingue unique, car la locale
     /// rust-i18n est globale au processus.
     fn assert_account_timestamps_are_customer_facing(today: &str, yesterday: &str, older: &str) {
         let offset = chrono::FixedOffset::east_opt(2 * 60 * 60).unwrap();

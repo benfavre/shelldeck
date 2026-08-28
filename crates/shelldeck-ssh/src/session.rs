@@ -112,6 +112,43 @@ impl SshSession {
         Ok(SshChannel { channel })
     }
 
+    /// Open ShellDeck's fixed, typed workspace subsystem on a raw PTY.
+    ///
+    /// No remote command or path is interpolated into an SSH exec request.
+    /// The remote sshd must map `shelldeck-workspace-v1` to the trusted helper.
+    pub async fn open_workspace_helper(
+        &self,
+        rows: u32,
+        cols: u32,
+    ) -> crate::Result<crate::workspace_helper::WorkspaceHelperChannel> {
+        let handle = self.handle.lock().await;
+        let channel = handle
+            .channel_open_session()
+            .await
+            .map_err(|error| SshError::Channel(error.to_string()))?;
+        channel
+            .request_pty(
+                true,
+                "xterm-256color",
+                cols,
+                rows,
+                0,
+                0,
+                &crate::workspace_helper::raw_workspace_pty_modes(),
+            )
+            .await
+            .map_err(|error| SshError::Channel(format!("workspace PTY request failed: {error}")))?;
+        channel
+            .request_subsystem(true, crate::workspace_helper::WORKSPACE_SUBSYSTEM)
+            .await
+            .map_err(|error| {
+                SshError::Channel(format!("workspace subsystem request failed: {error}"))
+            })?;
+        Ok(crate::workspace_helper::WorkspaceHelperChannel::new(
+            channel,
+        ))
+    }
+
     /// Execute a command and collect the full result.
     pub async fn exec(&self, command: &str) -> crate::Result<ExecResult> {
         let handle = self.handle.lock().await;
@@ -292,6 +329,10 @@ pub struct SshChannel {
 }
 
 impl SshChannel {
+    pub(crate) fn from_workspace_helper(channel: Channel<client::Msg>) -> Self {
+        Self { channel }
+    }
+
     /// Write data to the channel (keyboard input).
     /// The `data` method on Channel takes `impl AsyncRead + Unpin`,
     /// so we wrap the byte slice in a Cursor.
@@ -494,10 +535,19 @@ mod in_memory_ssh_tests {
 
     #[derive(Debug, PartialEq, Eq)]
     enum ServerEvent {
-        Pty { term: String, cols: u32, rows: u32 },
+        Pty {
+            term: String,
+            cols: u32,
+            rows: u32,
+            modes: Vec<(Pty, u32)>,
+        },
         Shell,
+        Subsystem(String),
         Exec(Vec<u8>),
-        Resize { cols: u32, rows: u32 },
+        Resize {
+            cols: u32,
+            rows: u32,
+        },
         ChannelEof,
     }
 
@@ -529,14 +579,26 @@ mod in_memory_ssh_tests {
             rows: u32,
             _pixel_width: u32,
             _pixel_height: u32,
-            _modes: &[(Pty, u32)],
+            modes: &[(Pty, u32)],
             session: &mut Session,
         ) -> Result<(), Self::Error> {
             let _ = self.events.send(ServerEvent::Pty {
                 term: term.to_owned(),
                 cols,
                 rows,
+                modes: modes.to_vec(),
             });
+            session.channel_success(channel)?;
+            Ok(())
+        }
+
+        async fn subsystem_request(
+            &mut self,
+            channel: ChannelId,
+            name: &str,
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let _ = self.events.send(ServerEvent::Subsystem(name.to_owned()));
             session.channel_success(channel)?;
             Ok(())
         }
@@ -680,6 +742,7 @@ mod in_memory_ssh_tests {
                 term: "xterm-256color".to_owned(),
                 cols: 120,
                 rows: 32,
+                modes: Vec::new(),
             }
         );
         assert_eq!(next_event(&mut events).await, ServerEvent::Shell);
@@ -691,6 +754,42 @@ mod in_memory_ssh_tests {
                 cols: 160,
                 rows: 48,
             }
+        );
+
+        server_task.abort();
+    }
+
+    // SDTEST-1786
+    #[tokio::test]
+    async fn workspace_helper_uses_only_fixed_subsystem_and_raw_bounded_control_pty() {
+        let (session, mut events, server_task) =
+            start_session(ExecBehavior::WaitForCancellation).await;
+
+        let _helper = session
+            .open_workspace_helper(36, 132)
+            .await
+            .expect("open fixed workspace subsystem");
+        let ServerEvent::Pty {
+            term,
+            cols,
+            rows,
+            modes,
+        } = next_event(&mut events).await
+        else {
+            panic!("workspace helper must request a PTY first");
+        };
+        assert_eq!(term, "xterm-256color");
+        assert_eq!((cols, rows), (132, 36));
+        for required in [Pty::ISIG, Pty::ICANON, Pty::ECHO, Pty::OPOST] {
+            assert!(modes.contains(&(required, 0)));
+        }
+        assert_eq!(
+            next_event(&mut events).await,
+            ServerEvent::Subsystem(crate::workspace_helper::WORKSPACE_SUBSYSTEM.to_owned())
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "no arbitrary exec or shell request"
         );
 
         server_task.abort();

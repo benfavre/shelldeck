@@ -3624,7 +3624,7 @@ mod tests {
         );
     }
 
-    // SDTEST-1738 — A-16 / SDUC-414. StyledText can clip a shaped run without
+    // SDTEST-1805 — A-16 / SDUC-414. StyledText can clip a shaped run without
     // painting CSS ellipsis, so compact Sheet titles carry their own bounded
     // Unicode-safe ellipsis while wide and short titles remain unchanged.
     #[test]
