@@ -858,11 +858,13 @@ mod tests {
             assert_eq!(mode_transition_overlay_opacity(1.0, loading_ms), 0.0);
         }
         assert_eq!(MODE_TRANSITION_TOTAL_MS, 3_000);
-        assert!(
-            MODE_TRANSITION_LOADING_REPEAT_MS < MODE_TRANSITION_LOADING_MS,
-            "un retour dans un mode déjà ouvert ne doit pas coûter plus cher \
-             que la première entrée"
-        );
+        const {
+            assert!(
+                MODE_TRANSITION_LOADING_REPEAT_MS < MODE_TRANSITION_LOADING_MS,
+                "un retour dans un mode déjà ouvert ne doit pas coûter plus cher \
+                 que la première entrée"
+            )
+        };
     }
 
     // SDTEST-1616

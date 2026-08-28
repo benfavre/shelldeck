@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn alternative_login_methods_are_complete_and_collapsed_by_default() {
-        assert!(!OTHER_METHODS_DEFAULT_EXPANDED);
+        const { assert!(!OTHER_METHODS_DEFAULT_EXPANDED) };
         assert_eq!(OTHER_LOGIN_METHODS.len(), 4);
         assert_eq!(
             OTHER_LOGIN_METHODS.map(|method| method.provider),

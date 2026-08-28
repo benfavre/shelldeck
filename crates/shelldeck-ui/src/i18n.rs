@@ -243,17 +243,11 @@ mod tests {
     /// SDTEST-1704 — reste dans le scénario bilingue unique : la locale est
     /// globale au processus et ne doit jamais être modifiée par deux tests en
     /// parallèle.
-    fn assert_operational_vocabulary_is_localized(
-        unknown_status: &str,
-        unknown_priority: &str,
-        one_connection: &str,
-        many_connections: &str,
-        one_forward: &str,
-        many_forwards: &str,
-        one_script: &str,
-        many_scripts: &str,
-    ) {
+    fn assert_operational_vocabulary_is_localized(expected: [&str; 8]) {
         use crate::status_bar::{status_count_label, StatusMetric};
+
+        let [unknown_status, unknown_priority, one_connection, many_connections, one_forward, many_forwards, one_script, many_scripts] =
+            expected;
 
         assert_eq!(
             crate::support_view::status_label("awaiting_agent"),
@@ -349,7 +343,7 @@ mod tests {
             "fr",
             "Ressource ou route SDK introuvable sur l’Instance Bext. Vérifiez la cible et sa version.",
         );
-        assert_operational_vocabulary_is_localized(
+        assert_operational_vocabulary_is_localized([
             "statut inconnu",
             "Priorité inconnue",
             "1 connexion active",
@@ -358,7 +352,7 @@ mod tests {
             "2 redirections actives",
             "1 script en cours",
             "2 scripts en cours",
-        );
+        ]);
         assert_account_timestamps_are_customer_facing(
             "Aujourd’hui à 10:34",
             "Hier à 18:05",
@@ -388,7 +382,7 @@ mod tests {
             "en",
             "Resource or SDK route not found on the Bext instance. Check the target and its version.",
         );
-        assert_operational_vocabulary_is_localized(
+        assert_operational_vocabulary_is_localized([
             "unknown status",
             "Unknown priority",
             "1 active connection",
@@ -397,7 +391,7 @@ mod tests {
             "2 active port forwards",
             "1 running script",
             "2 running scripts",
-        );
+        ]);
         assert_account_timestamps_are_customer_facing(
             "Today at 10:34",
             "Yesterday at 18:05",

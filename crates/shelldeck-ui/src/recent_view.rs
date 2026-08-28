@@ -393,35 +393,6 @@ impl RecentView {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{recent_uses_compact_layout, RecentView};
-
-    // SDTEST-1800 — D-09 / SDUC-409. The activity view's breakpoint follows
-    // the logical UI scale, and compact rows reserve enough room for a wrapped
-    // title plus their separate action row.
-    #[test]
-    fn recent_compact_layout_and_row_heights_are_scale_aware() {
-        assert!(recent_uses_compact_layout(gpui::px(999.0), gpui::px(16.0)));
-        assert!(!recent_uses_compact_layout(
-            gpui::px(1_000.0),
-            gpui::px(16.0)
-        ));
-        assert!(recent_uses_compact_layout(
-            gpui::px(1_999.0),
-            gpui::px(32.0)
-        ));
-        assert!(!recent_uses_compact_layout(
-            gpui::px(2_000.0),
-            gpui::px(32.0)
-        ));
-        assert_eq!(RecentView::row_height_for_content(false, false), 60.0);
-        assert_eq!(RecentView::row_height_for_content(true, false), 80.0);
-        assert_eq!(RecentView::row_height_for_content(false, true), 116.0);
-        assert_eq!(RecentView::row_height_for_content(true, true), 136.0);
-    }
-}
-
 impl Render for RecentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let compact = recent_uses_compact_layout(window.viewport_size().width, window.rem_size());
@@ -570,5 +541,34 @@ impl Render for RecentView {
                             .child(list),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{recent_uses_compact_layout, RecentView};
+
+    // SDTEST-1800 — D-09 / SDUC-409. The activity view's breakpoint follows
+    // the logical UI scale, and compact rows reserve enough room for a wrapped
+    // title plus their separate action row.
+    #[test]
+    fn recent_compact_layout_and_row_heights_are_scale_aware() {
+        assert!(recent_uses_compact_layout(gpui::px(999.0), gpui::px(16.0)));
+        assert!(!recent_uses_compact_layout(
+            gpui::px(1_000.0),
+            gpui::px(16.0)
+        ));
+        assert!(recent_uses_compact_layout(
+            gpui::px(1_999.0),
+            gpui::px(32.0)
+        ));
+        assert!(!recent_uses_compact_layout(
+            gpui::px(2_000.0),
+            gpui::px(32.0)
+        ));
+        assert_eq!(RecentView::row_height_for_content(false, false), 60.0);
+        assert_eq!(RecentView::row_height_for_content(true, false), 80.0);
+        assert_eq!(RecentView::row_height_for_content(false, true), 116.0);
+        assert_eq!(RecentView::row_height_for_content(true, true), 136.0);
     }
 }

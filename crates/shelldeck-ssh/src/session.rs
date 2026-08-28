@@ -852,3 +852,158 @@ mod in_memory_ssh_tests {
         server_task.abort();
     }
 }
+
+#[cfg(test)]
+mod live_workspace_subsystem_tests {
+    use crate::client::SshClient;
+    use crate::workspace_helper::WorkspacePrepareRequest;
+    use russh::ChannelMsg;
+    use shelldeck_core::models::{Connection, ConnectionSource, ConnectionStatus};
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use tokio::time::timeout;
+    use uuid::Uuid;
+
+    // SDTEST-1809
+    #[tokio::test]
+    #[ignore = "requires SHELLDECK_LIVE_SSH=1 and an installed shelldeck-workspace-v1 subsystem"]
+    async fn fixed_workspace_subsystem_prepares_releases_and_resumes_exact_remote_repository() {
+        if std::env::var("SHELLDECK_LIVE_SSH").as_deref() != Ok("1") {
+            eprintln!("skipped: SHELLDECK_LIVE_SSH is not set");
+            return;
+        }
+        let required = |name: &str| {
+            std::env::var(name).unwrap_or_else(|_| panic!("{name} is required for SDTEST-1809"))
+        };
+        let hostname = required("SHELLDECK_LIVE_SSH_HOST");
+        let port = required("SHELLDECK_LIVE_SSH_PORT")
+            .parse::<u16>()
+            .expect("SHELLDECK_LIVE_SSH_PORT must be a non-zero u16");
+        assert_ne!(port, 0, "SHELLDECK_LIVE_SSH_PORT must be non-zero");
+        let user = required("SHELLDECK_LIVE_SSH_USER");
+        let identity_file = PathBuf::from(required("SHELLDECK_LIVE_SSH_IDENTITY"));
+        let remote_workspace = required("SHELLDECK_LIVE_SSH_WORKSPACE");
+        let connection = Connection {
+            id: Uuid::new_v4(),
+            alias: "SDTEST-1809".to_owned(),
+            hostname,
+            port,
+            user,
+            identity_file: Some(identity_file),
+            proxy_jump: None,
+            group: None,
+            tags: Vec::new(),
+            auto_forwards: Vec::new(),
+            auto_scripts: Vec::new(),
+            source: ConnectionSource::Manual,
+            forward_agent: false,
+            site_id: None,
+            site_label: None,
+            status: ConnectionStatus::Disconnected,
+        };
+        let session = timeout(
+            Duration::from_secs(10),
+            SshClient::new().connect(&connection),
+        )
+        .await
+        .expect("live SSH connection timed out")
+        .expect("live SSH connection failed");
+
+        let release_operation = Uuid::new_v4();
+        let release_workspace = Uuid::new_v4();
+        let mut release_helper = timeout(
+            Duration::from_secs(5),
+            session.open_workspace_helper(24, 80),
+        )
+        .await
+        .expect("release helper open timed out")
+        .expect("release helper open failed");
+        let release_receipt = timeout(
+            Duration::from_secs(5),
+            release_helper.prepare(WorkspacePrepareRequest {
+                operation: release_operation,
+                workspace: release_workspace,
+                remote_root: remote_workspace.clone(),
+            }),
+        )
+        .await
+        .expect("release prepare timed out")
+        .expect("release prepare failed");
+        assert!(release_receipt.matches(release_operation, release_workspace));
+        timeout(
+            Duration::from_secs(5),
+            release_helper.release(&release_receipt),
+        )
+        .await
+        .expect("release timed out")
+        .expect("release failed");
+
+        let resume_operation = Uuid::new_v4();
+        let resume_workspace = Uuid::new_v4();
+        let mut resume_helper = timeout(
+            Duration::from_secs(5),
+            session.open_workspace_helper(31, 109),
+        )
+        .await
+        .expect("resume helper open timed out")
+        .expect("resume helper open failed");
+        let resume_receipt = timeout(
+            Duration::from_secs(5),
+            resume_helper.prepare(WorkspacePrepareRequest {
+                operation: resume_operation,
+                workspace: resume_workspace,
+                remote_root: remote_workspace.clone(),
+            }),
+        )
+        .await
+        .expect("resume prepare timed out")
+        .expect("resume prepare failed");
+        assert!(resume_receipt.matches(resume_operation, resume_workspace));
+        assert!(!resume_receipt.head_oid.is_empty());
+        assert!(!resume_receipt.branch.is_empty());
+
+        let mut shell = timeout(
+            Duration::from_secs(5),
+            resume_helper.resume(&resume_receipt),
+        )
+        .await
+        .expect("resume timed out")
+        .expect("resume failed");
+        shell
+            .write(b"printf 'SHELLDECK_WORKSPACE_READY:%s\\n' \"$PWD\"; exit\n")
+            .await
+            .expect("write resumed shell marker");
+        let output = timeout(Duration::from_secs(10), async {
+            let mut output = Vec::new();
+            while let Some(message) = shell.read().await {
+                match message {
+                    ChannelMsg::Data { data } => output.extend_from_slice(&data),
+                    ChannelMsg::Eof | ChannelMsg::Close => break,
+                    _ => {}
+                }
+            }
+            output
+        })
+        .await
+        .expect("resumed shell output timed out");
+        let output = String::from_utf8_lossy(&output);
+        let marker = "SHELLDECK_WORKSPACE_READY:";
+        let observed_cwd = output
+            .lines()
+            .map(|line| line.trim_end_matches('\r'))
+            .filter_map(|line| line.rsplit_once(marker).map(|(_, cwd)| cwd))
+            // The PTY may prefix the shell prompt to command output. The
+            // echoed printf format is another marker occurrence, but is not
+            // an absolute path and therefore cannot be the helper-authorized
+            // remote root.
+            .find(|cwd| cwd.starts_with('/'))
+            .unwrap_or_else(|| {
+                panic!("resumed shell did not emit the workspace-ready marker: {output:?}")
+            });
+        assert_eq!(
+            observed_cwd, remote_workspace,
+            "resumed shell did not prove the exact retained workspace CWD"
+        );
+        session.disconnect().await.expect("disconnect live session");
+    }
+}
