@@ -35,11 +35,22 @@ pub enum FleetViewEvent {
 
 impl EventEmitter<FleetViewEvent> for FleetView {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FleetCompactSection {
+    Resources,
+    Sessions,
+}
+
+fn fleet_uses_compact_layout(viewport_width: Pixels, rem_size: Pixels) -> bool {
+    viewport_width < px(1_000.0).to_pixels(rem_size)
+}
+
 pub struct FleetView {
     snapshot: Option<PlatformSnapshot>,
     cockpit: PlatformCockpitState,
     search_state: Entity<InputState>,
     search_query: String,
+    compact_section: FleetCompactSection,
     selected_session: Option<String>,
     pending_action: Option<PlatformActionPreview>,
     refusal: Option<(String, String)>,
@@ -55,6 +66,7 @@ impl FleetView {
             cockpit: PlatformCockpitState::default(),
             search_state: cx.new(InputState::new),
             search_query: String::new(),
+            compact_section: FleetCompactSection::Resources,
             selected_session: None,
             pending_action: None,
             refusal: None,
@@ -227,7 +239,7 @@ impl FleetView {
         exists
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity();
         let (resources, sessions, models, receipts, methods) =
             self.snapshot.as_ref().map_or((0, 0, 0, 0, 0), |snapshot| {
@@ -249,11 +261,66 @@ impl FleetView {
                     snapshot.capabilities.methods.len(),
                 )
             });
+        if compact {
+            let entity = cx.entity();
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(7.0))
+                .px(px(12.0))
+                .py(px(9.0))
+                .border_b_1()
+                .border_color(ShellDeckColors::border())
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .text_size(px(15.0))
+                        .line_height(relative(1.25))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(t!("fleet.title").to_string()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .child(
+                            Badge::new(if self.cockpit.is_online() {
+                                t!("fleet.connection.online").to_string()
+                            } else {
+                                t!("fleet.connection.offline").to_string()
+                            })
+                            .variant(if self.cockpit.is_online() {
+                                BadgeVariant::Default
+                            } else {
+                                BadgeVariant::Destructive
+                            }),
+                        )
+                        .child(
+                            Button::new(
+                                "platform-refresh-compact",
+                                t!("fleet.refresh").to_string(),
+                            )
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .h(px(30.0))
+                            .icon(IconSource::from("refresh-cw"))
+                            .loading(self.loading)
+                            .disabled(self.loading || self.operation_busy)
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |_this, cx| cx.emit(FleetViewEvent::Refresh));
+                            }),
+                        ),
+                )
+                .into_any_element();
+        }
+
         div()
             .flex()
-            .items_center()
-            .justify_between()
-            .gap(px(16.0))
+            .flex_col()
+            .gap(px(8.0))
             .px(px(16.0))
             .py(px(10.0))
             .border_b_1()
@@ -262,25 +329,55 @@ impl FleetView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.0))
+                    .justify_between()
+                    .gap(px(16.0))
                     .child(
                         div()
-                            .text_size(px(17.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("fleet.title").to_string()),
+                            .flex()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(
+                                div()
+                                    .text_size(px(17.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(t!("fleet.title").to_string()),
+                            )
+                            .child(
+                                Badge::new(if self.cockpit.is_online() {
+                                    t!("fleet.connection.online").to_string()
+                                } else {
+                                    t!("fleet.connection.offline").to_string()
+                                })
+                                .variant(
+                                    if self.cockpit.is_online() {
+                                        BadgeVariant::Default
+                                    } else {
+                                        BadgeVariant::Destructive
+                                    },
+                                ),
+                            ),
                     )
+                    .child(
+                        Button::new("platform-refresh", t!("fleet.refresh").to_string())
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .h(px(32.0))
+                            .icon(IconSource::from("refresh-cw"))
+                            .loading(self.loading)
+                            .disabled(self.loading || self.operation_busy)
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |_this, cx| cx.emit(FleetViewEvent::Refresh));
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(8.0))
                     .children([
-                        Badge::new(if self.cockpit.is_online() {
-                            t!("fleet.connection.online").to_string()
-                        } else {
-                            t!("fleet.connection.offline").to_string()
-                        })
-                        .variant(if self.cockpit.is_online() {
-                            BadgeVariant::Default
-                        } else {
-                            BadgeVariant::Destructive
-                        }),
                         Badge::new(t!("fleet.metric.resources", count = resources).to_string())
                             .variant(BadgeVariant::Outline),
                         Badge::new(t!("fleet.metric.sessions", count = sessions).to_string())
@@ -293,55 +390,37 @@ impl FleetView {
                             .variant(BadgeVariant::Outline),
                     ]),
             )
-            .child(
-                Button::new("platform-refresh", t!("fleet.refresh").to_string())
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Sm)
-                    .h(px(32.0))
-                    .icon(IconSource::from("refresh-cw"))
-                    .loading(self.loading)
-                    .disabled(self.loading || self.operation_busy)
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |_this, cx| cx.emit(FleetViewEvent::Refresh));
-                    }),
-            )
+            .into_any_element()
     }
 
-    fn render_action_preview(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_action_preview(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let Some(preview) = self.pending_action.as_ref() else {
-            return div();
+            return div().into_any_element();
         };
         let entity = cx.entity();
         let confirm_entity = entity.clone();
         let preview_for_event = preview.clone();
-        div()
+        let text = div()
+            .flex_1()
+            .min_w(px(0.0))
+            .text_size(px(11.0))
+            .text_color(ShellDeckColors::text_primary())
+            .child(
+                t!(
+                    "fleet.action.preview",
+                    action = preview.action.as_str(),
+                    target = preview.target.id.as_str(),
+                    revision = preview
+                        .expected_revision
+                        .map_or_else(|| "?".to_string(), |value| value.to_string()),
+                    parameter = preview.parameter.as_ref().map_or("—", PlatformText::as_str)
+                )
+                .to_string(),
+            );
+        let actions = div()
             .flex()
             .items_center()
-            .justify_between()
             .gap(px(8.0))
-            .px(px(12.0))
-            .py(px(8.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::warning())
-            .bg(ShellDeckColors::warning().opacity(0.12))
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(
-                        t!(
-                            "fleet.action.preview",
-                            action = preview.action.as_str(),
-                            target = preview.target.id.as_str(),
-                            revision = preview
-                                .expected_revision
-                                .map_or_else(|| "?".to_string(), |value| value.to_string()),
-                            parameter =
-                                preview.parameter.as_ref().map_or("—", PlatformText::as_str)
-                        )
-                        .to_string(),
-                    ),
-            )
             .child(
                 Button::new(
                     "confirm-platform-action",
@@ -370,7 +449,27 @@ impl FleetView {
                         cx.notify();
                     });
                 }),
-            )
+            );
+        let mut preview_bar = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(8.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::warning())
+            .bg(ShellDeckColors::warning().opacity(0.12));
+        if compact {
+            preview_bar = preview_bar
+                .flex_col()
+                .items_start()
+                .child(text)
+                .child(actions.w_full().justify_end());
+        } else {
+            preview_bar = preview_bar.child(text).child(actions);
+        }
+        preview_bar.into_any_element()
     }
 
     fn section_header(label: impl Into<SharedString>, count: usize) -> impl IntoElement {
@@ -396,6 +495,7 @@ impl FleetView {
     fn render_resource(
         &self,
         resource: &ResourceRecord,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let freshness = resource.freshness.state.as_str();
@@ -404,19 +504,28 @@ impl FleetView {
             "stale" => ShellDeckColors::warning(),
             _ => ShellDeckColors::text_muted(),
         };
-        let mut row = div()
+        let mut title = div()
+            .text_size(px(12.0))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(ShellDeckColors::text_primary())
+            .child(resource.summary.as_str().to_owned());
+        title = if compact {
+            title.line_clamp(2)
+        } else {
+            title.truncate()
+        };
+        let identity = div()
             .flex()
+            .flex_1()
+            .min_w(px(0.0))
             .items_start()
             .gap(px(9.0))
-            .px(px(12.0))
-            .py(px(9.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border().opacity(0.65))
             .child(
                 div()
                     .mt(px(4.0))
                     .size(px(7.0))
                     .rounded_full()
+                    .flex_shrink_0()
                     .bg(freshness_color),
             )
             .child(
@@ -426,17 +535,12 @@ impl FleetView {
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(resource.summary.as_str().to_owned()),
-                    )
+                    .child(title)
                     .child(
                         div()
                             .flex()
+                            .w_full()
+                            .min_w(px(0.0))
                             .items_center()
                             .gap(px(6.0))
                             .child(
@@ -445,6 +549,7 @@ impl FleetView {
                             )
                             .child(
                                 div()
+                                    .min_w(px(0.0))
                                     .truncate()
                                     .text_size(px(10.0))
                                     .text_color(ShellDeckColors::text_muted())
@@ -457,6 +562,19 @@ impl FleetView {
                             ),
                     ),
             );
+        let mut row = div()
+            .flex()
+            .items_start()
+            .gap(px(8.0))
+            .px(px(12.0))
+            .py(px(9.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border().opacity(0.65));
+        if compact {
+            row = row.flex_col().child(identity.w_full());
+        } else {
+            row = row.child(identity);
+        }
         if resource.resource.kind == ResourceKind::Approval
             && resource.freshness.state.as_str() == "fresh"
             && resource.summary.as_str().starts_with("state=pending")
@@ -466,7 +584,10 @@ impl FleetView {
             let approve_target = resource.resource.clone();
             let deny_target = resource.resource.clone();
             let revision = resource.freshness.revision;
-            row = row
+            let actions = div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
                 .child(
                     Button::new(
                         ElementId::from(SharedString::from(format!(
@@ -513,11 +634,16 @@ impl FleetView {
                         });
                     }),
                 );
+            row = if compact {
+                row.child(actions.w_full().justify_end())
+            } else {
+                row.child(actions.flex_shrink_0())
+            };
         }
         row
     }
 
-    fn render_resources(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_resources(&self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let resources = self
             .snapshot
             .as_ref()
@@ -540,7 +666,7 @@ impl FleetView {
             );
         } else {
             for resource in resources {
-                list = list.child(self.render_resource(resource, cx));
+                list = list.child(self.render_resource(resource, compact, cx));
             }
         }
         if let Some(snapshot) = self.snapshot.as_ref() {
@@ -591,7 +717,12 @@ impl FleetView {
         list
     }
 
-    fn render_session(&self, session: &SessionRecord, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_session(
+        &self,
+        session: &SessionRecord,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let coordinate = &session.session.resource;
         let key = resource_key(coordinate);
         let pane = self.cockpit.pane(coordinate);
@@ -605,30 +736,23 @@ impl FleetView {
         let observe_entity = entity.clone();
         let control_coordinate = coordinate.clone();
         let control_entity = entity.clone();
-        let mut row = div()
-            .id(ElementId::from(SharedString::from(format!(
-                "platform-session-{}",
-                coordinate.id.as_str()
-            ))))
+        let mut summary = div()
+            .text_size(px(13.0))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(ShellDeckColors::text_primary())
+            .child(session.session.summary.as_str().to_owned());
+        summary = if compact {
+            summary.line_clamp(2)
+        } else {
+            summary.truncate()
+        };
+        let identity = div()
             .w_full()
             .flex()
+            .flex_1()
+            .min_w(px(0.0))
             .items_start()
             .gap(px(10.0))
-            .px(px(14.0))
-            .py(px(11.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border().opacity(0.65))
-            .when(selected, |row| {
-                row.bg(ShellDeckColors::primary().opacity(0.08))
-            })
-            .cursor_pointer()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |this, cx| {
-                    this.selected_session = Some(select_id.clone());
-                    this.cockpit.select(&session_coordinate);
-                    cx.notify();
-                });
-            })
             .child(lucide_icon(
                 "messages-square",
                 16.0,
@@ -645,17 +769,12 @@ impl FleetView {
                     .flex()
                     .flex_col()
                     .gap(px(5.0))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(session.session.summary.as_str().to_owned()),
-                    )
+                    .child(summary)
                     .child(
                         div()
                             .flex()
+                            .w_full()
+                            .min_w(px(0.0))
                             .items_center()
                             .gap(px(6.0))
                             .child(
@@ -696,6 +815,7 @@ impl FleetView {
                             }))
                             .child(
                                 div()
+                                    .min_w(px(0.0))
                                     .truncate()
                                     .text_size(px(10.0))
                                     .text_color(ShellDeckColors::text_muted())
@@ -703,9 +823,12 @@ impl FleetView {
                             ),
                     ),
             );
+        let mut actions = div().flex().items_center().gap(px(6.0)).flex_shrink_0();
+        let mut has_actions = false;
 
         if session.attachable {
-            row = row.child(
+            has_actions = true;
+            actions = actions.child(
                 Button::new(
                     ElementId::from(SharedString::from(format!("observe-{key}"))),
                     if attached {
@@ -729,8 +852,9 @@ impl FleetView {
             );
         }
         if session.controllable && attached {
+            has_actions = true;
             let lease_for_event = lease.cloned();
-            row = row.child(
+            actions = actions.child(
                 Button::new(
                     ElementId::from(SharedString::from(format!("control-{key}"))),
                     if lease.is_some() {
@@ -760,10 +884,46 @@ impl FleetView {
                 }),
             );
         }
+
+        let mut row = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "platform-session-{}",
+                coordinate.id.as_str()
+            ))))
+            .w_full()
+            .flex()
+            .items_start()
+            .gap(px(8.0))
+            .px(px(14.0))
+            .py(px(11.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border().opacity(0.65))
+            .when(selected, |row| {
+                row.bg(ShellDeckColors::primary().opacity(0.08))
+            })
+            .cursor_pointer()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| {
+                    this.selected_session = Some(select_id.clone());
+                    this.cockpit.select(&session_coordinate);
+                    cx.notify();
+                });
+            });
+        if compact {
+            row = row.flex_col().child(identity);
+            if has_actions {
+                row = row.child(actions.w_full().justify_end());
+            }
+        } else {
+            row = row.child(identity);
+            if has_actions {
+                row = row.child(actions);
+            }
+        }
         row
     }
 
-    fn render_sessions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sessions(&self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.search_query.trim().to_ascii_lowercase();
         let sessions = self
             .snapshot
@@ -822,7 +982,7 @@ impl FleetView {
             );
         } else {
             for session in sessions {
-                list = list.child(self.render_session(session, cx));
+                list = list.child(self.render_session(session, compact, cx));
             }
         }
         list
@@ -849,6 +1009,71 @@ impl FleetView {
                     });
                 }
             })
+    }
+
+    fn render_compact_section_tabs(
+        &self,
+        resource_count: usize,
+        session_count: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let entity = cx.entity();
+        let sessions_entity = entity.clone();
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_sidebar())
+            .child(
+                Button::new(
+                    "platform-compact-resources",
+                    format!(
+                        "{} ({resource_count})",
+                        t!("fleet.resources.compact").to_string()
+                    ),
+                )
+                .flex_1()
+                .variant(if self.compact_section == FleetCompactSection::Resources {
+                    ButtonVariant::Default
+                } else {
+                    ButtonVariant::Outline
+                })
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("box"))
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.compact_section = FleetCompactSection::Resources;
+                        cx.notify();
+                    });
+                }),
+            )
+            .child(
+                Button::new(
+                    "platform-compact-sessions",
+                    format!(
+                        "{} ({session_count})",
+                        t!("fleet.sessions.compact").to_string()
+                    ),
+                )
+                .flex_1()
+                .variant(if self.compact_section == FleetCompactSection::Sessions {
+                    ButtonVariant::Default
+                } else {
+                    ButtonVariant::Outline
+                })
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("messages-square"))
+                .on_click(move |_, _, cx| {
+                    sessions_entity.update(cx, |this, cx| {
+                        this.compact_section = FleetCompactSection::Sessions;
+                        cx.notify();
+                    });
+                }),
+            )
     }
 
     fn render_pane_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1070,7 +1295,8 @@ fn resource_key(resource: &ResourceCoordinate) -> String {
 }
 
 impl Render for FleetView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact = fleet_uses_compact_layout(window.viewport_size().width, window.rem_size());
         let resource_count = self
             .snapshot
             .as_ref()
@@ -1079,38 +1305,22 @@ impl Render for FleetView {
             .snapshot
             .as_ref()
             .map_or(0, |snapshot| snapshot.sessions.len());
-        let mut content = div()
-            .flex_1()
-            .min_h(px(0.0))
-            .min_w(px(0.0))
-            .flex()
-            .child(
-                div()
-                    .w(px(380.0))
-                    .min_w(px(300.0))
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .border_r_1()
-                    .border_color(ShellDeckColors::border())
-                    .bg(ShellDeckColors::bg_sidebar())
-                    .child(Self::section_header(
-                        t!("fleet.resources.section").to_string(),
-                        resource_count,
-                    ))
-                    .child(self.render_resources(cx)),
-            )
-            .child(
-                div()
+        let mut content = if compact {
+            let panel = match self.compact_section {
+                FleetCompactSection::Resources => div()
                     .flex_1()
+                    .min_h(px(0.0))
                     .min_w(px(0.0))
-                    .h_full()
                     .flex()
                     .flex_col()
-                    .child(Self::section_header(
-                        t!("fleet.sessions.section").to_string(),
-                        session_count,
-                    ))
+                    .bg(ShellDeckColors::bg_sidebar())
+                    .child(self.render_resources(true, cx)),
+                FleetCompactSection::Sessions => div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
                     .child(
                         div()
                             .px(px(10.0))
@@ -1121,8 +1331,62 @@ impl Render for FleetView {
                     )
                     .child(self.render_pane_tabs(cx))
                     .child(self.render_selected_pane(cx))
-                    .child(self.render_sessions(cx)),
-            );
+                    .child(self.render_sessions(true, cx)),
+            };
+            div()
+                .flex_1()
+                .min_h(px(0.0))
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .child(self.render_compact_section_tabs(resource_count, session_count, cx))
+                .child(panel)
+        } else {
+            div()
+                .flex_1()
+                .min_h(px(0.0))
+                .min_w(px(0.0))
+                .flex()
+                .child(
+                    div()
+                        .w(px(380.0))
+                        .min_w(px(300.0))
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .border_r_1()
+                        .border_color(ShellDeckColors::border())
+                        .bg(ShellDeckColors::bg_sidebar())
+                        .child(Self::section_header(
+                            t!("fleet.resources.section").to_string(),
+                            resource_count,
+                        ))
+                        .child(self.render_resources(false, cx)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .child(Self::section_header(
+                            t!("fleet.sessions.section").to_string(),
+                            session_count,
+                        ))
+                        .child(
+                            div()
+                                .px(px(10.0))
+                                .py(px(8.0))
+                                .border_b_1()
+                                .border_color(ShellDeckColors::border())
+                                .child(self.render_session_search(cx)),
+                        )
+                        .child(self.render_pane_tabs(cx))
+                        .child(self.render_selected_pane(cx))
+                        .child(self.render_sessions(false, cx)),
+                )
+        };
         if let Some(error) = &self.error {
             content = content.child(
                 div()
@@ -1159,8 +1423,30 @@ impl Render for FleetView {
             .flex()
             .flex_col()
             .bg(ShellDeckColors::bg_primary())
-            .child(self.render_header(cx))
-            .child(self.render_action_preview(cx))
+            .child(self.render_header(compact, cx))
+            .child(self.render_action_preview(compact, cx))
             .child(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fleet_uses_compact_layout;
+
+    // SDTEST-1731 — the cockpit needs more horizontal room than a simple
+    // detail sheet. The breakpoint follows UI scale so neither column can
+    // silently fall outside the viewport at enlarged interface sizes.
+    #[test]
+    fn platform_cockpit_switches_to_one_accessible_panel_at_compact_width() {
+        assert!(fleet_uses_compact_layout(gpui::px(999.0), gpui::px(16.0)));
+        assert!(!fleet_uses_compact_layout(
+            gpui::px(1_000.0),
+            gpui::px(16.0)
+        ));
+        assert!(fleet_uses_compact_layout(gpui::px(1_999.0), gpui::px(32.0)));
+        assert!(!fleet_uses_compact_layout(
+            gpui::px(2_000.0),
+            gpui::px(32.0)
+        ));
     }
 }

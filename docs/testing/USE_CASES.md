@@ -988,6 +988,14 @@ Disconnect drops local control authority, preserves observation panes, marks
 them offline, and requires a new server-side lease after reconnect. Stale
 runtime configuration cannot restore the removed behavior.
 
+The native cockpit stays fully operable at compact widths. Below 1,000 logical
+pixels it replaces the fixed 380 px resource column plus session column with
+explicit Resources and Sessions views; their counters remain visible and each
+view owns the full available width. Session attach/control and approval actions
+move to a dedicated row instead of leaving the viewport. The compact header
+keeps connection state and Refresh, while the desktop two-column composition
+returns at and above the breakpoint. The breakpoint follows UI scale.
+
 ---
 
 ## 12. Hosted issue management (requests)
@@ -2592,6 +2600,9 @@ compact button plus secondary count badge as the neighboring Tickets queue.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-476 and added SDTEST-1731: the Platform
+  cockpit switches from fixed desktop columns to explicit full-width Resources
+  and Sessions views below a scale-aware 1,000 logical pixels.
 - **2026-08-28** — Amended SDUC-460 and added SDTEST-1730: Outlook Content-ID
   image markers resolve against same-message attachments or become a localized
   unavailable-image label across all request/ticket conversation surfaces.
