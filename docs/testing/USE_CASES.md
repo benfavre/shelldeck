@@ -1632,6 +1632,9 @@ shaping, so long turns remain wholly inside the conversation viewport instead
 of extending beneath history. Below that scale-aware breakpoint, history and
 conversation are exclusive full-width panels selected by the header button:
 the compact conversation never keeps a clipped or unusable history rail. In
+that compact Sheet header, actions and task count keep intrinsic width while a
+long shaped conversation title receives a Unicode-safe visible ellipsis; wide
+headers and short titles retain their complete text. In
 the main window, the
 right-side Assistant Sheet preserves the floating window's top-right and
 bottom-right 12 px `radius_xl`; the complete overlay is clipped once at the
@@ -2636,6 +2639,10 @@ new surface.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-414 and added SDTEST-1738: compact Assistant
+  Sheet titles gain a source-level visible ellipsis because GPUI can clip a
+  multi-run `StyledText` without painting its CSS ellipsis; short and wide
+  titles remain unchanged beside the intrinsic task/actions chrome.
 - **2026-08-28** — Added SDUC-487 and SDTEST-1737: account, mode, and site
   dropdowns close before the command palette opens through any entry point and
   are reset again on destination changes, preventing stacked or surviving

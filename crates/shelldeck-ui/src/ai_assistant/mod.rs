@@ -113,6 +113,16 @@ fn sheet_supports_history_column(viewport_width: Pixels, split_min_width: Pixels
     viewport_width >= split_min_width
 }
 
+fn compact_sheet_header_title(title: String, compact: bool) -> String {
+    const MAX_CHARS: usize = 32;
+    if !compact || title.chars().count() <= MAX_CHARS {
+        return title;
+    }
+
+    let shortened = title.chars().take(MAX_CHARS - 1).collect::<String>();
+    format!("{}…", shortened.trim_end())
+}
+
 /// The Sheet itself is 780 absolute pixels wide, but its conversation column
 /// loses the scaled 240px history rail when that rail is visible. Bubble
 /// shaping needs that effective width up front because GPUI cannot recover a
@@ -2570,7 +2580,11 @@ impl Render for AiAssistantView {
                     || matches!(task.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
             })
             .count();
-        let active_title = self.active_title();
+        let in_sheet = self.host == AiHost::Sheet;
+        let active_title = compact_sheet_header_title(
+            self.active_title(),
+            in_sheet && !sheet_supports_history_column,
+        );
         let active_labels = self
             .active_conversation()
             .map(composer::conversation_mention_labels)
@@ -2580,7 +2594,6 @@ impl Render for AiAssistantView {
         // sibling. In the Sheet the adabraka `Sheet` draws no header of its own
         // (no title, no close button => `has_header` is false), so this row is
         // the whole chrome and carries the close.
-        let in_sheet = self.host == AiHost::Sheet;
         let mut conversation_header = div()
             .flex()
             .items_center()
@@ -3508,9 +3521,9 @@ impl Render for AiAssistantView {
 #[cfg(test)]
 mod tests {
     use super::{
-        context_switch_resets, sheet_message_reading_width, sheet_supports_history_column,
-        should_auto_import_clippy, validated_clippy_result, AiAssistantView, AiQuickActionMode,
-        AiRequestGate,
+        compact_sheet_header_title, context_switch_resets, sheet_message_reading_width,
+        sheet_supports_history_column, should_auto_import_clippy, validated_clippy_result,
+        AiAssistantView, AiQuickActionMode, AiRequestGate,
     };
     use shelldeck_core::ai::{AiContext, AiSurface, CLIPPY_MAX_RESULT_CHARS};
 
@@ -3608,6 +3621,22 @@ mod tests {
         assert_eq!(
             sheet_message_reading_width(gpui::px(600.0), false, gpui::px(240.0), gpui::px(600.0)),
             gpui::px(600.0)
+        );
+    }
+
+    // SDTEST-1738 — A-16 / SDUC-414. StyledText can clip a shaped run without
+    // painting CSS ellipsis, so compact Sheet titles carry their own bounded
+    // Unicode-safe ellipsis while wide and short titles remain unchanged.
+    #[test]
+    fn compact_sheet_header_title_has_a_visible_ellipsis() {
+        let long = "Analyser les incidents Plateforme et les sessions Automonique".to_string();
+        let compact = compact_sheet_header_title(long.clone(), true);
+        assert_eq!(compact.chars().count(), 32);
+        assert!(compact.ends_with('…'));
+        assert_eq!(compact_sheet_header_title(long.clone(), false), long);
+        assert_eq!(
+            compact_sheet_header_title("Nouvelle conversation".to_string(), true),
+            "Nouvelle conversation"
         );
     }
 
