@@ -159,6 +159,12 @@ jobs:
           cargo update --manifest-path "$crate_dir/Cargo.toml"
           cargo test --manifest-path "$crate_dir/Cargo.toml" explicit_missing_cwd_is_forwarded_instead_of_falling_back_home
 
+      # SDPATCH-120 owns the Windows tray's ICO-to-HICON boundary. Exercise the
+      # exact asset selected by ShellDeck on the native Windows runner.
+      - name: Test native Windows tray icon decoder
+        if: runner.os == 'Windows'
+        run: cargo test -p shelldeck --bin shelldeck sdtest_1812_windows_tray_asset_is_a_decodable_ico
+
       - name: Test shelldeck-core
         run: cargo test -p shelldeck-core
 

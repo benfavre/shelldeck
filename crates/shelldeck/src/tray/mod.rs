@@ -253,7 +253,9 @@ fn counter_label_ai_tasks(n: usize) -> String {
 fn tray_icon_bytes() -> &'static [u8] {
     #[cfg(target_os = "macos")]
     return include_bytes!("../../../../packaging/icons/shelldeck-tray-template-macos.png");
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    return include_bytes!("../../../../packaging/icons/shelldeck.ico");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     return include_bytes!("../../../../packaging/icons/shelldeck-32.png");
 }
 
@@ -370,5 +372,17 @@ mod tests {
         for (x, y) in [(0, 0), (35, 0), (0, 35), (35, 35)] {
             assert_eq!(image.get_pixel(x, y).0[3], 0);
         }
+    }
+
+    // SDTEST-1812
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn sdtest_1812_windows_tray_asset_is_a_decodable_ico() {
+        let bytes = tray_icon_bytes();
+        assert_eq!(&bytes[..6], &[0, 0, 1, 0, 6, 0]);
+        let icon = image::load_from_memory_with_format(bytes, image::ImageFormat::Ico)
+            .expect("decode Windows tray ICO");
+        assert_eq!(icon.width(), icon.height());
+        assert!(icon.width() >= 32);
     }
 }

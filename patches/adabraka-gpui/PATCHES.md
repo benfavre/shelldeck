@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total marker occurrences in code: **159**
+Total marker occurrences in code: **160**
 (`rg "ShellDeck patch:" src/`; SDPATCH-103 and SDPATCH-119 are
 Cargo.toml-only and outside the src-scoped marker convention.)
 
@@ -43,8 +43,9 @@ Cargo.toml-only and outside the src-scoped marker convention.)
   - `src/platform/mac/tray.rs` — `// ShellDeck patch: SDPATCH-120 — retain the actual NSStatusItem result for`
   - `src/platform/mac/tray.rs` — `// ShellDeck patch: SDPATCH-120 — render informational rows disabled.`
   - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — report the retained Win32 tray owner.`
-  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — retain the Win32 API result instead`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — create the shell entry only after a real`
   - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — render informational rows disabled.`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — decode a complete .ico file as an ICONDIR,`
 - **Why**: ShellDeck now uses GPUI's native tray on every desktop instead of
   carrying a second `tray-icon`/GTK stack. The application must know whether
   tray creation actually succeeded before honoring start-hidden, needs
@@ -630,8 +631,9 @@ Cargo.toml-only and outside the src-scoped marker convention.)
 
 - **2026-08-28** — Added SDPATCH-120: made GPUI's native tray API sufficient
   for ShellDeck's cross-platform menu, fail-safe hidden-start decision, and
-  Linux event routing. 20 new markers, bringing the source total from 139 to
-  159.
+  Linux event routing. The Windows path decodes ShellDeck's ICO resource and
+  admits hidden start only after `NIM_ADD` accepts a real `HICON`. 21 new
+  markers, bringing the source total from 139 to 160.
 
 - **2026-08-28** — Added SDPATCH-119: narrowed GPUI's downstream
   `test-support` feature to the `adabraka_util` capability it actually uses,

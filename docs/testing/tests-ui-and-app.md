@@ -334,6 +334,7 @@ parallel `cargo test`.
 | SDTEST-1409 | `main::tests::task_center_request_always_shows_the_existing_dock` | SDUC-429, SDUC-434 | Green | A missing Dock is created and a hidden or visible Dock is shown idempotently, so selecting the tray task indicator never hides it. |
 | SDTEST-1410 | `tray::tests::macos_template_asset_is_retina_monochrome_with_transparent_background` | SDUC-434 | Green | The dedicated 36×36 Retina asset decodes, contains only black visible pixels, keeps transparent corners/background, and has non-trivial bounded mark coverage. macOS alone enables AppKit template rendering. |
 | SDTEST-1411 | `tray::tests::native_menu_snapshot_preserves_fail_closed_actions_counters_and_pins` | SDUC-429, SDUC-412, SDUC-434 | Green | One immutable GPUI menu snapshot keeps signed-out session actions non-interactive, retains exact live counters, and binds a pinned label to its exact UUID command. Native visual/event smoke remains a release check. |
+| SDTEST-1812 | `tray::tests::sdtest_1812_windows_tray_asset_is_a_decodable_ico` | SDUC-434, SDUC-435 | Green | The native Windows CI runner requires ShellDeck's selected tray asset to remain a complete, decodable multi-size ICO. GPUI selects its closest 32 px resource for `CreateIconFromResourceEx`, and hidden start separately depends on the successful icon-bearing `NIM_ADD`. |
 | SDTEST-1412 | `workspace::ssh::tests::only_unexpected_ssh_transport_loss_notifies_with_exact_identity` | SDUC-439 | Green | The session-end reducer keeps explicit tab closes and clean remote exits silent, while unexpected transport loss emits one notification carrying the exact connection display name. |
 | SDTEST-1414 | *to write* — User/Support home dashboards route to their operational tabs | SDUC-440 | **Red / P1** | GPUI integration: both modes start on Accueil; every Support counter clears stale constraints and opens the exact advertised queue; the greeting addresses « équipe Support » directly; the action banner and priority-list column keep distinct headings; priority-ticket and recent-request rows open their real detail; User exposes Sites/Requests only as primary tabs, keeps New Request as its sole quick action, and gives each site distinct public/Manage/select actions; sync acts on the current Manage account; onboarding omits Dev cards/media/shortcuts for non-Dev roles. Manually validated on X11: the User quick action opened creation on 2026-08-25, and the Support greeting rendered exactly « Bonjour, équipe Support » on 2026-08-26. |
 | SDTEST-1614 | `support_view::home::tests::support_home_targets_route_to_the_expected_section_and_ticket_filter` | SDUC-440 | Green | The five home destinations map exhaustively to Requests or to the exact All/Open/SLA/Unassigned ticket filter, preventing a visually correct card from opening the wrong queue. |
@@ -547,8 +548,9 @@ targets (not just Linux) are cross-linked here for the release
 checklist:
 
 - SDTEST-121, SDTEST-122 (keychain macOS/Windows)
-- SDTEST-1410, SDTEST-1411 (native tray template/menu snapshot plus the
-  Linux/macOS/Windows release compile matrix)
+- SDTEST-1410, SDTEST-1411, SDTEST-1812 (native tray template/menu snapshot,
+  Windows ICO-to-HICON smoke, plus the Linux/macOS/Windows release compile
+  matrix)
 - SDTEST-960..968 (PTY spawn on all three)
 - SDTEST-1579..1581 (shell resolution — pure fn asserts both platform
   branches from any target, no cfg gate)

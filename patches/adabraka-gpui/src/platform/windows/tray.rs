@@ -28,66 +28,102 @@ pub(crate) struct WindowsTray {
 }
 
 impl WindowsTray {
+    // ShellDeck patch: SDPATCH-120 — create the shell entry only after a real
+    // HICON exists, include it in the authoritative NIM_ADD, and retain the
+    // exact add result as the hidden-start availability boundary.
     pub fn new(hwnd: HWND) -> Self {
-        let mut tray = Self {
+        Self {
             icon_added: false,
             hwnd,
             current_icon: None,
             menu_items: Vec::new(),
             command_id_map: HashMap::new(),
-        };
-        tray.ensure_icon(hwnd);
-        tray
+        }
     }
 
-    fn ensure_icon(&mut self, hwnd: HWND) {
-        if self.icon_added {
+    pub(crate) fn is_available(&self) -> bool {
+        self.icon_added && self.current_icon.is_some()
+    }
+
+    pub fn set_icon(&mut self, icon_data: Option<&[u8]>, hwnd: HWND) {
+        let Some(icon_data) = icon_data else {
+            self.remove_icon();
             return;
+        };
+        let Some(hicon) = create_hicon_from_bytes(icon_data) else {
+            return;
+        };
+
+        if self.icon_added {
+            let modify = NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                hWnd: hwnd,
+                uID: TRAY_ICON_ID,
+                uFlags: NIF_ICON,
+                hIcon: hicon,
+                ..Default::default()
+            };
+            if unsafe { Shell_NotifyIconW(NIM_MODIFY, &modify).as_bool() } {
+                self.replace_retained_icon(hicon);
+                return;
+            }
+
+            // Explorer may have restarted and forgotten the old entry. Remove
+            // any surviving registration before retrying one authoritative add.
+            self.remove_icon();
         }
+
         let mut nid = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: hwnd,
             uID: TRAY_ICON_ID,
-            uFlags: NIF_MESSAGE | NIF_SHOWTIP,
+            uFlags: NIF_MESSAGE | NIF_SHOWTIP | NIF_ICON,
             uCallbackMessage: WM_GPUI_TRAY_ICON,
+            hIcon: hicon,
             ..Default::default()
         };
-        // ShellDeck patch: SDPATCH-120 — retain the Win32 API result instead
-        // of treating an attempted registration as a live tray icon.
-        self.icon_added = unsafe { Shell_NotifyIconW(NIM_ADD, &nid).as_bool() };
+        if unsafe { Shell_NotifyIconW(NIM_ADD, &nid).as_bool() } {
+            self.icon_added = true;
+            self.replace_retained_icon(hicon);
+        } else {
+            unsafe {
+                let _ = DestroyIcon(hicon);
+            }
+        }
     }
 
-    pub(crate) fn is_available(&self) -> bool {
-        self.icon_added
-    }
-
-    pub fn set_icon(&mut self, icon_data: Option<&[u8]>, hwnd: HWND) {
-        self.ensure_icon(hwnd);
-        if let Some(old_icon) = self.current_icon.take() {
+    fn replace_retained_icon(&mut self, hicon: HICON) {
+        if let Some(old_icon) = self.current_icon.replace(hicon) {
             unsafe {
                 let _ = DestroyIcon(old_icon);
             }
         }
-        let hicon = match icon_data {
-            Some(data) => create_hicon_from_bytes(data),
-            None => None,
-        };
-        self.current_icon = hicon;
-        let mut nid = NOTIFYICONDATAW {
-            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-            hWnd: hwnd,
-            uID: TRAY_ICON_ID,
-            uFlags: NIF_ICON,
-            hIcon: hicon.unwrap_or_default(),
-            ..Default::default()
-        };
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+
+    fn remove_icon(&mut self) {
+        if self.icon_added {
+            let nid = NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                hWnd: self.hwnd,
+                uID: TRAY_ICON_ID,
+                ..Default::default()
+            };
+            unsafe {
+                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+            }
+            self.icon_added = false;
+        }
+        if let Some(icon) = self.current_icon.take() {
+            unsafe {
+                let _ = DestroyIcon(icon);
+            }
         }
     }
 
     pub fn set_tooltip(&mut self, tooltip: &str, hwnd: HWND) {
-        self.ensure_icon(hwnd);
+        if !self.is_available() {
+            return;
+        }
         let mut nid = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: hwnd,
@@ -232,36 +268,69 @@ impl WindowsTray {
 
 impl Drop for WindowsTray {
     fn drop(&mut self) {
-        if self.icon_added {
-            let mut nid = NOTIFYICONDATAW {
-                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                hWnd: self.hwnd,
-                uID: TRAY_ICON_ID,
-                ..Default::default()
-            };
-            unsafe {
-                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-            }
-        }
-        if let Some(icon) = self.current_icon.take() {
-            unsafe {
-                let _ = DestroyIcon(icon);
-            }
-        }
+        self.remove_icon();
     }
 }
 
+// ShellDeck patch: SDPATCH-120 — decode a complete .ico file as an ICONDIR,
+// select its closest high-depth image, and pass only that image resource to
+// CreateIconFromResourceEx. LookupIconIdFromDirectoryEx returns a resource ID,
+// not an offset into an .ico file, and cannot decode PNG bytes directly.
 fn create_hicon_from_bytes(data: &[u8]) -> Option<HICON> {
+    let resource = ico_resource(data, 32)?;
     unsafe {
-        let offset = LookupIconIdFromDirectoryEx(data.as_ptr(), true, 0, 0, LR_DEFAULTCOLOR);
-        if offset <= 0 {
-            return None;
-        }
-        if (offset as usize) >= data.len() {
-            return None;
-        }
-        let icon_data = &data[offset as usize..];
-        let hicon = CreateIconFromResourceEx(icon_data, true, 0x00030000, 0, 0, LR_DEFAULTCOLOR);
-        hicon.ok()
+        CreateIconFromResourceEx(resource, true, 0x00030000, 32, 32, LR_DEFAULTCOLOR).ok()
     }
+}
+
+fn ico_resource(data: &[u8], desired_size: u16) -> Option<&[u8]> {
+    if read_u16(data, 0)? != 0 || read_u16(data, 2)? != 1 {
+        return None;
+    }
+    let count = usize::from(read_u16(data, 4)?);
+    let directory_end = 6usize.checked_add(count.checked_mul(16)?)?;
+    if count == 0 || directory_end > data.len() {
+        return None;
+    }
+
+    let mut best: Option<(u32, u16, &[u8])> = None;
+    for index in 0..count {
+        let entry = 6usize.checked_add(index.checked_mul(16)?)?;
+        let width = match *data.get(entry)? {
+            0 => 256,
+            width => u16::from(width),
+        };
+        let height = match *data.get(entry + 1)? {
+            0 => 256,
+            height => u16::from(height),
+        };
+        let bit_depth = read_u16(data, entry + 6)?;
+        let length = usize::try_from(read_u32(data, entry + 8)?).ok()?;
+        let offset = usize::try_from(read_u32(data, entry + 12)?).ok()?;
+        let end = offset.checked_add(length)?;
+        if length == 0 || offset < directory_end || end > data.len() {
+            return None;
+        }
+        let distance = u32::from(width.abs_diff(desired_size))
+            .checked_add(u32::from(height.abs_diff(desired_size)))?;
+        let resource = data.get(offset..end)?;
+        if best
+            .as_ref()
+            .is_none_or(|(best_distance, best_depth, _)| {
+                distance < *best_distance
+                    || (distance == *best_distance && bit_depth > *best_depth)
+            })
+        {
+            best = Some((distance, bit_depth, resource));
+        }
+    }
+    best.map(|(_, _, resource)| resource)
+}
+
+fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(data.get(offset..offset + 2)?.try_into().ok()?))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(data.get(offset..offset + 4)?.try_into().ok()?))
 }

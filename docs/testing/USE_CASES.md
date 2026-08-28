@@ -2879,6 +2879,7 @@ an unavailable adapter refuses before any effect.
   GPUI's native backend: Linux no longer initializes GTK/AppIndicator, native
   availability remains authoritative for hidden start, and counters/signed-out
   actions use portable disabled labels with foreground-thread event delivery.
+  Added SDTEST-1812 for Windows ICO decoding and visible-icon registration.
 
 - **2026-08-28** — Amended SDUC-443 and added SDTEST-1808: status counters
   now use semantic icons, numbers, 20 px hover targets, and localized tooltips;
