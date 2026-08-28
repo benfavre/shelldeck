@@ -1664,7 +1664,7 @@ impl Workspace {
                 at: iss.created_at,
                 channel: source_channel.clone(),
             },
-            iss.body.clone(),
+            crate::support_view::thread::cid_safe_text(&iss.body, &iss.attachments),
             opening_attachments,
             ThreadMessageExtras {
                 link_handler: Some(link_handler.clone()),
@@ -1695,7 +1695,7 @@ impl Workspace {
                 };
                 let actor = (!c.author.trim().is_empty()).then(|| c.author.clone());
                 let mut item = div().flex().flex_col().gap(px(6.0)).child(thread_note(
-                    c.body.clone(),
+                    crate::support_view::thread::cid_safe_text(&c.body, &c.attachments),
                     actor,
                     c.at,
                     kind,
@@ -1723,7 +1723,7 @@ impl Workspace {
                         at: c.at,
                         channel,
                     },
-                    c.body.clone(),
+                    crate::support_view::thread::cid_safe_text(&c.body, &c.attachments),
                     attachments,
                     ThreadMessageExtras {
                         link_handler: Some(link_handler.clone()),

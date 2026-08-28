@@ -1121,6 +1121,14 @@ only that label as the link text and retains the shared confirmation panel.
 Standard `[label](destination)` Markdown, standalone or whitespace-separated
 autolinks, unsafe schemes, code and image syntax are not reinterpreted.
 
+Outlook may also leave an inline-image Content-ID marker such as
+`[cid:image003.png@opaque-id]` in the plain-text body. Conversation rendering
+matches the filename before `@` against attachments belonging to that exact
+message: a match becomes a localized pointer to the attachment gallery; a miss
+becomes an explicit unavailable-image label. The opaque transport identifier is
+never rendered. Ticket, Support-request and User-request threads use the same
+presentation adapter, while cached source text and copy actions stay untouched.
+
 ### SDUC-461 — External Support titles remain readable without rewriting source data
 
 Ticket subjects and request titles received through Slack may contain mrkdwn
@@ -2584,6 +2592,9 @@ compact button plus secondary count badge as the neighboring Tickets queue.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-460 and added SDTEST-1730: Outlook Content-ID
+  image markers resolve against same-message attachments or become a localized
+  unavailable-image label across all request/ticket conversation surfaces.
 - **2026-08-28** — Amended SDUC-486 and SDTEST-1725: Support navigation and
   home counters retain the authorized server total when the loaded request page
   is capped, while the virtual list remains bounded to the rows received.
