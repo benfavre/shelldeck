@@ -71,7 +71,7 @@ jobs:
       - name: Test portable-pty Unix cwd authority regression
         shell: bash
         run: |
-          crate_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name 'portable-pty-0.8.1' | head -1)"
+          crate_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name 'portable-pty-0.9.0' | head -1)"
           test -n "$crate_dir"
           grep -F -q '// SDTEST-1745' "$crate_dir/src/cmdbuilder.rs"
           cargo update --manifest-path "$crate_dir/Cargo.toml"
@@ -139,7 +139,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          crate_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name 'portable-pty-0.8.1' | head -1)"
+          crate_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name 'portable-pty-0.9.0' | head -1)"
           test -n "$crate_dir"
           grep -F -q '// SDTEST-1745' "$crate_dir/src/cmdbuilder.rs"
           cargo update --manifest-path "$crate_dir/Cargo.toml"
@@ -155,7 +155,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          crate_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name 'portable-pty-0.8.1' | head -1)"
+          crate_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name 'portable-pty-0.9.0' | head -1)"
           test -n "$crate_dir"
           grep -F -q '// SDTEST-1744' "$crate_dir/src/cmdbuilder.rs"
           cargo update --manifest-path "$crate_dir/Cargo.toml"
