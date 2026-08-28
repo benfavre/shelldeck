@@ -94,7 +94,11 @@ automonique-platform-client = { git = "https://github.com/bext-stack/automonique
 automonique-protocol = { git = "https://github.com/bext-stack/automonique", rev = "cd8007526f6b60674a3a7174a4cf17b8ffb2ba52" }
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
 ] }
 
 [patch.crates-io]

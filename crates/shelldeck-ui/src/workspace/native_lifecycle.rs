@@ -254,19 +254,6 @@ struct ChildOutput {
     stderr: String,
 }
 
-struct ProcessGroupGuard {
-    process_id: u32,
-    armed: bool,
-}
-
-impl Drop for ProcessGroupGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            shelldeck_core::agent_runtime::terminate_local_process_group(self.process_id);
-        }
-    }
-}
-
 pub(super) trait GitWorktreeAdapter: Send + Sync {
     fn prepare(
         &self,
@@ -964,10 +951,8 @@ async fn cleanup_owned_effect(effect: WorktreeEffect) -> Result<(), WorkspaceCre
                 "workspaces.launcher.target_authority_changed",
             ));
         }
-        let (command_private_root, _inherited_private_root) = private_authority
-            .inherited_argument_path()
-            .map_err(|_| workspace_fs_failure())?;
-        let command_target = command_private_root.join(effect.workspace.to_string());
+        let (command_target, _target_authority, _inherited_target) =
+            bound_worktree_argument(&effect)?;
         let removed = git_output_owned(
             &effect.source,
             vec![
@@ -1054,10 +1039,15 @@ async fn run_command(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let mut child = command.spawn().map_err(|_| git_runtime_failure())?;
-    let mut process_group = ProcessGroupGuard {
-        process_id: child.id(),
-        armed: true,
-    };
+    let mut process_tree =
+        match shelldeck_core::agent_runtime::LocalProcessTree::capture(child.id()) {
+            Ok(process_tree) => process_tree,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.status().await;
+                return Err(git_runtime_failure());
+            }
+        };
     let stdout = child.stdout.take().ok_or_else(git_runtime_failure)?;
     let stderr = child.stderr.take().ok_or_else(git_runtime_failure)?;
     let stdout_task = smol::spawn(drain_bounded(stdout, 64 * 1024));
@@ -1069,7 +1059,7 @@ async fn run_command(
         if cancelled.load(Ordering::Acquire) || started.elapsed() >= Duration::from_secs(120) {
             was_cancelled = cancelled.load(Ordering::Acquire);
             timed_out = !was_cancelled;
-            shelldeck_core::agent_runtime::terminate_local_process_group(child.id());
+            process_tree.terminate();
             let _ = child.kill();
         }
         if let Some(status) = child.try_status().map_err(|_| git_runtime_failure())? {
@@ -1086,7 +1076,7 @@ async fn run_command(
     )
     .await;
     let Some((stdout, stderr)) = drained else {
-        shelldeck_core::agent_runtime::terminate_local_process_group(child.id());
+        process_tree.terminate();
         let _ = child.kill();
         return Err(filesystem_failure(
             "workspaces.launcher.worktree_timeout",
@@ -1094,7 +1084,7 @@ async fn run_command(
         ));
     };
     let stderr = String::from_utf8_lossy(&stderr).into_owned();
-    process_group.armed = false;
+    process_tree.disarm();
     if was_cancelled {
         return Err(WorkspaceCreateFailure {
             kind: WorkspaceCreateFailureKind::Unknown,
@@ -1349,15 +1339,98 @@ fn remove_owned_target(
         }
         return Ok(());
     };
+    #[cfg(not(unix))]
+    {
+        let _ = (candidate, expected);
+        // Preserve the exact candidate and journal when the platform cannot
+        // provide handle-relative recursive deletion.
+        return Err(authorization_failure(
+            "workspaces.launcher.target_authority_changed",
+        ));
+    }
+    #[cfg(unix)]
     let quarantine = private_root
         .command_path()
         .join(format!(".cleanup-{}", uuid::Uuid::new_v4()));
+    #[cfg(unix)]
     std::fs::rename(&candidate, &quarantine).map_err(|_| workspace_fs_failure())?;
+    #[cfg(unix)]
     sync_directory(&private_root.command_path())?;
-    match std::fs::remove_dir_all(&quarantine) {
-        Ok(()) => sync_directory(&private_root.command_path()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err(workspace_fs_failure()),
+    #[cfg(unix)]
+    remove_verified_quarantine(private_root, &quarantine, expected)
+}
+
+#[cfg(unix)]
+fn remove_verified_quarantine(
+    private_root: &AuthorizedLocalRoot,
+    quarantine: &Path,
+    expected: FileIdentity,
+) -> Result<(), WorkspaceCreateFailure> {
+    let authority = AuthorizedLocalRoot::capture(quarantine)
+        .map_err(|_| authorization_failure("workspaces.launcher.target_authority_changed"))?;
+    if authority.unix_identity() != (expected.volume, expected.file) {
+        return Err(authorization_failure(
+            "workspaces.launcher.target_authority_changed",
+        ));
+    }
+    // Delete children through the already-open directory authority. The
+    // standard library's Unix remove_dir_all is descriptor-relative and
+    // symlink-race hardened; spelling each child beneath the stable fd keeps a
+    // later exchange of the quarantine leaf out of the traversal.
+    let entries = std::fs::read_dir(authority.command_path())
+        .map_err(|_| workspace_fs_failure())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| workspace_fs_failure())?;
+    for entry in entries {
+        let child = authority.command_path().join(entry.file_name());
+        let metadata = std::fs::symlink_metadata(&child).map_err(|_| workspace_fs_failure())?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            std::fs::remove_dir_all(&child).map_err(|_| workspace_fs_failure())?;
+        } else {
+            std::fs::remove_file(&child).map_err(|_| workspace_fs_failure())?;
+        }
+    }
+    authority
+        .revalidate()
+        .map_err(|_| authorization_failure("workspaces.launcher.target_authority_changed"))?;
+    // Only an empty directory can be removed here. An exchange after the
+    // revalidation therefore cannot recursively destroy replacement data.
+    std::fs::remove_dir(quarantine).map_err(|_| workspace_fs_failure())?;
+    sync_directory(&private_root.command_path())
+}
+
+fn bound_worktree_argument(
+    effect: &WorktreeEffect,
+) -> Result<(PathBuf, AuthorizedLocalRoot, Option<std::fs::File>), WorkspaceCreateFailure> {
+    let _expected = effect
+        .target_identity
+        .ok_or_else(|| authorization_failure("workspaces.launcher.target_authority_changed"))?;
+    let authority = AuthorizedLocalRoot::capture(&effect.target)
+        .map_err(|_| authorization_failure("workspaces.launcher.target_authority_changed"))?;
+    authority
+        .revalidate()
+        .map_err(|_| authorization_failure("workspaces.launcher.target_authority_changed"))?;
+    #[cfg(unix)]
+    {
+        if authority.unix_identity() != (_expected.volume, _expected.file) {
+            return Err(authorization_failure(
+                "workspaces.launcher.target_authority_changed",
+            ));
+        }
+        let (path, inherited) = authority
+            .inherited_argument_path()
+            .map_err(|_| workspace_fs_failure())?;
+        Ok((path, authority, inherited))
+    }
+    #[cfg(not(unix))]
+    {
+        // Git accepts only a pathname and would reopen the leaf after this
+        // check. Windows exposes no portable handle-relative spelling that Git
+        // can consume, so destructive registered-worktree cleanup fails closed.
+        let _ = authority;
+        Err(authorization_failure(
+            "workspaces.launcher.target_authority_changed",
+        ))
     }
 }
 
@@ -1927,6 +2000,46 @@ mod tests {
         assert!(moved.join("protected").is_dir());
         assert!(!attacker.join("protected").exists());
         assert!(authority.revalidate().is_err());
+    }
+
+    // SDTEST-1770 — SDUC-491
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sdtest_1770_cleanup_binds_leaf_and_rechecks_quarantine_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let (first, _) = repository(&source);
+        let private = temp.path().join("private");
+        let workspace = CatalogWorkspaceId::new();
+        let target = private.join(workspace.to_string());
+        let request = worktree_request(
+            workspace,
+            std::fs::canonicalize(&source).unwrap(),
+            target.clone(),
+            first,
+        );
+        let outcome = prepare_git_worktree(&request, &AtomicBool::new(false))
+            .await
+            .unwrap();
+        let NativeLaunchOutcome::Ready(receipt) = outcome else {
+            panic!("expected a ready worktree");
+        };
+        let effect = receipt.cleanup.unwrap();
+        let (bound, _authority, _inherited) = bound_worktree_argument(&effect).unwrap();
+        let moved = private.join("moved-owned-worktree");
+        std::fs::rename(&target, &moved).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        assert_eq!(std::fs::canonicalize(bound).unwrap(), moved);
+
+        let private_authority = ensure_private_root(&private).unwrap();
+        let owned = private.join("owned");
+        std::fs::create_dir(&owned).unwrap();
+        let expected = file_identity(&owned).unwrap();
+        let quarantine = private.join(".cleanup-substituted");
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::write(quarantine.join("must-survive"), "unowned").unwrap();
+        assert!(remove_verified_quarantine(&private_authority, &quarantine, expected).is_err());
+        assert!(quarantine.join("must-survive").is_file());
     }
 
     struct GatedGitAdapter {

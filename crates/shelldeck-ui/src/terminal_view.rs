@@ -5633,6 +5633,11 @@ impl AuthorizedLocalRoot {
         &self.canonical
     }
 
+    #[cfg(unix)]
+    pub(crate) fn unix_identity(&self) -> (u64, u64) {
+        self.identity
+    }
+
     /// Stable command-line spelling for the already-open directory. Linux
     /// resolves this through the parent process' descriptor, so a concurrent
     /// rename or symlink replacement cannot redirect a spawned Git process.

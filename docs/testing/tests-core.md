@@ -522,6 +522,7 @@ Existing: **0 tests**.
 | SDTEST-1760 | `workspace_review_tests.rs::sdtest_1760_comment_batches_require_exact_workspace_surface_and_unique_anchors` | SDUC-492 | Green | Comment preparation/submission fences the exact Platform user-workspace ID and reconciliation revision through grant, projection, target and receipt; a mismatched receipt and P1→P2 remap are refused, as is matching-ID/actor/revision evidence crossing review, session, grant, or surface authority. Duplicate comment IDs and section/hunk aliases fail closed. |
 | SDTEST-1761 | `workspace_review_tests.rs::sdtest_1761_prepared_and_refused_records_remain_until_explicit_ack` | SDUC-492 | Yellow | Prepared records survive reload and can be explicitly abandoned; terminal refusals remain enumerable and continue occupying their bounded slot until explicit acknowledgement. Forced-process evidence remains SDTEST-1758. |
 | SDTEST-1762 | `workspace_review_tests.rs::sdtest_1762_reconciliation_not_found_terminates_without_redispatch` | SDUC-492 | Green | A receipt-not-found reconciliation refusal persists across reload, remains non-redispatchable, is enumerable, and is removed only by explicit terminal acknowledgement. |
+| SDTEST-1771 | `agent_runtime.rs::sdtest_1771_windows_job_object_terminates_owned_process_tree` | SDUC-491 | Green | The Windows matrix attaches a spawned command and its descendant to an owned Job Object, terminates the job without PID/taskkill lookup, and reaps the direct child within a bounded deadline. |
 
 ---
 

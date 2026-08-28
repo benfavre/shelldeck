@@ -505,6 +505,7 @@ parallel `cargo test`.
 | SDTEST-1767 | `workspace::workspaces::native_lifecycle::tests::sdtest_1767_cancellation_terminates_and_reaps_the_entire_process_group` | SDUC-491 | Green | Linux native evidence spawns a shell plus grandchild, cancels the operation, and verifies the descendant disappears from `/proc`; portable cancellation code remains compile-checked on Windows/macOS. |
 | SDTEST-1768 | `workspace::workspaces::native_lifecycle::tests::sdtest_1768_descendant_pipe_holder_cannot_deadlock_command_completion` | SDUC-491 | Green | A successful parent that leaves a pipe-owning descendant cannot block completion indefinitely: the bounded drain expires, kills the process group, and verifies the descendant disappears from `/proc`. |
 | SDTEST-1769 | `terminal_view::tests::prepared_workspace_pty_stays_detached_until_explicit_publication` | SDUC-491 | Green | A workspace PTY can be prepared and dropped without creating any tab or active session; only the explicit post-persistence publication call makes it visible. |
+| SDTEST-1770 | `workspace::workspaces::native_lifecycle::tests::sdtest_1770_cleanup_binds_leaf_and_rechecks_quarantine_identity` | SDUC-491 | Green | Registered Git cleanup retains an open authority for the exact worktree leaf so a later pathname exchange cannot redirect Git, and recursive quarantine deletion refuses an object whose post-rename identity does not match the journal. |
 
 ---
 

@@ -2667,11 +2667,12 @@ Stale or Unknown projection even if that projection claims a higher revision.
 
 ## Change log
 
-- **2026-08-28** — Hardened SDUC-491 and added SDTEST-1763..1769 for durable
+- **2026-08-28** — Hardened SDUC-491 and added SDTEST-1763..1771 for durable
   restart journals, immutable OID/repository/clean-state adoption, no-follow
-  root/target authority, closed-receiver compensation, and process-tree
-  cancellation/reaping including a descendant-held-pipe deadline, and detached
-  PTY publication after the durable catalog boundary.
+  root/target authority, leaf-bound Git cleanup with post-quarantine identity,
+  closed-receiver compensation, and owned process-tree cancellation/reaping
+  including Windows Job Objects and a descendant-held-pipe deadline, plus
+  detached PTY publication after the durable catalog boundary.
 - **2026-08-28** — Amended SDUC-489/491 with the production local-folder and
   ShellDeck-owned Git-worktree adapter, exact repository/branch/path adoption,
   operation-scoped cancellation cleanup, transactional catalog rollback, and
