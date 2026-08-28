@@ -235,6 +235,11 @@ impl Workspace {
     }
 
     pub(super) fn refresh_fleet_view(&mut self, cx: &mut Context<Self>) {
+        let attention_context = self
+            .workspace_hub
+            .read(cx)
+            .active_platform_attention_context();
+        self.reconcile_platform_attention_context(attention_context.clone(), cx);
         if self.fleet_refresh_in_flight {
             return;
         }
@@ -263,10 +268,8 @@ impl Workspace {
             .fleet_view
             .update(cx, |view, _cx| view.pending_review_reconciliation());
         let review_target = self.workspace_hub.read(cx).active_platform_review_target();
-        let attention_target = self
-            .workspace_hub
-            .read(cx)
-            .active_platform_attention_target();
+        let attention_target = attention_context
+            .and_then(|(workspace, target)| target.map(|target| (workspace, target)));
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -333,6 +336,11 @@ impl Workspace {
                     .workspace_hub
                     .read(cx)
                     .active_platform_review_target();
+                let current_attention_context = workspace
+                    .workspace_hub
+                    .read(cx)
+                    .active_platform_attention_context();
+                workspace.reconcile_platform_attention_context(current_attention_context, cx);
                 match result {
                     Ok(PlatformLoadResult::Snapshot {
                         snapshot,
@@ -453,6 +461,7 @@ impl Workspace {
                         workspace.focus_pending_fleet_session(cx);
                     }
                     Err(error) => {
+                        workspace.mark_all_platform_attention_unavailable(cx);
                         let log_failure =
                             fleet_should_log_failure(workspace.fleet_refresh_failures);
                         workspace.fleet_refresh_failures =
@@ -693,9 +702,9 @@ impl Workspace {
         .detach();
     }
 
-    pub fn open_fleet(&mut self, cx: &mut Context<Self>) {
+    pub fn open_fleet(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.enter_dev_mode(cx) {
-            return;
+            return false;
         }
         if self.platform_connection().is_none() {
             self.show_toast(
@@ -703,11 +712,12 @@ impl Workspace {
                 ToastLevel::Warning,
                 cx,
             );
-            return;
+            return false;
         }
         self.active_view = ActiveView::Fleet;
         self.on_active_view_changed(cx);
         cx.notify();
+        !self.settings_open && self.active_view == ActiveView::Fleet
     }
 }
 

@@ -8,9 +8,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use automonique_platform_client::platform_v2_client::AttentionReadResult;
 use automonique_platform_client::platform_v2_client::{
-    AttentionReadResult, NegotiationResult, PlatformV2Client, PlatformV2ClientError,
-    ReviewCapabilitiesResult, ReviewReadResult, ReviewReceiptResult, WorkContextQueryResult,
+    NegotiationResult, PlatformV2Client, PlatformV2ClientError, ReviewCapabilitiesResult,
+    ReviewReadResult, ReviewReceiptResult, WorkContextQueryResult,
 };
 pub use automonique_platform_client::{ActionResult, ControlClaimResult};
 use automonique_platform_client::{

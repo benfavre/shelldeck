@@ -2847,7 +2847,12 @@ re-resolves the current exact catalog mapping, full authority-qualified session
 directory, and retained provider pane: missing, duplicate, foreign, or stale
 coordinates refuse without consuming unread state. Review and orchestration
 items open only their exact workspace attention surface; provider items open
-only an exact authorized current session or unique retained pane. Same-process
+only the fresh session bound to their authoritative WorkContext source, either
+in Fleet or its unique retained pane. Whole-poll failures hide retained
+projections, and removing or replacing an exact local mapping retires its old
+board before a new target may appear. Every destination first stages and
+verifies its visible Dev surface; a hidden or failed transition cannot consume
+local unread state. Same-process
 OS notification handles remain alive through activation/dismissal and route the
 same tuple back through that current-catalog resolver. A failed durable
 notification reservation suppresses the toast. Native cold-launch/OS launch
@@ -2914,8 +2919,12 @@ an unavailable adapter refuses before any effect.
   reducer, source-scoped deterministic UI identities, and bounded durable local
   read/notification custody. Follow-up hardening added authenticated complete
   baseline/gap resync, cross-process notification reservation, size admission,
-  and no-follow/reparse-fenced storage. Native navigation and OS notifications
-  remain a separate integration milestone.
+  and no-follow/reparse-fenced storage. SDTEST-1822..1829 then activate the
+  authenticated board in Workspace/Fleet: provider coordinates stay bound to
+  their fresh WorkContext session, polling/remapping hides or retires stale
+  boards, visible native surface transitions precede read custody, and
+  same-process notifications retain exact revision-bound activation. Native
+  cold-launch/OS-launch routing remains a separate integration milestone.
 
 - **2026-08-28** — Hardened SDUC-435 and added SDTEST-1813..1815: Windows now
   handles Explorer's `TaskbarCreated` broadcast through an invisible top-level

@@ -615,6 +615,12 @@ pub struct Workspace {
         shelldeck_core::config::workspace_catalog::CatalogWorkspaceId,
         shelldeck_core::config::platform_attention::AttentionSource,
     )>,
+    /// Sources retired by an authoritative local mapping replacement. They
+    /// remain pending until durable local read/notification custody has also
+    /// been removed, so a replacement target can never inherit old overlay
+    /// state after a transient storage failure.
+    platform_attention_retired_sources:
+        BTreeSet<shelldeck_core::config::platform_attention::AttentionSource>,
     platform_attention_notifier: Option<Box<dyn Fn(PlatformAttentionNotification) + Send + Sync>>,
     /// Mentionable people from Inklura Manage, for the assistant's `@` picker.
     /// Empty until the directory endpoint ships (`manage_directory`); people
@@ -1439,6 +1445,7 @@ impl Workspace {
                 })
                 .ok(),
             platform_attention_resync: BTreeSet::new(),
+            platform_attention_retired_sources: BTreeSet::new(),
             platform_attention_notifier: None,
             mention_people: Vec::new(),
             issues_list: Vec::new(),

@@ -627,11 +627,25 @@ impl WorkspaceHubView {
     pub(super) fn active_platform_attention_target(
         &self,
     ) -> Option<(CatalogWorkspaceId, PlatformAttentionTarget)> {
+        let (active, target) = self.active_platform_attention_context()?;
+        target.map(|target| (active, target))
+    }
+
+    /// The current local workspace remains meaningful even when its Platform
+    /// mapping was removed or became non-exact. Callers use that distinction
+    /// to retire a formerly authoritative board instead of silently retaining
+    /// it as if the old mapping were still current.
+    pub(super) fn active_platform_attention_context(
+        &self,
+    ) -> Option<(CatalogWorkspaceId, Option<PlatformAttentionTarget>)> {
         let active = self.navigation.active()?;
-        let mapping = self.catalog.workspace(active).ok()?.platform_mapping()?;
-        PlatformAttentionTarget::from_exact_mapping(mapping)
+        let target = self
+            .catalog
+            .workspace(active)
             .ok()
-            .map(|target| (active, target))
+            .and_then(|workspace| workspace.platform_mapping())
+            .and_then(|mapping| PlatformAttentionTarget::from_exact_mapping(mapping).ok());
+        Some((active, target))
     }
 
     pub(super) const fn catalog(&self) -> &ProjectCatalog {

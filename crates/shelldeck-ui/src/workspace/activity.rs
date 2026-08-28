@@ -154,7 +154,9 @@ impl Workspace {
                 cx.notify();
             }
             ActivityAction::OpenMonique => self.open_monique_console(cx),
-            ActivityAction::OpenFleet => self.open_fleet(cx),
+            ActivityAction::OpenFleet => {
+                self.open_fleet(cx);
+            }
             ActivityAction::OpenBext => self.open_bext_cloud(cx),
         }
     }

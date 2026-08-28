@@ -1,9 +1,9 @@
 //! Source-atomic native consumption of Platform v2 attention.
 //!
-//! This module deliberately stops before navigation. It retains the complete
-//! authoritative source, project, user-workspace, item, revision, and optional
-//! authority-qualified Platform session coordinates. It never manufactures a
-//! pane, tab, terminal, path, or other client-local target.
+//! It retains the complete authoritative source, project, user-workspace, item,
+//! revision, and authority-qualified Platform session coordinates. Native
+//! activation may resolve those coordinates through current client-local
+//! catalogues, but never manufactures a pane, tab, terminal, or path.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -24,7 +24,9 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::app_config::AppConfig;
-use super::platform::{ResourceAuthority, ResourceCoordinate, ResourceKind, SessionRecord};
+use super::platform::{
+    FreshnessState, ResourceAuthority, ResourceCoordinate, ResourceKind, SessionRecord,
+};
 use super::workspace_catalog::PlatformV2Mapping;
 use super::workspace_catalog::{CatalogWorkspaceId, ProjectCatalog};
 use crate::workspace_navigation::{
@@ -88,6 +90,11 @@ pub enum ReviewAttentionPresence {
 pub struct AttentionSourceInventory {
     target: PlatformAttentionTarget,
     sources: Vec<AttentionSource>,
+    /// Exact Platform session coordinate authoritatively related to each
+    /// provider WorkContext source. This binding must survive inventory
+    /// projection so an item cannot redirect its source to another otherwise
+    /// valid current session.
+    provider_sessions: BTreeMap<AttentionSource, ResourceCoordinate>,
 }
 
 impl AttentionSourceInventory {
@@ -125,6 +132,7 @@ impl AttentionSourceInventory {
         let workspace_source = AttentionSourceId::new(target.user_workspace.as_str().to_owned())
             .map_err(|_| AttentionError::SourceInvalid)?;
         let mut sources = BTreeSet::new();
+        let mut provider_sessions = BTreeMap::new();
         if review == ReviewAttentionPresence::Present {
             sources.insert(AttentionSource::new(
                 AttentionSourceKind::Review,
@@ -154,10 +162,20 @@ impl AttentionSourceInventory {
             {
                 let id = AttentionSourceId::new(session.identity().id().to_owned())
                     .map_err(|_| AttentionError::SourceInvalid)?;
-                if !sources.insert(AttentionSource::new(
-                    AttentionSourceKind::ProviderSession,
-                    id,
-                )) {
+                let source = AttentionSource::new(AttentionSourceKind::ProviderSession, id);
+                let coordinate =
+                    match relation(session, WorkContextRelationKind::SessionPlatformSession) {
+                        Some(WorkContextIdentity::PlatformSession(session))
+                            if session.coordinate().authority == ResourceAuthority::Automonique
+                                && session.coordinate().kind == ResourceKind::Session =>
+                        {
+                            session.coordinate().clone()
+                        }
+                        _ => return Err(AttentionError::ProviderSessionRelationInvalid),
+                    };
+                if !sources.insert(source.clone())
+                    || provider_sessions.insert(source, coordinate).is_some()
+                {
                     return Err(AttentionError::SourceDuplicate);
                 }
             }
@@ -168,6 +186,7 @@ impl AttentionSourceInventory {
         Ok(Self {
             target,
             sources: sources.into_iter().collect(),
+            provider_sessions,
         })
     }
 
@@ -184,6 +203,11 @@ impl AttentionSourceInventory {
     #[must_use]
     pub fn contains(&self, source: &AttentionSource) -> bool {
         self.sources.binary_search(source).is_ok()
+    }
+
+    #[must_use]
+    pub fn provider_session(&self, source: &AttentionSource) -> Option<&ResourceCoordinate> {
+        self.provider_sessions.get(source)
     }
 }
 
@@ -409,16 +433,19 @@ pub fn resolve_platform_attention_activation(
         .ok_or(AttentionActivationError::CoordinateInvalid)?;
     if coordinate.authority != ResourceAuthority::Automonique
         || coordinate.kind != ResourceKind::Session
+        || board.inventory().provider_session(item.key().source()) != Some(coordinate)
     {
         return Err(AttentionActivationError::CoordinateInvalid);
     }
-    if sessions
+    let matching_sessions = sessions
         .iter()
         .filter(|record| &record.session.resource == coordinate)
-        .count()
-        != 1
-    {
+        .collect::<Vec<_>>();
+    let [session] = matching_sessions.as_slice() else {
         return Err(AttentionActivationError::SessionMissingOrAmbiguous);
+    };
+    if session.session.freshness.state != FreshnessState::Fresh {
+        return Err(AttentionActivationError::SessionNotFresh);
     }
 
     let mapping = catalog
@@ -1161,6 +1188,8 @@ pub enum AttentionError {
     WorkspaceProjectMismatch,
     #[error("attention source identity is invalid")]
     SourceInvalid,
+    #[error("attention provider source lacks its exact Platform session relation")]
+    ProviderSessionRelationInvalid,
     #[error("attention source is duplicated")]
     SourceDuplicate,
     #[error("attention source inventory exceeds its per-workspace bound")]
@@ -1195,6 +1224,8 @@ pub enum AttentionActivationError {
     CoordinateInvalid,
     #[error("attention provider session is missing or ambiguous")]
     SessionMissingOrAmbiguous,
+    #[error("attention provider session is not fresh")]
+    SessionNotFresh,
     #[error("attention provider session is retained by multiple panes")]
     PaneAmbiguous,
 }
@@ -1265,7 +1296,7 @@ mod tests {
         .unwrap()
     }
 
-    fn provider_item(id: &str, revision: u64) -> AttentionItem {
+    fn provider_item_for(id: &str, revision: u64, session_id: &str) -> AttentionItem {
         AttentionItem::new(
             AttentionItemId::new(id).unwrap(),
             Revision::new(revision).unwrap(),
@@ -1278,12 +1309,16 @@ mod tests {
                 V1SessionRef::new(ResourceCoordinate::new(
                     ResourceAuthority::Automonique,
                     ResourceKind::Session,
-                    ResourceId::new("platform-session-1").unwrap(),
+                    ResourceId::new(session_id).unwrap(),
                 ))
                 .unwrap(),
             ),
         )
         .unwrap()
+    }
+
+    fn provider_item(id: &str, revision: u64) -> AttentionItem {
+        provider_item_for(id, revision, "platform-session-1")
     }
 
     fn snapshot(
@@ -2172,7 +2207,7 @@ mod tests {
         }
     }
 
-    fn authorized_session() -> SessionRecord {
+    fn authorized_session_with_freshness(state: FreshnessState) -> SessionRecord {
         SessionRecord {
             session: ResourceRecord {
                 resource: ResourceCoordinate::new(
@@ -2181,7 +2216,7 @@ mod tests {
                     ResourceId::new("platform-session-1").unwrap(),
                 ),
                 freshness: Freshness {
-                    state: FreshnessState::Fresh,
+                    state,
                     observed_at: EpochMillis::from_millis(1),
                     revision: Revision::FIRST,
                 },
@@ -2191,6 +2226,10 @@ mod tests {
             attachable: true,
             controllable: false,
         }
+    }
+
+    fn authorized_session() -> SessionRecord {
+        authorized_session_with_freshness(FreshnessState::Fresh)
     }
 
     // SDTEST-1822
@@ -2252,6 +2291,51 @@ mod tests {
                 &duplicate,
             ),
             Err(AttentionActivationError::SessionMissingOrAmbiguous)
+        );
+        for state in [FreshnessState::Stale, FreshnessState::Unknown] {
+            assert_eq!(
+                resolve_platform_attention_activation(
+                    activation,
+                    &board,
+                    &catalog,
+                    &navigation,
+                    &[authorized_session_with_freshness(state)],
+                ),
+                Err(AttentionActivationError::SessionNotFresh)
+            );
+        }
+
+        let mut redirected =
+            PlatformAttentionBoard::new(inventory(ReviewAttentionPresence::Present));
+        redirected
+            .apply_authenticated_baseline_read(
+                &provider,
+                AttentionReadResult::Snapshot(Box::new(snapshot(
+                    provider.clone(),
+                    1,
+                    None,
+                    vec![provider_item_for("provider", 1, "platform-session-foreign")],
+                ))),
+            )
+            .unwrap();
+        let redirected_item = redirected.visible_items().next().unwrap();
+        let redirected_activation = PlatformAttentionActivation {
+            workspace,
+            item: redirected_item.ui_id(),
+            item_revision: redirected_item.value().revision(),
+        };
+        let mut foreign = authorized_session();
+        foreign.session.resource.id = ResourceId::new("platform-session-foreign").unwrap();
+        assert_eq!(
+            resolve_platform_attention_activation(
+                redirected_activation,
+                &redirected,
+                &catalog,
+                &navigation,
+                &[foreign],
+            ),
+            Err(AttentionActivationError::CoordinateInvalid),
+            "an item cannot redirect its provider source to another current session"
         );
 
         navigation
