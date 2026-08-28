@@ -5,7 +5,9 @@ use shelldeck_core::config::platform::{
     PlatformFollowUpResult, PlatformRefresh, PlatformSnapshot, ResourceCoordinate,
     RetainedSessionUpdate,
 };
-use shelldeck_core::config::platform_review::{PlatformReviewLoad, PlatformReviewUnavailable};
+use shelldeck_core::config::platform_review::{
+    PlatformReviewLoad, PlatformReviewTarget, PlatformReviewUnavailable,
+};
 
 enum PlatformActionResult {
     Attached(Attachment),
@@ -19,14 +21,42 @@ enum PlatformActionResult {
 enum PlatformLoadResult {
     Snapshot {
         snapshot: PlatformSnapshot,
-        review: Option<PlatformReviewLoad>,
+        review: Option<AttributedPlatformReview>,
     },
     Refresh {
         refresh: PlatformRefresh,
         retained: Vec<RetainedSessionUpdate>,
         reconciled: Vec<PlatformFollowUpResult>,
-        review: Option<PlatformReviewLoad>,
+        review: Option<AttributedPlatformReview>,
     },
+}
+
+struct AttributedPlatformReview {
+    target: PlatformReviewTarget,
+    load: PlatformReviewLoad,
+}
+
+fn load_review(
+    connection: &PlatformConnection,
+    target: Option<PlatformReviewTarget>,
+) -> Option<AttributedPlatformReview> {
+    target.map(|target| {
+        let load = connection
+            .review(&target)
+            .unwrap_or_else(|error| unavailable_review(&error));
+        AttributedPlatformReview { target, load }
+    })
+}
+
+/// Admit a remote observation only when it is still attributed to the exact
+/// active catalog mapping that requested it. A switched or now-unmapped
+/// workspace clears the strip instead of inheriting foreign review state.
+fn review_for_active_target(
+    active: Option<&PlatformReviewTarget>,
+    attributed: Option<AttributedPlatformReview>,
+) -> Option<PlatformReviewLoad> {
+    attributed
+        .and_then(|attributed| (Some(&attributed.target) == active).then_some(attributed.load))
 }
 
 fn unavailable_review(error: &shelldeck_core::error::ShellDeckError) -> PlatformReviewLoad {
@@ -116,11 +146,7 @@ impl Workspace {
                             .into_iter()
                             .map(|follow_up| connection.reconcile_follow_up(follow_up))
                             .collect();
-                        let review = review_target.as_ref().map(|target| {
-                            connection
-                                .review(target)
-                                .unwrap_or_else(|error| unavailable_review(&error))
-                        });
+                        let review = load_review(&connection, review_target);
                         Ok(PlatformLoadResult::Refresh {
                             refresh,
                             retained,
@@ -129,11 +155,7 @@ impl Workspace {
                         })
                     } else {
                         let snapshot = connection.snapshot()?;
-                        let review = review_target.as_ref().map(|target| {
-                            connection
-                                .review(target)
-                                .unwrap_or_else(|error| unavailable_review(&error))
-                        });
+                        let review = load_review(&connection, review_target);
                         Ok(PlatformLoadResult::Snapshot { snapshot, review })
                     }
                 })
@@ -146,8 +168,14 @@ impl Workspace {
                 if workspace.platform_connection().is_none() {
                     return;
                 }
+                let active_review_target = workspace
+                    .workspace_hub
+                    .read(cx)
+                    .active_platform_review_target();
                 match result {
                     Ok(PlatformLoadResult::Snapshot { snapshot, review }) => {
+                        let review =
+                            review_for_active_target(active_review_target.as_ref(), review);
                         workspace.fleet_snapshot = Some(snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.set_snapshot(snapshot);
@@ -162,6 +190,8 @@ impl Workspace {
                         reconciled,
                         review,
                     }) => {
+                        let review =
+                            review_for_active_target(active_review_target.as_ref(), review);
                         workspace.fleet_snapshot = Some(refresh.snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.apply_refresh(refresh);
@@ -373,5 +403,63 @@ impl Workspace {
         self.active_view = ActiveView::Fleet;
         self.on_active_view_changed(cx);
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{review_for_active_target, AttributedPlatformReview};
+    use shelldeck_core::config::platform_review::{
+        PlatformReviewLoad, PlatformReviewTarget, PlatformReviewUnavailable,
+    };
+    use shelldeck_core::config::workspace_catalog::{
+        PlatformContextRef, PlatformMappingReconciliation, PlatformV2Mapping,
+    };
+
+    fn target(project: &str, workspace: &str) -> PlatformReviewTarget {
+        PlatformReviewTarget::from_exact_mapping(&PlatformV2Mapping {
+            reconciliation_revision: 1,
+            project: PlatformContextRef {
+                id: project.to_owned(),
+                revision: 1,
+            },
+            checkout: PlatformContextRef {
+                id: "checkout-1".to_owned(),
+                revision: 1,
+            },
+            user_workspace: PlatformContextRef {
+                id: workspace.to_owned(),
+                revision: 1,
+            },
+            reconciliation: PlatformMappingReconciliation::Exact {
+                reconciled_at_millis: 1,
+            },
+        })
+        .unwrap()
+    }
+
+    fn refused(target: PlatformReviewTarget) -> AttributedPlatformReview {
+        AttributedPlatformReview {
+            target,
+            load: PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+                category: "not_available".to_owned(),
+                explanation: "review projection is not available".to_owned(),
+            }),
+        }
+    }
+
+    // SDTEST-1776
+    #[test]
+    fn review_apply_rechecks_target_and_preserves_same_target_refusal() {
+        let requested = target("project-1", "wc_user_1");
+        let switched = target("project-1", "wc_user_2");
+
+        let admitted = review_for_active_target(Some(&requested), Some(refused(requested.clone())));
+        assert!(matches!(admitted, Some(PlatformReviewLoad::Unavailable(_))));
+
+        assert!(
+            review_for_active_target(Some(&switched), Some(refused(requested.clone()))).is_none()
+        );
+        assert!(review_for_active_target(None, Some(refused(requested))).is_none());
     }
 }
