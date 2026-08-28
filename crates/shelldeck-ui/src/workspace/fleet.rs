@@ -59,6 +59,24 @@ fn review_for_active_target(
         .and_then(|attributed| (Some(&attributed.target) == active).then_some(attributed.load))
 }
 
+fn platform_connection_is_current(
+    current: Option<&PlatformConnection>,
+    captured: &PlatformConnection,
+) -> bool {
+    current == Some(captured)
+}
+
+fn review_for_active_context(
+    current_connection: Option<&PlatformConnection>,
+    captured_connection: &PlatformConnection,
+    active_target: Option<&PlatformReviewTarget>,
+    attributed: Option<AttributedPlatformReview>,
+) -> Option<PlatformReviewLoad> {
+    platform_connection_is_current(current_connection, captured_connection)
+        .then(|| review_for_active_target(active_target, attributed))
+        .flatten()
+}
+
 fn unavailable_review(error: &shelldeck_core::error::ShellDeckError) -> PlatformReviewLoad {
     PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
         category: "transport_error".to_owned(),
@@ -120,6 +138,7 @@ impl Workspace {
         let Some(connection) = self.platform_connection() else {
             return;
         };
+        let request_connection = connection.clone();
         self.fleet_refresh_in_flight = true;
         let request_epoch = self.fleet_request_epoch;
         self.fleet_view.update(cx, |view, cx| {
@@ -165,7 +184,18 @@ impl Workspace {
                     return;
                 }
                 workspace.fleet_refresh_in_flight = false;
-                if workspace.platform_connection().is_none() {
+                let current_connection = workspace.platform_connection();
+                if !platform_connection_is_current(current_connection.as_ref(), &request_connection)
+                {
+                    // Endpoint or credential replacement invalidates every
+                    // observation from the captured connection, not only the
+                    // review strip. Never relabel one Platform origin as
+                    // another when project/workspace IDs happen to match.
+                    workspace.fleet_snapshot = None;
+                    workspace.fleet_view.update(cx, |view, cx| {
+                        view.reset();
+                        cx.notify();
+                    });
                     return;
                 }
                 let active_review_target = workspace
@@ -174,8 +204,12 @@ impl Workspace {
                     .active_platform_review_target();
                 match result {
                     Ok(PlatformLoadResult::Snapshot { snapshot, review }) => {
-                        let review =
-                            review_for_active_target(active_review_target.as_ref(), review);
+                        let review = review_for_active_context(
+                            current_connection.as_ref(),
+                            &request_connection,
+                            active_review_target.as_ref(),
+                            review,
+                        );
                         workspace.fleet_snapshot = Some(snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.set_snapshot(snapshot);
@@ -190,8 +224,12 @@ impl Workspace {
                         reconciled,
                         review,
                     }) => {
-                        let review =
-                            review_for_active_target(active_review_target.as_ref(), review);
+                        let review = review_for_active_context(
+                            current_connection.as_ref(),
+                            &request_connection,
+                            active_review_target.as_ref(),
+                            review,
+                        );
                         workspace.fleet_snapshot = Some(refresh.snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.apply_refresh(refresh);
@@ -408,7 +446,11 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{review_for_active_target, AttributedPlatformReview};
+    use super::{
+        platform_connection_is_current, review_for_active_context, review_for_active_target,
+        AttributedPlatformReview,
+    };
+    use shelldeck_core::config::platform::PlatformConnection;
     use shelldeck_core::config::platform_review::{
         PlatformReviewLoad, PlatformReviewTarget, PlatformReviewUnavailable,
     };
@@ -461,5 +503,58 @@ mod tests {
             review_for_active_target(Some(&switched), Some(refused(requested.clone()))).is_none()
         );
         assert!(review_for_active_target(None, Some(refused(requested))).is_none());
+    }
+
+    // SDTEST-1777
+    #[test]
+    fn review_apply_rejects_changed_endpoint_or_credential_without_debugging_tokens() {
+        let captured = PlatformConnection::new_at_endpoint(
+            "https://manage-one.example/api/manage/automonique/platform",
+            "captured-secret-token",
+        )
+        .unwrap();
+        let same = captured.clone();
+        let changed_endpoint = PlatformConnection::new_at_endpoint(
+            "https://manage-two.example/api/manage/automonique/platform",
+            "captured-secret-token",
+        )
+        .unwrap();
+        let changed_credential = PlatformConnection::new_at_endpoint(
+            "https://manage-one.example/api/manage/automonique/platform",
+            "replacement-secret-token",
+        )
+        .unwrap();
+
+        assert!(platform_connection_is_current(Some(&same), &captured));
+        assert!(!platform_connection_is_current(
+            Some(&changed_endpoint),
+            &captured
+        ));
+        assert!(!platform_connection_is_current(
+            Some(&changed_credential),
+            &captured
+        ));
+        assert!(!platform_connection_is_current(None, &captured));
+
+        let exact_target = target("project-1", "wc_user_1");
+        assert!(review_for_active_context(
+            Some(&changed_endpoint),
+            &captured,
+            Some(&exact_target),
+            Some(refused(exact_target.clone())),
+        )
+        .is_none());
+        assert!(review_for_active_context(
+            Some(&changed_credential),
+            &captured,
+            Some(&exact_target),
+            Some(refused(exact_target.clone())),
+        )
+        .is_none());
+
+        let debug = format!("{captured:?} {changed_credential:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("captured-secret-token"));
+        assert!(!debug.contains("replacement-secret-token"));
     }
 }

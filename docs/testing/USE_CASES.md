@@ -2680,10 +2680,11 @@ The persisted local workspace-review schema remains independent and unmigrated.
 
 ## Change log
 
-- **2026-08-28** — Added SDUC-494 and SDTEST-1772..1776 for the exact shared
+- **2026-08-28** — Added SDUC-494 and SDTEST-1772..1777 for the exact shared
   Platform v2 review fixture, semantic projection, stale/unavailable behavior,
   exact-mapping target admission, negotiated typed read lane, and apply-time
-  rejection of review observations attributed to a switched workspace.
+  rejection of review observations attributed to a switched workspace or a
+  replaced Platform endpoint/credential generation.
 - **2026-08-28** — Hardened SDUC-491 and added SDTEST-1763..1771 for durable
   restart journals, immutable OID/repository/clean-state adoption, no-follow
   root/target authority, leaf-bound Git cleanup with post-quarantine identity,

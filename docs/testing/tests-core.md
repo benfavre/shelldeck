@@ -535,6 +535,7 @@ Existing: **0 tests**.
 | SDTEST-1774 | `config/platform_review.rs::stale_unavailable_projection_is_non_actionable` | SDUC-494 | Green | An in-memory canonical scenario variant preserves stale review freshness and an unavailable check while deriving Idle with no user-action prompt; a refused/unavailable load is also non-actionable. |
 | SDTEST-1775 | `config/platform.rs::typed_v2_loader_negotiates_then_projects_canonical_review` | SDUC-494 | Green | The shared SDK deterministic transport proves the production loader offers only v2, performs exactly one correlated typed review read, consumes the canonical fixture, and yields the same attention prompt. |
 | SDTEST-1776 | `workspace/fleet.rs::review_apply_rechecks_target_and_preserves_same_target_refusal` | SDUC-494 | Green | Async review results carry their exact requested project/workspace target. Apply preserves a refusal for the same active mapping, but a workspace switch or mapping removal yields no review instead of publishing a foreign observation. |
+| SDTEST-1777 | `workspace/fleet.rs::review_apply_rejects_changed_endpoint_or_credential_without_debugging_tokens` | SDUC-494 | Green | Apply compares the complete captured authenticated Platform connection with the current connection. Endpoint, credential or signed-out changes reject and clear the entire old-origin result, while Debug remains token-redacted. |
 
 ---
 
