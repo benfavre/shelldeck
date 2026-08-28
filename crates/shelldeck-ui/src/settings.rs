@@ -1,3 +1,4 @@
+use crate::overlay::round_window_bottom;
 use crate::scale::px;
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
@@ -243,6 +244,13 @@ pub enum SettingsTab {
     Ai,
     Appearance,
     About,
+}
+
+const SETTINGS_COMPACT_MAX_LOGICAL_WIDTH: f32 = 600.0;
+
+fn settings_uses_compact_flow(viewport_width: f32, ui_font_size: f32) -> bool {
+    let scale = crate::scale::scale_for_font_size(ui_font_size);
+    viewport_width / scale <= SETTINGS_COMPACT_MAX_LOGICAL_WIDTH
 }
 
 /// Events emitted when settings change.
@@ -674,6 +682,7 @@ impl SettingsView {
         &self,
         tab: SettingsTab,
         label: &str,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_active = self.active_tab == tab;
@@ -682,7 +691,7 @@ impl SettingsView {
             .id(ElementId::from(SharedString::from(format!(
                 "settings-tab-{tab:?}"
             ))))
-            .px(px(16.0))
+            .px(px(if compact { 10.0 } else { 16.0 }))
             .py(px(8.0))
             .cursor_pointer()
             .rounded(px(6.0))
@@ -2664,7 +2673,11 @@ impl SettingsView {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact = settings_uses_compact_flow(
+            window.viewport_size().width.to_f64() as f32,
+            self.config.general.ui_font_size,
+        );
         let close_button = IconButton::new("x")
             .variant(ButtonVariant::Ghost)
             .size(gpui::px(30.0))
@@ -2721,7 +2734,9 @@ impl Render for SettingsView {
             .id("settings-tab-content")
             .flex()
             .flex_col()
-            .p(px(24.0))
+            .w_full()
+            .min_w(px(0.0))
+            .p(px(if compact { 16.0 } else { 24.0 }))
             .max_w(px(600.0));
 
         match self.active_tab {
@@ -2745,73 +2760,99 @@ impl Render for SettingsView {
             }
         }
 
-        div()
+        let mut tabs = div().flex().flex_shrink_0().gap(px(2.0));
+        tabs = if compact {
+            tabs.w_full()
+                .px(px(12.0))
+                .py(px(8.0))
+                .border_b_1()
+                .border_color(ShellDeckColors::border())
+        } else {
+            tabs.flex_col()
+                .w(px(180.0))
+                .p(px(12.0))
+                .border_r_1()
+                .border_color(ShellDeckColors::border())
+        };
+        tabs = tabs.child(self.render_tab_button(
+            SettingsTab::General,
+            t!("settings.tab.general").as_ref(),
+            compact,
+            cx,
+        ));
+        if self.dev_tabs_enabled {
+            tabs = tabs
+                .child(self.render_tab_button(
+                    SettingsTab::Terminal,
+                    t!("settings.tab.terminal").as_ref(),
+                    compact,
+                    cx,
+                ))
+                .child(self.render_tab_button(
+                    SettingsTab::Editor,
+                    t!("settings.tab.editor").as_ref(),
+                    compact,
+                    cx,
+                ));
+        }
+        tabs = tabs
+            .child(self.render_tab_button(
+                SettingsTab::Ai,
+                t!("settings.tab.ai").as_ref(),
+                compact,
+                cx,
+            ))
+            .child(self.render_tab_button(
+                SettingsTab::Appearance,
+                t!("settings.tab.appearance").as_ref(),
+                compact,
+                cx,
+            ))
+            .child(self.render_tab_button(
+                SettingsTab::About,
+                t!("settings.tab.about").as_ref(),
+                compact,
+                cx,
+            ));
+
+        // `Scrollable` requests 100% width by design. Keep it inside a
+        // shrinkable flex shell so that 100% means the space left after the
+        // desktop rail, not the entire Settings body (U-15).
+        let content = div()
             .flex()
-            .flex_col()
-            .size_full()
-            .track_focus(&self.shortcut_capture_focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                this.handle_shortcut_capture(event, cx);
-            }))
-            .bg(ShellDeckColors::bg_primary())
-            // Header
-            .child(header)
-            // Content: horizontal row with fixed tab sidebar + scrollable tab content
-            .child(
-                div()
-                    .flex()
-                    .flex_grow()
-                    .min_h(px(0.0))
-                    .id("settings-body")
-                    .overflow_hidden()
-                    // Tab sidebar
-                    .child({
-                        let mut tabs = div()
-                            .flex()
-                            .flex_col()
-                            .flex_shrink_0()
-                            .gap(px(2.0))
-                            .w(px(180.0))
-                            .p(px(12.0))
-                            .border_r_1()
-                            .border_color(ShellDeckColors::border())
-                            .child(self.render_tab_button(
-                                SettingsTab::General,
-                                t!("settings.tab.general").as_ref(),
-                                cx,
-                            ));
-                        if self.dev_tabs_enabled {
-                            tabs = tabs
-                                .child(self.render_tab_button(
-                                    SettingsTab::Terminal,
-                                    t!("settings.tab.terminal").as_ref(),
-                                    cx,
-                                ))
-                                .child(self.render_tab_button(
-                                    SettingsTab::Editor,
-                                    t!("settings.tab.editor").as_ref(),
-                                    cx,
-                                ));
-                        }
-                        tabs.child(self.render_tab_button(
-                            SettingsTab::Ai,
-                            t!("settings.tab.ai").as_ref(),
-                            cx,
-                        ))
-                        .child(self.render_tab_button(
-                            SettingsTab::Appearance,
-                            t!("settings.tab.appearance").as_ref(),
-                            cx,
-                        ))
-                        .child(self.render_tab_button(
-                            SettingsTab::About,
-                            t!("settings.tab.about").as_ref(),
-                            cx,
-                        ))
-                    })
-                    // Tab content — scrolls independently
-                    .child(scrollable_vertical(tab_content)),
-            )
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(scrollable_vertical(tab_content));
+
+        let mut body = div()
+            .flex()
+            .flex_grow()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .id("settings-body")
+            .overflow_hidden();
+        if compact {
+            body = body.flex_col();
+        }
+        body = body.child(tabs).child(content);
+
+        round_window_bottom(
+            div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .track_focus(&self.shortcut_capture_focus)
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                    this.handle_shortcut_capture(event, cx);
+                }))
+                .bg(ShellDeckColors::bg_primary())
+                // Header
+                .child(header)
+                .child(body),
+            window.is_maximized(),
+        )
     }
 }
 
@@ -3237,10 +3278,22 @@ mod tests {
     use super::{
         apply_character_choice, classify_shortcut_error, compositor_companion_limited,
         display_shortcut, general_settings_visibility, is_monospace_family,
-        shortcut_error_is_portal_missing, validate_shortcut_capture, ClippyAppearanceConfig,
-        GeneralSettingsVisibility, ShortcutCaptureValidation, MONOSPACE_FONTS, UI_FONT_FAMILIES,
+        settings_uses_compact_flow, shortcut_error_is_portal_missing, validate_shortcut_capture,
+        ClippyAppearanceConfig, GeneralSettingsVisibility, ShortcutCaptureValidation,
+        MONOSPACE_FONTS, UI_FONT_FAMILIES,
     };
     use gpui::Keystroke;
+
+    // SDTEST-1796 — SDUC-310. Settings replaces its fixed side rail at the
+    // same logical compact width used by the User surface and follows UI
+    // scale, so controls never become unreachable behind intrinsic content.
+    #[test]
+    fn settings_compact_breakpoint_tracks_ui_scale() {
+        assert!(settings_uses_compact_flow(600.0, 14.0));
+        assert!(!settings_uses_compact_flow(601.0, 14.0));
+        assert!(settings_uses_compact_flow(1_200.0, 28.0));
+        assert!(!settings_uses_compact_flow(1_201.0, 28.0));
+    }
 
     // SDTEST-1653
     //

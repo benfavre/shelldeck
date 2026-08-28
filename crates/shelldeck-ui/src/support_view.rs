@@ -80,6 +80,10 @@ fn reconciled_ticket_total(reported: u32, ticket_count: usize) -> u32 {
     reported.max(visible)
 }
 
+fn reconciled_issue_total(reported: usize, visible_issue_count: usize) -> usize {
+    reported.max(visible_issue_count)
+}
+
 impl SupportFilter {
     fn label(self) -> String {
         match self {
@@ -1526,7 +1530,7 @@ impl SupportView {
                 cx,
             ))
             .child(tab(
-                t!("support.requests_count", count = self.visible_issue_count()).to_string(),
+                t!("support.requests_count", count = self.issue_total_count()).to_string(),
                 "tag",
                 SupportSection::Requests,
                 cx,
@@ -1630,7 +1634,7 @@ impl Render for SupportView {
         left = left.child(self.render_filters(cx)).child(list);
 
         let content = match self.section {
-            SupportSection::Home => self.render_home(cx).into_any_element(),
+            SupportSection::Home => self.render_home(compact, cx).into_any_element(),
             SupportSection::Tickets if compact && self.selected_id.is_some() => div()
                 .flex_1()
                 .flex()
@@ -2018,7 +2022,7 @@ pub(crate) fn render_attachment_delete_dialog(
 
 #[cfg(test)]
 mod tests {
-    use super::{reconciled_ticket_total, support_compact_layout};
+    use super::{reconciled_issue_total, reconciled_ticket_total, support_compact_layout};
 
     // SDTEST-1618
     #[test]
@@ -2037,5 +2041,15 @@ mod tests {
         assert_eq!(reconciled_ticket_total(6, 4), 6);
         assert_eq!(reconciled_ticket_total(0, 0), 0);
         assert_eq!(reconciled_ticket_total(1, usize::MAX), u32::MAX);
+    }
+
+    // SDTEST-1725 — the API total describes the complete authorized universe,
+    // while the loaded list may be capped. A stale-low legacy total still
+    // cannot under-report rows that are already visible.
+    #[test]
+    fn request_total_keeps_the_server_universe_above_the_loaded_page() {
+        assert_eq!(reconciled_issue_total(487, 200), 487);
+        assert_eq!(reconciled_issue_total(2, 4), 4);
+        assert_eq!(reconciled_issue_total(0, 0), 0);
     }
 }

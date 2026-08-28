@@ -14,6 +14,10 @@ use crate::syntax::highlight::render_code_block_with_language;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
+fn scripts_use_compact_layout(viewport_width: Pixels, rem_size: Pixels) -> bool {
+    viewport_width < px(1_000.0).to_pixels(rem_size)
+}
+
 #[derive(Debug, Clone)]
 pub enum ScriptEvent {
     RunScript(Script),
@@ -442,15 +446,19 @@ impl ScriptEditorView {
             .child(script_language_icon(lang.clone(), 11.0))
     }
 
-    fn render_script_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_script_list(&self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = div()
             .flex()
             .flex_col()
-            .w(px(260.0))
             .h_full()
-            .bg(ShellDeckColors::bg_sidebar())
-            .border_r_1()
-            .border_color(ShellDeckColors::border());
+            .bg(ShellDeckColors::bg_sidebar());
+        list = if compact {
+            list.w_full()
+        } else {
+            list.w(px(260.0))
+                .border_r_1()
+                .border_color(ShellDeckColors::border())
+        };
 
         // Header with title and buttons
         list = list.child(
@@ -1797,13 +1805,15 @@ impl ScriptEditorView {
 }
 
 impl Render for ScriptEditorView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact = scripts_use_compact_layout(window.viewport_size().width, window.rem_size());
         let selected = self.selected().cloned();
         let is_editing = self.inline_editing;
 
         let mut container = div()
             .id("script-editor-root")
             .flex()
+            .when(compact, |container| container.flex_col())
             .size_full()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _window, cx| {
@@ -1812,13 +1822,49 @@ impl Render for ScriptEditorView {
                 } else {
                     this.handle_search_key_down(event, cx);
                 }
-            }))
-            .child(self.render_script_list(cx));
+            }));
 
-        if let Some(ref script) = selected {
-            container = container.child(self.render_editor(script, cx));
+        if compact {
+            if let Some(ref script) = selected {
+                let back = Button::new(
+                    "scripts-compact-back",
+                    t!("scripts.back_to_list").to_string(),
+                )
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("chevron-left"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.cancel_inline_edit();
+                    this.selected_script = None;
+                    this.run_target_menu_open = false;
+                    this.kebab_menu = None;
+                    this.ai_actions_menu = None;
+                    cx.notify();
+                }));
+                container = container
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .flex_shrink_0()
+                            .px(px(8.0))
+                            .py(px(6.0))
+                            .border_b_1()
+                            .border_color(ShellDeckColors::border())
+                            .bg(ShellDeckColors::bg_sidebar())
+                            .child(back),
+                    )
+                    .child(self.render_editor(script, cx));
+            } else {
+                container = container.child(self.render_script_list(true, cx));
+            }
         } else {
-            container = container.child(Self::render_empty_editor());
+            container = container.child(self.render_script_list(false, cx));
+            if let Some(ref script) = selected {
+                container = container.child(self.render_editor(script, cx));
+            } else {
+                container = container.child(Self::render_empty_editor());
+            }
         }
 
         // Kebab (⋮) menu overlay for the currently-open row.
@@ -1840,5 +1886,29 @@ impl Render for ScriptEditorView {
         }
 
         container
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scripts_use_compact_layout;
+
+    // SDTEST-1802 — D-09 / SDUC-443. The Scripts master/detail switch uses
+    // logical pixels so UI zoom cannot reintroduce a clipped two-pane view.
+    #[test]
+    fn scripts_compact_layout_breakpoint_is_scale_aware() {
+        assert!(scripts_use_compact_layout(gpui::px(999.0), gpui::px(16.0)));
+        assert!(!scripts_use_compact_layout(
+            gpui::px(1_000.0),
+            gpui::px(16.0)
+        ));
+        assert!(scripts_use_compact_layout(
+            gpui::px(1_999.0),
+            gpui::px(32.0)
+        ));
+        assert!(!scripts_use_compact_layout(
+            gpui::px(2_000.0),
+            gpui::px(32.0)
+        ));
     }
 }

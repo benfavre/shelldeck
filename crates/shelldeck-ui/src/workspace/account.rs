@@ -529,6 +529,8 @@ impl Workspace {
         self._monique_poll_task = None;
         self._fleet_view_poll = None;
         self.fleet_refresh_in_flight = false;
+        self.fleet_refresh_failures = 0;
+        self.fleet_retry_not_before = None;
         self._bext_poll = None;
         self.support.update(cx, |support, cx| {
             support.set_list(Vec::new(), Default::default(), Default::default());

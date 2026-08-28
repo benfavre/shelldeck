@@ -594,6 +594,10 @@ pub struct Workspace {
     _fleet_view_poll: Option<gpui::Task<()>>,
     /// Prevent overlapping cursor reads from applying out of order.
     fleet_refresh_in_flight: bool,
+    /// Consecutive projection failures, used to deduplicate diagnostics and
+    /// back off automatic retries while preserving manual Refresh.
+    fleet_refresh_failures: u32,
+    fleet_retry_not_before: Option<std::time::Instant>,
     /// Fences platform responses across sign-out and subsequent sign-in.
     fleet_request_epoch: u64,
     /// Mentionable people from Inklura Manage, for the assistant's `@` picker.
@@ -1404,6 +1408,8 @@ impl Workspace {
             pending_fleet_session_focus: None,
             _fleet_view_poll: None,
             fleet_refresh_in_flight: false,
+            fleet_refresh_failures: 0,
+            fleet_retry_not_before: None,
             fleet_request_epoch: 0,
             mention_people: Vec::new(),
             issues_list: Vec::new(),
@@ -1470,13 +1476,16 @@ impl Workspace {
 /// visible card (~56px) + 4px padding top/bottom, which reads as an 8px
 /// gap between adjacent rows without breaking `uniform_list`'s
 /// uniform-height contract. Any change here must also update the
-/// `others_count * SITE_ROW_H` calc in `render_user_home`.
+/// `others_count * site_row_h` calc in `render_user_home`.
 const SITE_ROW_H: f32 = 64.0;
+const SITE_ROW_H_COMPACT: f32 = 88.0;
 
-/// Uniform slot for User-mode request rows. The inner row occupies 38px and
-/// the remaining 4px preserves the existing visual gap while allowing GPUI
-/// to render only the visible range.
+/// Uniform slots for User-mode request rows. Each inner row explicitly uses
+/// `slot - 4px`; the remainder is the visual gap while GPUI renders only the
+/// visible range. Compact rows reserve enough height for one title line, its
+/// gap, and the full badge line without clipping either edge after scaling.
 const USER_REQUEST_ROW_H: f32 = 42.0;
+const USER_REQUEST_ROW_H_COMPACT: f32 = 70.0;
 
 /// Lucide slug for a Manage area key. Kept in one place so the User-home
 /// site cards and any future palette entries share the same visual vocab.

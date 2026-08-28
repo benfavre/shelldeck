@@ -176,7 +176,7 @@ impl Render for Workspace {
                     main_area = main_area.child(self.support.clone());
                 }
                 AppMode::User => {
-                    main_area = main_area.child(self.render_user_home(is_maximized, _cx));
+                    main_area = main_area.child(self.render_user_home(is_maximized, _window, _cx));
                 }
                 AppMode::Dev => {
                     // Always rendered: the activity rail stays on screen even
@@ -280,11 +280,7 @@ impl Render for Workspace {
             .on_action(move |_: &ToggleCommandPalette, window, cx| {
                 if let Some(ws) = h5.upgrade() {
                     ws.update(cx, |ws, cx| {
-                        ws.command_palette.update(cx, |palette, cx| {
-                            palette.toggle(window, cx);
-                            cx.notify();
-                        });
-                        cx.notify();
+                        ws.toggle_command_palette(window, cx);
                     });
                 }
             })
@@ -862,11 +858,13 @@ mod tests {
             assert_eq!(mode_transition_overlay_opacity(1.0, loading_ms), 0.0);
         }
         assert_eq!(MODE_TRANSITION_TOTAL_MS, 3_000);
-        assert!(
-            MODE_TRANSITION_LOADING_REPEAT_MS < MODE_TRANSITION_LOADING_MS,
-            "un retour dans un mode déjà ouvert ne doit pas coûter plus cher \
-             que la première entrée"
-        );
+        const {
+            assert!(
+                MODE_TRANSITION_LOADING_REPEAT_MS < MODE_TRANSITION_LOADING_MS,
+                "un retour dans un mode déjà ouvert ne doit pas coûter plus cher \
+                 que la première entrée"
+            )
+        };
     }
 
     // SDTEST-1616

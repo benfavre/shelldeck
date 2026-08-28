@@ -10,12 +10,22 @@ all-features = true
 unmaintained = "workspace"
 unsound = "all"
 ignore = [
-    { id = "RUSTSEC-2021-0145", reason = "atty is transitive through the Linux tray stack and only unsound with a custom Windows allocator" },
     { id = "RUSTSEC-2023-0071", reason = "rsa is transitive through russh and RustSec has no patched release; retained temporarily for RSA SSH key compatibility" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is transitive through GTK3 macros in the Linux tray stack" },
+    { id = "RUSTSEC-2024-0384", reason = "instant is transitive through the vendored GPUI futures-lite 1 stack" },
+    { id = "RUSTSEC-2024-0412", reason = "GTK3 is required by the current Linux tray integration; migration requires replacing that desktop backend" },
+    { id = "RUSTSEC-2024-0413", reason = "GTK3 is required by the current Linux tray integration; migration requires replacing that desktop backend" },
     { id = "RUSTSEC-2024-0415", reason = "GTK3 is required by the current Linux tray integration; migration requires replacing that desktop backend" },
+    { id = "RUSTSEC-2024-0416", reason = "GTK3 is required by the current Linux tray integration; migration requires replacing that desktop backend" },
+    { id = "RUSTSEC-2024-0418", reason = "GTK3 is required by the current Linux tray integration; migration requires replacing that desktop backend" },
+    { id = "RUSTSEC-2024-0419", reason = "GTK3 is required by the current Linux tray integration; migration requires replacing that desktop backend" },
+    { id = "RUSTSEC-2024-0420", reason = "GTK3 is required by the current Linux tray integration; migration requires replacing that desktop backend" },
     { id = "RUSTSEC-2024-0429", reason = "glib 0.18 is transitive through the Linux GTK tray stack; ShellDeck does not use VariantStrIter" },
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.30 is a build dependency pinned by the latest xcb release and parses only trusted protocol XML" },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.30 is a build dependency pinned by the latest xcb release and parses only trusted protocol XML" },
+    { id = "RUSTSEC-2024-0436", reason = "paste is transitive through image codecs used by GPUI and has no in-place maintained release" },
+    { id = "RUSTSEC-2025-0052", reason = "async-std is transitive through the vendored GPUI HTTP and async-tar stack" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is transitive through zed-reqwest in the vendored GPUI HTTP client" },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is transitive through stacksafe in the vendored GPUI renderer" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25 is transitive through cosmic-text/fontdb and lopdf; both are already on their latest compatible release" },
 ]
 
 [bans]

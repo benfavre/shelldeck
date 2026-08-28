@@ -103,6 +103,17 @@ fn unavailable_review(error: &shelldeck_core::error::ShellDeckError) -> Platform
     })
 }
 
+const FLEET_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn fleet_retry_delay(consecutive_failures: u32) -> std::time::Duration {
+    let exponent = consecutive_failures.saturating_sub(1).min(2);
+    std::time::Duration::from_secs(30 * (1_u64 << exponent))
+}
+
+fn fleet_should_log_failure(consecutive_failures: u32) -> bool {
+    consecutive_failures == 0
+}
+
 impl Workspace {
     /// Signed-in AI Operations origin and bearer used by non-platform Manage APIs.
     pub(super) fn manage_base_token(&self) -> Option<(String, String)> {
@@ -240,6 +251,12 @@ impl Workspace {
                             active_review_target.as_ref(),
                             review,
                         );
+                        let recovered = workspace.fleet_refresh_failures > 0;
+                        workspace.fleet_refresh_failures = 0;
+                        workspace.fleet_retry_not_before = None;
+                        if recovered {
+                            tracing::info!("Plateforme de nouveau joignable");
+                        }
                         workspace.fleet_snapshot = Some(snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.set_snapshot(snapshot);
@@ -269,6 +286,12 @@ impl Workspace {
                                 *result,
                             )
                         });
+                        let recovered = workspace.fleet_refresh_failures > 0;
+                        workspace.fleet_refresh_failures = 0;
+                        workspace.fleet_retry_not_before = None;
+                        if recovered {
+                            tracing::info!("Plateforme de nouveau joignable");
+                        }
                         workspace.fleet_snapshot = Some(refresh.snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.apply_refresh(refresh);
@@ -284,10 +307,21 @@ impl Workspace {
                         });
                         workspace.focus_pending_fleet_session(cx);
                     }
-                    Err(error) => workspace.fleet_view.update(cx, |view, cx| {
-                        view.set_error(crate::i18n::api_error_message(&error));
-                        cx.notify();
-                    }),
+                    Err(error) => {
+                        let log_failure =
+                            fleet_should_log_failure(workspace.fleet_refresh_failures);
+                        workspace.fleet_refresh_failures =
+                            workspace.fleet_refresh_failures.saturating_add(1);
+                        workspace.fleet_retry_not_before = Some(
+                            std::time::Instant::now()
+                                + fleet_retry_delay(workspace.fleet_refresh_failures),
+                        );
+                        let message = crate::i18n::platform_error_message(&error, log_failure);
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.set_error(message);
+                            cx.notify();
+                        });
+                    }
                 }
             });
         })
@@ -311,13 +345,17 @@ impl Workspace {
             self.refresh_fleet_view(cx);
             if self._fleet_view_poll.is_none() {
                 self._fleet_view_poll = Some(cx.spawn(async move |this, cx: &mut AsyncApp| loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(2))
-                        .await;
+                    cx.background_executor().timer(FLEET_POLL_INTERVAL).await;
                     let keep = this
                         .update(cx, |workspace, cx| {
                             if workspace.fleet_visible() {
-                                workspace.refresh_fleet_view(cx);
+                                let retry_ready =
+                                    workspace.fleet_retry_not_before.is_none_or(|not_before| {
+                                        std::time::Instant::now() >= not_before
+                                    });
+                                if retry_ready {
+                                    workspace.refresh_fleet_view(cx);
+                                }
                                 true
                             } else {
                                 false
@@ -496,7 +534,7 @@ impl Workspace {
                         });
                     }
                     Err(error) => workspace.fleet_view.update(cx, |view, cx| {
-                        view.set_operation_error(crate::i18n::api_error_message(&error));
+                        view.set_operation_error(crate::i18n::platform_error_message(&error, true));
                         cx.notify();
                     }),
                 }
@@ -526,9 +564,9 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        platform_connection_is_current, review_action_for_active_context,
-        review_for_active_context, review_for_active_target, AttributedPlatformReview,
-        AttributedPlatformReviewActionResult,
+        fleet_retry_delay, fleet_should_log_failure, platform_connection_is_current,
+        review_action_for_active_context, review_for_active_context, review_for_active_target,
+        AttributedPlatformReview, AttributedPlatformReviewActionResult, FLEET_POLL_INTERVAL,
     };
     use shelldeck_core::config::platform::{PlatformConnection, PlatformReviewActionResult};
     use shelldeck_core::config::platform_review::{
@@ -543,6 +581,7 @@ mod tests {
     use shelldeck_core::config::workspace_catalog::{
         PlatformContextRef, PlatformMappingReconciliation, PlatformV2Mapping,
     };
+    use std::time::Duration;
 
     fn target(project: &str, workspace: &str) -> PlatformReviewTarget {
         PlatformReviewTarget::from_exact_mapping(&PlatformV2Mapping {
@@ -785,5 +824,20 @@ mod tests {
             foreign_attribution,
         )
         .is_none());
+    }
+
+    // SDTEST-1799 — Platform polling must remain useful while healthy without
+    // hammering or repeating diagnostics throughout one outage.
+    #[test]
+    fn platform_failure_policy_backs_off_and_logs_once_per_outage() {
+        assert_eq!(FLEET_POLL_INTERVAL, Duration::from_secs(10));
+        assert_eq!(fleet_retry_delay(1), Duration::from_secs(30));
+        assert_eq!(fleet_retry_delay(2), Duration::from_secs(60));
+        assert_eq!(fleet_retry_delay(3), Duration::from_secs(120));
+        assert_eq!(fleet_retry_delay(20), Duration::from_secs(120));
+
+        assert!(fleet_should_log_failure(0));
+        assert!(!fleet_should_log_failure(1));
+        assert!(!fleet_should_log_failure(20));
     }
 }

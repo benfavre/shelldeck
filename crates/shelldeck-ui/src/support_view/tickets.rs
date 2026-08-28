@@ -31,7 +31,7 @@ impl SupportView {
                 if message.is_note() {
                     Vec::new()
                 } else {
-                    markdown_blocks(&message.text)
+                    markdown_blocks(&message.text, &message.attachments)
                 }
             })
             .collect();
@@ -920,7 +920,7 @@ impl SupportView {
                     t!("support.bubble.agent").to_string()
                 }
             });
-        let quoted = message.text.clone();
+        let quoted = super::thread::cid_safe_text(&message.text, &message.attachments);
         let ticket_id = self.selected_id.clone().unwrap_or_default();
         div()
             .flex()

@@ -864,7 +864,7 @@ mod live_workspace_subsystem_tests {
     use tokio::time::timeout;
     use uuid::Uuid;
 
-    // SDTEST-1793
+    // SDTEST-1809
     #[tokio::test]
     #[ignore = "requires SHELLDECK_LIVE_SSH=1 and an installed shelldeck-workspace-v1 subsystem"]
     async fn fixed_workspace_subsystem_prepares_releases_and_resumes_exact_remote_repository() {
@@ -873,7 +873,7 @@ mod live_workspace_subsystem_tests {
             return;
         }
         let required = |name: &str| {
-            std::env::var(name).unwrap_or_else(|_| panic!("{name} is required for SDTEST-1793"))
+            std::env::var(name).unwrap_or_else(|_| panic!("{name} is required for SDTEST-1809"))
         };
         let hostname = required("SHELLDECK_LIVE_SSH_HOST");
         let port = required("SHELLDECK_LIVE_SSH_PORT")
@@ -885,7 +885,7 @@ mod live_workspace_subsystem_tests {
         let remote_workspace = required("SHELLDECK_LIVE_SSH_WORKSPACE");
         let connection = Connection {
             id: Uuid::new_v4(),
-            alias: "SDTEST-1793".to_owned(),
+            alias: "SDTEST-1809".to_owned(),
             hostname,
             port,
             user,

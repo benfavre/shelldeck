@@ -106,6 +106,23 @@ pub enum AiHost {
     Dock,
 }
 
+/// The Sheet only has enough room for history and conversation side by side at
+/// its full design width. Below that threshold history swaps the conversation
+/// instead of becoming a clipped phantom rail.
+fn sheet_supports_history_column(viewport_width: Pixels, split_min_width: Pixels) -> bool {
+    viewport_width >= split_min_width
+}
+
+fn compact_sheet_header_title(title: String, compact: bool) -> String {
+    const MAX_CHARS: usize = 32;
+    if !compact || title.chars().count() <= MAX_CHARS {
+        return title;
+    }
+
+    let shortened = title.chars().take(MAX_CHARS - 1).collect::<String>();
+    format!("{}…", shortened.trim_end())
+}
+
 /// The Sheet itself is 780 absolute pixels wide, but its conversation column
 /// loses the scaled 240px history rail when that rail is visible. Bubble
 /// shaping needs that effective width up front because GPUI cannot recover a
@@ -257,6 +274,10 @@ pub struct AiAssistantView {
     history_scroll: ScrollHandle,
     task_scroll: ScrollHandle,
     history_open: bool,
+    /// Compact sheets cannot carry a history column. They keep a separate
+    /// swap state so the wide layout may remember its open column without
+    /// forcing a sliver of it into a narrow window.
+    compact_history_open: bool,
     host: AiHost,
     backend_menu_open: bool,
     notice: Option<String>,
@@ -349,6 +370,7 @@ impl AiAssistantView {
             history_scroll: ScrollHandle::new(),
             task_scroll: ScrollHandle::new(),
             history_open: true,
+            compact_history_open: false,
             host: AiHost::default(),
             backend_menu_open: false,
             notice: None,
@@ -426,13 +448,15 @@ impl AiAssistantView {
     }
 
     /// Kept as the hosts' entry point (the Dock opens without history).
-    /// `history_open` is Sheet-only state — it drives the side column and the
-    /// header toggle. The Dock never reads it (its rail renders on
-    /// `active_tab`), so a Dock host maps the call onto its activity instead
-    /// of writing dead state.
+    /// Sheet history is a column at full width and a swapped full panel in a
+    /// compact window. The Dock never reads either state (its rail renders on
+    /// `active_tab`), so a Dock host maps the call onto its activity instead.
     pub fn set_history_open(&mut self, open: bool, cx: &mut Context<Self>) {
         match self.host {
-            AiHost::Sheet => self.history_open = open,
+            AiHost::Sheet => {
+                self.history_open = open;
+                self.compact_history_open = open;
+            }
             AiHost::Dock => {
                 self.active_tab = if open {
                     AiActivity::History
@@ -441,6 +465,25 @@ impl AiAssistantView {
                 };
             }
         }
+        cx.notify();
+    }
+
+    fn sheet_supports_history_column(&self, window: &Window) -> bool {
+        self.host == AiHost::Sheet
+            && sheet_supports_history_column(
+                window.viewport_size().width,
+                px(780.0).to_pixels(window.rem_size()),
+            )
+    }
+
+    fn toggle_sheet_history(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.sheet_supports_history_column(window) {
+            self.history_open = !self.history_open;
+        } else {
+            self.compact_history_open = !self.compact_history_open;
+        }
+        self.attach_menu_open = false;
+        self.mention_picker = None;
         cx.notify();
     }
 
@@ -1120,8 +1163,10 @@ impl AiAssistantView {
         // then hard-clipped by the row after the two fixed 36px buttons.
         let panel_width = if as_column {
             px(240.0).to_pixels(window.rem_size())
-        } else {
+        } else if self.host == AiHost::Dock {
             window.viewport_size().width - gpui::px(56.0)
+        } else {
+            window.viewport_size().width
         };
         // list padding 16 + row padding 16 + two 4px gaps, all scaled; then
         // the two adabraka Sm icon buttons, which stay absolute 36px each.
@@ -1670,11 +1715,13 @@ impl AiAssistantView {
         // percentage max-width in one measurement pass. Long/structured user
         // messages therefore receive the prototype's definite 88% width;
         // short one-line messages receive an explicit compact width.
+        let history_column_visible =
+            self.history_open && self.sheet_supports_history_column(window);
         let reading_width = match self.host {
             AiHost::Dock => window.viewport_size().width - gpui::px(56.0),
             AiHost::Sheet => sheet_message_reading_width(
                 window.viewport_size().width,
-                self.history_open,
+                history_column_visible,
                 px(240.0).to_pixels(window.rem_size()),
                 px(600.0).to_pixels(window.rem_size()),
             ),
@@ -2442,6 +2489,13 @@ impl AiAssistantView {
 
 impl Render for AiAssistantView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sheet_supports_history_column = self.sheet_supports_history_column(window);
+        let history_column_visible = sheet_supports_history_column && self.history_open;
+        let compact_history_visible = self.host == AiHost::Sheet
+            && !sheet_supports_history_column
+            && self.compact_history_open;
+        let sheet_history_visible = history_column_visible || compact_history_visible;
+
         // One closure for the round button and for Enter — `Composer` takes a
         // single handler precisely so the two cannot drift apart.
         let submit = {
@@ -2526,7 +2580,11 @@ impl Render for AiAssistantView {
                     || matches!(task.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
             })
             .count();
-        let active_title = self.active_title();
+        let in_sheet = self.host == AiHost::Sheet;
+        let active_title = compact_sheet_header_title(
+            self.active_title(),
+            in_sheet && !sheet_supports_history_column,
+        );
         let active_labels = self
             .active_conversation()
             .map(composer::conversation_mention_labels)
@@ -2536,7 +2594,6 @@ impl Render for AiAssistantView {
         // sibling. In the Sheet the adabraka `Sheet` draws no header of its own
         // (no title, no close button => `has_header` is false), so this row is
         // the whole chrome and carries the close.
-        let in_sheet = self.host == AiHost::Sheet;
         let mut conversation_header = div()
             .flex()
             .items_center()
@@ -2551,14 +2608,22 @@ impl Render for AiAssistantView {
             // User-home hero artwork, it must own the curve itself because a
             // GPUI parent clip alone can leave a rectangular paint remnant.
             conversation_header = conversation_header
-                .rounded_tr(use_theme().tokens.radius_xl)
                 .overflow_hidden()
                 .bg(ShellDeckColors::bg_primary());
+            if !window.is_maximized() {
+                conversation_header = conversation_header.rounded_tr(use_theme().tokens.radius_xl);
+            }
+            if !window.is_maximized() && !sheet_supports_history_column {
+                // A compact Sheet fills the host width, so this opaque header
+                // reaches the left window edge too. It must own that curve;
+                // the rounded Sheet ancestor is not a reliable GPUI clip.
+                conversation_header = conversation_header.rounded_tl(use_theme().tokens.radius_xl);
+            }
             conversation_header = conversation_header.child(
                 Button::new("ai-toggle-history", "")
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Sm)
-                    .tooltip(if self.history_open {
+                    .tooltip(if sheet_history_visible {
                         t!("ai.history.hide").to_string()
                     } else {
                         t!("ai.history.show").to_string()
@@ -2566,14 +2631,13 @@ impl Render for AiAssistantView {
                     // `panel-left` is not in the bundled Lucide subset
                     // (.agents/icons.md): reuse the two slugs the previous
                     // toggle already shipped with rather than add a file.
-                    .icon(IconSource::from(if self.history_open {
+                    .icon(IconSource::from(if sheet_history_visible {
                         "chevron-left"
                     } else {
                         "clock"
                     }))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.history_open = !this.history_open;
-                        cx.notify();
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_sheet_history(window, cx);
                     })),
             );
         }
@@ -2884,6 +2948,11 @@ impl Render for AiAssistantView {
             composer = composer.rounded_bl(use_theme().tokens.radius_xl);
         } else if !window.is_maximized() {
             composer = composer.rounded_br(use_theme().tokens.radius_xl);
+            if !sheet_supports_history_column {
+                // Same ownership rule as the compact Sheet header: the
+                // composer's opaque background now reaches bottom-left.
+                composer = composer.rounded_bl(use_theme().tokens.radius_xl);
+            }
         }
         if let Some(error) = &self.error {
             composer = composer.child(
@@ -3118,15 +3187,21 @@ impl Render for AiAssistantView {
                     )
                     .child(self.render_rail(active_tasks, cx))
             }
-            // Sheet: no rail. 780px has room for the history column beside the
-            // conversation, and the header carries the toggle and the tasks.
+            // Sheet: no rail. At the full 780px design width history may sit
+            // beside the conversation. In a narrower window the same button
+            // swaps between two full-width panels, so no clipped rail can
+            // steal room from the thread or composer.
             AiHost::Sheet => {
                 // The Sheet has no rail, so its header spans the full split.
                 sheet_header = Some(conversation_header);
-                let main = match self.active_tab {
-                    AiActivity::Tasks => self.render_tasks(window, cx),
-                    AiActivity::Clippy => self.render_clippy(window, cx),
-                    _ => chat.into_any_element(),
+                let main = if compact_history_visible {
+                    self.render_history(false, window, cx)
+                } else {
+                    match self.active_tab {
+                        AiActivity::Tasks => self.render_tasks(window, cx),
+                        AiActivity::Clippy => self.render_clippy(window, cx),
+                        _ => chat.into_any_element(),
+                    }
                 };
                 let mut split = div()
                     .flex()
@@ -3135,7 +3210,7 @@ impl Render for AiAssistantView {
                     .min_h(px(0.0))
                     .min_w_0()
                     .overflow_hidden();
-                if self.history_open {
+                if history_column_visible {
                     split = split.child(self.render_history(true, window, cx));
                 }
                 split.child(
@@ -3349,10 +3424,10 @@ impl Render for AiAssistantView {
             );
         }
 
-        if let Some(menu) = self.render_attach_menu(cx) {
+        if let Some(menu) = self.render_attach_menu(history_column_visible, cx) {
             root = root.child(menu);
         }
-        if let Some(picker) = self.render_mention_picker(cx) {
+        if let Some(picker) = self.render_mention_picker(history_column_visible, cx) {
             root = root.child(picker);
         }
 
@@ -3446,8 +3521,9 @@ impl Render for AiAssistantView {
 #[cfg(test)]
 mod tests {
     use super::{
-        context_switch_resets, sheet_message_reading_width, should_auto_import_clippy,
-        validated_clippy_result, AiAssistantView, AiQuickActionMode, AiRequestGate,
+        compact_sheet_header_title, context_switch_resets, sheet_message_reading_width,
+        sheet_supports_history_column, should_auto_import_clippy, validated_clippy_result,
+        AiAssistantView, AiQuickActionMode, AiRequestGate,
     };
     use shelldeck_core::ai::{AiContext, AiSurface, CLIPPY_MAX_RESULT_CHARS};
 
@@ -3521,12 +3597,19 @@ mod tests {
         assert!(validated_clippy_result("x".repeat(CLIPPY_MAX_RESULT_CHARS + 1)).is_err());
     }
 
-    // SDTEST-1600 — the 240px history column used to leave the message
-    // renderer believing it still owned the Sheet's 600px reading measure.
-    // Definite user bubbles then extended underneath history and lost their
-    // leading text to the split's overflow clip.
+    // SDTEST-1600 — the 240px history column used to survive below the
+    // Sheet's two-column breakpoint. Flex then clipped it into a 94px phantom
+    // rail and stole that space from the conversation and composer.
     #[test]
-    fn sheet_message_width_accounts_for_the_visible_history_column() {
+    fn compact_sheet_swaps_history_instead_of_reserving_a_column() {
+        assert!(sheet_supports_history_column(
+            gpui::px(780.0),
+            gpui::px(780.0)
+        ));
+        assert!(!sheet_supports_history_column(
+            gpui::px(600.0),
+            gpui::px(780.0)
+        ));
         assert_eq!(
             sheet_message_reading_width(gpui::px(1210.0), false, gpui::px(240.0), gpui::px(600.0)),
             gpui::px(600.0)
@@ -3536,8 +3619,24 @@ mod tests {
             gpui::px(540.0)
         );
         assert_eq!(
-            sheet_message_reading_width(gpui::px(600.0), true, gpui::px(240.0), gpui::px(600.0)),
-            gpui::px(360.0)
+            sheet_message_reading_width(gpui::px(600.0), false, gpui::px(240.0), gpui::px(600.0)),
+            gpui::px(600.0)
+        );
+    }
+
+    // SDTEST-1805 — A-16 / SDUC-414. StyledText can clip a shaped run without
+    // painting CSS ellipsis, so compact Sheet titles carry their own bounded
+    // Unicode-safe ellipsis while wide and short titles remain unchanged.
+    #[test]
+    fn compact_sheet_header_title_has_a_visible_ellipsis() {
+        let long = "Analyser les incidents Plateforme et les sessions Automonique".to_string();
+        let compact = compact_sheet_header_title(long.clone(), true);
+        assert_eq!(compact.chars().count(), 32);
+        assert!(compact.ends_with('…'));
+        assert_eq!(compact_sheet_header_title(long.clone(), false), long);
+        assert_eq!(
+            compact_sheet_header_title("Nouvelle conversation".to_string(), true),
+            "Nouvelle conversation"
         );
     }
 

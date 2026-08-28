@@ -16,6 +16,7 @@ use adabraka_ui::prelude::Markdown;
 use gpui::prelude::*;
 use gpui::*;
 use pulldown_cmark::{Event, Options, Parser};
+use shelldeck_core::config::issues::IssueAttachment;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -340,10 +341,70 @@ fn styled_body(
     }
 }
 
+fn attachment_basename(filename: &str) -> &str {
+    filename
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(filename)
+        .trim()
+}
+
+/// Replace Outlook/Office inline-image transport markers with reader-facing
+/// text. The source payload remains untouched; this adapter only feeds the
+/// conversation renderer. When Manage exposes the matching attachment, its
+/// canonical filename points the reader to the gallery rendered below the
+/// message. Otherwise no opaque Content-ID escapes into the UI.
+pub(crate) fn cid_safe_text(source: &str, attachments: &[IssueAttachment]) -> String {
+    let folded = source.to_ascii_lowercase();
+    let mut rendered = String::with_capacity(source.len());
+    let mut cursor = 0usize;
+
+    while let Some(relative_start) = folded[cursor..].find("[cid:") {
+        let start = cursor + relative_start;
+        rendered.push_str(&source[cursor..start]);
+
+        let token_start = start + "[cid:".len();
+        let Some(relative_end) = source[token_start..].find(']') else {
+            rendered.push_str(&source[start..]);
+            cursor = source.len();
+            break;
+        };
+        let end = token_start + relative_end;
+        let marker_filename = source[token_start..end]
+            .split('@')
+            .next()
+            .map(str::trim)
+            .unwrap_or_default();
+        let matching_filename = (!marker_filename.is_empty())
+            .then(|| {
+                attachments.iter().find_map(|attachment| {
+                    let filename = attachment_basename(&attachment.filename);
+                    (!filename.is_empty() && filename.eq_ignore_ascii_case(marker_filename))
+                        .then_some(filename)
+                })
+            })
+            .flatten();
+
+        if let Some(filename) = matching_filename {
+            rendered.push_str(t!("support.thread.cid.attached", filename = filename).as_ref());
+        } else {
+            rendered.push_str(t!("support.thread.cid.unavailable").as_ref());
+        }
+        cursor = end + 1;
+    }
+
+    if cursor < source.len() {
+        rendered.push_str(&source[cursor..]);
+    }
+    rendered
+}
+
 /// Split Markdown at top-level block boundaries. The thread's native GPUI
 /// list can then virtualise a huge message block-by-block instead of parsing,
 /// laying out and painting the complete document on every scroll tick.
-pub(super) fn markdown_blocks(source: &str) -> Vec<SharedString> {
+pub(super) fn markdown_blocks(source: &str, attachments: &[IssueAttachment]) -> Vec<SharedString> {
+    let source = cid_safe_text(source, attachments);
+    let source = source.as_str();
     if source.trim().is_empty() {
         return Vec::new();
     }
@@ -428,6 +489,8 @@ pub(super) fn attributed_quote(
     author: impl Into<SharedString>,
     body: impl Into<SharedString>,
 ) -> AnyElement {
+    let body = body.into();
+    let body = cid_safe_text(body.as_ref(), &[]);
     div()
         .w_full()
         .min_w(px(0.0))
@@ -443,7 +506,7 @@ pub(super) fn attributed_quote(
                 .whitespace_normal()
                 .child(t!("support.thread.reply_to", author = author.into()).to_string()),
         )
-        .child(div().whitespace_normal().italic().child(body.into()))
+        .child(div().whitespace_normal().italic().child(body))
         .into_any_element()
 }
 
@@ -792,7 +855,7 @@ pub(crate) fn note(
     kind: ThreadNoteKind,
     base_font_size: Pixels,
 ) -> AnyElement {
-    let body: SharedString = body.into();
+    let body: SharedString = cid_safe_text(body.into().as_ref(), &[]).into();
     let actor = actor.map(Into::into);
     let (icon, border, bg) = match kind {
         ThreadNoteKind::Status => (
@@ -953,13 +1016,14 @@ pub(crate) fn note(
 
 #[cfg(test)]
 mod tests {
-    use super::markdown_blocks;
+    use super::{cid_safe_text, markdown_blocks};
+    use shelldeck_core::config::issues::IssueAttachment;
 
     #[test]
     fn markdown_is_split_on_complete_top_level_blocks() {
         let source =
             "# Titre\n\nPremier **paragraphe**.\n\n- un\n- deux\n\n```rust\nfn main() {}\n```";
-        let blocks = markdown_blocks(source);
+        let blocks = markdown_blocks(source, &[]);
         assert!(blocks.len() >= 4, "expected virtualisable Markdown blocks");
         assert!(blocks.iter().any(|block| block.contains("**paragraphe**")));
         assert!(blocks.iter().any(|block| block.contains("- un")));
@@ -969,8 +1033,34 @@ mod tests {
 
     #[test]
     fn plain_text_remains_renderable() {
-        let blocks = markdown_blocks("Une seule ligne sans balisage");
+        let blocks = markdown_blocks("Une seule ligne sans balisage", &[]);
         assert_eq!(blocks.as_slice(), &["Une seule ligne sans balisage"]);
-        assert!(markdown_blocks("  \n").is_empty());
+        assert!(markdown_blocks("  \n", &[]).is_empty());
+    }
+
+    // SDTEST-1797 — Content-ID transport markers never escape into visible
+    // conversation prose. A same-message attachment resolves by basename;
+    // an unresolved image remains explicit without exposing its opaque id.
+    #[test]
+    fn cid_markers_resolve_to_attachment_names_or_a_readable_fallback() {
+        let attachments = vec![IssueAttachment {
+            filename: "mail/image003.png".to_string(),
+            ..Default::default()
+        }];
+        let rendered = cid_safe_text(
+            "Avant\n[CID:image003.png@01DD36D8.282608C0]\n[cid:image001.png@opaque]\nAprès",
+            &attachments,
+        );
+
+        assert!(rendered.contains("image003.png"));
+        assert!(!rendered.to_ascii_lowercase().contains("cid:"));
+        assert!(!rendered.contains("01DD36D8"));
+        assert!(!rendered.contains("opaque"));
+        assert!(rendered.starts_with("Avant\n"));
+        assert!(rendered.ends_with("\nAprès"));
+        assert_eq!(
+            cid_safe_text("Texte [cid:image.png sans fin", &[]),
+            "Texte [cid:image.png sans fin"
+        );
     }
 }

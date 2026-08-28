@@ -2,6 +2,8 @@
 
 use shelldeck_core::config::app_config::UiLanguage;
 
+use chrono::{DateTime, Local, TimeZone};
+
 /// Apply the persisted UI language to the global rust-i18n locale.
 pub fn apply_ui_language(preference: &UiLanguage) {
     rust_i18n::set_locale(resolve_locale(preference));
@@ -44,6 +46,38 @@ pub fn rel_time(at_ms: f64) -> String {
     }
 }
 
+/// Render an RFC 3339 timestamp as a short, local, customer-facing date.
+///
+/// Manage returns wire timestamps such as `2026-08-27T08:34:49.305Z`. They
+/// remain useful in logs, but should never be shown verbatim in the UI.
+pub fn local_timestamp(value: &str) -> String {
+    let value = value.trim();
+    let Ok(parsed) = DateTime::parse_from_rfc3339(value) else {
+        return value.to_string();
+    };
+    friendly_datetime(parsed.with_timezone(&Local), Local::now())
+}
+
+fn friendly_datetime<Tz>(value: DateTime<Tz>, now: DateTime<Tz>) -> String
+where
+    Tz: TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    let time = value.format("%H:%M").to_string();
+    if value.date_naive() == now.date_naive() {
+        crate::t!("time.today_at", time = time).to_string()
+    } else if Some(value.date_naive()) == now.date_naive().pred_opt() {
+        crate::t!("time.yesterday_at", time = time).to_string()
+    } else {
+        let date = if rust_i18n::locale().starts_with("fr") {
+            value.format("%d/%m/%Y").to_string()
+        } else {
+            value.format("%m/%d/%Y").to_string()
+        };
+        crate::t!("time.date_at", date = date, time = time).to_string()
+    }
+}
+
 /// Phrase à montrer à l'utilisateur quand une requête vers Manage échoue.
 ///
 /// Les clients construisent des messages techniques qui embarquent l'URL
@@ -67,6 +101,56 @@ pub fn api_error_message(err: &shelldeck_core::error::ShellDeckError) -> String 
         ApiFailure::ServerError => "error.api.server",
         ApiFailure::BadResponse => "error.api.bad_response",
         ApiFailure::Other => "error.api.other",
+    };
+    crate::t!(key).to_string()
+}
+
+/// Human-readable error for the SDK exposed by one bext instance.
+///
+/// Its HTTP statuses do not describe Manage resources. In particular, a 404
+/// can mean that the targeted instance does not expose the requested SDK route;
+/// it must never be presented as an item deleted from the portal.
+pub fn bext_instance_error_message(err: &shelldeck_core::error::ShellDeckError) -> String {
+    use shelldeck_core::config::cloud_account::{classify_api_error, ApiFailure};
+
+    tracing::warn!("requête Instance bext échouée : {err}");
+
+    let key = match classify_api_error(err) {
+        ApiFailure::Unreachable => "bext.error.instance_unreachable",
+        ApiFailure::Timeout => "bext.error.instance_timeout",
+        ApiFailure::AuthRejected | ApiFailure::Forbidden => "bext.error.instance_rejected",
+        ApiFailure::NotFound => "bext.error.instance_not_found",
+        ApiFailure::ServerError => "bext.error.instance_server",
+        ApiFailure::BadResponse => "bext.error.instance_bad_response",
+        ApiFailure::Other => "bext.error.instance_other",
+    };
+    crate::t!(key).to_string()
+}
+
+/// Human-readable error for the shared Platform projection.
+///
+/// Platform polling can retry the same unavailable endpoint several times.
+/// `log_failure` lets its owner emit one diagnostic per outage instead of one
+/// warning per poll while still rebuilding the localized UI message.
+pub fn platform_error_message(
+    err: &shelldeck_core::error::ShellDeckError,
+    log_failure: bool,
+) -> String {
+    use shelldeck_core::config::cloud_account::{classify_api_error, ApiFailure};
+
+    if log_failure {
+        tracing::warn!("requête Plateforme échouée : {err}");
+    }
+
+    let key = match classify_api_error(err) {
+        ApiFailure::Unreachable => "fleet.error.unreachable",
+        ApiFailure::Timeout => "fleet.error.timeout",
+        ApiFailure::AuthRejected => "fleet.error.auth_rejected",
+        ApiFailure::Forbidden => "fleet.error.forbidden",
+        ApiFailure::NotFound => "fleet.error.not_found",
+        ApiFailure::ServerError => "fleet.error.server",
+        ApiFailure::BadResponse => "fleet.error.bad_response",
+        ApiFailure::Other => "fleet.error.other",
     };
     crate::t!(key).to_string()
 }
@@ -129,20 +213,41 @@ mod tests {
         );
     }
 
+    /// SDTEST-1807 — reste dans le scénario bilingue unique car la locale
+    /// rust-i18n est globale au processus.
+    fn assert_bext_instance_failures_keep_sdk_context(language: &str, expected_404: &str) {
+        use shelldeck_core::error::ShellDeckError;
+
+        let not_found = bext_instance_error_message(&ShellDeckError::Connection(
+            "instance SDK request failed: HTTP 404".to_string(),
+        ));
+        assert_eq!(not_found, expected_404);
+        assert!(
+            !not_found.to_ascii_lowercase().contains("portal")
+                && !not_found.to_ascii_lowercase().contains("portail")
+                && !not_found.contains("404"),
+            "un statut Instance est attribué au portail en {language}: {not_found}",
+        );
+
+        let unreachable = bext_instance_error_message(&ShellDeckError::Connection(
+            "instance SDK request failed: error sending request for url \
+             (http://127.0.0.1/__bext/sdk/site/list)"
+                .to_string(),
+        ));
+        assert!(
+            !unreachable.contains("127.0.0.1") && !unreachable.contains("/__bext/"),
+            "URL SDK exposée en {language}: {unreachable}",
+        );
+    }
+
     /// SDTEST-1704 — reste dans le scénario bilingue unique : la locale est
     /// globale au processus et ne doit jamais être modifiée par deux tests en
     /// parallèle.
-    fn assert_operational_vocabulary_is_localized(
-        unknown_status: &str,
-        unknown_priority: &str,
-        one_connection: &str,
-        many_connections: &str,
-        one_forward: &str,
-        many_forwards: &str,
-        one_script: &str,
-        many_scripts: &str,
-    ) {
+    fn assert_operational_vocabulary_is_localized(expected: [&str; 8]) {
         use crate::status_bar::{status_count_label, StatusMetric};
+
+        let [unknown_status, unknown_priority, one_connection, many_connections, one_forward, many_forwards, one_script, many_scripts] =
+            expected;
 
         assert_eq!(
             crate::support_view::status_label("awaiting_agent"),
@@ -194,6 +299,21 @@ mod tests {
         assert_eq!(crate::t!("sidebar.nav.recent"), crate::t!("recent.title"));
     }
 
+    /// SDTEST-1793 — appelé dans le scénario bilingue unique, car la locale
+    /// rust-i18n est globale au processus.
+    fn assert_account_timestamps_are_customer_facing(today: &str, yesterday: &str, older: &str) {
+        let offset = chrono::FixedOffset::east_opt(2 * 60 * 60).unwrap();
+        let now = offset.with_ymd_and_hms(2026, 8, 27, 12, 0, 0).unwrap();
+        let same_day = offset.with_ymd_and_hms(2026, 8, 27, 10, 34, 49).unwrap();
+        let previous_day = offset.with_ymd_and_hms(2026, 8, 26, 18, 5, 0).unwrap();
+        let previous_month = offset.with_ymd_and_hms(2026, 7, 9, 8, 7, 0).unwrap();
+
+        assert_eq!(friendly_datetime(same_day, now), today);
+        assert_eq!(friendly_datetime(previous_day, now), yesterday);
+        assert_eq!(friendly_datetime(previous_month, now), older);
+        assert_eq!(local_timestamp("valeur historique"), "valeur historique");
+    }
+
     /// Single test — `rust_i18n::set_locale` is process-global; parallel tests race.
     #[test]
     fn locale_fr_and_en() {
@@ -219,7 +339,11 @@ mod tests {
             "Connexion interrompue\u{a0}: production"
         );
         assert_portal_failures_stay_readable("fr");
-        assert_operational_vocabulary_is_localized(
+        assert_bext_instance_failures_keep_sdk_context(
+            "fr",
+            "Ressource ou route SDK introuvable sur l’Instance Bext. Vérifiez la cible et sa version.",
+        );
+        assert_operational_vocabulary_is_localized([
             "statut inconnu",
             "Priorité inconnue",
             "1 connexion active",
@@ -228,6 +352,11 @@ mod tests {
             "2 redirections actives",
             "1 script en cours",
             "2 scripts en cours",
+        ]);
+        assert_account_timestamps_are_customer_facing(
+            "Aujourd’hui à 10:34",
+            "Hier à 18:05",
+            "09/07/2026 à 08:07",
         );
 
         apply_ui_language(&UiLanguage::En);
@@ -249,7 +378,11 @@ mod tests {
             "Connection interrupted: production"
         );
         assert_portal_failures_stay_readable("en");
-        assert_operational_vocabulary_is_localized(
+        assert_bext_instance_failures_keep_sdk_context(
+            "en",
+            "Resource or SDK route not found on the Bext instance. Check the target and its version.",
+        );
+        assert_operational_vocabulary_is_localized([
             "unknown status",
             "Unknown priority",
             "1 active connection",
@@ -258,6 +391,11 @@ mod tests {
             "2 active port forwards",
             "1 running script",
             "2 running scripts",
+        ]);
+        assert_account_timestamps_are_customer_facing(
+            "Today at 10:34",
+            "Yesterday at 18:05",
+            "07/09/2026 at 08:07",
         );
     }
 

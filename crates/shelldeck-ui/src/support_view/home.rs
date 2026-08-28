@@ -18,6 +18,31 @@ struct SupportHomeStat {
     target: SupportHomeTarget,
 }
 
+fn support_home_card_header(icon: &'static str, color: Hsla, title: String) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(9.0))
+        .child(
+            div()
+                .size(px(26.0))
+                .rounded(px(7.0))
+                .bg(color.opacity(0.12))
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .child(lucide_icon(icon, 14.0, color)),
+        )
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(ShellDeckColors::text_primary())
+                .child(title),
+        )
+}
+
 impl SupportHomeTarget {
     fn section(self) -> SupportSection {
         match self {
@@ -189,8 +214,10 @@ impl SupportView {
             .flex()
             .items_center()
             .gap(px(10.0))
-            .px(px(2.0))
+            .mx(px(-8.0))
+            .px(px(8.0))
             .py(px(9.0))
+            .rounded(px(8.0))
             .border_b_1()
             .border_color(ShellDeckColors::border().opacity(0.65))
             .cursor_pointer()
@@ -272,8 +299,10 @@ impl SupportView {
             .flex()
             .items_center()
             .gap(px(10.0))
-            .px(px(2.0))
+            .mx(px(-8.0))
+            .px(px(8.0))
             .py(px(9.0))
+            .rounded(px(8.0))
             .border_b_1()
             .border_color(ShellDeckColors::border().opacity(0.65))
             .cursor_pointer()
@@ -327,7 +356,7 @@ impl SupportView {
             ))
     }
 
-    pub(super) fn render_home(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_home(&self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let tickets = Button::new(
             "support-home-tickets",
@@ -351,6 +380,49 @@ impl SupportView {
                 this.open_home_target(SupportHomeTarget::Requests, cx)
             });
         });
+
+        let triage_copy = div()
+            .flex()
+            .flex_col()
+            .min_w(px(0.0))
+            .flex_1()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(t!("support.home.priority_title").to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("support.home.priority_hint").to_string()),
+            );
+
+        let mut triage_actions = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.0))
+            .flex_shrink_0();
+        if compact {
+            triage_actions = triage_actions
+                .w_full()
+                .child(requests.min_w(px(180.0)).flex_1())
+                .child(tickets.min_w(px(180.0)).flex_1());
+        } else {
+            triage_actions = triage_actions.child(requests).child(tickets);
+        }
+
+        let mut triage_content = div().flex().gap(px(12.0));
+        if compact {
+            triage_content = triage_content.flex_col();
+        } else {
+            triage_content = triage_content.items_center().justify_between();
+        }
+        triage_content = triage_content.child(triage_copy).child(triage_actions);
 
         let attention_indices = attention_ticket_indices(&self.tickets, 4);
         let attention = if attention_indices.is_empty() {
@@ -483,7 +555,7 @@ impl SupportView {
                             SupportHomeStat {
                                 id: "support-home-requests-stat",
                                 icon: "tag",
-                                value: self.visible_issue_count(),
+                                value: self.issue_total_count(),
                                 label: t!("support.home.requests").to_string(),
                                 color: ShellDeckColors::success(),
                                 target: SupportHomeTarget::Requests,
@@ -491,42 +563,7 @@ impl SupportView {
                             cx,
                         )),
                 )
-                .child(
-                    Card::new().content(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(12.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(14.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(ShellDeckColors::text_primary())
-                                            .child(t!("support.home.priority_title").to_string()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.0))
-                                            .text_color(ShellDeckColors::text_muted())
-                                            .child(t!("support.home.priority_hint").to_string()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.0))
-                                    .child(requests)
-                                    .child(tickets),
-                            ),
-                    ),
-                )
+                .child(Card::new().content(triage_content))
                 .child(
                     div()
                         .flex()
@@ -535,51 +572,22 @@ impl SupportView {
                         .gap(px(12.0))
                         .child(
                             Card::new()
-                                .header(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(7.0))
-                                        .child(lucide_icon(
-                                            "siren",
-                                            15.0,
-                                            ShellDeckColors::warning(),
-                                        ))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(ShellDeckColors::text_primary())
-                                                .child(
-                                                    t!("support.home.priority_column_title")
-                                                        .to_string(),
-                                                ),
-                                        ),
-                                )
+                                .header(support_home_card_header(
+                                    "triangle-alert",
+                                    ShellDeckColors::warning(),
+                                    t!("support.home.priority_column_title").to_string(),
+                                ))
                                 .content(attention)
                                 .min_w(px(360.0))
                                 .flex_1(),
                         )
                         .child(
                             Card::new()
-                                .header(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(7.0))
-                                        .child(lucide_icon(
-                                            "history",
-                                            15.0,
-                                            ShellDeckColors::success(),
-                                        ))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(ShellDeckColors::text_primary())
-                                                .child(t!("user.home.recent_requests").to_string()),
-                                        ),
-                                )
+                                .header(support_home_card_header(
+                                    "clock",
+                                    ShellDeckColors::success(),
+                                    t!("user.home.recent_requests").to_string(),
+                                ))
                                 .content(recent_requests)
                                 .min_w(px(360.0))
                                 .flex_1(),

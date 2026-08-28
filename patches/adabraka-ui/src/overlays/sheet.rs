@@ -200,7 +200,23 @@ impl Render for Sheet {
         let has_header =
             self.title.is_some() || self.description.is_some() || self.show_close_button;
         let has_footer = self.footer.is_some();
-        let sheet_size = self.get_sheet_size();
+        let requested_sheet_size = self.get_sheet_size();
+        // ShellDeck patch: SDPATCH-042 — a fixed side Sheet may be wider or
+        // taller than a compact host window. Bound it to the axis it occupies;
+        // otherwise its anchored edge stays visible while the opposite edge
+        // and the beginning of every child are painted outside the viewport.
+        let sheet_size = match self.side {
+            SheetSide::Left | SheetSide::Right => {
+                requested_sheet_size.min(window.viewport_size().width)
+            }
+            SheetSide::Top | SheetSide::Bottom => {
+                requested_sheet_size.min(window.viewport_size().height)
+            }
+        };
+        let sheet_fills_host_axis = match self.side {
+            SheetSide::Left | SheetSide::Right => sheet_size >= window.viewport_size().width,
+            SheetSide::Top | SheetSide::Bottom => sheet_size >= window.viewport_size().height,
+        };
         let user_style = self.style.clone();
         let assistant = self.variant == SheetVariant::Assistant;
         // Le fond couvre toute la fenêtre quelle que soit la variante : il en
@@ -265,10 +281,19 @@ impl Render for Sheet {
                     // through those descendants, which otherwise repaint the
                     // corner as a small rectangle.
                     .when(round_assistant, |panel| {
-                        panel
+                        let panel = panel
                             .rounded_tr(theme.tokens.radius_xl)
                             .rounded_br(theme.tokens.radius_xl)
-                            .overflow_hidden()
+                            .overflow_hidden();
+                        // ShellDeck patch: SDPATCH-042 — when bounding makes the
+                        // panel fill its host, it owns the opposite corners too;
+                        // keeping only the usual right-side curves leaves compact
+                        // windows visually square on the left.
+                        if sheet_fills_host_axis {
+                            panel.rounded(theme.tokens.radius_xl)
+                        } else {
+                            panel
+                        }
                     })
                     .on_mouse_down(MouseButton::Left, |_, _, _| {})
                     .when(self.side == SheetSide::Right, |this: Div| {
