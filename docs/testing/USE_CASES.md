@@ -2665,8 +2665,24 @@ Delivery checks, review status, merge readiness, and delivery state carry their
 observed authority and freshness. Once Fresh, they cannot be overwritten by a
 Stale or Unknown projection even if that projection claims a higher revision.
 
+### SDUC-494 — Shared Platform review meaning remains canonical and read-only
+
+For an exactly reconciled catalog workspace, ShellDeck negotiates Platform v2
+and reads the shared typed review snapshot without inventing a second wire
+model. Its presentation seam preserves attention state, reason, source
+revision and unread count; review, check, pull-request and delivery freshness
+plus authority; and the complete bounded file, hunk, preview, conflict,
+comment and proposal meaning. `needs_you` is a visual inspection prompt only.
+Stale, unavailable and refused projections remain explicitly non-actionable,
+and neither provider-session presence nor any remote review observation grants
+filesystem, Git, CI, review, pull-request or delivery mutation authority.
+The persisted local workspace-review schema remains independent and unmigrated.
+
 ## Change log
 
+- **2026-08-28** — Added SDUC-494 and SDTEST-1772..1775 for the exact shared
+  Platform v2 review fixture, semantic projection, stale/unavailable behavior,
+  exact-mapping target admission, and negotiated typed read lane.
 - **2026-08-28** — Hardened SDUC-491 and added SDTEST-1763..1771 for durable
   restart journals, immutable OID/repository/clean-state adoption, no-follow
   root/target authority, leaf-bound Git cleanup with post-quarantine identity,

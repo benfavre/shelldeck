@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use automonique_platform_client::platform_v2_client::{
+    NegotiationResult, PlatformV2Client, PlatformV2ClientError, ReviewReadResult,
+};
 pub use automonique_platform_client::{ActionResult, ControlClaimResult};
 use automonique_platform_client::{
     BearerToken, HttpsTransport, PlatformClient, PlatformView, SessionCommandStateResult,
@@ -22,9 +25,13 @@ pub use automonique_protocol::platform::{
     SessionHistoryEvidence, SessionHistoryPage, SessionHistoryRole, SessionHistoryRunState,
     SessionHistoryToolState, SessionHistoryUnknownSource, SessionRecord,
 };
+use automonique_protocol::platform_v2::PlatformVersionOffer;
 pub use automonique_protocol::primitives::Revision;
 use url::Url;
 
+use super::platform_review::{
+    PlatformReviewLoad, PlatformReviewSemantic, PlatformReviewTarget, PlatformReviewUnavailable,
+};
 use crate::error::{Result, ShellDeckError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -554,6 +561,23 @@ impl PlatformConnection {
         let transport =
             HttpsTransport::new(self.endpoint.clone(), token).map_err(platform_error)?;
         Ok(PlatformClient::new(transport))
+    }
+
+    fn review_client(&self) -> Result<PlatformV2Client<HttpsTransport>> {
+        let token = BearerToken::new(self.token.clone()).map_err(platform_error)?;
+        let transport =
+            HttpsTransport::new(self.endpoint.clone(), token).map_err(platform_error)?;
+        Ok(PlatformV2Client::new_https(transport))
+    }
+
+    /// Load one authenticated Platform v2 review projection for display.
+    ///
+    /// This lane is intentionally read-only. A review response, provider
+    /// session, or attention event never grants ShellDeck local mutation
+    /// authority.
+    pub fn review(&self, target: &PlatformReviewTarget) -> Result<PlatformReviewLoad> {
+        let mut client = self.review_client()?;
+        load_review(&mut client, target)
     }
 
     pub fn snapshot(&self) -> Result<PlatformSnapshot> {
@@ -1134,6 +1158,48 @@ fn platform_error(error: automonique_platform_client::ClientError) -> ShellDeckE
     ShellDeckError::Connection(format!("platform request refused: {}", error.category()))
 }
 
+fn platform_v2_error(error: PlatformV2ClientError) -> ShellDeckError {
+    ShellDeckError::Connection(format!("platform v2 request refused: {}", error.category()))
+}
+
+fn load_review<T>(
+    client: &mut PlatformV2Client<T>,
+    target: &PlatformReviewTarget,
+) -> Result<PlatformReviewLoad> {
+    let offer = PlatformVersionOffer::new(vec![2]).map_err(|_| {
+        ShellDeckError::Connection("platform v2 negotiation offer is invalid".to_owned())
+    })?;
+    match client.negotiate(offer).map_err(platform_v2_error)? {
+        NegotiationResult::V2(_) => {}
+        NegotiationResult::Downgraded(_) => {
+            return Ok(PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+                category: "platform_v2_unavailable".to_owned(),
+                explanation: "the platform endpoint did not negotiate review v2".to_owned(),
+            }));
+        }
+        NegotiationResult::Refused(refusal) => {
+            return Ok(PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+                category: refusal.category().as_str().to_owned(),
+                explanation: refusal.explanation().as_str().to_owned(),
+            }));
+        }
+    }
+    match client
+        .get_review(target.project.clone(), target.workspace.clone())
+        .map_err(platform_v2_error)?
+    {
+        ReviewReadResult::Snapshot(snapshot) => Ok(PlatformReviewLoad::Available(Box::new(
+            PlatformReviewSemantic::from(snapshot.as_ref()),
+        ))),
+        ReviewReadResult::Refused(refusal) => {
+            Ok(PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+                category: refusal.category().as_str().to_owned(),
+                explanation: refusal.explanation().as_str().to_owned(),
+            }))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1148,6 +1214,55 @@ mod tests {
     };
     use automonique_protocol::platform_api::{PlatformRequestMessage, PlatformResponseMessage};
     use automonique_protocol::primitives::{EpochMillis, Revision};
+
+    // SDTEST-1775
+    #[test]
+    fn typed_v2_loader_negotiates_then_projects_canonical_review() {
+        use automonique_platform_client::platform_v2_client::testing::{
+            DeterministicPlatformV2Step, DeterministicPlatformV2Transport,
+        };
+        use automonique_protocol::platform_v2::{
+            NegotiatedPlatform, PlatformVersion, WorkContextAvailability, WorkContextIdentity,
+            WorkContextTargetKind,
+        };
+        use automonique_protocol::platform_v2_review_api::decode_review_snapshot;
+        use automonique_protocol::platform_v2_transport::{
+            PlatformNegotiationResponse, PlatformV2Response,
+        };
+
+        let snapshot = decode_review_snapshot(include_bytes!(
+            "../../tests/fixtures/platform-v2-review-v2.json"
+        ))
+        .unwrap();
+        let negotiated = NegotiatedPlatform::new(
+            PlatformVersion::V2,
+            PlatformVersion::V2.schema(),
+            WorkContextAvailability::V2Structured,
+        )
+        .unwrap();
+        let transport = DeterministicPlatformV2Transport::new([
+            DeterministicPlatformV2Step::Negotiation(PlatformNegotiationResponse::Negotiated(
+                negotiated,
+            )),
+            DeterministicPlatformV2Step::V2(Box::new(PlatformV2Response::ReviewResult(snapshot))),
+        ]);
+        let mut client = PlatformV2Client::new_testing(transport);
+        let target = PlatformReviewTarget {
+            project: automonique_protocol::platform_v2::ProjectId::new("project-1").unwrap(),
+            workspace: WorkContextIdentity::parse_local(
+                WorkContextTargetKind::UserWorkspace,
+                "wc_user_1",
+            )
+            .unwrap(),
+        };
+
+        let loaded = load_review(&mut client, &target).unwrap();
+
+        assert!(loaded.needs_user_action());
+        assert_eq!(client.transport().pending_steps(), 0);
+        assert_eq!(client.transport().negotiations().len(), 1);
+        assert_eq!(client.transport().requests().len(), 1);
+    }
 
     #[test]
     fn endpoint_is_canonical_and_https_only() {

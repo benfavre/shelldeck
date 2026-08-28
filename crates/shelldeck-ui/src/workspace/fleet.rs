@@ -5,6 +5,7 @@ use shelldeck_core::config::platform::{
     PlatformFollowUpResult, PlatformRefresh, PlatformSnapshot, ResourceCoordinate,
     RetainedSessionUpdate,
 };
+use shelldeck_core::config::platform_review::{PlatformReviewLoad, PlatformReviewUnavailable};
 
 enum PlatformActionResult {
     Attached(Attachment),
@@ -16,12 +17,23 @@ enum PlatformActionResult {
 }
 
 enum PlatformLoadResult {
-    Snapshot(PlatformSnapshot),
+    Snapshot {
+        snapshot: PlatformSnapshot,
+        review: Option<PlatformReviewLoad>,
+    },
     Refresh {
         refresh: PlatformRefresh,
         retained: Vec<RetainedSessionUpdate>,
         reconciled: Vec<PlatformFollowUpResult>,
+        review: Option<PlatformReviewLoad>,
     },
+}
+
+fn unavailable_review(error: &shelldeck_core::error::ShellDeckError) -> PlatformReviewLoad {
+    PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+        category: "transport_error".to_owned(),
+        explanation: error.to_string(),
+    })
 }
 
 impl Workspace {
@@ -92,6 +104,7 @@ impl Workspace {
         let pending_follow_ups = self
             .fleet_view
             .update(cx, |view, _cx| view.pending_follow_ups());
+        let review_target = self.workspace_hub.read(cx).active_platform_review_target();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -103,13 +116,25 @@ impl Workspace {
                             .into_iter()
                             .map(|follow_up| connection.reconcile_follow_up(follow_up))
                             .collect();
+                        let review = review_target.as_ref().map(|target| {
+                            connection
+                                .review(target)
+                                .unwrap_or_else(|error| unavailable_review(&error))
+                        });
                         Ok(PlatformLoadResult::Refresh {
                             refresh,
                             retained,
                             reconciled,
+                            review,
                         })
                     } else {
-                        connection.snapshot().map(PlatformLoadResult::Snapshot)
+                        let snapshot = connection.snapshot()?;
+                        let review = review_target.as_ref().map(|target| {
+                            connection
+                                .review(target)
+                                .unwrap_or_else(|error| unavailable_review(&error))
+                        });
+                        Ok(PlatformLoadResult::Snapshot { snapshot, review })
                     }
                 })
                 .await;
@@ -122,10 +147,11 @@ impl Workspace {
                     return;
                 }
                 match result {
-                    Ok(PlatformLoadResult::Snapshot(snapshot)) => {
+                    Ok(PlatformLoadResult::Snapshot { snapshot, review }) => {
                         workspace.fleet_snapshot = Some(snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.set_snapshot(snapshot);
+                            view.set_review(review);
                             cx.notify();
                         });
                         workspace.focus_pending_fleet_session(cx);
@@ -134,6 +160,7 @@ impl Workspace {
                         refresh,
                         retained,
                         reconciled,
+                        review,
                     }) => {
                         workspace.fleet_snapshot = Some(refresh.snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
@@ -142,6 +169,7 @@ impl Workspace {
                                 view.set_follow_up_result(result, cx);
                             }
                             view.apply_retained_updates(retained);
+                            view.set_review(review);
                             cx.notify();
                         });
                         workspace.focus_pending_fleet_session(cx);
