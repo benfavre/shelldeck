@@ -1571,6 +1571,11 @@ script, tunnel, support ticket, hosted request, site, Monique, Fleet, or bext.
 When Recent AI is enabled, a row can explicitly open the assistant with only
 that activity entry and the bounded host directory as context.
 
+Below 1,000 logical pixels the header and search stack, while each activity
+entry reserves a multiline identity row above its contextual actions. Long
+titles wrap instead of running under the buttons, and variable virtual-list
+extents match the compact row height at every UI scale.
+
 ---
 
 ## 21. Pinned connections
@@ -2156,6 +2161,12 @@ panel-less activities.
 The panel header names the active activity, so the list below it does not
 repeat that name as its own section header.
 
+The main Sites and Scripts surfaces also preserve this navigation contract at
+narrow Dev widths. Sites uses contained full-width cards and replaces the list
+with one fully scrollable detail view; Scripts shows either its full-width
+master list or the selected editor with an explicit return action. At wide
+widths their table and side-by-side master/detail layouts remain unchanged.
+
 ### SDUC-444 — A global shortcut that cannot register says why
 
 A global shortcut whose registration is refused reports it instead of looking
@@ -2610,6 +2621,11 @@ compact button plus secondary count badge as the neighboring Tickets queue.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-409/443 and added SDTEST-1733/1734/1735: at
+  narrow Dev widths, Recent Activity stacks actions below wrapping titles,
+  Sites uses contained cards plus one scrollable detail view, and Scripts uses
+  an explicit list/editor master-detail switch. All three breakpoints follow
+  the UI scale and preserve their wide layouts.
 - **2026-08-28** — Amended SDUC-476 and added SDTEST-1732: Platform polling
   uses a bounded failure backoff with one diagnostic per outage, while its
   persistent error notice reserves layout space instead of covering sessions.

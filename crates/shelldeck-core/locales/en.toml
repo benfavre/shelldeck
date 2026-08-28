@@ -502,6 +502,7 @@ tray.counter.ai_tasks.many = "%{count} AI tasks running"
 
 # Scripts
 scripts.title = "Scripts"
+scripts.back_to_list = "Back to scripts"
 scripts.templates = "Templates"
 scripts.search_placeholder = "Search scripts..."
 scripts.category_all = "All"
