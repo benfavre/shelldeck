@@ -56,7 +56,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "2"
 directories = "6"
-notify = "7"
+notify = "8.2"
 # Platform credential stores are all behind feature flags in keyring 3: with
 # none enabled, `keyring::default` resolves to the in-process **mock** store on
 # every OS, so nothing is ever persisted. The deps are target-gated upstream,
