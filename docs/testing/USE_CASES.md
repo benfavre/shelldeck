@@ -2701,12 +2701,32 @@ and neither provider-session presence nor any remote review observation grants
 filesystem, Git, CI, review, pull-request or delivery mutation authority.
 The persisted local workspace-review schema remains independent and unmigrated.
 
+### SDUC-495 — Native Platform review comments and approvals are exact and replay-safe
+
+For an exactly reconciled Platform project/workspace, ShellDeck expands the
+canonical review snapshot into bounded files, hunks, conflicts, safe preview
+metadata, attributed comments, and attention chronology. A user may select an
+exact hunk line and prepare either one typed `AddComment` or one typed
+`ApproveReview`; the confirmation names the exact workspace and captured
+snapshot/review revisions before dispatch.
+
+The client dispatches that canonical SDK `ReviewAction` at most once. Accepted,
+unknown, or transport-ambiguous outcomes retain the original idempotency key and
+use receipt lookup only. Async results are admitted only if both the complete
+captured authenticated connection and `PlatformReviewTarget` still match the
+active context. Provider-session, Git, CI, and pull-request action families are
+not constructible through this surface and remain inert.
+
 ## Change log
 
 - **2026-08-28** — Amended SDUC-491 and added SDTEST-1780 after auditing the
   SSH/SFTP boundary: remote lifecycle stays fail-closed before progress while
   no beneath/no-follow helper exists, and the minimum fixed-subsystem,
   descriptor-retained receipt protocol is now explicit.
+- **2026-08-28** — Added SDUC-495 and SDTEST-1781..1785 for the exact native
+  review comment/approval preview seam, captured connection/target revalidation,
+  typed dispatch/lookup client lanes, the execute-once then lookup-only reducer,
+  and workspace-bound ambiguous receipt lookup.
 - **2026-08-28** — Added SDUC-494 and SDTEST-1772..1779 for the exact shared
   Platform v2 review fixture, semantic projection, stale/unavailable behavior,
   exact-mapping target admission, negotiated typed read lane, and apply-time

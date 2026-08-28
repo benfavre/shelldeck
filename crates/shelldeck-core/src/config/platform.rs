@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use automonique_platform_client::platform_v2_client::{
     NegotiationResult, PlatformV2Client, PlatformV2ClientError, ReviewReadResult,
+    ReviewReceiptResult,
 };
 pub use automonique_platform_client::{ActionResult, ControlClaimResult};
 use automonique_platform_client::{
@@ -30,7 +31,8 @@ pub use automonique_protocol::primitives::Revision;
 use url::Url;
 
 use super::platform_review::{
-    PlatformReviewLoad, PlatformReviewSemantic, PlatformReviewTarget, PlatformReviewUnavailable,
+    PlatformReviewActionPreview, PlatformReviewLoad, PlatformReviewSemantic, PlatformReviewTarget,
+    PlatformReviewUnavailable, ReviewActionReceipt, ReviewReceiptOutcome, ReviewReconciliation,
 };
 use crate::error::{Result, ShellDeckError};
 
@@ -122,6 +124,54 @@ pub struct PlatformActionPreview {
     pub expected_revision: Option<automonique_protocol::primitives::Revision>,
     pub parameter: Option<PlatformText>,
     idempotency_key: IdempotencyKey,
+}
+
+/// Result of the single dispatch lane for a native Platform v2 review action.
+///
+/// `ReconciliationPending` retains the original preview and idempotency key;
+/// callers must use [`PlatformConnection::reconcile_review_action`] and must
+/// never dispatch the action again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlatformReviewActionResult {
+    Receipt {
+        preview: PlatformReviewActionPreview,
+        receipt: ReviewActionReceipt,
+    },
+    Refused {
+        preview: PlatformReviewActionPreview,
+        category: String,
+        explanation: String,
+    },
+    ReconciliationPending {
+        preview: PlatformReviewActionPreview,
+        category: String,
+    },
+}
+
+impl PlatformReviewActionResult {
+    #[must_use]
+    pub const fn preview(&self) -> &PlatformReviewActionPreview {
+        match self {
+            Self::Receipt { preview, .. }
+            | Self::Refused { preview, .. }
+            | Self::ReconciliationPending { preview, .. } => preview,
+        }
+    }
+
+    #[must_use]
+    pub fn requires_lookup(&self) -> bool {
+        match self {
+            Self::Receipt { receipt, .. } => {
+                receipt.reconciliation() == ReviewReconciliation::PollReceipt
+                    || matches!(
+                        receipt.outcome(),
+                        ReviewReceiptOutcome::Accepted | ReviewReceiptOutcome::Unknown
+                    )
+            }
+            Self::ReconciliationPending { .. } => true,
+            Self::Refused { .. } => false,
+        }
+    }
 }
 
 impl PlatformActionPreview {
@@ -578,6 +628,91 @@ impl PlatformConnection {
     pub fn review(&self, target: &PlatformReviewTarget) -> Result<PlatformReviewLoad> {
         let mut client = self.review_client()?;
         load_review(&mut client, target)
+    }
+
+    /// Dispatch one already-confirmed review action exactly once.
+    ///
+    /// Any uncertain transport outcome immediately switches to lookup by the
+    /// original idempotency key. If that lookup is also unavailable, the
+    /// returned preview is reconciliation-only and must not be dispatched
+    /// again.
+    pub fn execute_review_action(
+        &self,
+        preview: PlatformReviewActionPreview,
+    ) -> PlatformReviewActionResult {
+        let mut client = match self.review_client() {
+            Ok(client) => client,
+            Err(error) => {
+                return PlatformReviewActionResult::ReconciliationPending {
+                    preview,
+                    category: error.to_string(),
+                };
+            }
+        };
+        match dispatch_review_action(&mut client, &preview) {
+            Ok(ReviewReceiptResult::Receipt(receipt)) => {
+                PlatformReviewActionResult::Receipt { preview, receipt }
+            }
+            Ok(ReviewReceiptResult::Refused(refusal)) => PlatformReviewActionResult::Refused {
+                preview,
+                category: refusal.category().as_str().to_owned(),
+                explanation: refusal.explanation().as_str().to_owned(),
+            },
+            Err(error) => self.reconcile_review_after_uncertain(preview, &error.to_string()),
+        }
+    }
+
+    /// Lookup an unresolved review action by its original key only.
+    pub fn reconcile_review_action(
+        &self,
+        preview: PlatformReviewActionPreview,
+    ) -> PlatformReviewActionResult {
+        self.lookup_review_action(preview)
+    }
+
+    fn reconcile_review_after_uncertain(
+        &self,
+        preview: PlatformReviewActionPreview,
+        execute_category: &str,
+    ) -> PlatformReviewActionResult {
+        match self.lookup_review_action(preview.clone()) {
+            PlatformReviewActionResult::ReconciliationPending { .. } => {
+                PlatformReviewActionResult::ReconciliationPending {
+                    preview,
+                    category: execute_category.to_owned(),
+                }
+            }
+            settled => settled,
+        }
+    }
+
+    fn lookup_review_action(
+        &self,
+        preview: PlatformReviewActionPreview,
+    ) -> PlatformReviewActionResult {
+        let mut client = match self.review_client() {
+            Ok(client) => client,
+            Err(error) => {
+                return PlatformReviewActionResult::ReconciliationPending {
+                    preview,
+                    category: error.to_string(),
+                };
+            }
+        };
+        match lookup_review_action(&mut client, &preview) {
+            Ok(ReviewReceiptResult::Receipt(receipt)) => {
+                PlatformReviewActionResult::Receipt { preview, receipt }
+            }
+            Ok(ReviewReceiptResult::Refused(refusal)) => PlatformReviewActionResult::Refused {
+                preview,
+                category: refusal.category().as_str().to_owned(),
+                explanation: refusal.explanation().as_str().to_owned(),
+            },
+            Err(error) => PlatformReviewActionResult::ReconciliationPending {
+                preview,
+                category: error.to_string(),
+            },
+        }
     }
 
     pub fn snapshot(&self) -> Result<PlatformSnapshot> {
@@ -1200,6 +1335,51 @@ fn load_review<T>(
     }
 }
 
+fn negotiate_review<T>(client: &mut PlatformV2Client<T>) -> Result<()> {
+    let offer = PlatformVersionOffer::new(vec![2]).map_err(|_| {
+        ShellDeckError::Connection("platform v2 negotiation offer is invalid".to_owned())
+    })?;
+    match client.negotiate(offer).map_err(platform_v2_error)? {
+        NegotiationResult::V2(_) => Ok(()),
+        NegotiationResult::Downgraded(_) => Err(ShellDeckError::Connection(
+            "platform endpoint did not negotiate review v2".to_owned(),
+        )),
+        NegotiationResult::Refused(refusal) => Err(ShellDeckError::Connection(format!(
+            "platform v2 negotiation refused: {}",
+            refusal.category().as_str()
+        ))),
+    }
+}
+
+fn dispatch_review_action<T>(
+    client: &mut PlatformV2Client<T>,
+    preview: &PlatformReviewActionPreview,
+) -> Result<ReviewReceiptResult> {
+    negotiate_review(client)?;
+    client
+        .execute_review_action(
+            preview.target().workspace.clone(),
+            preview.expected_revision(),
+            preview.action().clone(),
+            preview.idempotency_key().clone(),
+        )
+        .map_err(platform_v2_error)
+}
+
+fn lookup_review_action<T>(
+    client: &mut PlatformV2Client<T>,
+    preview: &PlatformReviewActionPreview,
+) -> Result<ReviewReceiptResult> {
+    negotiate_review(client)?;
+    client
+        .get_review_receipt(
+            preview.target().project.clone(),
+            preview.target().workspace.clone(),
+            preview.idempotency_key().clone(),
+        )
+        .map_err(platform_v2_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1262,6 +1442,80 @@ mod tests {
         assert_eq!(client.transport().pending_steps(), 0);
         assert_eq!(client.transport().negotiations().len(), 1);
         assert_eq!(client.transport().requests().len(), 1);
+    }
+
+    // SDTEST-1784
+    #[test]
+    fn typed_review_client_separates_single_dispatch_from_key_only_lookup() {
+        use automonique_platform_client::platform_v2_client::testing::{
+            DeterministicPlatformV2Step, DeterministicPlatformV2Transport,
+        };
+        use automonique_protocol::platform_v2::{
+            NegotiatedPlatform, PlatformVersion, WorkContextAvailability,
+        };
+        use automonique_protocol::platform_v2_review_api::decode_review_snapshot;
+        use automonique_protocol::platform_v2_transport::{
+            PlatformNegotiationResponse, PlatformV2Refusal, PlatformV2Request, PlatformV2Response,
+        };
+
+        let snapshot = decode_review_snapshot(include_bytes!(
+            "../../tests/fixtures/platform-v2-review-v2.json"
+        ))
+        .unwrap();
+        let semantic = PlatformReviewSemantic::from(&snapshot);
+        let target = PlatformReviewTarget {
+            project: automonique_protocol::platform_v2::ProjectId::new("project-1").unwrap(),
+            workspace: snapshot.workspace().clone(),
+        };
+        let preview = PlatformReviewActionPreview::approve(target, &semantic).unwrap();
+        let negotiated = || {
+            NegotiatedPlatform::new(
+                PlatformVersion::V2,
+                PlatformVersion::V2.schema(),
+                WorkContextAvailability::V2Structured,
+            )
+            .unwrap()
+        };
+        let refusal = || PlatformV2Refusal::new("fixture_refusal", "fixture refusal").unwrap();
+
+        let dispatch_transport = DeterministicPlatformV2Transport::new([
+            DeterministicPlatformV2Step::Negotiation(PlatformNegotiationResponse::Negotiated(
+                negotiated(),
+            )),
+            DeterministicPlatformV2Step::V2(Box::new(PlatformV2Response::Refused(refusal()))),
+        ]);
+        let mut dispatch_client = PlatformV2Client::new_testing(dispatch_transport);
+        assert!(matches!(
+            dispatch_review_action(&mut dispatch_client, &preview).unwrap(),
+            ReviewReceiptResult::Refused(_)
+        ));
+        assert_eq!(dispatch_client.transport().requests().len(), 1);
+        assert!(matches!(
+            dispatch_client.transport().requests()[0].request(),
+            PlatformV2Request::ExecuteReviewAction(request)
+                if request.idempotency_key() == preview.idempotency_key()
+                    && request.workspace() == &preview.target().workspace
+        ));
+
+        let lookup_transport = DeterministicPlatformV2Transport::new([
+            DeterministicPlatformV2Step::Negotiation(PlatformNegotiationResponse::Negotiated(
+                negotiated(),
+            )),
+            DeterministicPlatformV2Step::V2(Box::new(PlatformV2Response::Refused(refusal()))),
+        ]);
+        let mut lookup_client = PlatformV2Client::new_testing(lookup_transport);
+        assert!(matches!(
+            lookup_review_action(&mut lookup_client, &preview).unwrap(),
+            ReviewReceiptResult::Refused(_)
+        ));
+        assert_eq!(lookup_client.transport().requests().len(), 1);
+        assert!(matches!(
+            lookup_client.transport().requests()[0].request(),
+            PlatformV2Request::GetReviewReceipt(lookup)
+                if lookup.idempotency_key() == preview.idempotency_key()
+                    && lookup.project() == &preview.target().project
+                    && lookup.workspace() == &preview.target().workspace
+        ));
     }
 
     #[test]

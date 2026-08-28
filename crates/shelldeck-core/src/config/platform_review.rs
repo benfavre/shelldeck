@@ -5,15 +5,19 @@
 //! observations for display only; they never authorize filesystem, git, CI,
 //! pull-request, review, or delivery mutations in ShellDeck.
 
+use automonique_protocol::platform::IdempotencyKey;
 use automonique_protocol::platform_v2::{ProjectId, WorkContextIdentity, WorkContextTargetKind};
 pub use automonique_protocol::platform_v2_review::{
     AttentionOriginKind, AttentionReason, AttentionState, CheckState, CommentAgentState,
     ConflictState, DeliveryState, DiffChangeKind, DiffSide, MergeReadiness, PreviewKind,
-    PullRequestState, ReviewAuthority, ReviewAuthorityKind, ReviewDecision, ReviewFile,
-    ReviewFreshness, ReviewFreshnessState, ReviewProposalKind, ReviewSchemaVersion, ReviewSnapshot,
-    WorktreeFileState,
+    PullRequestState, ReviewAction, ReviewActionReceipt, ReviewAnchor, ReviewAuthority,
+    ReviewAuthorityKind, ReviewCommentId, ReviewDecision, ReviewFile, ReviewFreshness,
+    ReviewFreshnessState, ReviewProposalKind, ReviewReceiptOutcome, ReviewReconciliation,
+    ReviewSchemaVersion, ReviewSnapshot, ReviewText, WorktreeFileState,
 };
 use automonique_protocol::primitives::Revision;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::workspace_catalog::PlatformV2Mapping;
 
@@ -38,6 +42,169 @@ impl PlatformReviewTarget {
         .map_err(|_| "platform workspace identity is invalid")?;
         Ok(Self { project, workspace })
     }
+}
+
+/// One native review mutation prepared against an exact workspace snapshot.
+///
+/// Construction is deliberately restricted to the two review-authority
+/// actions ShellDeck exposes. Provider-session, Git, CI, and pull-request
+/// action families cannot enter this client seam.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformReviewActionPreview {
+    target: PlatformReviewTarget,
+    expected_revision: Revision,
+    action: ReviewAction,
+    idempotency_key: IdempotencyKey,
+}
+
+impl PlatformReviewActionPreview {
+    pub fn add_comment(
+        target: PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+        anchor: &ReviewAnchorSemantic,
+        body: &str,
+    ) -> Result<Self, &'static str> {
+        validate_review_target(&target, review)?;
+        validate_anchor(review, anchor)?;
+        let nonce = review_nonce();
+        let action = ReviewAction::AddComment {
+            comment_id: ReviewCommentId::new(format!("shelldeck-comment-{nonce}"))
+                .map_err(|_| "review comment identity is invalid")?,
+            anchor: ReviewAnchor::new(
+                automonique_protocol::platform_v2_review::ReviewFileId::new(anchor.file_id.clone())
+                    .map_err(|_| "review file identity is invalid")?,
+                automonique_protocol::platform_v2_review::ReviewHunkId::new(anchor.hunk_id.clone())
+                    .map_err(|_| "review hunk identity is invalid")?,
+                anchor.side,
+                anchor.line,
+            )
+            .map_err(|_| "review anchor is invalid")?,
+            body: ReviewText::new(body.trim().to_owned())
+                .map_err(|_| "review comment is invalid")?,
+        };
+        Self::review_action(target, review.revision, action, &nonce)
+    }
+
+    pub fn approve(
+        target: PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+    ) -> Result<Self, &'static str> {
+        validate_review_target(&target, review)?;
+        if review.review.freshness.state != ReviewFreshnessState::Fresh {
+            return Err("review status is not fresh");
+        }
+        let nonce = review_nonce();
+        Self::review_action(
+            target,
+            review.revision,
+            ReviewAction::ApproveReview {
+                expected_review_revision: review.review.freshness.observed_revision,
+            },
+            &nonce,
+        )
+    }
+
+    fn review_action(
+        target: PlatformReviewTarget,
+        expected_revision: Revision,
+        action: ReviewAction,
+        nonce: &str,
+    ) -> Result<Self, &'static str> {
+        if action.required_authority() != ReviewAuthorityKind::Review
+            || !matches!(
+                action,
+                ReviewAction::AddComment { .. } | ReviewAction::ApproveReview { .. }
+            )
+        {
+            return Err("review action family is unsupported");
+        }
+        action
+            .validate_client_shape()
+            .map_err(|_| "review action is invalid")?;
+        let idempotency_key = IdempotencyKey::new(format!("shelldeck-review-{nonce}"))
+            .map_err(|_| "review idempotency key is invalid")?;
+        Ok(Self {
+            target,
+            expected_revision,
+            action,
+            idempotency_key,
+        })
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> &PlatformReviewTarget {
+        &self.target
+    }
+
+    #[must_use]
+    pub const fn expected_revision(&self) -> Revision {
+        self.expected_revision
+    }
+
+    #[must_use]
+    pub const fn action(&self) -> &ReviewAction {
+        &self.action
+    }
+
+    #[must_use]
+    pub const fn idempotency_key(&self) -> &IdempotencyKey {
+        &self.idempotency_key
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self.action {
+            ReviewAction::AddComment { .. } => "add_comment",
+            ReviewAction::ApproveReview { .. } => "approve_review",
+            _ => "unsupported",
+        }
+    }
+}
+
+fn review_nonce() -> String {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos}-{sequence}")
+}
+
+fn validate_review_target(
+    target: &PlatformReviewTarget,
+    review: &PlatformReviewSemantic,
+) -> Result<(), &'static str> {
+    if review.workspace_kind != target.workspace.kind()
+        || review.workspace_id != target.workspace.id()
+    {
+        return Err("review snapshot belongs to another workspace");
+    }
+    Ok(())
+}
+
+fn validate_anchor(
+    review: &PlatformReviewSemantic,
+    anchor: &ReviewAnchorSemantic,
+) -> Result<(), &'static str> {
+    let file = review
+        .files
+        .iter()
+        .find(|file| file.id == anchor.file_id)
+        .ok_or("review file is not in the exact snapshot")?;
+    let hunk = file
+        .hunks
+        .iter()
+        .find(|hunk| hunk.id == anchor.hunk_id)
+        .ok_or("review hunk is not in the exact snapshot")?;
+    let (start, lines) = match anchor.side {
+        DiffSide::Old => (hunk.old_start, hunk.old_lines),
+        DiffSide::New => (hunk.new_start, hunk.new_lines),
+    };
+    if lines == 0 || anchor.line < start || anchor.line >= start.saturating_add(lines) {
+        return Err("review line is not in the exact hunk");
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -964,6 +1131,71 @@ mod tests {
                 .map(ReviewFreshnessState::as_str)
                 .map(str::to_owned)
                 .into()
+        );
+    }
+
+    // SDTEST-1781
+    #[test]
+    fn native_review_previews_admit_only_exact_comment_and_approval_authority() {
+        let snapshot = decode_review_snapshot(CANONICAL_FIXTURE).unwrap();
+        let semantic = PlatformReviewSemantic::from(&snapshot);
+        let target = PlatformReviewTarget {
+            project: ProjectId::new("project-1").unwrap(),
+            workspace: snapshot.workspace().clone(),
+        };
+        let anchor = ReviewAnchorSemantic {
+            file_id: "file-1".to_owned(),
+            hunk_id: "hunk-1".to_owned(),
+            side: DiffSide::New,
+            line: 11,
+        };
+
+        let comment = PlatformReviewActionPreview::add_comment(
+            target.clone(),
+            &semantic,
+            &anchor,
+            "  Exact line comment.  ",
+        )
+        .unwrap();
+        assert_eq!(comment.target(), &target);
+        assert_eq!(comment.expected_revision(), semantic.revision);
+        assert_eq!(
+            comment.action().required_authority(),
+            ReviewAuthorityKind::Review
+        );
+        assert!(matches!(
+            comment.action(),
+            ReviewAction::AddComment { anchor, body, .. }
+                if anchor.file_id().as_str() == "file-1"
+                    && anchor.hunk_id().as_str() == "hunk-1"
+                    && anchor.line() == 11
+                    && body.as_str() == "Exact line comment."
+        ));
+
+        let approval = PlatformReviewActionPreview::approve(target.clone(), &semantic).unwrap();
+        assert!(matches!(
+            approval.action(),
+            ReviewAction::ApproveReview { expected_review_revision }
+                if *expected_review_revision == semantic.review.freshness.observed_revision
+        ));
+        assert_ne!(approval.idempotency_key(), comment.idempotency_key());
+
+        let foreign = PlatformReviewTarget {
+            project: target.project.clone(),
+            workspace: WorkContextIdentity::parse_local(
+                WorkContextTargetKind::UserWorkspace,
+                "wc_foreign",
+            )
+            .unwrap(),
+        };
+        assert!(
+            PlatformReviewActionPreview::add_comment(foreign, &semantic, &anchor, "foreign")
+                .is_err()
+        );
+        let outside = ReviewAnchorSemantic { line: 99, ..anchor };
+        assert!(
+            PlatformReviewActionPreview::add_comment(target, &semantic, &outside, "outside")
+                .is_err()
         );
     }
 }
