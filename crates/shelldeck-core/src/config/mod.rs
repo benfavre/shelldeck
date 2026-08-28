@@ -13,6 +13,7 @@ pub mod manage_sites;
 pub mod manage_support;
 pub mod monique;
 pub mod platform;
+pub mod platform_review;
 pub mod single_instance;
 pub mod ssh_config;
 pub mod store;

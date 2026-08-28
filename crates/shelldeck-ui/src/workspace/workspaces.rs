@@ -8,6 +8,7 @@ use super::*;
 use adabraka_ui::components::input::InputVariant;
 use adabraka_ui::display::card::Card;
 use adabraka_ui::prelude::{Alert, AlertVariant};
+use shelldeck_core::config::platform_review::PlatformReviewTarget;
 use shelldeck_core::config::workspace_catalog::{
     CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, CheckoutHost, ExternalWorkItem,
     ExternalWorkItemKind, ProjectCatalog, ProjectCheckout, ProjectRecord, RemotePosixPath,
@@ -565,6 +566,14 @@ pub(super) enum WorkspaceHubEvent {
 impl EventEmitter<WorkspaceHubEvent> for WorkspaceHubView {}
 
 impl WorkspaceHubView {
+    /// Resolve the active workspace through the catalog's exact reconciliation.
+    /// Provider session bindings are deliberately not considered authority.
+    pub(super) fn active_platform_review_target(&self) -> Option<PlatformReviewTarget> {
+        let active = self.navigation.active()?;
+        let mapping = self.catalog.workspace(active).ok()?.platform_mapping()?;
+        PlatformReviewTarget::from_exact_mapping(mapping).ok()
+    }
+
     pub(super) fn configure_terminals(
         &mut self,
         config: WorkspaceTerminalConfig,

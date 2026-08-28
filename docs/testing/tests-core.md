@@ -526,6 +526,19 @@ Existing: **0 tests**.
 
 ---
 
+## 28. `config/platform_review.rs` + Platform v2 review loading
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1772 | `config/platform_review.rs::review_target_requires_exact_catalog_mapping` | SDUC-494 | Green | A pending catalog reconciliation cannot create a read target; the exact project and user-workspace identities are admitted only after the complete mapping is Exact. Provider-session bindings are not consulted. |
+| SDTEST-1773 | `config/platform_review.rs::canonical_fixture_projects_equivalent_review_meaning` | SDUC-494 | Green | The byte-exact shared Automonique fixture projects `needs_you`, reason/source/unread, all freshness/authority dimensions, and bounded file/hunk/preview/conflict/comment/proposal meaning without a handwritten wire model. |
+| SDTEST-1774 | `config/platform_review.rs::stale_unavailable_projection_is_non_actionable` | SDUC-494 | Green | An in-memory canonical scenario variant preserves stale review freshness and an unavailable check while deriving Idle with no user-action prompt; a refused/unavailable load is also non-actionable. |
+| SDTEST-1775 | `config/platform.rs::typed_v2_loader_negotiates_then_projects_canonical_review` | SDUC-494 | Green | The shared SDK deterministic transport proves the production loader offers only v2, performs exactly one correlated typed review read, consumes the canonical fixture, and yields the same attention prompt. |
+| SDTEST-1776 | `workspace/fleet.rs::review_apply_rechecks_target_and_preserves_same_target_refusal` | SDUC-494 | Green | Async review results carry their exact requested project/workspace target. Apply preserves a refusal for the same active mapping, but a workspace switch or mapping removal yields no review instead of publishing a foreign observation. |
+| SDTEST-1777 | `workspace/fleet.rs::review_apply_rejects_changed_endpoint_or_credential_without_debugging_tokens` | SDUC-494 | Green | Apply compares the complete captured authenticated Platform connection with the current connection. Endpoint, credential or signed-out changes reject and clear the entire old-origin result, while Debug remains token-redacted. |
+
+---
+
 ## Retired tests
 
 *(none yet)*

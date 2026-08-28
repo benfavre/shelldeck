@@ -19,6 +19,7 @@ use shelldeck_core::config::platform::{
     PlatformRefresh, PlatformSnapshot, PlatformText, ResourceCoordinate, ResourceKind,
     ResourceRecord, RetainedSessionRead, RetainedSessionUpdate, SessionHistoryEvent, SessionRecord,
 };
+use shelldeck_core::config::platform_review::{PlatformReviewLoad, PlatformReviewSemantic};
 
 use crate::icons::lucide_icon;
 use crate::scale::px;
@@ -40,6 +41,7 @@ impl EventEmitter<FleetViewEvent> for FleetView {}
 
 pub struct FleetView {
     snapshot: Option<PlatformSnapshot>,
+    review: Option<PlatformReviewLoad>,
     cockpit: PlatformCockpitState,
     search_state: Entity<InputState>,
     search_query: String,
@@ -58,6 +60,7 @@ impl FleetView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             snapshot: None,
+            review: None,
             cockpit: PlatformCockpitState::default(),
             search_state: cx.new(InputState::new),
             search_query: String::new(),
@@ -86,6 +89,10 @@ impl FleetView {
             self.cockpit.apply_attachment_refresh(attachment);
         }
         self.set_snapshot(refresh.snapshot);
+    }
+
+    pub fn set_review(&mut self, review: Option<PlatformReviewLoad>) {
+        self.review = review;
     }
 
     pub fn retained_reads(&self) -> Vec<RetainedSessionRead> {
@@ -291,6 +298,7 @@ impl FleetView {
 
     pub fn reset(&mut self) {
         self.snapshot = None;
+        self.review = None;
         self.cockpit = PlatformCockpitState::default();
         self.search_query.clear();
         self.composer_value.clear();
@@ -402,6 +410,178 @@ impl FleetView {
                         entity.update(cx, |_this, cx| cx.emit(FleetViewEvent::Refresh));
                     }),
             )
+    }
+
+    fn render_review_summary(&self) -> AnyElement {
+        let Some(review) = self.review.as_ref() else {
+            return div().into_any_element();
+        };
+        match review {
+            PlatformReviewLoad::Available(review) => Self::render_available_review(review),
+            PlatformReviewLoad::Unavailable(unavailable) => div()
+                .px(px(12.0))
+                .py(px(8.0))
+                .border_b_1()
+                .border_color(ShellDeckColors::border())
+                .child(
+                    Alert::warning()
+                        .title(
+                            t!(
+                                "fleet.review.unavailable",
+                                category = unavailable.category.as_str()
+                            )
+                            .to_string(),
+                        )
+                        .description(unavailable.explanation.clone()),
+                )
+                .into_any_element(),
+        }
+    }
+
+    fn render_available_review(review: &PlatformReviewSemantic) -> AnyElement {
+        let attention = &review.attention;
+        let attention_variant = if attention.needs_user_action {
+            BadgeVariant::Warning
+        } else {
+            match attention.state {
+                shelldeck_core::config::platform_review::AttentionState::Blocked => {
+                    BadgeVariant::Destructive
+                }
+                shelldeck_core::config::platform_review::AttentionState::Done => {
+                    BadgeVariant::Default
+                }
+                _ => BadgeVariant::Secondary,
+            }
+        };
+        let hunk_count = review
+            .files
+            .iter()
+            .map(|file| file.hunks.len())
+            .sum::<usize>();
+        let conflict_count = review
+            .files
+            .iter()
+            .filter(|file| {
+                file.conflict != shelldeck_core::config::platform_review::ConflictState::None
+            })
+            .count();
+        let unread_comments = review
+            .comments
+            .iter()
+            .filter(|comment| comment.unread)
+            .count();
+        let source_revision = attention
+            .source_revision
+            .map_or_else(|| "—".to_owned(), |revision| revision.get().to_string());
+        let reason = attention.reason.map_or("—", |reason| reason.as_str());
+        let authority =
+            |value: &shelldeck_core::config::platform_review::ReviewAuthoritySemantic| {
+                format!("{}:{}", value.kind.as_str(), value.id)
+            };
+        let checks = review
+            .checks
+            .iter()
+            .map(|check| {
+                format!(
+                    "{}={} · {}@{} · {}",
+                    check.id,
+                    check.state.as_str(),
+                    check.freshness.state.as_str(),
+                    check.freshness.observed_revision.get(),
+                    authority(&check.authority)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        div()
+            .id("platform-review-summary")
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .overflow_x_scroll()
+            .child(
+                Badge::new(
+                    t!(
+                        "fleet.review.attention",
+                        state = attention.state.as_str(),
+                        reason = reason,
+                        revision = source_revision,
+                        unread = attention.unread
+                    )
+                    .to_string(),
+                )
+                .variant(attention_variant),
+            )
+            .child(
+                Badge::new(
+                    t!(
+                        "fleet.review.status",
+                        decision = review.review.decision.as_str(),
+                        freshness = review.review.freshness.state.as_str(),
+                        revision = review.review.freshness.observed_revision.get(),
+                        authority = authority(&review.review.authority)
+                    )
+                    .to_string(),
+                )
+                .variant(BadgeVariant::Outline),
+            )
+            .child(
+                Badge::new(
+                    t!(
+                        "fleet.review.pull_request",
+                        state = review.pull_request.state.as_str(),
+                        readiness = review.pull_request.readiness.as_str(),
+                        freshness = review.pull_request.freshness.state.as_str(),
+                        revision = review.pull_request.freshness.observed_revision.get(),
+                        authority = authority(&review.pull_request.authority)
+                    )
+                    .to_string(),
+                )
+                .variant(BadgeVariant::Outline),
+            )
+            .child(
+                Badge::new(
+                    t!(
+                        "fleet.review.delivery",
+                        state = review.delivery.state.as_str(),
+                        freshness = review.delivery.freshness.state.as_str(),
+                        revision = review.delivery.freshness.observed_revision.get(),
+                        authority = authority(&review.delivery.authority)
+                    )
+                    .to_string(),
+                )
+                .variant(BadgeVariant::Outline),
+            )
+            .child(
+                Badge::new(
+                    t!(
+                        "fleet.review.checks",
+                        count = review.checks.len(),
+                        checks = checks
+                    )
+                    .to_string(),
+                )
+                .variant(BadgeVariant::Secondary),
+            )
+            .child(
+                Badge::new(
+                    t!(
+                        "fleet.review.diff",
+                        files = review.files.len(),
+                        hunks = hunk_count,
+                        conflicts = conflict_count,
+                        comments = review.comments.len(),
+                        unread = unread_comments
+                    )
+                    .to_string(),
+                )
+                .variant(BadgeVariant::Secondary),
+            )
+            .into_any_element()
     }
 
     fn render_action_preview(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1579,6 +1759,7 @@ impl Render for FleetView {
             .bg(ShellDeckColors::bg_primary())
             .child(self.render_header(cx))
             .child(self.render_action_preview(cx))
+            .child(self.render_review_summary())
             .child(content)
     }
 }
