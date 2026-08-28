@@ -7875,6 +7875,7 @@ dependencies = [
  "parking_lot",
  "rand 0.10.2",
  "russh",
+ "rustix 0.38.44",
  "shelldeck-core",
  "thiserror 2.0.18",
  "tokio",
