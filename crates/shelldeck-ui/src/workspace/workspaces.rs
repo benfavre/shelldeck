@@ -19,653 +19,23 @@ use shelldeck_core::workspace_navigation::{
     TerminalAuthority, TerminalBinding, TerminalBindingId, TerminalSurface, TerminalViewport,
     WorkspaceAgentState, WorkspaceCardState, WorkspaceCreateConflict, WorkspaceCreateEvent,
     WorkspaceCreateFailure, WorkspaceCreateFailureKind, WorkspaceCreatePhase,
-    WorkspaceCreateProgress, WorkspaceCreationReducer, WorkspaceFreshness,
-    WorkspaceNavigationAction, WorkspaceNavigationState, WorkspaceSurfaceState, WorkspaceTab,
-    WorkspaceTabContent, WorkspaceTabId,
+    WorkspaceCreationReducer, WorkspaceFreshness, WorkspaceNavigationAction,
+    WorkspaceNavigationState, WorkspaceSurfaceState, WorkspaceTab, WorkspaceTabContent,
+    WorkspaceTabId,
 };
 use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
-use std::io::Read;
 use std::path::PathBuf;
-use std::pin::Pin;
-use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-type ExecutorFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum WorkspaceLaunchMode {
-    #[default]
-    ExistingFolder,
-    GitWorktree,
-    Ssh,
-}
-
-/// Autorité immuable résolue avant de quitter le catalogue.
-#[derive(Clone, Debug)]
-pub(super) enum AuthorizedLaunchHost {
-    LocalExisting {
-        canonical_root: PathBuf,
-    },
-    LocalWorktree {
-        source_root: PathBuf,
-        target_root: PathBuf,
-        branch: String,
-        start_point: String,
-    },
-    // Retained as the typed authority boundary for the future beneath/no-follow
-    // SSH adapter; the launcher currently refuses it before dispatch.
-    #[allow(dead_code)]
-    Ssh {
-        connection_id: Uuid,
-        remote_root: String,
-    },
-}
-
-/// Requête riche et immuable livrée à l'adaptateur d'effets.
-#[derive(Clone, Debug)]
-pub(super) struct WorkspaceExecutionRequest {
-    pub workspace: CatalogWorkspaceId,
-    pub checkout: CatalogCheckoutId,
-    pub operation: CreationOperationId,
-    pub catalog_revision: u64,
-    pub name: String,
-    pub intake: WorkspaceLaunchIntake,
-    pub host: AuthorizedLaunchHost,
-    mode: WorkspaceLaunchMode,
-}
-
-/// Frontière non bloquante du futur adaptateur d'effets.
-///
-/// L'implémentation de production reste volontairement indisponible dans ce
-/// lot. Un adaptateur devra faire le travail hors du thread GPUI et retourner
-/// des événements typés du réducteur, jamais des mutations directes de la vue.
-pub(super) trait WorkspaceLaunchExecutor: Send + Sync {
-    fn launch(
-        &self,
-        request: WorkspaceExecutionRequest,
-        events: mpsc::UnboundedSender<WorkspaceCreateEvent>,
-    ) -> ExecutorFuture<Result<(), WorkspaceCreateFailure>>;
-    fn cancel(
-        &self,
-        request: WorkspaceExecutionRequest,
-    ) -> ExecutorFuture<Result<WorkspaceCreateEvent, WorkspaceCreateFailure>>;
-}
-
-struct LaunchCancellation {
-    requested: AtomicBool,
-    finished: AtomicBool,
-}
-
-impl Default for LaunchCancellation {
-    fn default() -> Self {
-        Self {
-            requested: AtomicBool::new(false),
-            finished: AtomicBool::new(false),
-        }
-    }
-}
-
-struct NativeWorkspaceExecutor {
-    cancellations: Arc<parking_lot::Mutex<BTreeMap<CreationOperationId, Arc<LaunchCancellation>>>>,
-    git: Arc<dyn GitWorktreeAdapter>,
-}
-
-enum NativeLaunchOutcome {
-    Ready { cleanup_on_cancel: bool },
-    Cancelled,
-    Conflict(WorkspaceCreateConflict),
-}
-
-struct LaunchFinishGuard {
-    operation: CreationOperationId,
-    cancellation: Arc<LaunchCancellation>,
-    registry: Arc<parking_lot::Mutex<BTreeMap<CreationOperationId, Arc<LaunchCancellation>>>>,
-}
-
-impl Drop for LaunchFinishGuard {
-    fn drop(&mut self) {
-        self.cancellation.finished.store(true, Ordering::Release);
-        self.registry.lock().remove(&self.operation);
-    }
-}
-
-struct ChildOutput {
-    status: ExitStatus,
-    stderr: String,
-    timed_out: bool,
-}
-
-trait GitWorktreeAdapter: Send + Sync {
-    fn prepare(
-        &self,
-        source_root: &std::path::Path,
-        target_root: &std::path::Path,
-        branch: &str,
-        start_point: &str,
-        cancelled: &AtomicBool,
-    ) -> Result<NativeLaunchOutcome, WorkspaceCreateFailure>;
-}
-
-#[derive(Default)]
-struct SystemGitWorktreeAdapter;
-
-impl GitWorktreeAdapter for SystemGitWorktreeAdapter {
-    fn prepare(
-        &self,
-        source_root: &std::path::Path,
-        target_root: &std::path::Path,
-        branch: &str,
-        start_point: &str,
-        cancelled: &AtomicBool,
-    ) -> Result<NativeLaunchOutcome, WorkspaceCreateFailure> {
-        prepare_git_worktree(source_root, target_root, branch, start_point, cancelled)
-    }
-}
-
-impl Default for NativeWorkspaceExecutor {
-    fn default() -> Self {
-        Self {
-            cancellations: Arc::default(),
-            git: Arc::new(SystemGitWorktreeAdapter),
-        }
-    }
-}
-
-impl NativeWorkspaceExecutor {
-    #[cfg(test)]
-    fn with_git(git: Arc<dyn GitWorktreeAdapter>) -> Self {
-        Self {
-            cancellations: Arc::default(),
-            git,
-        }
-    }
-
-    fn cancellation(&self, operation: CreationOperationId) -> Arc<LaunchCancellation> {
-        let mut cancellations = self.cancellations.lock();
-        cancellations
-            .entry(operation)
-            .or_insert_with(|| Arc::new(LaunchCancellation::default()))
-            .clone()
-    }
-}
-
-impl WorkspaceLaunchExecutor for NativeWorkspaceExecutor {
-    fn launch(
-        &self,
-        request: WorkspaceExecutionRequest,
-        events: mpsc::UnboundedSender<WorkspaceCreateEvent>,
-    ) -> ExecutorFuture<Result<(), WorkspaceCreateFailure>> {
-        let cancellation = self.cancellation(request.operation);
-        let executor = self.cancellations.clone();
-        let git = self.git.clone();
-        Box::pin(async move {
-            let _finish = LaunchFinishGuard {
-                operation: request.operation,
-                cancellation: cancellation.clone(),
-                registry: executor.clone(),
-            };
-            tracing::debug!(
-                checkout = %request.checkout,
-                intake = ?request.intake,
-                revision = request.catalog_revision,
-                "launching authorized workspace attach"
-            );
-            if request.mode == WorkspaceLaunchMode::Ssh {
-                return Err(WorkspaceCreateFailure {
-                    kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
-                    message: t!("workspaces.launcher.ssh_executor_unavailable").to_string(),
-                    retryable: false,
-                });
-            }
-            if let AuthorizedLaunchHost::Ssh {
-                connection_id,
-                remote_root,
-            } = &request.host
-            {
-                tracing::debug!(%connection_id, remote_root, "SSH attach adapter unavailable");
-            }
-            let phases = [
-                WorkspaceCreatePhase::Queued,
-                WorkspaceCreatePhase::ResolvingHost,
-                WorkspaceCreatePhase::PreparingCheckout,
-                WorkspaceCreatePhase::CreatingWorkspace,
-                WorkspaceCreatePhase::BindingRuntime,
-            ];
-            for phase in phases.into_iter().take(3) {
-                if cancellation.requested.load(Ordering::Acquire) {
-                    cancellation.finished.store(true, Ordering::Release);
-                    executor.lock().remove(&request.operation);
-                    return Ok(());
-                }
-                events
-                    .send(WorkspaceCreateEvent::Progress {
-                        workspace: request.workspace,
-                        operation: request.operation,
-                        progress: WorkspaceCreateProgress {
-                            phase,
-                            // Le reducer mesure l'avancement à l'intérieur de
-                            // chaque phase; une nouvelle phase ne peut débuter
-                            // que lorsque la précédente est terminée.
-                            completed_steps: 1,
-                            total_steps: 1,
-                            detail: request.name.clone(),
-                        },
-                    })
-                    .map_err(|_| WorkspaceCreateFailure {
-                        kind: WorkspaceCreateFailureKind::Unknown,
-                        message: "workspace progress receiver closed".into(),
-                        retryable: true,
-                    })?;
-                tokio::task::yield_now().await;
-            }
-            let outcome = match &request.host {
-                AuthorizedLaunchHost::LocalExisting { canonical_root } => {
-                    match std::fs::canonicalize(canonical_root) {
-                        Ok(actual) if actual == *canonical_root && actual.is_dir() => {
-                            NativeLaunchOutcome::Ready {
-                                cleanup_on_cancel: false,
-                            }
-                        }
-                        _ => {
-                            cancellation.finished.store(true, Ordering::Release);
-                            executor.lock().remove(&request.operation);
-                            return Err(WorkspaceCreateFailure {
-                                kind: WorkspaceCreateFailureKind::Filesystem,
-                                message: t!("workspaces.launcher.folder_unavailable").to_string(),
-                                retryable: true,
-                            });
-                        }
-                    }
-                }
-                AuthorizedLaunchHost::LocalWorktree {
-                    source_root,
-                    target_root,
-                    branch,
-                    start_point,
-                } => git.prepare(
-                    source_root,
-                    target_root,
-                    branch,
-                    start_point,
-                    &cancellation.requested,
-                )?,
-                AuthorizedLaunchHost::Ssh { .. } => unreachable!(),
-            };
-            let cleanup_worktree = match outcome {
-                NativeLaunchOutcome::Cancelled => {
-                    cancellation.finished.store(true, Ordering::Release);
-                    executor.lock().remove(&request.operation);
-                    return Ok(());
-                }
-                NativeLaunchOutcome::Conflict(conflict) => {
-                    events
-                        .send(WorkspaceCreateEvent::Conflict {
-                            workspace: request.workspace,
-                            operation: request.operation,
-                            conflict,
-                        })
-                        .map_err(|_| receiver_closed())?;
-                    cancellation.finished.store(true, Ordering::Release);
-                    executor.lock().remove(&request.operation);
-                    return Ok(());
-                }
-                NativeLaunchOutcome::Ready { cleanup_on_cancel } => cleanup_on_cancel.then(|| {
-                    let AuthorizedLaunchHost::LocalWorktree {
-                        source_root,
-                        target_root,
-                        branch,
-                        ..
-                    } = &request.host
-                    else {
-                        unreachable!()
-                    };
-                    (source_root.clone(), target_root.clone(), branch.clone())
-                }),
-            };
-            for phase in phases.into_iter().skip(3) {
-                if cancellation.requested.load(Ordering::Acquire) {
-                    if let Some((source, target, branch)) = cleanup_worktree.as_ref() {
-                        cleanup_cancelled_worktree(source, target, branch);
-                    }
-                    cancellation.finished.store(true, Ordering::Release);
-                    executor.lock().remove(&request.operation);
-                    return Ok(());
-                }
-                events
-                    .send(WorkspaceCreateEvent::Progress {
-                        workspace: request.workspace,
-                        operation: request.operation,
-                        progress: WorkspaceCreateProgress {
-                            phase,
-                            completed_steps: 1,
-                            total_steps: 1,
-                            detail: request.name.clone(),
-                        },
-                    })
-                    .map_err(|_| receiver_closed())?;
-            }
-            if cancellation.requested.load(Ordering::Acquire) {
-                if let Some((source, target, branch)) = cleanup_worktree.as_ref() {
-                    cleanup_cancelled_worktree(source, target, branch);
-                }
-                return Ok(());
-            }
-            events
-                .send(WorkspaceCreateEvent::Completed {
-                    workspace: request.workspace,
-                    operation: request.operation,
-                })
-                .map_err(|_| receiver_closed())?;
-            cancellation.finished.store(true, Ordering::Release);
-            executor.lock().remove(&request.operation);
-            Ok(())
-        })
-    }
-
-    fn cancel(
-        &self,
-        request: WorkspaceExecutionRequest,
-    ) -> ExecutorFuture<Result<WorkspaceCreateEvent, WorkspaceCreateFailure>> {
-        let cancellation = self.cancellations.lock().get(&request.operation).cloned();
-        Box::pin(async move {
-            if let Some(cancellation) = cancellation {
-                cancellation.requested.store(true, Ordering::Release);
-                while !cancellation.finished.load(Ordering::Acquire) {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            }
-            Ok(WorkspaceCreateEvent::Cancelled {
-                workspace: request.workspace,
-                operation: request.operation,
-            })
-        })
-    }
-}
-
-fn receiver_closed() -> WorkspaceCreateFailure {
-    WorkspaceCreateFailure {
-        kind: WorkspaceCreateFailureKind::Unknown,
-        message: "workspace progress receiver closed".into(),
-        retryable: true,
-    }
-}
-
-fn prepare_git_worktree(
-    source_root: &std::path::Path,
-    target_root: &std::path::Path,
-    branch: &str,
-    start_point: &str,
-    cancelled: &AtomicBool,
-) -> Result<NativeLaunchOutcome, WorkspaceCreateFailure> {
-    let source = std::fs::canonicalize(source_root).map_err(|_| workspace_fs_failure())?;
-    if source != source_root || !source.is_dir() {
-        return Err(workspace_fs_failure());
-    }
-    let top = git_stdout(&source, &["rev-parse", "--show-toplevel"])?;
-    let top = std::fs::canonicalize(PathBuf::from(top.trim())).map_err(|_| git_repo_failure())?;
-    if top != source {
-        return Err(WorkspaceCreateFailure {
-            kind: WorkspaceCreateFailureKind::Authorization,
-            message: t!("workspaces.launcher.git_root_mismatch").to_string(),
-            retryable: false,
-        });
-    }
-    if branch.is_empty() || branch.len() > 255 || branch.starts_with('-') {
-        return Err(invalid_branch_failure());
-    }
-    let branch_check = Command::new("git")
-        .args(["check-ref-format", "--branch", branch])
-        .current_dir(&source)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|_| git_runtime_failure())?;
-    if !branch_check.success() {
-        return Err(invalid_branch_failure());
-    }
-    if start_point.is_empty()
-        || start_point.len() > 512
-        || start_point.starts_with('-')
-        || start_point.chars().any(char::is_control)
-    {
-        return Err(WorkspaceCreateFailure {
-            kind: WorkspaceCreateFailureKind::Authorization,
-            message: t!("workspaces.launcher.invalid_start_point").to_string(),
-            retryable: false,
-        });
-    }
-    let commitish = format!("{start_point}^{{commit}}");
-    let start_check = Command::new("git")
-        .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
-        .arg(&commitish)
-        .current_dir(&source)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|_| git_runtime_failure())?;
-    if !start_check.success() {
-        return Err(WorkspaceCreateFailure {
-            kind: WorkspaceCreateFailureKind::Filesystem,
-            message: t!("workspaces.launcher.start_point_missing").to_string(),
-            retryable: true,
-        });
-    }
-    if target_root.exists() {
-        return if exact_worktree(&source, target_root, branch)? {
-            Ok(NativeLaunchOutcome::Ready {
-                cleanup_on_cancel: false,
-            })
-        } else {
-            Ok(NativeLaunchOutcome::Conflict(
-                WorkspaceCreateConflict::CheckoutAlreadyExists {
-                    root: target_root.display().to_string(),
-                },
-            ))
-        };
-    }
-    let parent = target_root.parent().ok_or_else(workspace_fs_failure)?;
-    std::fs::create_dir_all(parent).map_err(|_| workspace_fs_failure())?;
-    let parent = std::fs::canonicalize(parent).map_err(|_| workspace_fs_failure())?;
-    if target_root.parent() != Some(parent.as_path()) {
-        return Err(WorkspaceCreateFailure {
-            kind: WorkspaceCreateFailureKind::Authorization,
-            message: t!("workspaces.launcher.target_authority_changed").to_string(),
-            retryable: false,
-        });
-    }
-    let branch_ref = format!("refs/heads/{branch}");
-    let branch_status = Command::new("git")
-        .args(["show-ref", "--verify", "--quiet", "--end-of-options"])
-        .arg(&branch_ref)
-        .current_dir(&source)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|_| git_runtime_failure())?;
-    if branch_status.success() {
-        return Ok(NativeLaunchOutcome::Conflict(
-            WorkspaceCreateConflict::BranchAlreadyExists {
-                branch: branch.to_owned(),
-            },
-        ));
-    }
-    if cancelled.load(Ordering::Acquire) {
-        return Ok(NativeLaunchOutcome::Cancelled);
-    }
-    let mut command = Command::new("git");
-    command
-        .args(["worktree", "add", "--no-track", "-b", branch, "--"])
-        .arg(target_root)
-        .arg(start_point)
-        .current_dir(&source)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    let output = run_cancellable(command, cancelled)?;
-    if cancelled.load(Ordering::Acquire) {
-        cleanup_cancelled_worktree(&source, target_root, branch);
-        return Ok(NativeLaunchOutcome::Cancelled);
-    }
-    if output.timed_out {
-        cleanup_cancelled_worktree(&source, target_root, branch);
-        return Err(WorkspaceCreateFailure {
-            kind: WorkspaceCreateFailureKind::Filesystem,
-            message: t!("workspaces.launcher.worktree_timeout").to_string(),
-            retryable: true,
-        });
-    }
-    if output.status.success() || exact_worktree(&source, target_root, branch)? {
-        return Ok(NativeLaunchOutcome::Ready {
-            cleanup_on_cancel: true,
-        });
-    }
-    tracing::warn!(stderr = %bounded_error(&output.stderr), "git worktree creation failed");
-    Err(WorkspaceCreateFailure {
-        kind: WorkspaceCreateFailureKind::Filesystem,
-        message: t!("workspaces.launcher.worktree_failed").to_string(),
-        retryable: true,
-    })
-}
-
-fn run_cancellable(
-    mut command: Command,
-    cancelled: &AtomicBool,
-) -> Result<ChildOutput, WorkspaceCreateFailure> {
-    let mut child = command.spawn().map_err(|_| git_runtime_failure())?;
-    let started = Instant::now();
-    let mut timed_out = false;
-    loop {
-        if cancelled.load(Ordering::Acquire) {
-            let _ = child.kill();
-        } else if started.elapsed() >= Duration::from_secs(120) {
-            timed_out = true;
-            let _ = child.kill();
-        }
-        match child.try_wait().map_err(|_| git_runtime_failure())? {
-            Some(status) => {
-                let mut stderr = String::new();
-                if let Some(pipe) = child.stderr.take() {
-                    let _ = pipe.take(16_385).read_to_string(&mut stderr);
-                }
-                return Ok(ChildOutput {
-                    status,
-                    stderr,
-                    timed_out,
-                });
-            }
-            None => std::thread::sleep(Duration::from_millis(20)),
-        }
-    }
-}
-
-fn exact_worktree(
-    source: &std::path::Path,
-    target: &std::path::Path,
-    branch: &str,
-) -> Result<bool, WorkspaceCreateFailure> {
-    let Some(target) = std::fs::canonicalize(target).ok() else {
-        return Ok(false);
-    };
-    let output = Command::new("git")
-        .args(["worktree", "list", "--porcelain", "-z"])
-        .current_dir(source)
-        .output()
-        .map_err(|_| git_runtime_failure())?;
-    if !output.status.success() {
-        return Err(git_repo_failure());
-    }
-    let expected_branch = format!("refs/heads/{branch}");
-    let mut path = None;
-    let mut observed_branch = None;
-    for field in output.stdout.split(|byte| *byte == 0) {
-        let field = String::from_utf8_lossy(field);
-        if field.is_empty() {
-            if path.as_ref() == Some(&target)
-                && observed_branch.as_deref() == Some(expected_branch.as_str())
-            {
-                return Ok(true);
-            }
-            path = None;
-            observed_branch = None;
-        } else if let Some(value) = field.strip_prefix("worktree ") {
-            path = std::fs::canonicalize(value).ok();
-        } else if let Some(value) = field.strip_prefix("branch ") {
-            observed_branch = Some(value.to_owned());
-        }
-    }
-    Ok(path.as_ref() == Some(&target) && observed_branch.as_deref() == Some(&expected_branch))
-}
-
-fn cleanup_cancelled_worktree(source: &std::path::Path, target: &std::path::Path, branch: &str) {
-    if exact_worktree(source, target, branch).unwrap_or(false) {
-        let _ = Command::new("git")
-            .args(["worktree", "remove", "--force", "--"])
-            .arg(target)
-            .current_dir(source)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        let branch_ref = format!("refs/heads/{branch}");
-        let _ = Command::new("git")
-            .args(["branch", "-D", "--"])
-            .arg(branch_ref.strip_prefix("refs/heads/").unwrap_or(branch))
-            .current_dir(source)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-}
-
-fn git_stdout(root: &std::path::Path, args: &[&str]) -> Result<String, WorkspaceCreateFailure> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|_| git_runtime_failure())?;
-    if !output.status.success() {
-        return Err(git_repo_failure());
-    }
-    String::from_utf8(output.stdout).map_err(|_| git_repo_failure())
-}
-
-fn workspace_fs_failure() -> WorkspaceCreateFailure {
-    WorkspaceCreateFailure {
-        kind: WorkspaceCreateFailureKind::Filesystem,
-        message: t!("workspaces.launcher.folder_unavailable").to_string(),
-        retryable: true,
-    }
-}
-
-fn git_runtime_failure() -> WorkspaceCreateFailure {
-    WorkspaceCreateFailure {
-        kind: WorkspaceCreateFailureKind::RuntimeUnavailable,
-        message: t!("workspaces.launcher.git_unavailable").to_string(),
-        retryable: true,
-    }
-}
-
-fn git_repo_failure() -> WorkspaceCreateFailure {
-    WorkspaceCreateFailure {
-        kind: WorkspaceCreateFailureKind::Filesystem,
-        message: t!("workspaces.launcher.git_repository_required").to_string(),
-        retryable: false,
-    }
-}
-
-fn invalid_branch_failure() -> WorkspaceCreateFailure {
-    WorkspaceCreateFailure {
-        kind: WorkspaceCreateFailureKind::Authorization,
-        message: t!("workspaces.launcher.invalid_branch").to_string(),
-        retryable: false,
-    }
-}
-
-fn bounded_error(value: &str) -> String {
-    value.chars().take(512).collect()
-}
+#[path = "native_lifecycle.rs"]
+mod native_lifecycle;
+use native_lifecycle::{
+    AuthorizedLaunchHost, NativeWorkspaceExecutor, WorkspaceExecutionRequest,
+    WorkspaceLaunchExecutor, WorkspaceLaunchMode,
+};
+#[cfg(test)]
+use native_lifecycle::{GitWorktreeAdapter, NativeLaunchOutcome};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum LauncherIntakeKind {
@@ -1184,6 +554,7 @@ pub(super) struct WorkspaceHubView {
     checkout_select: Entity<Select<CatalogCheckoutId>>,
     error: Option<String>,
     load_error: Option<String>,
+    recovery_pending: bool,
     pending_requests: BTreeMap<CatalogWorkspaceId, WorkspaceExecutionRequest>,
 }
 
@@ -1300,6 +671,32 @@ impl WorkspaceHubView {
         }
         let onboarding_open = catalog.projects().len() == 0;
         let onboarding_connection = connections.keys().next().copied();
+        let retained_roots = catalog
+            .projects()
+            .flat_map(ProjectRecord::checkouts)
+            .filter_map(|checkout| match checkout.host() {
+                CheckoutHost::Local { root, .. } => Some(root.clone()),
+                CheckoutHost::Ssh { .. } => None,
+            })
+            .collect();
+        let recovery = cx
+            .background_executor()
+            .spawn(executor.clone().recover_orphans(retained_roots));
+        cx.spawn(async move |this, cx| {
+            let result = recovery.await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => this.recovery_pending = false,
+                    Err(failure) => {
+                        this.error = Some(failure.message);
+                        // Keep the gate closed: an unvalidated retained
+                        // worktree must never become terminal authority.
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         Self {
             catalog,
             navigation,
@@ -1333,11 +730,17 @@ impl WorkspaceHubView {
             checkout_select,
             error: None,
             load_error,
+            recovery_pending: true,
             pending_requests: BTreeMap::new(),
         }
     }
 
     fn switch_to(&mut self, id: CatalogWorkspaceId, cx: &mut Context<Self>) {
+        if self.recovery_pending {
+            self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+            cx.notify();
+            return;
+        }
         if let Some(outgoing) = self.navigation.active() {
             if let Some(surface) = self.retained.get(&outgoing) {
                 let state = {
@@ -1622,6 +1025,11 @@ impl WorkspaceHubView {
     }
 
     fn submit_launcher(&mut self, cx: &mut Context<Self>) {
+        if self.recovery_pending {
+            self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
+            cx.notify();
+            return;
+        }
         self.sync_launcher(cx);
         let Some(checkout_id) = self.launcher.checkout else {
             self.error = Some(t!("workspaces.launcher.error.checkout_required").to_string());
@@ -1680,9 +1088,9 @@ impl WorkspaceHubView {
         let workspace = CatalogWorkspaceId::new();
         let (host, workspace_checkout, created_checkout) = match (mode, selected_checkout.host()) {
             (WorkspaceLaunchMode::ExistingFolder, CheckoutHost::Local { root, .. }) => {
-                match std::fs::canonicalize(root) {
-                    Ok(canonical_root) if canonical_root.is_dir() => (
-                        AuthorizedLaunchHost::LocalExisting { canonical_root },
+                match crate::terminal_view::AuthorizedLocalRoot::capture(root) {
+                    Ok(authority) => (
+                        AuthorizedLaunchHost::LocalExisting { authority },
                         checkout_id,
                         None,
                     ),
@@ -1700,29 +1108,18 @@ impl WorkspaceHubView {
                     cx.notify();
                     return;
                 }
-                let source_root = match std::fs::canonicalize(root) {
-                    Ok(source_root) if source_root.is_dir() => source_root,
-                    _ => {
-                        self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
-                        cx.notify();
-                        return;
-                    }
-                };
+                let source_authority =
+                    match crate::terminal_view::AuthorizedLocalRoot::capture(root) {
+                        Ok(source_authority) => source_authority,
+                        _ => {
+                            self.error =
+                                Some(t!("workspaces.launcher.folder_unavailable").to_string());
+                            cx.notify();
+                            return;
+                        }
+                    };
                 let owned_parent =
                     shelldeck_core::config::AppConfig::config_dir().join("workspace-checkouts");
-                if std::fs::create_dir_all(&owned_parent).is_err() {
-                    self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
-                    cx.notify();
-                    return;
-                }
-                let owned_parent = match std::fs::canonicalize(&owned_parent) {
-                    Ok(path) if path.is_dir() => path,
-                    _ => {
-                        self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
-                        cx.notify();
-                        return;
-                    }
-                };
                 let target_root = owned_parent.join(workspace.to_string());
                 let generated_checkout = CatalogCheckoutId::new();
                 let checkout = ProjectCheckout::new(
@@ -1736,7 +1133,7 @@ impl WorkspaceHubView {
                 );
                 (
                     AuthorizedLaunchHost::LocalWorktree {
-                        source_root,
+                        source_authority,
                         target_root,
                         branch: self.launcher.branch.clone(),
                         start_point: self.launcher.start_point.clone(),
@@ -1747,32 +1144,10 @@ impl WorkspaceHubView {
             }
             _ => unreachable!("SSH mode was refused above"),
         };
-        let launch_name = self.launcher.name.clone();
-        let launch_intake = intake.clone();
-        if let Err(error) = mutate_and_save(&mut self.catalog, |catalog| {
-            if let Some(checkout) = created_checkout {
-                catalog
-                    .add_checkout(project_id, checkout)
-                    .map_err(|error| error.to_string())?;
-            }
-            catalog
-                .create_workspace(WorkspaceLaunchRequest {
-                    id: workspace,
-                    project_id,
-                    checkout_id: workspace_checkout,
-                    name: launch_name.clone(),
-                    intake: launch_intake.clone(),
-                })
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        }) {
-            self.error = Some(error.to_string());
-            cx.notify();
-            return;
-        }
         let operation = CreationOperationId::new();
+        let catalog_revision = self.catalog.revision();
         if let Err(error) = self.creation.reduce(
-            self.catalog.revision(),
+            catalog_revision,
             WorkspaceCreateEvent::Start {
                 workspace,
                 operation,
@@ -1782,48 +1157,14 @@ impl WorkspaceHubView {
             cx.notify();
             return;
         }
-        let surface = WorkspaceSurfaceState::default();
-        if let Err(error) = self.navigation.reduce(
-            &self.catalog,
-            WorkspaceNavigationAction::Retain {
-                id: workspace,
-                surface: surface.clone(),
-                card: WorkspaceCardState::default(),
-            },
-        ) {
-            self.error = Some(error.to_string());
-            cx.notify();
-            return;
-        }
-        let terminal = self
-            .unclaimed_terminal
-            .take()
-            .unwrap_or_else(|| cx.new(TerminalView::new));
-        if let Some(config) = self.terminal_config.as_ref() {
-            apply_terminal_config(&terminal, config, cx);
-        }
-        let authorized_root = match &host {
-            AuthorizedLaunchHost::LocalExisting { canonical_root } => canonical_root,
-            AuthorizedLaunchHost::LocalWorktree { target_root, .. } => target_root,
-            AuthorizedLaunchHost::Ssh { .. } => unreachable!(),
-        };
-        {
-            // `host` a été canonisé et autorisé avant la mutation du
-            // catalogue. Cette installation ne touche pas au disque et doit
-            // précéder l'exposition de la surface interactive.
-            terminal.update(cx, |terminal, _| {
-                terminal.install_authorized_default_cwd(authorized_root)
-            });
-        }
-        self.retained.insert(
-            workspace,
-            cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
-        );
         let request = WorkspaceExecutionRequest {
             workspace,
+            project: project_id,
+            source_checkout: checkout_id,
             checkout: workspace_checkout,
+            created_checkout,
             operation,
-            catalog_revision: self.catalog.revision(),
+            catalog_revision,
             name: self.launcher.name.clone(),
             intake,
             host,
@@ -1831,13 +1172,12 @@ impl WorkspaceHubView {
         };
         self.pending_requests.insert(workspace, request.clone());
         self.launcher_open = false;
-        self.switch_to(workspace, cx);
 
         let executor = self.executor.clone();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let task = cx
             .background_executor()
-            .spawn(executor.launch(request, event_tx));
+            .spawn(executor.launch(request.clone(), event_tx));
         cx.spawn(async move |this, cx| {
             while let Some(event) = event_rx.recv().await {
                 let _ = this.update(cx, |this, cx| {
@@ -1847,7 +1187,11 @@ impl WorkspaceHubView {
             let result = task.await;
             if let Err(failure) = result {
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(request) = this.pending_requests.get(&workspace) {
+                    if this
+                        .pending_requests
+                        .get(&workspace)
+                        .is_some_and(|pending| pending.operation == request.operation)
+                    {
                         this.apply_executor_event(
                             workspace,
                             WorkspaceCreateEvent::Failed {
@@ -1873,6 +1217,13 @@ impl WorkspaceHubView {
         let Some(request) = self.pending_requests.get(&workspace).cloned() else {
             return;
         };
+        let (event_workspace, event_operation) = create_event_coordinates(&event);
+        if event_workspace != workspace
+            || event_workspace != request.workspace
+            || event_operation != request.operation
+        {
+            return;
+        }
         let event = if let WorkspaceCreateEvent::Completed {
             workspace: event_workspace,
             operation: event_operation,
@@ -1887,59 +1238,95 @@ impl WorkspaceHubView {
             );
             if !attachable {
                 // Les événements retardés, prématurés ou reçus pendant une
-                // annulation ne doivent jamais atteindre le PTY. Le reducer
-                // conserve déjà l'état canonique; ignorer est donc sûr.
+                // annulation ne doivent jamais atteindre le PTY. Un reçu natif
+                // reste toutefois une preuve d'effet et doit être compensé;
+                // le reducer conserve son état canonique actuel.
+                if let Some(receipt) = self.executor.take_receipt(event_operation) {
+                    self.compensate_rejected_receipt(request, receipt, cx);
+                }
                 return;
             }
             if self.catalog.revision() != request.catalog_revision {
-                WorkspaceCreateEvent::Conflict {
+                let event = WorkspaceCreateEvent::Conflict {
                     workspace: event_workspace,
                     operation: event_operation,
                     conflict: WorkspaceCreateConflict::CatalogRevisionChanged {
                         expected: request.catalog_revision,
                         actual: self.catalog.revision(),
                     },
-                }
-            } else {
-                let attach = match &request.host {
-                    AuthorizedLaunchHost::LocalExisting { canonical_root } => self
-                        .retained
-                        .get(&event_workspace)
-                        .ok_or_else(|| t!("workspaces.launcher.terminal_owner_missing").to_string())
-                        .and_then(|surface| {
-                            let terminal = surface.read(cx).terminal.clone();
-                            terminal
-                                .update(cx, |terminal, cx| {
-                                    terminal.spawn_local_terminal_at(canonical_root, cx)
-                                })
-                                .map_err(|_| {
-                                    t!("workspaces.launcher.folder_unavailable").to_string()
-                                })
-                        }),
-                    AuthorizedLaunchHost::LocalWorktree { target_root, .. } => self
-                        .retained
-                        .get(&event_workspace)
-                        .ok_or_else(|| t!("workspaces.launcher.terminal_owner_missing").to_string())
-                        .and_then(|surface| {
-                            let terminal = surface.read(cx).terminal.clone();
-                            terminal
-                                .update(cx, |terminal, cx| {
-                                    terminal.spawn_local_terminal_at(target_root, cx)
-                                })
-                                .map_err(|_| {
-                                    t!("workspaces.launcher.folder_unavailable").to_string()
-                                })
-                        }),
-                    AuthorizedLaunchHost::Ssh { .. } => {
-                        Err(t!("workspaces.launcher.ssh_executor_unavailable").to_string())
-                    }
                 };
-                match attach {
-                    Ok(_) => WorkspaceCreateEvent::Completed {
+                let Some(receipt) = self.executor.take_receipt(event_operation) else {
+                    return;
+                };
+                self.compensate_then_apply(request, receipt, event, cx);
+                return;
+            } else {
+                let Some(receipt) = self.executor.take_receipt(event_operation) else {
+                    return;
+                };
+                if receipt.authority.revalidate().is_err() {
+                    let event = WorkspaceCreateEvent::Failed {
                         workspace: event_workspace,
                         operation: event_operation,
-                    },
-                    Err(message) => WorkspaceCreateEvent::Failed {
+                        failure: WorkspaceCreateFailure {
+                            kind: WorkspaceCreateFailureKind::Authorization,
+                            message: t!("workspaces.launcher.authority_changed").to_string(),
+                            retryable: false,
+                        },
+                    };
+                    self.compensate_then_apply(request, receipt, event, cx);
+                    return;
+                }
+                let using_unclaimed_terminal = self.unclaimed_terminal.is_some();
+                let terminal = self
+                    .unclaimed_terminal
+                    .clone()
+                    .unwrap_or_else(|| cx.new(TerminalView::new));
+                if let Some(config) = self.terminal_config.as_ref() {
+                    apply_terminal_config(&terminal, config, cx);
+                }
+                let prepared = terminal.update(cx, |terminal, _cx| {
+                    terminal.prepare_authorized_local_terminal(&receipt.authority)
+                });
+                let prepared = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(message) => {
+                        let event = WorkspaceCreateEvent::Failed {
+                            workspace: event_workspace,
+                            operation: event_operation,
+                            failure: WorkspaceCreateFailure {
+                                kind: WorkspaceCreateFailureKind::Filesystem,
+                                message,
+                                retryable: true,
+                            },
+                        };
+                        self.compensate_then_apply(request, receipt, event, cx);
+                        return;
+                    }
+                };
+                let created_checkout = request.created_checkout.clone();
+                let launch_name = request.name.clone();
+                let launch_intake = request.intake.clone();
+                let commit = mutate_and_save(&mut self.catalog, |catalog| {
+                    if let Some(checkout) = created_checkout {
+                        catalog
+                            .add_checkout(request.project, checkout)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    catalog
+                        .create_workspace(WorkspaceLaunchRequest {
+                            id: request.workspace,
+                            project_id: request.project,
+                            checkout_id: request.checkout,
+                            name: launch_name,
+                            intake: launch_intake,
+                        })
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                });
+                if let Err(message) = commit {
+                    drop(prepared);
+                    let event = WorkspaceCreateEvent::Failed {
                         workspace: event_workspace,
                         operation: event_operation,
                         failure: WorkspaceCreateFailure {
@@ -1947,13 +1334,50 @@ impl WorkspaceHubView {
                             message,
                             retryable: true,
                         },
+                    };
+                    self.compensate_then_apply(request, receipt, event, cx);
+                    return;
+                }
+                if using_unclaimed_terminal {
+                    self.unclaimed_terminal.take();
+                }
+                terminal.update(cx, |terminal, cx| {
+                    terminal.commit_prepared_local_terminal(prepared, cx);
+                });
+                let surface = WorkspaceSurfaceState::default();
+                if let Err(error) = self.navigation.reduce(
+                    &self.catalog,
+                    WorkspaceNavigationAction::Retain {
+                        id: workspace,
+                        surface,
+                        card: WorkspaceCardState::default(),
                     },
+                ) {
+                    self.error = Some(error.to_string());
+                }
+                self.retained.insert(
+                    workspace,
+                    cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
+                );
+                let executor = self.executor.clone();
+                let acknowledge = cx
+                    .background_executor()
+                    .spawn(executor.acknowledge(request.clone()));
+                cx.spawn(async move |_this, _cx| {
+                    if let Err(error) = acknowledge.await {
+                        tracing::warn!(message = %error.message, "workspace journal acknowledgement deferred to recovery");
+                    }
+                })
+                .detach();
+                WorkspaceCreateEvent::Completed {
+                    workspace: event_workspace,
+                    operation: event_operation,
                 }
             }
         } else {
             event
         };
-        if let Err(error) = self.creation.reduce(self.catalog.revision(), event) {
+        if let Err(error) = self.creation.reduce(request.catalog_revision, event) {
             self.error = Some(error.to_string());
             cx.notify();
             return;
@@ -1963,9 +1387,72 @@ impl WorkspaceHubView {
             Some(BackgroundWorkspaceCreateState::Completed { .. })
         ) {
             self.pending_requests.remove(&workspace);
+            self.switch_to(workspace, cx);
             self.observe_local_card(workspace, cx);
         }
         cx.notify();
+    }
+
+    fn compensate_then_apply(
+        &mut self,
+        request: WorkspaceExecutionRequest,
+        receipt: native_lifecycle::WorkspaceLaunchReceipt,
+        event: WorkspaceCreateEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = request.workspace;
+        let operation = request.operation;
+        let revision = request.catalog_revision;
+        let executor = self.executor.clone();
+        let task = cx
+            .background_executor()
+            .spawn(executor.compensate(request, receipt));
+        cx.spawn(async move |this, cx| {
+            let cleanup = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if !this
+                    .pending_requests
+                    .get(&workspace)
+                    .is_some_and(|pending| pending.operation == operation)
+                {
+                    return;
+                }
+                let event = match cleanup {
+                    Ok(()) => event,
+                    Err(failure) => WorkspaceCreateEvent::Failed {
+                        workspace,
+                        operation,
+                        failure,
+                    },
+                };
+                if let Err(error) = this.creation.reduce(revision, event) {
+                    this.error = Some(error.to_string());
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn compensate_rejected_receipt(
+        &mut self,
+        request: WorkspaceExecutionRequest,
+        receipt: native_lifecycle::WorkspaceLaunchReceipt,
+        cx: &mut Context<Self>,
+    ) {
+        let executor = self.executor.clone();
+        let task = cx
+            .background_executor()
+            .spawn(executor.compensate(request, receipt));
+        cx.spawn(async move |this, cx| {
+            if let Err(failure) = task.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.error = Some(failure.message);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn request_cancel(&mut self, workspace: CatalogWorkspaceId, cx: &mut Context<Self>) {
@@ -2121,10 +1608,16 @@ impl WorkspaceHubView {
                 cx.notify();
                 return;
             }
+            let Ok(authority) = crate::terminal_view::AuthorizedLocalRoot::capture(&canonical)
+            else {
+                self.error = Some(t!("workspaces.launcher.authority_changed").to_string());
+                cx.notify();
+                return;
+            };
             if let Some(surface) = self.retained.get(&workspace) {
                 let terminal = surface.read(cx).terminal.clone();
                 terminal.update(cx, |terminal, _| {
-                    terminal.install_authorized_default_cwd(&canonical)
+                    terminal.install_authorized_default_cwd(&authority)
                 });
             }
         }
@@ -2178,24 +1671,19 @@ impl WorkspaceHubView {
 }
 
 fn request_matches_catalog(catalog: &ProjectCatalog, request: &WorkspaceExecutionRequest) -> bool {
-    let Ok(workspace) = catalog.workspace(request.workspace) else {
-        return false;
-    };
-    if workspace.checkout_id() != request.checkout {
-        return false;
-    }
-    let Ok(checkout) = catalog.checkout_in_project(workspace.project_id(), request.checkout) else {
+    let Ok(checkout) = catalog.checkout_in_project(request.project, request.source_checkout) else {
         return false;
     };
     match (&request.host, checkout.host()) {
+        (AuthorizedLaunchHost::LocalExisting { authority }, CheckoutHost::Local { root, .. }) => {
+            root == authority.path() && authority.revalidate().is_ok()
+        }
         (
-            AuthorizedLaunchHost::LocalExisting { canonical_root },
+            AuthorizedLaunchHost::LocalWorktree {
+                source_authority, ..
+            },
             CheckoutHost::Local { root, .. },
-        ) => root == canonical_root,
-        (
-            AuthorizedLaunchHost::LocalWorktree { target_root, .. },
-            CheckoutHost::Local { root, .. },
-        ) => root == target_root,
+        ) => root == source_authority.path() && source_authority.revalidate().is_ok(),
         (
             AuthorizedLaunchHost::Ssh {
                 connection_id,
@@ -2207,6 +1695,49 @@ fn request_matches_catalog(catalog: &ProjectCatalog, request: &WorkspaceExecutio
             },
         ) => connection_id == catalog_connection && remote_root == root.as_str(),
         _ => false,
+    }
+}
+
+fn create_event_coordinates(
+    event: &WorkspaceCreateEvent,
+) -> (CatalogWorkspaceId, CreationOperationId) {
+    match event {
+        WorkspaceCreateEvent::Start {
+            workspace,
+            operation,
+        }
+        | WorkspaceCreateEvent::Progress {
+            workspace,
+            operation,
+            ..
+        }
+        | WorkspaceCreateEvent::RequestCancel {
+            workspace,
+            operation,
+        }
+        | WorkspaceCreateEvent::Cancelled {
+            workspace,
+            operation,
+        }
+        | WorkspaceCreateEvent::Conflict {
+            workspace,
+            operation,
+            ..
+        }
+        | WorkspaceCreateEvent::Failed {
+            workspace,
+            operation,
+            ..
+        }
+        | WorkspaceCreateEvent::Completed {
+            workspace,
+            operation,
+        } => (*workspace, *operation),
+        WorkspaceCreateEvent::Retry {
+            workspace,
+            operation,
+            ..
+        } => (*workspace, *operation),
     }
 }
 

@@ -2610,13 +2610,23 @@ operation.
 For local creation, the production adapter either revalidates an exact existing
 catalog folder or creates a new Git worktree below ShellDeck's private
 application-data root. The selected checkout must be the repository top-level;
-branch and start-point arguments are separately validated and passed to fixed
-Git subcommands without shell parsing. A retry adopts an existing target only
-when its canonical worktree path and branch match exactly. Cancellation is
-operation-scoped, terminates an in-flight Git child and removes only that exact
-ShellDeck-owned worktree. Resume re-canonicalizes the catalog root before the
-retained terminal becomes interactive. SSH creation remains explicitly
-unavailable until a beneath/no-follow remote adapter exists.
+branch and start-point arguments are separately validated, the start point is
+resolved once to an immutable commit OID, and fixed Git subcommands receive
+typed arguments without shell parsing. Before creating a target, ShellDeck
+durably journals the source repository identity, OID, branch, reserved target
+identity, and catalog commit state below an opened no-follow private root.
+Restart either validates the exact same repository/worktree registration,
+symbolic branch, OID, target identity, and clean status or fails closed without
+deleting substituted or dirty user data. A retry adopts only that exact state.
+Cancellations and bounded pipe-drain deadlines terminate and reap the in-flight
+process group, so a descendant cannot keep completion blocked by retaining an
+output pipe. Cleanup removes only the exact journal-owned worktree. Closed UI receivers
+compensate the effect. Catalog, retained UI, and terminal-tab publication occur
+only after the effect journal is durable; a prepared PTY remains detached and
+is dropped if the atomic catalog save fails. Resume finishes journal
+reconciliation and revalidates opened directory authority before the retained
+terminal becomes interactive. SSH creation remains explicitly unavailable
+until a beneath/no-follow remote adapter exists.
 
 ### SDUC-492 — Workspace review mutations remain previewed, scoped, and exactly once
 
@@ -2657,6 +2667,11 @@ Stale or Unknown projection even if that projection claims a higher revision.
 
 ## Change log
 
+- **2026-08-28** — Hardened SDUC-491 and added SDTEST-1763..1769 for durable
+  restart journals, immutable OID/repository/clean-state adoption, no-follow
+  root/target authority, closed-receiver compensation, and process-tree
+  cancellation/reaping including a descendant-held-pipe deadline, and detached
+  PTY publication after the durable catalog boundary.
 - **2026-08-28** — Amended SDUC-489/491 with the production local-folder and
   ShellDeck-owned Git-worktree adapter, exact repository/branch/path adoption,
   operation-scoped cancellation cleanup, transactional catalog rollback, and

@@ -738,7 +738,61 @@ impl Render for WorkspaceHubView {
                 ));
             }
         }
-        if self.catalog.workspaces().len() == 0 {
+        for (workspace, request) in &self.pending_requests {
+            if self.catalog.workspace(*workspace).is_ok() {
+                continue;
+            }
+            let Some(state) = self.creation.state(*workspace) else {
+                continue;
+            };
+            let id = *workspace;
+            let entity = cx.entity();
+            let mut actions = div().flex().gap(px(6.0));
+            if matches!(
+                state,
+                BackgroundWorkspaceCreateState::Running { .. }
+                    | BackgroundWorkspaceCreateState::Cancelling { .. }
+            ) {
+                let cancel_entity = entity.clone();
+                actions = actions.child(
+                    Button::new(
+                        ("workspace-pending-cancel", id.as_uuid().as_u128() as u64),
+                        t!("workspaces.create.cancel").to_string(),
+                    )
+                    .size(ButtonSize::Sm)
+                    .disabled(matches!(
+                        state,
+                        BackgroundWorkspaceCreateState::Cancelling { .. }
+                    ))
+                    .on_click(move |_, _, cx| {
+                        cancel_entity.update(cx, |this, cx| this.request_cancel(id, cx));
+                    }),
+                );
+            } else if creation_retryable(state) {
+                actions = actions.child(
+                    Button::new(
+                        ("workspace-pending-retry", id.as_uuid().as_u128() as u64),
+                        t!("workspaces.create.retry").to_string(),
+                    )
+                    .size(ButtonSize::Sm)
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| this.retry_create(id, cx));
+                    }),
+                );
+            }
+            workspace_cards = workspace_cards.child(
+                Card::new().content(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .child(request.name.clone())
+                        .child(render_creation_state(state))
+                        .child(actions),
+                ),
+            );
+        }
+        if self.catalog.workspaces().len() == 0 && self.pending_requests.is_empty() {
             workspace_cards = workspace_cards.child(
                 div()
                     .p(px(16.0))

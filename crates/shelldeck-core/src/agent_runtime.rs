@@ -351,6 +351,9 @@ fn shell_quote(value: &str) -> String {
 /// Put a local agent in its own process group so Stop can also terminate tool
 /// subprocesses that inherited the CLI's output pipes.
 pub fn configure_local_process(command: &mut Command) {
+    #[cfg(not(unix))]
+    let _ = command;
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -392,6 +395,30 @@ pub fn terminate_local_process(child: &mut Child) -> std::io::Result<ExitStatus>
     }
     let _ = child.kill();
     child.wait()
+}
+
+/// Best-effort tree termination for async supervisors that own reaping.
+/// The caller must still await or poll the direct child to completion.
+pub fn terminate_local_process_group(process_id: u32) {
+    #[cfg(unix)]
+    {
+        let process_group = -(process_id as i32);
+        // SAFETY: `configure_local_process` assigned the child a process group
+        // whose id is its pid; a negative pid targets only that group.
+        unsafe {
+            libc::kill(process_group, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &process_id.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

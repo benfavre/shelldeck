@@ -78,6 +78,20 @@ impl TerminalSession {
         cols: u16,
         cwd: &std::path::Path,
     ) -> crate::Result<Self> {
+        Self::spawn_local_at_authorized(shell, rows, cols, cwd, cwd)
+    }
+
+    /// Spawn through a stable authority path while retaining the canonical
+    /// user-facing cwd in terminal state. On Linux the authority path may be
+    /// `/proc/<parent>/fd/<directory>`, which is intentionally not persisted
+    /// or shown as the workspace root.
+    pub fn spawn_local_at_authorized(
+        shell: Option<&str>,
+        rows: u16,
+        cols: u16,
+        authority_cwd: &std::path::Path,
+        canonical_cwd: &std::path::Path,
+    ) -> crate::Result<Self> {
         // Detect the flavor from the shell the PTY will actually spawn (same
         // resolution chain as `LocalPty::spawn`, incl. platform fallbacks).
         let shell_name = crate::pty::resolve_shell(shell).to_ascii_lowercase();
@@ -99,7 +113,7 @@ impl TerminalSession {
         let (response_tx, response_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         grid.lock().set_response_tx(response_tx);
 
-        let (pty, reader) = LocalPty::spawn_at(shell, rows, cols, cwd)?;
+        let (pty, reader) = LocalPty::spawn_at(shell, rows, cols, authority_cwd)?;
 
         // Split PTY: writer goes to the writer thread, master stays for resize.
         let (mut writer, master) = pty.into_parts();
@@ -185,7 +199,7 @@ impl TerminalSession {
             resize_fn: Some(resize_fn),
             output_notifier,
             shell_flavor,
-            initial_cwd: Some(cwd.to_path_buf()),
+            initial_cwd: Some(canonical_cwd.to_path_buf()),
         })
     }
 
