@@ -9,10 +9,25 @@ step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
 Total marker occurrences in code: **166**
-(`rg "ShellDeck patch:" src/`; SDPATCH-103 and SDPATCH-119 are
+(`rg "ShellDeck patch:" src/`; SDPATCH-103, SDPATCH-119, and SDPATCH-121 are
 Cargo.toml-only and outside the src-scoped marker convention.)
 
 ## Patches
+
+### SDPATCH-121 — Move stack-safety macros off an unmaintained diagnostic dependency
+
+- **Files / symbols**:
+  - `Cargo.toml` and `Cargo.toml.orig` — `stacksafe` dependency
+- **Markers**: none — the manifests are outside the
+  `patches/<crate>/src/` marker scope. The entry exists so the sync knows to
+  re-apply the dependency constraint after each overlay.
+- **Why**: `stacksafe` 0.1's procedural macro retained the unmaintained
+  `proc-macro-error2` crate. Version 1 keeps the `StackSafe` wrapper and
+  `#[stacksafe]` attribute used by GPUI while moving the macro to maintained
+  Syn diagnostics, removing that transitive RustSec warning without changing
+  GPUI's recursive layout contract.
+- **Upstream status**: not filed yet; suitable as a dependency update in the
+  vendored GPUI upstream.
 
 ### SDPATCH-120 — Portable native tray availability, labels, and Linux callbacks
 
@@ -636,6 +651,10 @@ Cargo.toml-only and outside the src-scoped marker convention.)
 - **Upstream status**: not filed yet.
 
 ## Sync log
+
+- **2026-08-28** — Added SDPATCH-121: upgraded `stacksafe` from 0.1 to 1,
+  removing the `proc-macro-error2` dependency path. No source marker was added
+  because this is a Cargo.toml-only patch.
 
 - **2026-08-28** — Hardened SDPATCH-120 after independent review: the Windows
   tray owner now receives `TaskbarCreated`, restores its retained HICON with
