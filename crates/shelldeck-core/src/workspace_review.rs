@@ -30,7 +30,7 @@ use validation::{
     validate_pending_record, validate_preview_bounds, validate_provider_evidence,
 };
 #[path = "workspace_review_storage.rs"]
-mod storage;
+pub(crate) mod storage;
 use storage::{
     bounded_read, ensure_private_directory, lock_path, open_lock_file, read_disk_identity,
     secure_atomic_write, workflow_bounded_read, workflow_disk_revision, workspace_review_root,
