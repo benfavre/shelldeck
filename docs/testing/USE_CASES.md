@@ -2626,7 +2626,26 @@ only after the effect journal is durable; a prepared PTY remains detached and
 is dropped if the atomic catalog save fails. Resume finishes journal
 reconciliation and revalidates opened directory authority before the retained
 terminal becomes interactive. SSH creation remains explicitly unavailable
-until a beneath/no-follow remote adapter exists.
+until a beneath/no-follow remote adapter exists. The current SSH layer exposes
+only shell and arbitrary-command channels and has no SFTP implementation.
+Adding a standard path-based SFTP client would not provide the missing
+authority: it cannot carry an opened directory descriptor across the protocol,
+and a remote canonicalize/lstat check followed by a pathname operation would
+retain the same substitution race as a local check-then-use implementation.
+
+The minimum admissible remote contract is a fixed, versioned SSH subsystem
+(not an interpolated command) with bounded typed frames. Its negotiation must
+fail closed unless the server helper can open the catalog root and relative
+components beneath one retained root descriptor without following symlinks or
+magic links. Prepare/resume requests must bind the operation ID, repository,
+immutable OID, symbolic branch, root and leaf identities, cleanliness and
+durable journal revision into an opaque receipt. Cancellation must terminate
+and reap the helper-owned process tree. A PTY-capable resume request must
+consume that receipt and change directory through the still-open/revalidated
+descriptor in the same helper before starting the shell. Archive/release and
+compensation must name the same receipt and refuse stale or substituted
+identities. Missing helper support produces no progress, receipt, catalog,
+terminal or cleanup side effect.
 
 ### SDUC-492 — Workspace review mutations remain previewed, scoped, and exactly once
 
@@ -2684,6 +2703,10 @@ The persisted local workspace-review schema remains independent and unmigrated.
 
 ## Change log
 
+- **2026-08-28** — Amended SDUC-491 and added SDTEST-1780 after auditing the
+  SSH/SFTP boundary: remote lifecycle stays fail-closed before progress while
+  no beneath/no-follow helper exists, and the minimum fixed-subsystem,
+  descriptor-retained receipt protocol is now explicit.
 - **2026-08-28** — Added SDUC-494 and SDTEST-1772..1779 for the exact shared
   Platform v2 review fixture, semantic projection, stale/unavailable behavior,
   exact-mapping target admission, negotiated typed read lane, and apply-time
