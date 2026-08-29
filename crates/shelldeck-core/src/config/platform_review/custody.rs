@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use automonique_protocol::platform::ReceiptId;
 use automonique_protocol::platform_v2_review::{
-    ReviewActionId, ReviewActorId, ReviewFileId, ReviewHunkId,
+    ReviewActionId, ReviewActorId, ReviewFileId, ReviewHunkId, MAX_REVIEW_COMMENTS,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -348,6 +348,25 @@ enum ReviewActionDisk {
         check_id: String,
         expected_check_revision: u64,
     },
+    /// The unconfirmed batch delivery lane.
+    ///
+    /// It carries no `confirmation` — the server advertises no digest for it —
+    /// but it is still an exposed mutation, so it takes the same durable
+    /// at-most-once record as every other one. Without it a restart between
+    /// the POST and the receipt would leave a delivered batch indistinguishable
+    /// from one that never left, and re-preparing would mint a fresh
+    /// idempotency key.
+    BatchSendCommentsToAgent {
+        comments: Vec<ReviewCommentTargetDisk>,
+    },
+}
+
+/// One comment target inside a persisted batch delivery.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewCommentTargetDisk {
+    comment_id: String,
+    expected_revision: u64,
 }
 
 impl ReviewActionDisk {
@@ -376,6 +395,15 @@ impl ReviewActionDisk {
             } => Self::RerunCheck {
                 check_id: check_id.as_str().to_owned(),
                 expected_check_revision: expected_check_revision.get(),
+            },
+            ReviewAction::BatchSendCommentsToAgent { comments } => Self::BatchSendCommentsToAgent {
+                comments: comments
+                    .iter()
+                    .map(|comment| ReviewCommentTargetDisk {
+                        comment_id: comment.comment_id().as_str().to_owned(),
+                        expected_revision: comment.expected_revision().get(),
+                    })
+                    .collect(),
             },
             _ => return Err(ReviewCustodyError::UnsupportedAction),
         })
@@ -420,6 +448,27 @@ impl ReviewActionDisk {
                 expected_check_revision: Revision::new(*expected_check_revision)
                     .map_err(|_| ReviewCustodyError::DocumentInvalid)?,
             },
+            Self::BatchSendCommentsToAgent { comments } => {
+                // Bound before allocating. `validate_client_shape` would also
+                // reject an oversized batch, but only after building the whole
+                // vector out of a document this process has not yet trusted.
+                if comments.len() > MAX_REVIEW_COMMENTS {
+                    return Err(ReviewCustodyError::DocumentInvalid);
+                }
+                ReviewAction::BatchSendCommentsToAgent {
+                    comments: comments
+                        .iter()
+                        .map(|comment| {
+                            Ok(ReviewCommentTarget::new(
+                                ReviewCommentId::new(comment.comment_id.clone())
+                                    .map_err(|_| ReviewCustodyError::DocumentInvalid)?,
+                                Revision::new(comment.expected_revision)
+                                    .map_err(|_| ReviewCustodyError::DocumentInvalid)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, ReviewCustodyError>>()?,
+                }
+            }
         })
     }
 }
@@ -951,6 +1000,105 @@ mod tests {
                 outcome: "completed".to_owned(),
                 detail: "action-1 · final".to_owned(),
                 actor: Some("reviewer-7".to_owned()),
+            }))
+        );
+    }
+
+    /// The advertisement a coherent server would mint for this snapshot's one
+    /// sendable comment, and the preview built verbatim from it.
+    fn batch_delivery() -> PlatformReviewActionPreview {
+        let mut review = semantic();
+        review.comments[0].agent_state = CommentAgentState::NotSent;
+        let target = target(&review);
+        let capabilities = ReviewCapabilities::new(
+            target.project.clone(),
+            target.workspace.clone(),
+            review.revision,
+            Revision::new(91).unwrap(),
+            Vec::new(),
+            vec![ReviewAgentDeliveryCapability::new(
+                ReviewCommentId::new(review.comments[0].id.clone()).unwrap(),
+                review.comments[0].revision,
+                ReviewAuthority::new(
+                    ReviewAuthorityKind::Review,
+                    automonique_protocol::platform_v2_review::ReviewAuthorityId::new(
+                        review.review.authority.id.clone(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap()],
+            ReviewPullRequestCapabilities::default(),
+        )
+        .unwrap();
+        PlatformReviewActionPreview::batch_send_comments(
+            target,
+            &review,
+            &capabilities,
+            &[review.comments[0].id.clone()],
+        )
+        .unwrap()
+    }
+
+    // SDTEST-1865 — the unconfirmed batch delivery takes the same durable
+    // at-most-once lane as every other exposed mutation, and survives the
+    // round trip through disk with its exact comment set intact.
+    #[test]
+    fn unconfirmed_batch_delivery_is_fenced_and_survives_the_disk_round_trip() {
+        let directory = TempRoot::new();
+        let preview = batch_delivery();
+        // No confirmation digest: this lane is fenced by the advertisement and
+        // the domain state machine, never by a digest.
+        assert!(preview.confirmation().is_none());
+        // It must still be revalidated before dispatch, exactly like a
+        // confirmed rerun and unlike a comment or an approval.
+        assert!(preview.requires_capability_revalidation());
+
+        // Before this slice the disk format knew only AddComment,
+        // ApproveReview and RerunCheck, so a batch delivery could not be
+        // recorded at all and would have refused at the fence.
+        let store = PlatformReviewCustodyStore::open(store_path(&directory)).unwrap();
+        store.prepare(&preview).unwrap();
+        assert!(matches!(
+            store.prepare(&batch_delivery()),
+            Err(ReviewCustodyError::EffectAlreadyPending)
+        ));
+
+        // A restart before dispatch reports the preview as never started, and
+        // the exact action survives serialization: same comments, same
+        // revisions, same order.
+        let restarted = PlatformReviewCustodyStore::open(store_path(&directory)).unwrap();
+        assert_eq!(
+            restarted.recovery(preview.target()).unwrap(),
+            Some(ReviewCustodyRecovery::NeverStarted(preview.clone()))
+        );
+
+        restarted.mark_dispatched(&preview).unwrap();
+        assert_eq!(
+            PlatformReviewCustodyStore::open(store_path(&directory))
+                .unwrap()
+                .recovery(preview.target())
+                .unwrap(),
+            Some(ReviewCustodyRecovery::LookupOnly(preview.clone())),
+            "a restart mid-delivery must look the receipt up, never re-post"
+        );
+
+        let reopened = PlatformReviewCustodyStore::open(store_path(&directory)).unwrap();
+        reopened
+            .record_receipt(
+                &preview,
+                &receipt(&preview, ReviewReceiptOutcome::Completed, "reviewer-9"),
+            )
+            .unwrap();
+        assert_eq!(
+            PlatformReviewCustodyStore::open(store_path(&directory))
+                .unwrap()
+                .recovery(preview.target())
+                .unwrap(),
+            Some(ReviewCustodyRecovery::Terminal(ReviewCustodyPresentation {
+                outcome: "completed".to_owned(),
+                detail: "action-1 · final".to_owned(),
+                actor: Some("reviewer-9".to_owned()),
             }))
         );
     }

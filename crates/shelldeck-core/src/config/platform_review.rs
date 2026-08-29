@@ -29,10 +29,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::workspace_catalog::PlatformV2Mapping;
 
 mod custody;
+mod delivery;
 mod notes;
 pub use custody::{
     PlatformReviewCustodyStore, ReviewCustodyError, ReviewCustodyPresentation,
     ReviewCustodyRecovery,
+};
+pub use delivery::{
+    advertised_agent_deliveries, review_delivery_control, AdvertisedReviewDelivery,
+    ReviewAgentDeliveryProjection, ReviewDeliveryWithheld,
 };
 pub use notes::{PlatformReviewNote, PlatformReviewNoteStore, ReviewNoteError};
 
@@ -169,39 +174,59 @@ impl PlatformReviewActionPreview {
         )
     }
 
+    /// Prepare the unconfirmed batch delivery of advertised review comments.
+    ///
+    /// Every coordinate that crosses the network is taken verbatim from the
+    /// capability: the comment ids and their `expected_comment_revision` come
+    /// from `agent_deliverable_comments`, and the request is pinned to the
+    /// capability's own `snapshot_revision`. The snapshot is consulted only to
+    /// prove the two reads agree; it never supplies a value.
+    ///
+    /// This is the unconfirmed lane. It deliberately carries no confirmation
+    /// digest and no receipt correlation — see [`delivery`] for why both would
+    /// be wrong here, and why minting the second would actively break receipt
+    /// recovery. The advertisement is the fence, which is why an unadvertised
+    /// selection refuses here instead of being posted and refused remotely.
     pub fn batch_send_comments(
         target: PlatformReviewTarget,
         review: &PlatformReviewSemantic,
+        capabilities: &ReviewCapabilities,
         comment_ids: &[String],
     ) -> Result<Self, &'static str> {
         validate_review_target(&target, review)?;
-        if review.review.freshness.state != ReviewFreshnessState::Fresh || comment_ids.is_empty() {
-            return Err("review comments are not actionable");
+        if comment_ids.is_empty() {
+            return Err("review comment selection is empty");
         }
         let selected = comment_ids.iter().collect::<BTreeSet<_>>();
         if selected.len() != comment_ids.len() {
             return Err("review comment selection is duplicated");
         }
-        let comments = comment_ids
+        let advertised = advertised_agent_deliveries(Some(capabilities), &target, review);
+        if advertised.is_empty() {
+            return Err("review agent delivery is not advertised");
+        }
+        // Walk the advertisement rather than the selection. The server sorts
+        // the advertised list by comment id and the protocol requires a batch
+        // to be strictly ordered by that same id, so filtering here yields
+        // wire order for free; walking the selection would not.
+        let comments = advertised
             .iter()
-            .map(|id| {
-                let comment = review
-                    .comments
-                    .iter()
-                    .find(|comment| &comment.id == id)
-                    .filter(|comment| review.comment_is_batch_actionable(&comment.id))
-                    .ok_or("review comment is not actionable")?;
+            .filter(|entry| selected.contains(&entry.comment_id))
+            .map(|entry| {
                 Ok(ReviewCommentTarget::new(
-                    ReviewCommentId::new(comment.id.clone())
+                    ReviewCommentId::new(entry.comment_id.clone())
                         .map_err(|_| "review comment identity is invalid")?,
-                    comment.revision,
+                    entry.expected_comment_revision,
                 ))
             })
             .collect::<Result<Vec<_>, &'static str>>()?;
+        if comments.len() != selected.len() {
+            return Err("review comment is not advertised as deliverable");
+        }
         let nonce = review_nonce();
         Self::review_action(
             target,
-            review.revision,
+            capabilities.snapshot_revision(),
             ReviewAction::BatchSendCommentsToAgent { comments },
             &nonce,
             None,
@@ -364,31 +389,77 @@ impl PlatformReviewActionPreview {
         self.confirmation.as_ref()
     }
 
-    /// Revalidate a confirmed rerun against the latest authoritative
-    /// capability generation before crossing the durable dispatch fence.
+    /// Whether this preview must be revalidated against the latest
+    /// authoritative capability generation before it crosses the durable
+    /// dispatch fence.
+    ///
+    /// A confirmed rerun must, because its digest names a plan the server
+    /// preflighted. A batch delivery must for the opposite reason: it carries
+    /// no digest at all, so the advertisement *is* its fence, and a list that
+    /// has since been retracted has to refuse locally rather than be posted.
+    #[must_use]
+    pub const fn requires_capability_revalidation(&self) -> bool {
+        self.confirmation.is_some()
+            || matches!(self.action, ReviewAction::BatchSendCommentsToAgent { .. })
+    }
+
+    /// Revalidate a confirmed rerun or an unconfirmed batch delivery against
+    /// the latest authoritative capability generation before crossing the
+    /// durable dispatch fence.
     #[must_use]
     pub fn matches_capabilities(&self, capabilities: &ReviewCapabilities) -> bool {
-        let (
-            ReviewAction::RerunCheck {
-                check_id,
-                expected_check_revision,
-            },
-            Some(confirmation),
-        ) = (&self.action, &self.confirmation)
-        else {
-            return self.confirmation.is_none();
-        };
+        match (&self.action, &self.confirmation) {
+            (
+                ReviewAction::RerunCheck {
+                    check_id,
+                    expected_check_revision,
+                },
+                Some(confirmation),
+            ) => {
+                self.capability_coordinates_match(capabilities)
+                    && capabilities.workspace_revision()
+                        == confirmation.expected_workspace_revision()
+                    && capabilities.rerunnable_checks().iter().any(|capability| {
+                        capability.check_id() == check_id
+                            && capability.expected_check_revision() == *expected_check_revision
+                            && capability.confirmation_digest()
+                                == confirmation.confirmation_digest()
+                            && capability.receipt_correlation_digest()
+                                == confirmation.receipt_correlation_digest()
+                    })
+            }
+            // The unconfirmed delivery lane has no digest to compare, so the
+            // comparison is the advertisement itself: every comment must still
+            // be listed, at exactly the revision this preview committed to.
+            //
+            // That is what makes a reused list refuse here instead of reaching
+            // the server. Settling a delivery moves the comment out of
+            // `not_sent`/`refused` and bumps both the snapshot revision and the
+            // comment's own revision, so a re-read after settlement cannot
+            // still advertise it — whatever fresh idempotency key a caller
+            // attaches.
+            (ReviewAction::BatchSendCommentsToAgent { comments }, None) => {
+                self.capability_coordinates_match(capabilities)
+                    && comments.iter().all(|comment| {
+                        capabilities
+                            .agent_deliverable_comments()
+                            .iter()
+                            .any(|capability| {
+                                capability.comment_id() == comment.comment_id()
+                                    && capability.expected_comment_revision()
+                                        == comment.expected_revision()
+                            })
+                    })
+            }
+            (_, None) => true,
+            _ => false,
+        }
+    }
+
+    fn capability_coordinates_match(&self, capabilities: &ReviewCapabilities) -> bool {
         capabilities.project() == &self.target.project
             && capabilities.workspace() == &self.target.workspace
             && capabilities.snapshot_revision() == self.expected_revision
-            && capabilities.workspace_revision() == confirmation.expected_workspace_revision()
-            && capabilities.rerunnable_checks().iter().any(|capability| {
-                capability.check_id() == check_id
-                    && capability.expected_check_revision() == *expected_check_revision
-                    && capability.confirmation_digest() == confirmation.confirmation_digest()
-                    && capability.receipt_correlation_digest()
-                        == confirmation.receipt_correlation_digest()
-            })
     }
 
     #[must_use]
@@ -1085,6 +1156,110 @@ mod tests {
     const RENDER_CORPUS: &[u8] =
         include_bytes!("../../tests/fixtures/platform-v2-render-conformance-v1.json");
 
+    /// Mint the advertisement a coherent server would return for `comment_ids`
+    /// at this review's exact snapshot revision.
+    ///
+    /// Every value comes from the review itself, so the helper cannot advertise
+    /// a comment revision the snapshot disagrees with — the tests that need
+    /// that divergence build it explicitly.
+    fn delivery_capabilities(
+        target: &PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+        comment_ids: &[&str],
+    ) -> ReviewCapabilities {
+        let authority = ReviewAuthority::new(
+            ReviewAuthorityKind::Review,
+            automonique_protocol::platform_v2_review::ReviewAuthorityId::new(
+                review.review.authority.id.clone(),
+            )
+            .unwrap(),
+        );
+        let advertised = comment_ids
+            .iter()
+            .map(|id| {
+                let comment = review.comments.iter().find(|c| c.id == *id).unwrap();
+                ReviewAgentDeliveryCapability::new(
+                    ReviewCommentId::new(comment.id.clone()).unwrap(),
+                    comment.revision,
+                    authority.clone(),
+                )
+                .unwrap()
+            })
+            .collect();
+        ReviewCapabilities::new(
+            target.project.clone(),
+            target.workspace.clone(),
+            review.revision,
+            Revision::new(91).unwrap(),
+            Vec::new(),
+            advertised,
+            ReviewPullRequestCapabilities::default(),
+        )
+        .unwrap()
+    }
+
+    /// Mirror the server's own eligibility rule for `agent_deliverable_comments`.
+    ///
+    /// The daemon advertises a comment only when the caller holds the review
+    /// authority the snapshot names, the review is fresh, and the comment is
+    /// still in `not_sent` or `refused`. Reproducing that rule here — rather
+    /// than hand-writing each expected list — is what lets the delivery tests
+    /// *show* an advertisement retracting instead of asserting that it does.
+    fn advertise(
+        target: &PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+    ) -> ReviewCapabilities {
+        let eligible = if review.review.authority.kind == ReviewAuthorityKind::Review
+            && review.review.freshness.state == ReviewFreshnessState::Fresh
+        {
+            review
+                .comments
+                .iter()
+                .filter(|comment| {
+                    matches!(
+                        comment.agent_state,
+                        CommentAgentState::NotSent | CommentAgentState::Refused
+                    )
+                })
+                .map(|comment| comment.id.as_str())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        delivery_capabilities(target, review, &eligible)
+    }
+
+    /// Mirror the settlement the daemon performs when a delivery completes:
+    /// the delivered comment leaves the sendable states and bumps its own
+    /// revision, and the snapshot revision bumps with it.
+    fn settle(review: &PlatformReviewSemantic, delivered: &[&str]) -> PlatformReviewSemantic {
+        let mut settled = review.clone();
+        settled.revision = Revision::new(review.revision.get() + 1).unwrap();
+        for comment in &mut settled.comments {
+            if delivered.contains(&comment.id.as_str()) {
+                comment.agent_state = CommentAgentState::Sent;
+                comment.revision = Revision::new(comment.revision.get() + 1).unwrap();
+            }
+        }
+        settled
+    }
+
+    /// The canonical fixture carries one already-sent comment. Batch delivery
+    /// needs at least two sendable ones, and needs their snapshot order to
+    /// differ from their sorted order, so the wire ordering requirement is
+    /// exercised rather than satisfied by accident.
+    fn deliverable_review() -> PlatformReviewSemantic {
+        let snapshot = decode_review_snapshot(CANONICAL_FIXTURE).unwrap();
+        let mut review = PlatformReviewSemantic::from(&snapshot);
+        review.comments[0].agent_state = CommentAgentState::NotSent;
+        let mut second = review.comments[0].clone();
+        second.id = "comment-0".to_owned();
+        second.revision = Revision::new(review.comments[0].revision.get() + 3).unwrap();
+        second.agent_state = CommentAgentState::Refused;
+        review.comments.push(second);
+        review
+    }
+
     fn rerun_capabilities(
         target: &PlatformReviewTarget,
         review: &PlatformReviewSemantic,
@@ -1477,6 +1652,7 @@ mod tests {
         let batch = PlatformReviewActionPreview::batch_send_comments(
             target.clone(),
             &semantic,
+            &delivery_capabilities(&target, &semantic, &[&semantic.comments[0].id]),
             &[semantic.comments[0].id.clone()],
         )
         .unwrap();
@@ -1632,9 +1808,13 @@ mod tests {
         wrong_authority.checks[0].authority.kind = ReviewAuthorityKind::Review;
         wrong_authority.pull_request.authority.kind = ReviewAuthorityKind::Review;
         assert!(!wrong_authority.approval_is_actionable());
+        // The advertisement is minted from the review the snapshot names, so a
+        // Git review authority cannot produce one at all: the capability's own
+        // constructor refuses a non-review authority.
         assert!(PlatformReviewActionPreview::batch_send_comments(
             target.clone(),
             &wrong_authority,
+            &delivery_capabilities(&target, &semantic, &[&semantic.comments[0].id]),
             &[wrong_authority.comments[0].id.clone()],
         )
         .is_err());
@@ -1680,12 +1860,165 @@ mod tests {
         )
         .is_err());
         assert!(PlatformReviewActionPreview::batch_send_comments(
-            target,
+            target.clone(),
             &semantic,
+            &delivery_capabilities(&target, &semantic, &[&semantic.comments[0].id]),
             &[
                 semantic.comments[0].id.clone(),
                 semantic.comments[0].id.clone()
             ],
+        )
+        .is_err());
+    }
+
+    // SDTEST-1863
+    #[test]
+    fn advertised_delivery_is_sent_verbatim_and_a_reused_advertisement_is_refused() {
+        let review = deliverable_review();
+        let snapshot = decode_review_snapshot(CANONICAL_FIXTURE).unwrap();
+        let target = PlatformReviewTarget {
+            project: ProjectId::new("project-1").unwrap(),
+            workspace: snapshot.workspace().clone(),
+        };
+
+        // The server advertises both sendable comments, sorted by id, which is
+        // the opposite of their order inside the snapshot.
+        let advertised = advertise(&target, &review);
+        let ids = advertised
+            .agent_deliverable_comments()
+            .iter()
+            .map(|capability| capability.comment_id().as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["comment-0", "comment-1"]);
+        assert_ne!(
+            ids,
+            review
+                .comments
+                .iter()
+                .map(|comment| comment.id.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        let preview = PlatformReviewActionPreview::batch_send_comments(
+            target.clone(),
+            &review,
+            &advertised,
+            &["comment-1".to_owned(), "comment-0".to_owned()],
+        )
+        .unwrap();
+        // Every coordinate is the capability's, and the request is pinned to
+        // the capability's snapshot revision.
+        assert_eq!(preview.expected_revision(), advertised.snapshot_revision());
+        assert!(preview.confirmation().is_none());
+        let ReviewAction::BatchSendCommentsToAgent { comments } = preview.action() else {
+            panic!("batch preview changed action family");
+        };
+        assert_eq!(
+            comments
+                .iter()
+                .map(|comment| (comment.comment_id().as_str(), comment.expected_revision()))
+                .collect::<Vec<_>>(),
+            advertised
+                .agent_deliverable_comments()
+                .iter()
+                .map(|capability| (
+                    capability.comment_id().as_str(),
+                    capability.expected_comment_revision()
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert!(preview.requires_capability_revalidation());
+        assert!(preview.matches_capabilities(&advertised));
+
+        // A capability response minted against another snapshot revision must
+        // construct nothing, or the preview would pin itself to a revision the
+        // active review never observed.
+        let superseded = advertise(&target, &settle(&review, &[]));
+        assert_ne!(superseded.snapshot_revision(), review.revision);
+        assert!(PlatformReviewActionPreview::batch_send_comments(
+            target.clone(),
+            &review,
+            &superseded,
+            &["comment-1".to_owned()],
+        )
+        .is_err());
+        // A comment that exists and is sendable, but was not advertised, is
+        // refused locally rather than posted for the server to refuse.
+        let partial = delivery_capabilities(&target, &review, &["comment-0"]);
+        assert!(PlatformReviewActionPreview::batch_send_comments(
+            target.clone(),
+            &review,
+            &partial,
+            &["comment-0".to_owned(), "comment-1".to_owned()],
+        )
+        .is_err());
+
+        // One delivery settles. Re-read the advertisement rather than reusing
+        // the list: the delivered comment left `refused`, its own revision
+        // bumped, and the snapshot revision bumped with it.
+        let settled = settle(&review, &["comment-0"]);
+        let readvertised = advertise(&target, &settled);
+        assert_eq!(
+            readvertised
+                .agent_deliverable_comments()
+                .iter()
+                .map(|capability| capability.comment_id().as_str())
+                .collect::<Vec<_>>(),
+            vec!["comment-1"],
+            "settling one delivery must retract only that comment"
+        );
+        assert_eq!(readvertised.snapshot_revision(), settled.revision);
+
+        // The preview built from the retracted list is now refused locally, so
+        // it never reaches the server.
+        assert!(!preview.matches_capabilities(&readvertised));
+
+        // And a fresh preview built from that same stale list — the exact
+        // request a duplicate-delivery bug would have to make: same batch,
+        // same advertised revisions, a brand new idempotency key — is refused
+        // for the same reason, which is why no digest is needed here.
+        let replay = PlatformReviewActionPreview::batch_send_comments(
+            target.clone(),
+            &review,
+            &advertised,
+            &["comment-1".to_owned(), "comment-0".to_owned()],
+        )
+        .unwrap();
+        assert_ne!(replay.idempotency_key(), preview.idempotency_key());
+        assert!(!replay.matches_capabilities(&readvertised));
+
+        // Preparing against the settled snapshot cannot reconstruct it either:
+        // the delivered comment is no longer advertised at all.
+        assert!(PlatformReviewActionPreview::batch_send_comments(
+            target.clone(),
+            &settled,
+            &readvertised,
+            &["comment-0".to_owned()],
+        )
+        .is_err());
+
+        // The survivor is still deliverable, at the new snapshot revision.
+        let next = PlatformReviewActionPreview::batch_send_comments(
+            target.clone(),
+            &settled,
+            &readvertised,
+            &["comment-1".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(next.expected_revision(), settled.revision);
+        assert!(next.matches_capabilities(&readvertised));
+
+        // Settling the last one empties the advertisement entirely, and an
+        // empty advertisement can construct nothing.
+        let drained = settle(&settled, &["comment-1"]);
+        let empty = advertise(&target, &drained);
+        assert!(empty.agent_deliverable_comments().is_empty());
+        assert!(!next.matches_capabilities(&empty));
+        assert!(PlatformReviewActionPreview::batch_send_comments(
+            target,
+            &drained,
+            &empty,
+            &["comment-1".to_owned()],
         )
         .is_err());
     }

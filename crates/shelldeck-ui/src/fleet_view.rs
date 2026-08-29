@@ -25,10 +25,11 @@ use shelldeck_core::config::platform_review::{
     ConflictResolution, PlatformReviewActionPreview, PlatformReviewCapabilitiesLoad,
     PlatformReviewConfirmationCoordinates, PlatformReviewCustodyStore, PlatformReviewLoad,
     PlatformReviewNote, PlatformReviewNoteStore, PlatformReviewRenderSemantic,
-    PlatformReviewSemantic, PlatformReviewTarget, ReviewAction, ReviewAnchorSemantic,
-    ReviewCustodyRecovery, ReviewPreviewWithheld, ReviewProposalKind, ReviewReceiptOutcome,
-    ReviewSafePreview, ReviewSafeText, ReviewStagingWithheld, ReviewWorktreeFile,
-    ReviewWorktreeLane, ReviewWorktreeLaneGroup, ReviewWorktreeProjection,
+    PlatformReviewSemantic, PlatformReviewTarget, ReviewAction, ReviewAgentDeliveryProjection,
+    ReviewAnchorSemantic, ReviewCustodyRecovery, ReviewDeliveryWithheld, ReviewPreviewWithheld,
+    ReviewProposalKind, ReviewReceiptOutcome, ReviewSafePreview, ReviewSafeText,
+    ReviewStagingWithheld, ReviewWorktreeFile, ReviewWorktreeLane, ReviewWorktreeLaneGroup,
+    ReviewWorktreeProjection,
 };
 
 use crate::icons::lucide_icon;
@@ -222,6 +223,18 @@ const fn review_staging_withheld_key(reason: ReviewStagingWithheld) -> &'static 
             "fleet.review.staging_withheld_no_server_capability"
         }
         ReviewStagingWithheld::NoCustodyLane => "fleet.review.staging_withheld_no_custody_lane",
+    }
+}
+
+const fn review_delivery_withheld_key(reason: ReviewDeliveryWithheld) -> &'static str {
+    match reason {
+        ReviewDeliveryWithheld::NoServerCapability => {
+            "fleet.review.delivery_withheld_no_server_capability"
+        }
+        ReviewDeliveryWithheld::NoDeliverableComment => {
+            "fleet.review.delivery_withheld_no_deliverable_comment"
+        }
+        ReviewDeliveryWithheld::NoCustodyLane => "fleet.review.delivery_withheld_no_custody_lane",
     }
 }
 
@@ -460,17 +473,30 @@ impl FleetView {
         if !selected_is_current {
             self.selected_review_anchor = None;
         }
-        match &review {
-            Some(PlatformReviewLoad::Available(review)) => {
+        // The selection is retained against the *advertisement*, never against
+        // the snapshot alone. A settled delivery moves its comments out of the
+        // sendable states and bumps the revision, so the freshly re-read
+        // capability no longer lists them and the selection empties itself —
+        // which is what stops the previous list from being reused.
+        match (&review, &target) {
+            (Some(PlatformReviewLoad::Available(review)), Some(target)) => {
+                let delivery = ReviewAgentDeliveryProjection::new(
+                    review,
+                    target,
+                    capabilities
+                        .as_ref()
+                        .and_then(PlatformReviewCapabilitiesLoad::available),
+                    self.review_custody.is_some(),
+                );
                 self.selected_review_comments
-                    .retain(|id| review.comment_is_batch_actionable(id));
+                    .retain(|id| delivery.advertises(id));
             }
             _ => self.selected_review_comments.clear(),
         }
         let preview_is_stale = self.pending_review_preview.as_ref().is_some_and(|preview| {
             target.as_ref() != Some(preview.target())
                 || !matches!(&review, Some(PlatformReviewLoad::Available(value)) if value.revision == preview.expected_revision())
-                || (preview.confirmation().is_some()
+                || (preview.requires_capability_revalidation()
                     && !capabilities
                         .as_ref()
                         .and_then(PlatformReviewCapabilitiesLoad::available)
@@ -828,6 +854,62 @@ impl FleetView {
         self.admit_review_preview(preview)
     }
 
+    /// Toggle one advertised comment in the batch-delivery selection.
+    ///
+    /// A comment the current advertisement does not list can never enter the
+    /// selection, so a control that raced a capability refresh selects nothing
+    /// rather than staging an unsendable id.
+    fn set_review_comment_selected(&mut self, id: &str, selected: bool) {
+        if !selected {
+            self.selected_review_comments.remove(id);
+            return;
+        }
+        if self
+            .review_delivery()
+            .is_some_and(|delivery| delivery.advertises(id))
+        {
+            self.selected_review_comments.insert(id.to_owned());
+        }
+    }
+
+    /// The advertised delivery projection for the exact active snapshot.
+    fn review_delivery(&self) -> Option<ReviewAgentDeliveryProjection> {
+        let review = self.available_review().ok()?;
+        let target = self.review_target.as_ref()?;
+        Some(ReviewAgentDeliveryProjection::new(
+            review,
+            target,
+            self.available_review_capabilities().ok(),
+            self.review_custody.is_some(),
+        ))
+    }
+
+    /// Prepare the unconfirmed batch delivery of the selected comments.
+    ///
+    /// The preview takes every coordinate from the capability, so this refuses
+    /// locally whenever the advertisement no longer covers the selection.
+    fn prepare_review_batch_send(&mut self) -> Result<(), ReviewPrepareRefusal> {
+        let target = self
+            .review_target
+            .clone()
+            .ok_or(ReviewPrepareRefusal::Preview)?;
+        let selected = self
+            .selected_review_comments
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let preview = PlatformReviewActionPreview::batch_send_comments(
+            target,
+            self.available_review()
+                .map_err(|_| ReviewPrepareRefusal::Preview)?,
+            self.available_review_capabilities()
+                .map_err(|_| ReviewPrepareRefusal::Preview)?,
+            &selected,
+        )
+        .map_err(|_| ReviewPrepareRefusal::Preview)?;
+        self.admit_review_preview(preview)
+    }
+
     fn prepare_review_approval(&mut self) -> Result<(), ReviewPrepareRefusal> {
         let target = self
             .review_target
@@ -905,12 +987,17 @@ impl FleetView {
             return None;
         }
         let preview = self.pending_review_preview.as_ref()?;
-        if preview.confirmation().is_some() {
+        if preview.requires_capability_revalidation() {
+            let stale_detail = if preview.confirmation().is_some() {
+                "fleet.review.capability_stale"
+            } else {
+                "fleet.review.delivery_capability_stale"
+            };
             let capabilities = self.available_review_capabilities().ok()?;
             if !preview.matches_capabilities(capabilities) {
                 self.review_receipt = Some((
                     t!("fleet.review.state_refused").to_string(),
-                    t!("fleet.review.capability_stale").to_string(),
+                    t!(stale_detail).to_string(),
                 ));
                 return None;
             }
@@ -1678,32 +1765,94 @@ impl FleetView {
             );
         }
 
+        // Batch delivery to the authorized session. The send control exists
+        // only for the comments the server advertised in
+        // `agent_deliverable_comments` for this exact snapshot: the
+        // advertisement is the whole fence for this lane, because it carries
+        // no confirmation digest by design.
+        let delivery = self
+            .review_delivery()
+            .unwrap_or_else(ReviewAgentDeliveryProjection::unavailable);
         let mut comments = div().flex().flex_col().gap(px(4.0));
         for comment in &review.comments {
-            comments = comments.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(
-                        div().flex_1().min_w(px(0.0)).child(
-                            t!(
-                                "fleet.review.comment",
-                                actor = comment.actor.as_str(),
-                                file = comment.anchor.file_id.as_str(),
-                                side = comment.anchor.side.as_str(),
-                                line = comment.anchor.line,
-                                revision = comment.revision.get(),
-                                body = comment.body.as_str()
-                            )
-                            .to_string(),
-                        ),
+            let deliverable = delivery.advertises(&comment.id);
+            let selected = self.selected_review_comments.contains(&comment.id);
+            let mut row = div()
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .text_size(px(11.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(
+                    div().flex_1().min_w(px(0.0)).child(
+                        t!(
+                            "fleet.review.comment",
+                            actor = comment.actor.as_str(),
+                            file = comment.anchor.file_id.as_str(),
+                            side = comment.anchor.side.as_str(),
+                            line = comment.anchor.line,
+                            revision = comment.revision.get(),
+                            body = comment.body.as_str()
+                        )
+                        .to_string(),
                     ),
-            );
+                );
+            if deliverable {
+                let select_entity = entity.clone();
+                let select_id = comment.id.clone();
+                // Same widget, same variants and same copy as the note
+                // selection toggle: one selection affordance, two lists.
+                row = row.child(
+                    div().flex_shrink_0().child(
+                        Button::new(
+                            ElementId::from(SharedString::from(format!(
+                                "review-comment-select-{}",
+                                comment.id
+                            ))),
+                            if selected {
+                                t!("fleet.review.comment_selected").to_string()
+                            } else {
+                                t!("fleet.review.comment_select").to_string()
+                            },
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(if selected {
+                            ButtonVariant::Default
+                        } else {
+                            ButtonVariant::Outline
+                        })
+                        .disabled(!can_anchor)
+                        .on_click(move |_, _, cx| {
+                            select_entity.update(cx, |this, cx| {
+                                this.set_review_comment_selected(&select_id, !selected);
+                                cx.notify();
+                            });
+                        }),
+                    ),
+                );
+            }
+            comments = comments.child(row);
+        }
+        // Unlike the staging sibling, this reason is shown only when a comment
+        // in the snapshot looks locally sendable. A review with nothing in
+        // `not_sent`/`refused` has no gap to explain, and a permanent
+        // "nothing to deliver" banner would be noise rather than an answer.
+        if let Err(reason) = delivery.control {
+            if review
+                .comments
+                .iter()
+                .any(|comment| review.comment_is_batch_actionable(&comment.id))
+            {
+                comments = comments.child(
+                    div().min_w(px(0.0)).overflow_hidden().child(
+                        Alert::info()
+                            .title(t!("fleet.review.delivery_withheld_title").to_string())
+                            .description(t!(review_delivery_withheld_key(reason)).to_string()),
+                    ),
+                );
+            }
         }
 
         let mut attention = div().flex().flex_col().gap(px(4.0));
@@ -1850,15 +1999,15 @@ impl FleetView {
             );
         }
         if selected_notes > 0 {
-            // The selection is durable and ready, but Platform v2 advertises
-            // no capability for delivering it to the authorized session, so
-            // Fleet states that instead of offering a control that cannot
-            // honour its own at-most-once contract.
+            // A note is a local draft and is not on the server, so it cannot
+            // be delivered directly: batch delivery names server comment ids,
+            // which a note only acquires once it has been prepared and posted.
+            // The durable selection says which drafts the user means to send.
             notes = notes.child(
                 div()
                     .text_size(px(10.0))
-                    .text_color(ShellDeckColors::warning())
-                    .child(t!("fleet.review.batch_blocked", count = selected_notes).to_string()),
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("fleet.review.notes_selected", count = selected_notes).to_string()),
             );
         }
 
@@ -1883,9 +2032,35 @@ impl FleetView {
                 .to_string()
             },
         );
-        // External Git, agent-delivery, and pull-request actions remain absent:
-        // Platform v2 currently advertises only explicit check-rerun authority.
+        // External Git and pull-request actions remain absent: Platform v2
+        // advertises check reruns and agent delivery, and ships the three
+        // pull-request slots empty because no provider adapter can preflight
+        // one yet.
         let mut effect_controls = div().flex().flex_wrap().gap(px(6.0));
+        if delivery.control.is_ok() && !self.selected_review_comments.is_empty() {
+            let batch_entity = entity.clone();
+            let selected_comments = self.selected_review_comments.len();
+            effect_controls = effect_controls.child(
+                Button::new(
+                    "prepare-review-batch-send",
+                    t!("fleet.review.prepare_batch_send", count = selected_comments).to_string(),
+                )
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Outline)
+                .disabled(!can_prepare)
+                .on_click(move |_, _, cx| {
+                    batch_entity.update(cx, |this, cx| {
+                        if let Err(refusal) = this.prepare_review_batch_send() {
+                            this.review_receipt = Some((
+                                t!("fleet.review.state_refused").to_string(),
+                                refusal.detail(),
+                            ));
+                        }
+                        cx.notify();
+                    });
+                }),
+            );
+        }
         let capabilities = self
             .review_capabilities
             .as_ref()
@@ -3796,10 +3971,11 @@ impl Render for FleetView {
 mod review_render_tests {
     use super::{
         exact_review_target_index, fleet_uses_compact_layout, review_anchor_element_id,
-        review_dispatch_directive, review_lane_label_key, review_lane_variant,
-        review_preparation_gate, review_preview_withheld_key, review_rerun_control_gate,
-        review_staging_withheld_key, same_exact_review_snapshot, semantic_words,
-        visible_review_lanes, BadgeVariant, ReviewDispatchDirective, ReviewPrepareRefusal,
+        review_delivery_withheld_key, review_dispatch_directive, review_lane_label_key,
+        review_lane_variant, review_preparation_gate, review_preview_withheld_key,
+        review_rerun_control_gate, review_staging_withheld_key, same_exact_review_snapshot,
+        semantic_words, visible_review_lanes, BadgeVariant, ReviewDeliveryWithheld,
+        ReviewDispatchDirective, ReviewPrepareRefusal,
     };
     use shelldeck_core::config::platform_review::PlatformReviewTarget;
     use shelldeck_core::config::workspace_catalog::{
@@ -4151,5 +4327,46 @@ mod review_render_tests {
             "{details:?}"
         );
         assert!(details.iter().all(|detail| !detail.trim().is_empty()));
+    }
+
+    // SDTEST-1866 — SDUC-495
+    #[test]
+    fn every_delivery_withheld_reason_has_its_own_key_in_both_shipped_locales() {
+        // A surface that cannot tell "the server advertised nothing" from
+        // "this process has no custody lane" sends the user to the wrong fix,
+        // so the three reasons must never collapse onto one string.
+        let keys = ReviewDeliveryWithheld::ALL
+            .iter()
+            .map(|reason| review_delivery_withheld_key(*reason))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(keys.len(), ReviewDeliveryWithheld::ALL.len());
+
+        for locale in ["fr", "en"] {
+            let copies = keys
+                .iter()
+                .map(|key| {
+                    let copy = crate::t!(*key, locale = locale).to_string();
+                    assert_ne!(&copy, *key, "{locale} is missing {key}");
+                    copy
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(copies.len(), keys.len(), "{locale} reuses one explanation");
+            // The delivery lane must not be explained with the staging lane's
+            // copy: they are withheld for different reasons and are fixed
+            // differently.
+            for key in [
+                "fleet.review.staging_withheld_no_server_capability",
+                "fleet.review.staging_withheld_no_custody_lane",
+            ] {
+                assert!(!copies.contains(&crate::t!(key, locale = locale).to_string()));
+            }
+            let stale =
+                crate::t!("fleet.review.delivery_capability_stale", locale = locale).to_string();
+            assert_ne!(
+                stale,
+                crate::t!("fleet.review.capability_stale", locale = locale).to_string(),
+                "{locale} tells a retracted advertisement and a changed rerun digest apart"
+            );
+        }
     }
 }
