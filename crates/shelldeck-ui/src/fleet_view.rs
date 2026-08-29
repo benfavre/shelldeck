@@ -22,10 +22,12 @@ use shelldeck_core::config::platform::{
     SessionHistoryEvent, SessionRecord,
 };
 use shelldeck_core::config::platform_review::{
-    ConflictResolution, DiffSide, PlatformReviewActionPreview, PlatformReviewCapabilitiesLoad,
+    ConflictResolution, PlatformReviewActionPreview, PlatformReviewCapabilitiesLoad,
     PlatformReviewConfirmationCoordinates, PlatformReviewCustodyStore, PlatformReviewLoad,
     PlatformReviewRenderSemantic, PlatformReviewSemantic, PlatformReviewTarget, ReviewAction,
-    ReviewAnchorSemantic, ReviewCustodyRecovery, ReviewProposalKind, ReviewReceiptOutcome,
+    ReviewAnchorSemantic, ReviewCustodyRecovery, ReviewPreviewWithheld, ReviewProposalKind,
+    ReviewReceiptOutcome, ReviewSafePreview, ReviewSafeText, ReviewStagingWithheld,
+    ReviewWorktreeFile, ReviewWorktreeLane, ReviewWorktreeLaneGroup, ReviewWorktreeProjection,
 };
 
 use crate::icons::lucide_icon;
@@ -127,6 +129,65 @@ const fn review_rerun_control_gate(
     custody_available: bool,
 ) -> bool {
     authoritative_capability_available && custody_available
+}
+
+/// Lanes worth painting, most blocking first.
+///
+/// An empty lane is omitted rather than rendered as a zero-count header: a
+/// clean index should not look like four unfinished sections.
+fn visible_review_lanes(projection: &ReviewWorktreeProjection) -> Vec<&ReviewWorktreeLaneGroup> {
+    projection
+        .lanes
+        .iter()
+        .filter(|group| !group.files.is_empty())
+        .collect()
+}
+
+const fn review_lane_label_key(lane: ReviewWorktreeLane) -> &'static str {
+    match lane {
+        ReviewWorktreeLane::Conflicted => "fleet.review.lane_conflicted",
+        ReviewWorktreeLane::Staged => "fleet.review.lane_staged",
+        ReviewWorktreeLane::Unstaged => "fleet.review.lane_unstaged",
+        ReviewWorktreeLane::Untracked => "fleet.review.lane_untracked",
+    }
+}
+
+/// An unresolved conflict blocks everything downstream, so it is the only lane
+/// that reads as destructive.
+const fn review_lane_variant(lane: ReviewWorktreeLane) -> BadgeVariant {
+    match lane {
+        ReviewWorktreeLane::Conflicted => BadgeVariant::Destructive,
+        _ => BadgeVariant::Secondary,
+    }
+}
+
+const fn review_preview_withheld_key(reason: ReviewPreviewWithheld) -> &'static str {
+    match reason {
+        ReviewPreviewWithheld::NoContent => "fleet.review.preview_withheld_no_content",
+        ReviewPreviewWithheld::Binary => "fleet.review.preview_withheld_binary",
+        ReviewPreviewWithheld::Unsanitized => "fleet.review.preview_withheld_unsanitized",
+        ReviewPreviewWithheld::Oversized => "fleet.review.preview_withheld_oversized",
+        ReviewPreviewWithheld::OversizedRaster => "fleet.review.preview_withheld_oversized_raster",
+        ReviewPreviewWithheld::Incoherent => "fleet.review.preview_withheld_incoherent",
+    }
+}
+
+/// Deterministic identity for one hunk anchor button.
+///
+/// A partially staged file is listed in both the staged and the unstaged lane,
+/// so the lane has to take part in the identity. Two GPUI elements sharing an
+/// id route each other's clicks, which would silently select the wrong anchor.
+fn review_anchor_element_id(lane: ReviewWorktreeLane, file_id: &str, hunk_id: &str) -> String {
+    format!("review-anchor-{}-{file_id}-{hunk_id}", lane.as_str())
+}
+
+const fn review_staging_withheld_key(reason: ReviewStagingWithheld) -> &'static str {
+    match reason {
+        ReviewStagingWithheld::NoServerCapability => {
+            "fleet.review.staging_withheld_no_server_capability"
+        }
+        ReviewStagingWithheld::NoCustodyLane => "fleet.review.staging_withheld_no_custody_lane",
+    }
 }
 
 fn localized_review_proposal_kind(kind: ReviewProposalKind) -> String {
@@ -1363,119 +1424,52 @@ impl FleetView {
         let unresolved = self.current_unresolved_review_action().is_some();
         let can_prepare = !self.operation_busy && !unresolved;
         let selected_anchor = self.selected_review_anchor.as_ref();
-        let mut files = div().flex().flex_col().gap(px(6.0));
-        for (file_index, file) in review.files.iter().enumerate() {
-            let mut hunks = div().flex().flex_col().gap(px(4.0));
-            for (hunk_index, hunk) in file.hunks.iter().enumerate() {
-                let (side, line) = if hunk.new_lines > 0 {
-                    (DiffSide::New, hunk.new_start)
-                } else {
-                    (DiffSide::Old, hunk.old_start)
-                };
-                let anchor = ReviewAnchorSemantic {
-                    file_id: file.id.clone(),
-                    hunk_id: hunk.id.clone(),
-                    side,
-                    line,
-                };
-                let selected = selected_anchor == Some(&anchor);
-                let select_entity = entity.clone();
-                let anchor_for_click = anchor.clone();
-                hunks = hunks.child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .gap(px(8.0))
-                        .min_w(px(0.0))
-                        .child(
-                            Button::new(
-                                ("review-anchor", file_index * 1024 + hunk_index),
-                                t!("fleet.review.anchor", side = side.as_str(), line = line)
-                                    .to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(if selected {
-                                ButtonVariant::Default
-                            } else {
-                                ButtonVariant::Outline
-                            })
-                            .disabled(!can_prepare)
-                            .on_click(move |_, _, cx| {
-                                select_entity.update(cx, |this, cx| {
-                                    this.selected_review_anchor = Some(anchor_for_click.clone());
-                                    this.cancel_pending_review_preview();
-                                    cx.notify();
-                                });
-                            }),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .text_size(px(11.0))
-                                .text_color(ShellDeckColors::text_muted())
-                                .line_clamp(3)
-                                .child(hunk.preview.clone()),
-                        ),
-                );
+        let projection = ReviewWorktreeProjection::new(
+            review,
+            self.available_review_capabilities().ok(),
+            self.review_custody.is_some(),
+        );
+        let mut files = div().flex().flex_col().gap(px(10.0));
+        for group in visible_review_lanes(&projection) {
+            let mut lane_files = div().flex().flex_col().gap(px(6.0));
+            for file in &group.files {
+                lane_files = lane_files.child(Self::render_review_file(
+                    group.lane,
+                    file,
+                    selected_anchor,
+                    can_prepare,
+                    &entity,
+                ));
             }
             files = files.child(
                 div()
                     .min_w(px(0.0))
-                    .overflow_hidden()
-                    .p(px(8.0))
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .rounded(px(6.0))
                     .child(
                         div()
                             .flex()
                             .items_center()
+                            .justify_between()
                             .gap(px(6.0))
                             .mb(px(6.0))
                             .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .text_size(px(12.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(file.path.clone()),
+                                Badge::new(t!(review_lane_label_key(group.lane)).to_string())
+                                    .variant(review_lane_variant(group.lane)),
                             )
                             .child(
-                                Badge::new(
-                                    t!(
-                                        "fleet.review.file_state",
-                                        change = file.change.as_str(),
-                                        worktree = file.worktree.as_str(),
-                                        conflict = file.conflict.as_str()
-                                    )
-                                    .to_string(),
-                                )
-                                .variant(BadgeVariant::Outline),
-                            )
-                            .child(
-                                Badge::new(
-                                    t!(
-                                        "fleet.review.preview_metadata",
-                                        kind = file.preview.kind.as_str(),
-                                        bytes = file.preview.byte_size.map_or_else(
-                                            || "—".to_owned(),
-                                            |value| value.to_string()
-                                        ),
-                                        sanitized = if file.preview.sanitized {
-                                            t!("fleet.review.sanitized_yes").to_string()
-                                        } else {
-                                            t!("fleet.review.sanitized_no").to_string()
-                                        }
-                                    )
-                                    .to_string(),
-                                )
-                                .variant(BadgeVariant::Secondary),
+                                Badge::new(group.files.len().to_string())
+                                    .variant(BadgeVariant::Outline),
                             ),
                     )
-                    .child(hunks),
+                    .child(lane_files),
+            );
+        }
+        if let Err(reason) = projection.staging {
+            files = files.child(
+                div().min_w(px(0.0)).overflow_hidden().child(
+                    Alert::info()
+                        .title(t!("fleet.review.staging_withheld_title").to_string())
+                        .description(t!(review_staging_withheld_key(reason)).to_string()),
+                ),
             );
         }
 
@@ -1699,7 +1693,7 @@ impl FleetView {
                             .min_w(px(0.0))
                             .child(Self::review_column_title(
                                 t!("fleet.review.files_title").to_string(),
-                                review.files.len(),
+                                projection.distinct_file_count(),
                             ))
                             .child(files),
                     )
@@ -1720,6 +1714,270 @@ impl FleetView {
                     ),
             )
             .child(controls)
+            .into_any_element()
+    }
+
+    /// Paint already-bounded review text as plain characters.
+    ///
+    /// The core projection has replaced every control and invisible
+    /// reordering scalar and capped line count and length, so the only work
+    /// left here is containment: one definite-width row per line, clipped.
+    fn render_safe_text(text: &ReviewSafeText, size: f32, color: Hsla) -> AnyElement {
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .text_size(px(size))
+            .text_color(color);
+        for line in &text.lines {
+            let display: SharedString = if line.is_empty() {
+                " ".into()
+            } else {
+                SharedString::from(line.clone())
+            };
+            column = column.child(div().min_w(px(0.0)).truncate().child(display));
+        }
+        if text.truncated {
+            column = column.child(
+                div().mt(px(2.0)).child(
+                    Badge::new(t!("fleet.review.preview_truncated").to_string())
+                        .variant(BadgeVariant::Outline),
+                ),
+            );
+        }
+        column.into_any_element()
+    }
+
+    /// Render only what the projection judged safe for this file.
+    ///
+    /// Text is painted as characters, an image becomes a bounded empty box
+    /// beside its described metadata (the contract ships no pixels and none
+    /// are fetched), sanitized HTML is described but never interpreted or
+    /// re-emitted as source, and anything withheld states its reason.
+    fn render_review_preview(preview: &ReviewSafePreview) -> AnyElement {
+        let shell = div()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .mb(px(6.0))
+            .p(px(6.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(4.0));
+        match preview {
+            ReviewSafePreview::Text(text) => shell
+                .child(
+                    div().mb(px(4.0)).child(
+                        Badge::new(t!("fleet.review.preview_text").to_string())
+                            .variant(BadgeVariant::Secondary),
+                    ),
+                )
+                .child(Self::render_safe_text(
+                    text,
+                    11.0,
+                    ShellDeckColors::text_muted(),
+                ))
+                .into_any_element(),
+            ReviewSafePreview::Image(image) => shell
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    // adabraka has no "described but undecoded raster" shape:
+                    // the contract ships metadata only, so the box is an empty
+                    // bounded placeholder, never an image element.
+                    div()
+                        .flex_shrink_0()
+                        .w(px(f32::from(
+                            u16::try_from(image.box_width).unwrap_or(u16::MAX),
+                        )))
+                        .h(px(f32::from(
+                            u16::try_from(image.box_height).unwrap_or(u16::MAX),
+                        )))
+                        .border_1()
+                        .border_color(ShellDeckColors::border())
+                        .rounded(px(4.0))
+                        .bg(ShellDeckColors::hint_bg()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(
+                            Badge::new(
+                                t!(
+                                    "fleet.review.preview_image",
+                                    media = image.media_type.as_str(),
+                                    width = image.width,
+                                    height = image.height,
+                                    bytes = image.byte_size
+                                )
+                                .to_string(),
+                            )
+                            .variant(BadgeVariant::Secondary),
+                        )
+                        .child(
+                            div()
+                                .mt(px(4.0))
+                                .text_size(px(10.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(t!("fleet.review.preview_image_box").to_string()),
+                        ),
+                )
+                .into_any_element(),
+            ReviewSafePreview::Html(html) => shell
+                .child(
+                    Badge::new(
+                        t!(
+                            "fleet.review.preview_html",
+                            media = html.media_type.as_str(),
+                            bytes = html.byte_size
+                        )
+                        .to_string(),
+                    )
+                    .variant(BadgeVariant::Secondary),
+                )
+                .into_any_element(),
+            ReviewSafePreview::Withheld(reason) => shell
+                .child(
+                    Badge::new(t!(review_preview_withheld_key(*reason)).to_string())
+                        .variant(BadgeVariant::Outline),
+                )
+                .into_any_element(),
+        }
+    }
+
+    fn render_review_file(
+        lane: ReviewWorktreeLane,
+        file: &ReviewWorktreeFile,
+        selected_anchor: Option<&ReviewAnchorSemantic>,
+        can_prepare: bool,
+        entity: &Entity<Self>,
+    ) -> AnyElement {
+        let mut hunks = div().flex().flex_col().gap(px(4.0));
+        for hunk in &file.hunks {
+            let selected = selected_anchor == Some(&hunk.anchor);
+            let select_entity = entity.clone();
+            let anchor_for_click = hunk.anchor.clone();
+            hunks = hunks.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(8.0))
+                    .min_w(px(0.0))
+                    .child(
+                        Button::new(
+                            ElementId::from(SharedString::from(review_anchor_element_id(
+                                lane, &file.id, &hunk.id,
+                            ))),
+                            t!(
+                                "fleet.review.anchor",
+                                side = hunk.anchor.side.as_str(),
+                                line = hunk.anchor.line
+                            )
+                            .to_string(),
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(if selected {
+                            ButtonVariant::Default
+                        } else {
+                            ButtonVariant::Outline
+                        })
+                        .disabled(!can_prepare)
+                        .on_click(move |_, _, cx| {
+                            select_entity.update(cx, |this, cx| {
+                                this.selected_review_anchor = Some(anchor_for_click.clone());
+                                this.cancel_pending_review_preview();
+                                cx.notify();
+                            });
+                        }),
+                    )
+                    .child(div().flex_1().min_w(px(0.0)).child(Self::render_safe_text(
+                        &hunk.text,
+                        11.0,
+                        ShellDeckColors::text_muted(),
+                    ))),
+            );
+        }
+
+        let mut header = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.0))
+            .mb(px(6.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(Self::render_safe_text(
+                        &file.path,
+                        12.0,
+                        ShellDeckColors::text_primary(),
+                    )),
+            )
+            .child(
+                Badge::new(
+                    t!(
+                        "fleet.review.file_state",
+                        change = file.change.as_str(),
+                        worktree = file.worktree.as_str(),
+                        conflict = file.conflict.as_str()
+                    )
+                    .to_string(),
+                )
+                .variant(BadgeVariant::Outline),
+            );
+        if file.partial {
+            header = header.child(
+                Badge::new(t!("fleet.review.lane_partial").to_string())
+                    .variant(BadgeVariant::Warning),
+            );
+        }
+        // Server-proposed staging transitions are shown as observations. No
+        // control accompanies them: see `projection.staging`.
+        for proposal in &file.staging {
+            let action = localized_review_proposal_kind(proposal.kind);
+            header = header.child(
+                Badge::new(
+                    if proposal.admissible {
+                        t!(
+                            "fleet.review.staging_proposed",
+                            action = action,
+                            id = proposal.proposal_id.as_str()
+                        )
+                    } else {
+                        t!(
+                            "fleet.review.staging_blocked",
+                            action = action,
+                            id = proposal.proposal_id.as_str()
+                        )
+                    }
+                    .to_string(),
+                )
+                .variant(if proposal.admissible {
+                    BadgeVariant::Secondary
+                } else {
+                    BadgeVariant::Destructive
+                }),
+            );
+        }
+
+        div()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .p(px(8.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(6.0))
+            .child(header)
+            .child(Self::render_review_preview(&file.preview))
+            .child(hunks)
             .into_any_element()
     }
 
@@ -3161,8 +3419,10 @@ impl Render for FleetView {
 #[cfg(test)]
 mod review_render_tests {
     use super::{
-        exact_review_target_index, fleet_uses_compact_layout, review_dispatch_directive,
-        review_rerun_control_gate, same_exact_review_snapshot, semantic_words,
+        exact_review_target_index, fleet_uses_compact_layout, review_anchor_element_id,
+        review_dispatch_directive, review_lane_label_key, review_lane_variant,
+        review_preview_withheld_key, review_rerun_control_gate, review_staging_withheld_key,
+        same_exact_review_snapshot, semantic_words, visible_review_lanes, BadgeVariant,
         ReviewDispatchDirective,
     };
     use shelldeck_core::config::platform_review::PlatformReviewTarget;
@@ -3330,5 +3590,158 @@ mod review_render_tests {
         assert!(!review_rerun_control_gate(false, true));
         assert!(!review_rerun_control_gate(true, false));
         assert!(review_rerun_control_gate(true, true));
+    }
+
+    // SDTEST-1850 — the combined review paints only the lanes that hold a
+    // file, most blocking first, and only the conflicted lane reads as
+    // destructive. An empty index must not render four zero-count headers.
+    #[test]
+    fn sdtest_1850_only_populated_lanes_render_and_conflicts_lead() {
+        use shelldeck_core::config::platform_review::{
+            review_safe_text, ConflictState, DiffChangeKind, ReviewPreviewWithheld,
+            ReviewSafePreview, ReviewStagingWithheld, ReviewWorktreeFile, ReviewWorktreeLane,
+            ReviewWorktreeLaneGroup, ReviewWorktreeProjection, WorktreeFileState,
+        };
+
+        let file = |id: &str| ReviewWorktreeFile {
+            id: id.to_owned(),
+            path: review_safe_text("src/a.rs"),
+            change: DiffChangeKind::Modified,
+            worktree: WorktreeFileState::Staged,
+            conflict: ConflictState::None,
+            partial: false,
+            preview: ReviewSafePreview::Withheld(ReviewPreviewWithheld::NoContent),
+            hunks: Vec::new(),
+            staging: Vec::new(),
+        };
+        let projection = ReviewWorktreeProjection {
+            source_revision: automonique_protocol::primitives::Revision::new(9).unwrap(),
+            lanes: vec![
+                ReviewWorktreeLaneGroup {
+                    lane: ReviewWorktreeLane::Conflicted,
+                    semantic_key: ReviewWorktreeLane::Conflicted.semantic_key(),
+                    files: vec![file("file-conflict")],
+                },
+                ReviewWorktreeLaneGroup {
+                    lane: ReviewWorktreeLane::Staged,
+                    semantic_key: ReviewWorktreeLane::Staged.semantic_key(),
+                    files: Vec::new(),
+                },
+                ReviewWorktreeLaneGroup {
+                    lane: ReviewWorktreeLane::Unstaged,
+                    semantic_key: ReviewWorktreeLane::Unstaged.semantic_key(),
+                    files: vec![file("file-unstaged")],
+                },
+                ReviewWorktreeLaneGroup {
+                    lane: ReviewWorktreeLane::Untracked,
+                    semantic_key: ReviewWorktreeLane::Untracked.semantic_key(),
+                    files: Vec::new(),
+                },
+            ],
+            staging: Err(ReviewStagingWithheld::NoServerCapability),
+        };
+
+        assert_eq!(
+            visible_review_lanes(&projection)
+                .iter()
+                .map(|group| group.lane)
+                .collect::<Vec<_>>(),
+            [ReviewWorktreeLane::Conflicted, ReviewWorktreeLane::Unstaged]
+        );
+        assert_eq!(
+            review_lane_variant(ReviewWorktreeLane::Conflicted),
+            BadgeVariant::Destructive
+        );
+        for lane in [
+            ReviewWorktreeLane::Staged,
+            ReviewWorktreeLane::Unstaged,
+            ReviewWorktreeLane::Untracked,
+        ] {
+            assert_eq!(review_lane_variant(lane), BadgeVariant::Secondary);
+        }
+    }
+
+    // SDTEST-1851 — a preview or staging refusal must reach the user as words,
+    // not as a raw key. Every declared reason resolves to distinct localized
+    // copy present in both shipped locales.
+    #[test]
+    fn sdtest_1851_every_withheld_reason_has_distinct_copy_in_both_locales() {
+        use shelldeck_core::config::platform_review::{
+            ReviewPreviewWithheld, ReviewStagingWithheld, ReviewWorktreeLane,
+        };
+        use std::collections::BTreeSet;
+
+        let fr: toml::Table =
+            toml::from_str(include_str!("../../shelldeck-core/locales/fr.toml")).expect("fr");
+        let en: toml::Table =
+            toml::from_str(include_str!("../../shelldeck-core/locales/en.toml")).expect("en");
+
+        let keys = ReviewWorktreeLane::ALL
+            .into_iter()
+            .map(review_lane_label_key)
+            .chain(
+                ReviewPreviewWithheld::ALL
+                    .into_iter()
+                    .map(review_preview_withheld_key),
+            )
+            .chain(
+                ReviewStagingWithheld::ALL
+                    .into_iter()
+                    .map(review_staging_withheld_key),
+            )
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            keys.iter().collect::<BTreeSet<_>>().len(),
+            keys.len(),
+            "two states must not share one label"
+        );
+        // The locale files use unquoted dotted keys, so TOML nests them.
+        fn localized<'a>(table: &'a toml::Table, key: &str) -> Option<&'a str> {
+            let mut current = table;
+            let mut segments = key.split('.').peekable();
+            while let Some(segment) = segments.next() {
+                let value = current.get(segment)?;
+                if segments.peek().is_none() {
+                    return value.as_str();
+                }
+                current = value.as_table()?;
+            }
+            None
+        }
+
+        for key in keys {
+            for (locale, table) in [("fr", &fr), ("en", &en)] {
+                let value = localized(table, key)
+                    .unwrap_or_else(|| panic!("{locale}.toml is missing {key}"));
+                assert!(!value.trim().is_empty(), "{locale}.toml {key} is empty");
+            }
+        }
+    }
+
+    // SDTEST-1852 — a partially staged file is rendered in two lanes. Its
+    // anchor buttons must not collide: GPUI routes a click by element id, so
+    // two identical ids would select the other lane's anchor.
+    #[test]
+    fn sdtest_1852_anchor_identity_survives_a_file_listed_in_two_lanes() {
+        use shelldeck_core::config::platform_review::ReviewWorktreeLane;
+        use std::collections::BTreeSet;
+
+        let ids = [
+            review_anchor_element_id(ReviewWorktreeLane::Staged, "file-1", "hunk-1"),
+            review_anchor_element_id(ReviewWorktreeLane::Unstaged, "file-1", "hunk-1"),
+            review_anchor_element_id(ReviewWorktreeLane::Unstaged, "file-1", "hunk-2"),
+            review_anchor_element_id(ReviewWorktreeLane::Unstaged, "file-2", "hunk-1"),
+        ];
+        assert_eq!(
+            ids.iter().collect::<BTreeSet<_>>().len(),
+            ids.len(),
+            "lane, file and hunk must all take part in the identity: {ids:?}"
+        );
+        assert_eq!(
+            review_anchor_element_id(ReviewWorktreeLane::Staged, "file-1", "hunk-1"),
+            ids[0],
+            "the identity must be stable across renders"
+        );
     }
 }

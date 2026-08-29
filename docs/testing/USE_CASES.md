@@ -2901,6 +2901,32 @@ does not expose those controls until their own explicit server capabilities and
 custody lanes exist. Every exposed confirmation names the exact workspace and
 captured snapshot or target revision before dispatch.
 
+The read side presents those files as one combined worktree: conflicted first,
+then staged, unstaged, and untracked, with empty lanes omitted. A partially
+staged file appears on both sides and says so; an unresolved conflict is listed
+only as conflicted, because git reports it unmerged and refuses to stage it,
+while a resolved conflict returns to its own lane. Anchor identities bind lane,
+file, and hunk so a twice-listed file cannot route one lane's click to the
+other. The server's own stage, unstage, commit, and conflict-resolution
+proposals are shown as per-file observations with their admissibility, and the
+surface states which fence is missing instead of offering a control: Platform
+v2 `ReviewCapabilities` advertises rerunnable checks only, defines no staging
+capability, confirmation digest, or receipt-correlation digest, and the action
+preview structurally refuses a confirmation on those four actions. Hunk-level
+staging is not representable at all — a proposal names files, never hunks.
+
+Previews are decided from declared metadata, never from trust. Text is painted
+only from bounded hunk previews, with control characters and invisible
+reordering scalars replaced and line count and length capped; the protocol's
+own control-free bound still admits a bidirectional override that would repaint
+a diff line. A sanitized image is described beside an aspect-preserving
+placeholder box that can never exceed its edge cap, and no pixels are decoded or
+fetched. Sanitized HTML is described only: never interpreted as markup, never
+re-emitted as source. An unsanitized payload, opaque binary, an absent preview,
+a declared size or raster above the client budget, and a kind disagreeing with
+its media type or content are each withheld with a distinct localized reason
+present in both shipped locales.
+
 Before a confirmed rerun crosses the network, ShellDeck persists the inert
 preview and then a dispatched marker under a bounded, no-follow,
 cross-process-locked custody store. Accepted, unknown, or transport-ambiguous
@@ -2917,6 +2943,20 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-08-29** — Expanded SDUC-495 and added SDTEST-1843..1852: the review
+  snapshot now projects into one combined conflicted/staged/unstaged/untracked
+  worktree with per-file conflict state, and every preview is decided from
+  declared metadata rather than trusted. Staging stays read-only and says why:
+  Platform v2 `ReviewCapabilities` advertises rerunnable checks only, so no
+  staging capability, confirmation digest, or receipt-correlation digest exists
+  to fence a Git mutation, and a proposal's `git` authority inside the read
+  snapshot is an observation rather than a capability. Hunk-level staging is
+  not representable in the contract at all. The preview projection replaces
+  invisible reordering scalars the protocol's control-free bound still admits,
+  caps text shape, clamps declared rasters into a bounded placeholder box
+  without decoding pixels, and describes sanitized HTML without ever
+  interpreting it as markup or re-emitting it as source.
 
 - **2026-08-29** — Added SDTEST-1842: the shared cross-client attention
   succession corpus (`platform-v2-attention-conformance-v1.json`, copied
