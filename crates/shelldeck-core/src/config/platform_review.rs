@@ -18,8 +18,8 @@ pub use automonique_protocol::platform_v2_review::{
     ReviewSchemaVersion, ReviewSnapshot, ReviewText, WorktreeFileState,
 };
 pub use automonique_protocol::platform_v2_transport::{
-    ReviewCapabilities, ReviewCheckRerunCapability, ReviewConfirmationDigest,
-    ReviewReceiptCorrelationDigest,
+    ReviewAgentDeliveryCapability, ReviewCapabilities, ReviewCheckRerunCapability,
+    ReviewConfirmationDigest, ReviewPullRequestCapabilities, ReviewReceiptCorrelationDigest,
 };
 use automonique_protocol::primitives::Revision;
 use std::collections::BTreeSet;
@@ -547,9 +547,13 @@ pub enum PlatformReviewLoad {
 
 /// Authenticated server-advertised review mutation capabilities for one exact
 /// project/workspace snapshot. An unavailable capability load grants nothing.
+///
+/// The available payload is boxed because `ReviewCapabilities` now carries the
+/// agent-delivery list and three pull-request slots, which makes it far larger
+/// than a refusal's two strings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PlatformReviewCapabilitiesLoad {
-    Available(ReviewCapabilities),
+    Available(Box<ReviewCapabilities>),
     Unavailable(PlatformReviewUnavailable),
 }
 
@@ -1105,6 +1109,8 @@ mod tests {
                 ReviewReceiptCorrelationDigest::new("b".repeat(64)).unwrap(),
             )
             .unwrap()],
+            Vec::new(),
+            ReviewPullRequestCapabilities::default(),
         )
         .unwrap()
     }
