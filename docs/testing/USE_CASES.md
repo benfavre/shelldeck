@@ -2918,6 +2918,15 @@ an unavailable adapter refuses before any effect.
 
 ## Change log
 
+- **2026-08-29** — Added SDTEST-1842: the shared cross-client attention
+  succession corpus (`platform-v2-attention-conformance-v1.json`, copied
+  byte-for-byte from Automonique) replays against the authoritative board.
+  `automonique.platform/attention/v1` is `atomic_replace`, so no single
+  snapshot says what a client must conclude after a sequence of reads; the
+  corpus fixes that sequence and ShellDeck now proves it reaches the same
+  outcome the contract records, including the cases where the honest answer
+  is that the source is hidden rather than empty.
+
 - **2026-08-28** — Narrowed SDUC-495 to the controls that have explicit server
   authority and added SDTEST-1822..1828 for confirmed-rerun capability fencing,
   durable pre-dispatch custody, restart lookup-only recovery, correlated-only

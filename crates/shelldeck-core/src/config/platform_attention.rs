@@ -2682,4 +2682,381 @@ mod tests {
             Err(AttentionActivationError::ItemStale)
         );
     }
+
+    // --- Shared cross-client attention succession corpus -------------------
+
+    const ATTENTION_CORPUS: &[u8] =
+        include_bytes!("../../tests/fixtures/platform-v2-attention-conformance-v1.json");
+
+    #[derive(serde::Deserialize)]
+    struct CorpusFile {
+        schema: String,
+        version: String,
+        target: CorpusTarget,
+        cases: Vec<CorpusCase>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct CorpusTarget {
+        project: String,
+        user_workspace: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct CorpusCase {
+        id: String,
+        source: CorpusSource,
+        reads: Vec<CorpusRead>,
+        expected: CorpusExpected,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct CorpusSource {
+        kind: String,
+        id: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum CorpusRead {
+        Snapshot {
+            mode: String,
+            outcome: String,
+            snapshot: CorpusSnapshot,
+        },
+        Refusal {
+            category: String,
+        },
+        Unavailable {
+            reason: String,
+        },
+    }
+
+    #[derive(serde::Deserialize)]
+    struct CorpusSnapshot {
+        source: CorpusSource,
+        project: String,
+        user_workspace: String,
+        revision: String,
+        previous_revision: Option<String>,
+        observed_at_ms: String,
+        items: Vec<CorpusItem>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct CorpusItem {
+        id: String,
+        revision: String,
+        observed_at_ms: String,
+        state: String,
+        reason: String,
+        unread: bool,
+        nested_agent_path: Vec<String>,
+        platform_session: Option<CorpusSession>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct CorpusSession {
+        authority: String,
+        kind: String,
+        id: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct CorpusExpected {
+        available: bool,
+        visible_items: Vec<String>,
+    }
+
+    fn corpus_decimal(value: &str) -> u64 {
+        assert!(
+            !value.is_empty()
+                && (value == "0"
+                    || (!value.starts_with('0') && value.bytes().all(|b| b.is_ascii_digit()))),
+            "corpus revision is not a canonical decimal: {value}"
+        );
+        value
+            .parse()
+            .expect("corpus revision fits the client fence")
+    }
+
+    fn corpus_target() -> PlatformAttentionTarget {
+        PlatformAttentionTarget {
+            project: ProjectId::new("project-conformance").unwrap(),
+            user_workspace: UserWorkspaceId::new("workspace-conformance").unwrap(),
+        }
+    }
+
+    /// The graph the corpus target implies: one workspace in its project, one
+    /// attempt under it, and one session bound to an exact Platform session.
+    fn corpus_inventory() -> AttentionSourceInventory {
+        let workspace = record(
+            WorkContextIdentity::UserWorkspace(
+                UserWorkspaceId::new("workspace-conformance").unwrap(),
+            ),
+            WorkContextLifecycle::Active,
+            vec![
+                relation(
+                    WorkContextRelationKind::UserWorkspaceProject,
+                    WorkContextIdentity::Project(ProjectId::new("project-conformance").unwrap()),
+                ),
+                relation(
+                    WorkContextRelationKind::UserWorkspaceCheckout,
+                    WorkContextIdentity::Checkout(CheckoutId::new("checkout-conformance").unwrap()),
+                ),
+            ],
+        );
+        let attempt = record(
+            WorkContextIdentity::AttemptWorkspace(
+                AttemptWorkspaceId::new("attempt-conformance").unwrap(),
+            ),
+            WorkContextLifecycle::Running,
+            vec![relation(
+                WorkContextRelationKind::AttemptUserWorkspace,
+                WorkContextIdentity::UserWorkspace(
+                    UserWorkspaceId::new("workspace-conformance").unwrap(),
+                ),
+            )],
+        );
+        let platform_session = V1SessionRef::new(ResourceCoordinate::new(
+            ResourceAuthority::Automonique,
+            ResourceKind::Session,
+            ResourceId::new("platform-session-conformance").unwrap(),
+        ))
+        .unwrap();
+        let session = record(
+            WorkContextIdentity::Session(WorkSessionId::new("session-conformance").unwrap()),
+            WorkContextLifecycle::Active,
+            vec![
+                relation(
+                    WorkContextRelationKind::SessionAttemptWorkspace,
+                    WorkContextIdentity::AttemptWorkspace(
+                        AttemptWorkspaceId::new("attempt-conformance").unwrap(),
+                    ),
+                ),
+                relation(
+                    WorkContextRelationKind::SessionPlatformSession,
+                    WorkContextIdentity::PlatformSession(platform_session),
+                ),
+            ],
+        );
+        AttentionSourceInventory::from_authoritative_records(
+            corpus_target(),
+            &[workspace, attempt, session],
+            ReviewAttentionPresence::Present,
+        )
+        .unwrap()
+    }
+
+    fn corpus_source(value: &CorpusSource) -> AttentionSource {
+        let kind = match value.kind.as_str() {
+            "review" => AttentionSourceKind::Review,
+            "orchestration" => AttentionSourceKind::Orchestration,
+            "provider_session" => AttentionSourceKind::ProviderSession,
+            other => panic!("corpus source kind {other} is unknown"),
+        };
+        AttentionSource::new(kind, AttentionSourceId::new(value.id.clone()).unwrap())
+    }
+
+    fn corpus_state(value: &str) -> AttentionItemState {
+        match value {
+            "needs_you" => AttentionItemState::NeedsYou,
+            "working" => AttentionItemState::Working,
+            "blocked" => AttentionItemState::Blocked,
+            "done" => AttentionItemState::Done,
+            other => panic!("corpus item state {other} is unknown"),
+        }
+    }
+
+    fn corpus_reason(value: &str) -> AttentionItemReason {
+        match value {
+            "review_requested" => AttentionItemReason::ReviewRequested,
+            "comment_reply" => AttentionItemReason::CommentReply,
+            "approval_required" => AttentionItemReason::ApprovalRequired,
+            "agent_working" => AttentionItemReason::AgentWorking,
+            "check_running" => AttentionItemReason::CheckRunning,
+            "delivery_pending" => AttentionItemReason::DeliveryPending,
+            "complete" => AttentionItemReason::Complete,
+            "conflict" => AttentionItemReason::Conflict,
+            "check_failed" => AttentionItemReason::CheckFailed,
+            "external_blocker" => AttentionItemReason::ExternalBlocker,
+            other => panic!("corpus item reason {other} is unknown"),
+        }
+    }
+
+    fn corpus_snapshot(value: &CorpusSnapshot) -> AttentionSourceSnapshot {
+        let items = value
+            .items
+            .iter()
+            .map(|item| {
+                let session = item.platform_session.as_ref().map(|coordinate| {
+                    assert_eq!(coordinate.authority, "automonique");
+                    assert_eq!(coordinate.kind, "session");
+                    V1SessionRef::new(ResourceCoordinate::new(
+                        ResourceAuthority::Automonique,
+                        ResourceKind::Session,
+                        ResourceId::new(coordinate.id.clone()).unwrap(),
+                    ))
+                    .unwrap()
+                });
+                AttentionItem::new(
+                    AttentionItemId::new(item.id.clone()).unwrap(),
+                    Revision::new(corpus_decimal(&item.revision)).unwrap(),
+                    corpus_decimal(&item.observed_at_ms),
+                    corpus_state(&item.state),
+                    corpus_reason(&item.reason),
+                    item.unread,
+                    item.nested_agent_path
+                        .iter()
+                        .map(|agent| {
+                            automonique_protocol::platform_v2_attention::AttentionAgentId::new(
+                                agent.clone(),
+                            )
+                            .unwrap()
+                        })
+                        .collect(),
+                    session,
+                )
+                .unwrap()
+            })
+            .collect();
+        AttentionSourceSnapshot::new(
+            corpus_source(&value.source),
+            ProjectId::new(value.project.clone()).unwrap(),
+            UserWorkspaceId::new(value.user_workspace.clone()).unwrap(),
+            Revision::new(corpus_decimal(&value.revision)).unwrap(),
+            value
+                .previous_revision
+                .as_ref()
+                .map(|previous| Revision::new(corpus_decimal(previous)).unwrap()),
+            corpus_decimal(&value.observed_at_ms),
+            items,
+        )
+        .unwrap()
+    }
+
+    fn corpus_unavailable(reason: &str) -> AttentionUnavailableReason {
+        match reason {
+            "transport" => AttentionUnavailableReason::Transport,
+            "inventory_incomplete" => AttentionUnavailableReason::InventoryIncomplete,
+            other => panic!("corpus unavailable reason {other} is unknown"),
+        }
+    }
+
+    /// Assert this board reached exactly what the corpus records for the read.
+    fn assert_corpus_outcome(
+        case: &str,
+        outcome: &str,
+        actual: &Result<AttentionApplyOutcome, AttentionError>,
+    ) {
+        let matched = match outcome {
+            "inserted" => matches!(actual, Ok(AttentionApplyOutcome::Inserted)),
+            "replaced" => matches!(actual, Ok(AttentionApplyOutcome::Replaced)),
+            "exact_replay" => matches!(actual, Ok(AttentionApplyOutcome::ExactReplay)),
+            "availability_restored" => {
+                matches!(actual, Ok(AttentionApplyOutcome::AvailabilityRestored))
+            }
+            "initial_revision_required" => {
+                matches!(actual, Err(AttentionError::InitialRevisionRequired))
+            }
+            "invalid_successor" => matches!(actual, Err(AttentionError::InvalidSuccessor)),
+            "conflicting_replay" => matches!(actual, Err(AttentionError::ConflictingReplay)),
+            "baseline_invalid" => matches!(actual, Err(AttentionError::InvalidBaseline)),
+            other => panic!("corpus outcome {other} is unknown"),
+        };
+        assert!(
+            matched,
+            "case {case} expected {outcome}, board reached {actual:?}"
+        );
+    }
+
+    // SDTEST-1842 — SDUC-493
+    #[test]
+    fn sdtest_1842_shared_attention_corpus_replays_to_the_recorded_outcomes() {
+        let corpus: CorpusFile = serde_json::from_slice(ATTENTION_CORPUS).unwrap();
+        assert_eq!(corpus.schema, "automonique.attention-conformance/v1");
+        assert_eq!(corpus.version, "1");
+        assert_eq!(corpus.target.project, "project-conformance");
+        assert_eq!(corpus.target.user_workspace, "workspace-conformance");
+        assert!(!corpus.cases.is_empty());
+
+        for case in &corpus.cases {
+            let source = corpus_source(&case.source);
+            let mut board = PlatformAttentionBoard::new(corpus_inventory());
+            assert!(
+                board.inventory().contains(&source),
+                "case {} names a source the corpus target does not inventory",
+                case.id
+            );
+
+            for read in &case.reads {
+                match read {
+                    CorpusRead::Snapshot {
+                        mode,
+                        outcome,
+                        snapshot,
+                    } => {
+                        let value = corpus_snapshot(snapshot);
+                        let result = match mode.as_str() {
+                            "continuous" => board.apply_read(
+                                &source,
+                                AttentionReadResult::Snapshot(Box::new(value)),
+                            ),
+                            "baseline" => board.apply_authenticated_baseline_read(
+                                &source,
+                                AttentionReadResult::Snapshot(Box::new(value)),
+                            ),
+                            other => panic!("corpus read mode {other} is unknown"),
+                        };
+                        assert_corpus_outcome(&case.id, outcome, &result);
+                    }
+                    CorpusRead::Refusal { category } => {
+                        let refusal = PlatformV2Refusal::new(category.clone(), "corpus").unwrap();
+                        board.mark_refused(&source, &refusal).unwrap();
+                    }
+                    CorpusRead::Unavailable { reason } => {
+                        board
+                            .mark_unavailable(&source, corpus_unavailable(reason))
+                            .unwrap();
+                    }
+                }
+            }
+
+            let available = matches!(
+                board.status(&source),
+                Some(AttentionSourceStatus::Available)
+            );
+            assert_eq!(
+                available, case.expected.available,
+                "case {} reached the wrong availability",
+                case.id
+            );
+            let visible = board
+                .visible_items()
+                .filter(|item| item.key().source() == &source)
+                .map(|item| item.value().id().as_str().to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                visible, case.expected.visible_items,
+                "case {} rendered the wrong items",
+                case.id
+            );
+            // Hiding a source must not discard its revision chain: a client
+            // that forgot where it was could only resynchronize by trusting
+            // whatever the next read claims.
+            let ever_accepted = case.reads.iter().any(|read| {
+                matches!(
+                    read,
+                    CorpusRead::Snapshot { outcome, .. }
+                        if outcome == "inserted" || outcome == "replaced"
+                )
+            });
+            assert_eq!(
+                board.retained_snapshot(&source).is_some(),
+                ever_accepted,
+                "case {} disagrees about whether the revision chain survived",
+                case.id
+            );
+        }
+    }
 }
