@@ -1,9 +1,9 @@
 //! Source-atomic native consumption of Platform v2 attention.
 //!
-//! This module deliberately stops before navigation. It retains the complete
-//! authoritative source, project, user-workspace, item, revision, and optional
-//! authority-qualified Platform session coordinates. It never manufactures a
-//! pane, tab, terminal, path, or other client-local target.
+//! It retains the complete authoritative source, project, user-workspace, item,
+//! revision, and authority-qualified Platform session coordinates. Native
+//! activation may resolve those coordinates through current client-local
+//! catalogues, but never manufactures a pane, tab, terminal, or path.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -24,7 +24,14 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::app_config::AppConfig;
+use super::platform::{
+    FreshnessState, ResourceAuthority, ResourceCoordinate, ResourceKind, SessionRecord,
+};
 use super::workspace_catalog::PlatformV2Mapping;
+use super::workspace_catalog::{CatalogWorkspaceId, ProjectCatalog};
+use crate::workspace_navigation::{
+    PaneNode, WorkspaceFocus, WorkspaceNavigationState, WorkspaceTabContent,
+};
 use crate::workspace_review::storage::{
     bounded_descriptor_read, ensure_private_directory_io, lock_path, open_lock_file,
     secure_atomic_write,
@@ -37,7 +44,7 @@ pub const MAX_ATTENTION_INVENTORY_RECORDS: usize = 512;
 /// Maximum locally retained read/notification tuples.
 pub const MAX_ATTENTION_LOCAL_ENTRIES: usize = 4_096;
 const MAX_ATTENTION_LOCAL_FILE_BYTES: u64 = 1024 * 1024;
-const ATTENTION_LOCAL_SCHEMA: u16 = 1;
+const ATTENTION_LOCAL_SCHEMA: u16 = 2;
 static ATTENTION_LOCAL_STORE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Namespace reserved for ShellDeck's presentation-only attention UUIDs.
@@ -49,7 +56,7 @@ const ATTENTION_UI_NAMESPACE: Uuid = Uuid::from_bytes([
     0xa6, 0x61, 0x14, 0x3f, 0x23, 0x88, 0x5a, 0x25, 0xa4, 0xca, 0x53, 0x42, 0x6e, 0x92, 0x7d, 0x31,
 ]);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PlatformAttentionTarget {
     pub project: ProjectId,
     pub user_workspace: UserWorkspaceId,
@@ -83,6 +90,11 @@ pub enum ReviewAttentionPresence {
 pub struct AttentionSourceInventory {
     target: PlatformAttentionTarget,
     sources: Vec<AttentionSource>,
+    /// Exact Platform session coordinate authoritatively related to each
+    /// provider WorkContext source. This binding must survive inventory
+    /// projection so an item cannot redirect its source to another otherwise
+    /// valid current session.
+    provider_sessions: BTreeMap<AttentionSource, ResourceCoordinate>,
 }
 
 impl AttentionSourceInventory {
@@ -120,6 +132,7 @@ impl AttentionSourceInventory {
         let workspace_source = AttentionSourceId::new(target.user_workspace.as_str().to_owned())
             .map_err(|_| AttentionError::SourceInvalid)?;
         let mut sources = BTreeSet::new();
+        let mut provider_sessions = BTreeMap::new();
         if review == ReviewAttentionPresence::Present {
             sources.insert(AttentionSource::new(
                 AttentionSourceKind::Review,
@@ -149,10 +162,20 @@ impl AttentionSourceInventory {
             {
                 let id = AttentionSourceId::new(session.identity().id().to_owned())
                     .map_err(|_| AttentionError::SourceInvalid)?;
-                if !sources.insert(AttentionSource::new(
-                    AttentionSourceKind::ProviderSession,
-                    id,
-                )) {
+                let source = AttentionSource::new(AttentionSourceKind::ProviderSession, id);
+                let coordinate =
+                    match relation(session, WorkContextRelationKind::SessionPlatformSession) {
+                        Some(WorkContextIdentity::PlatformSession(session))
+                            if session.coordinate().authority == ResourceAuthority::Automonique
+                                && session.coordinate().kind == ResourceKind::Session =>
+                        {
+                            session.coordinate().clone()
+                        }
+                        _ => return Err(AttentionError::ProviderSessionRelationInvalid),
+                    };
+                if !sources.insert(source.clone())
+                    || provider_sessions.insert(source, coordinate).is_some()
+                {
                     return Err(AttentionError::SourceDuplicate);
                 }
             }
@@ -163,6 +186,7 @@ impl AttentionSourceInventory {
         Ok(Self {
             target,
             sources: sources.into_iter().collect(),
+            provider_sessions,
         })
     }
 
@@ -179,6 +203,11 @@ impl AttentionSourceInventory {
     #[must_use]
     pub fn contains(&self, source: &AttentionSource) -> bool {
         self.sources.binary_search(source).is_ok()
+    }
+
+    #[must_use]
+    pub fn provider_session(&self, source: &AttentionSource) -> Option<&ResourceCoordinate> {
+        self.provider_sessions.get(source)
     }
 }
 
@@ -321,6 +350,159 @@ pub struct PlatformAttentionBoard {
     inventory: AttentionSourceInventory,
     slots: BTreeMap<AttentionSource, AttentionSourceSlot>,
     ui_index: BTreeMap<AttentionUiItemId, AttentionItemKey>,
+}
+
+/// Stable same-process activation request. It deliberately carries the
+/// authoritative presentation identity and revision, not a previously
+/// resolved pane/session. Every click is resolved again against the current
+/// authorized catalogues.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlatformAttentionActivation {
+    pub workspace: CatalogWorkspaceId,
+    pub item: AttentionUiItemId,
+    pub item_revision: Revision,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlatformAttentionDestination {
+    WorkspaceAttention {
+        workspace: CatalogWorkspaceId,
+    },
+    FleetSession {
+        workspace: CatalogWorkspaceId,
+        session: ResourceCoordinate,
+    },
+    RetainedProviderPane {
+        workspace: CatalogWorkspaceId,
+        session: ResourceCoordinate,
+        focus: WorkspaceFocus,
+    },
+}
+
+/// Resolve an activation through the complete current catalogue.
+///
+/// Provider coordinates must be exact authorized Automonique sessions. A
+/// retained provider pane, when present, must also be unique. Review and
+/// orchestration items intentionally resolve only to the mapped workspace's
+/// attention surface and cannot acquire provider authority.
+pub fn resolve_platform_attention_activation(
+    activation: PlatformAttentionActivation,
+    board: &PlatformAttentionBoard,
+    catalog: &ProjectCatalog,
+    navigation: &WorkspaceNavigationState,
+    sessions: &[SessionRecord],
+) -> Result<PlatformAttentionDestination, AttentionActivationError> {
+    let item = board
+        .item_by_ui_id(activation.item)
+        .ok_or(AttentionActivationError::ItemMissing)?;
+    if item.value().revision() != activation.item_revision {
+        return Err(AttentionActivationError::ItemStale);
+    }
+
+    let matches = catalog
+        .workspaces()
+        .filter(|workspace| {
+            workspace.platform_mapping().is_some_and(|mapping| {
+                PlatformAttentionTarget::from_exact_mapping(mapping)
+                    .is_ok_and(|target| &target == board.inventory().target())
+            })
+        })
+        .map(|workspace| workspace.id())
+        .collect::<Vec<_>>();
+    if matches.as_slice() != [activation.workspace] {
+        return Err(AttentionActivationError::WorkspaceMissingOrAmbiguous);
+    }
+    let retained = navigation
+        .workspace(activation.workspace)
+        .ok_or(AttentionActivationError::WorkspaceMissingOrAmbiguous)?;
+
+    let source_kind = item.key().source().kind();
+    if source_kind != AttentionSourceKind::ProviderSession {
+        if item.value().platform_session().is_some() {
+            return Err(AttentionActivationError::CoordinateInvalid);
+        }
+        return Ok(PlatformAttentionDestination::WorkspaceAttention {
+            workspace: activation.workspace,
+        });
+    }
+
+    let coordinate = item
+        .value()
+        .platform_session()
+        .map(|session| session.coordinate())
+        .ok_or(AttentionActivationError::CoordinateInvalid)?;
+    if coordinate.authority != ResourceAuthority::Automonique
+        || coordinate.kind != ResourceKind::Session
+        || board.inventory().provider_session(item.key().source()) != Some(coordinate)
+    {
+        return Err(AttentionActivationError::CoordinateInvalid);
+    }
+    let matching_sessions = sessions
+        .iter()
+        .filter(|record| &record.session.resource == coordinate)
+        .collect::<Vec<_>>();
+    let [session] = matching_sessions.as_slice() else {
+        return Err(AttentionActivationError::SessionMissingOrAmbiguous);
+    };
+    if session.session.freshness.state != FreshnessState::Fresh {
+        return Err(AttentionActivationError::SessionNotFresh);
+    }
+
+    let mapping = catalog
+        .workspace(activation.workspace)
+        .ok()
+        .and_then(|workspace| workspace.platform_mapping())
+        .filter(|mapping| mapping.is_exact())
+        .ok_or(AttentionActivationError::WorkspaceMissingOrAmbiguous)?;
+    let mut pane_matches = Vec::new();
+    collect_provider_panes(
+        retained.surface.root.as_ref(),
+        &mapping.user_workspace.id,
+        coordinate,
+        &mut pane_matches,
+    );
+    match pane_matches.as_slice() {
+        [] => Ok(PlatformAttentionDestination::FleetSession {
+            workspace: activation.workspace,
+            session: coordinate.clone(),
+        }),
+        [focus] => Ok(PlatformAttentionDestination::RetainedProviderPane {
+            workspace: activation.workspace,
+            session: coordinate.clone(),
+            focus: *focus,
+        }),
+        _ => Err(AttentionActivationError::PaneAmbiguous),
+    }
+}
+
+fn collect_provider_panes(
+    node: Option<&PaneNode>,
+    user_workspace: &str,
+    coordinate: &ResourceCoordinate,
+    output: &mut Vec<WorkspaceFocus>,
+) {
+    let Some(node) = node else { return };
+    match node {
+        PaneNode::Leaf(leaf) => {
+            for tab in &leaf.tabs {
+                if matches!(
+                    &tab.content,
+                    WorkspaceTabContent::ProviderSession(binding)
+                        if binding.platform_user_workspace_id == user_workspace
+                            && binding.session_id == coordinate.id.as_str()
+                ) {
+                    output.push(WorkspaceFocus {
+                        pane_id: leaf.id,
+                        tab_id: tab.id,
+                    });
+                }
+            }
+        }
+        PaneNode::Split { first, second, .. } => {
+            collect_provider_panes(Some(first), user_workspace, coordinate, output);
+            collect_provider_panes(Some(second), user_workspace, coordinate, output);
+        }
+    }
 }
 
 impl PlatformAttentionBoard {
@@ -673,17 +855,54 @@ fn build_ui_index(
 /// Durable local acknowledgement key. Server `unread` remains untouched.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct AttentionLocalKey {
+    target: PlatformAttentionTarget,
     item: AttentionItemKey,
     item_revision: Revision,
 }
 
+/// Durable fence for local overlay custody belonging to a retired Platform
+/// source incarnation. The target is part of the key so a remap can never
+/// make an old target's cleanup look like custody for the replacement.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AttentionRetirement {
+    target: PlatformAttentionTarget,
+    source: AttentionSource,
+}
+
+impl AttentionRetirement {
+    #[must_use]
+    pub const fn new(target: PlatformAttentionTarget, source: AttentionSource) -> Self {
+        Self { target, source }
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> &PlatformAttentionTarget {
+        &self.target
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> &AttentionSource {
+        &self.source
+    }
+}
+
 impl AttentionLocalKey {
     #[must_use]
-    pub const fn new(item: AttentionItemKey, item_revision: Revision) -> Self {
+    pub const fn new(
+        target: PlatformAttentionTarget,
+        item: AttentionItemKey,
+        item_revision: Revision,
+    ) -> Self {
         Self {
+            target,
             item,
             item_revision,
         }
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> &PlatformAttentionTarget {
+        &self.target
     }
 
     #[must_use]
@@ -707,6 +926,7 @@ struct AttentionLocalFlags {
 pub struct AttentionLocalState {
     capacity: usize,
     entries: BTreeMap<AttentionLocalKey, AttentionLocalFlags>,
+    retirements: BTreeSet<AttentionRetirement>,
 }
 
 impl AttentionLocalState {
@@ -717,6 +937,7 @@ impl AttentionLocalState {
         Ok(Self {
             capacity,
             entries: BTreeMap::new(),
+            retirements: BTreeSet::new(),
         })
     }
 
@@ -731,10 +952,20 @@ impl AttentionLocalState {
     }
 
     fn mark_read(&mut self, key: AttentionLocalKey) -> Result<bool, AttentionLocalStateError> {
+        if self.retirements.iter().any(|retirement| {
+            retirement.target() == key.target() && retirement.source() == key.item().source()
+        }) {
+            return Err(AttentionLocalStateError::RetirementPending);
+        }
         self.update(key, |flags| &mut flags.read)
     }
 
     fn mark_notified(&mut self, key: AttentionLocalKey) -> Result<bool, AttentionLocalStateError> {
+        if self.retirements.iter().any(|retirement| {
+            retirement.target() == key.target() && retirement.source() == key.item().source()
+        }) {
+            return Err(AttentionLocalStateError::RetirementPending);
+        }
         self.update(key, |flags| &mut flags.notified)
     }
 
@@ -756,13 +987,31 @@ impl AttentionLocalState {
 
     fn retain_source_keys(
         &mut self,
+        target: &PlatformAttentionTarget,
         source: &AttentionSource,
         current: &BTreeSet<AttentionLocalKey>,
     ) -> bool {
         let before = self.entries.len();
-        self.entries
-            .retain(|key, _| key.item().source() != source || current.contains(key));
+        self.entries.retain(|key, _| {
+            key.target() != target || key.item().source() != source || current.contains(key)
+        });
         before != self.entries.len()
+    }
+
+    fn begin_retirement(
+        &mut self,
+        retirement: AttentionRetirement,
+    ) -> Result<bool, AttentionLocalStateError> {
+        if !self.retirements.contains(&retirement) && self.retirements.len() == self.capacity {
+            return Err(AttentionLocalStateError::CapacityExceeded);
+        }
+        Ok(self.retirements.insert(retirement))
+    }
+
+    fn finish_retirement(&mut self, retirement: &AttentionRetirement) -> bool {
+        let removed_entries =
+            self.retain_source_keys(retirement.target(), retirement.source(), &BTreeSet::new());
+        self.retirements.remove(retirement) || removed_entries
     }
 }
 
@@ -827,6 +1076,11 @@ impl AttentionLocalStateStore {
             return Ok(NotificationReservation::Ineligible);
         }
         self.transact(|state| {
+            if state.retirements.iter().any(|retirement| {
+                retirement.target() == key.target() && retirement.source() == key.item().source()
+            }) {
+                return Err(AttentionLocalStateError::RetirementPending);
+            }
             if state.is_notified(&key) {
                 return Ok(NotificationReservation::AlreadyReserved);
             }
@@ -840,22 +1094,59 @@ impl AttentionLocalStateStore {
     /// this method because neither means an empty source.
     pub fn reconcile_source(
         &mut self,
+        target: &PlatformAttentionTarget,
         source: &AttentionSource,
         current: BTreeSet<AttentionLocalKey>,
     ) -> Result<bool, AttentionLocalStateError> {
         if current.len() > MAX_ATTENTION_ITEMS
-            || current.iter().any(|key| key.item().source() != source)
+            || current
+                .iter()
+                .any(|key| key.target() != target || key.item().source() != source)
         {
             return Err(AttentionLocalStateError::ReconciliationInvalid);
         }
-        self.transact(|state| Ok(state.retain_source_keys(source, &current)))
+        self.transact(|state| {
+            if state
+                .retirements
+                .iter()
+                .any(|retirement| retirement.target() == target && retirement.source() == source)
+            {
+                return Err(AttentionLocalStateError::RetirementPending);
+            }
+            Ok(state.retain_source_keys(target, source, &current))
+        })
     }
 
     pub fn remove_source(
         &mut self,
+        target: &PlatformAttentionTarget,
         source: &AttentionSource,
     ) -> Result<bool, AttentionLocalStateError> {
-        self.reconcile_source(source, BTreeSet::new())
+        self.reconcile_source(target, source, BTreeSet::new())
+    }
+
+    /// Persist the retirement fence before the corresponding in-memory board
+    /// is removed. A crash after this succeeds leaves enough custody for the
+    /// next process to finish cleanup before admitting a replacement.
+    pub fn begin_retirement(
+        &mut self,
+        retirement: AttentionRetirement,
+    ) -> Result<bool, AttentionLocalStateError> {
+        self.transact(|state| state.begin_retirement(retirement))
+    }
+
+    /// Atomically remove every overlay tuple for the retired source and its
+    /// durable fence. Failure leaves both intact and therefore fail-closed.
+    pub fn finish_retirement(
+        &mut self,
+        retirement: &AttentionRetirement,
+    ) -> Result<bool, AttentionLocalStateError> {
+        self.transact(|state| Ok(state.finish_retirement(retirement)))
+    }
+
+    #[must_use]
+    pub fn pending_retirements(&self) -> &BTreeSet<AttentionRetirement> {
+        &self.state.retirements
     }
 
     fn transact<T>(
@@ -882,11 +1173,42 @@ impl AttentionLocalStateStore {
 struct AttentionLocalDocument {
     schema: u16,
     entries: Vec<AttentionLocalEntry>,
+    retirements: Vec<AttentionLocalRetirement>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AttentionLocalEntry {
+    project_id: String,
+    workspace_id: String,
+    source_kind: String,
+    source_id: String,
+    item_id: String,
+    item_revision: u64,
+    read: bool,
+    notified: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttentionLocalRetirement {
+    project_id: String,
+    workspace_id: String,
+    source_kind: String,
+    source_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttentionLocalDocumentV1 {
+    schema: u16,
+    entries: Vec<AttentionLocalEntryV1>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // Parsed only to validate and boundedly discard unscoped v1 custody.
+struct AttentionLocalEntryV1 {
     source_kind: String,
     source_id: String,
     item_id: String,
@@ -906,11 +1228,29 @@ fn load_local_state(
     if bytes.len() as u64 > MAX_ATTENTION_LOCAL_FILE_BYTES {
         return Err(AttentionLocalStateError::DocumentInvalid);
     }
-    let document: AttentionLocalDocument = serde_json::from_slice(&bytes)?;
-    if document.schema != ATTENTION_LOCAL_SCHEMA || document.entries.len() > capacity {
+    let schema = serde_json::from_slice::<serde_json::Value>(&bytes)?
+        .get("schema")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(AttentionLocalStateError::DocumentInvalid)?;
+    if schema == 1 {
+        let document: AttentionLocalDocumentV1 = serde_json::from_slice(&bytes)?;
+        if document.schema != 1 || document.entries.len() > capacity {
+            return Err(AttentionLocalStateError::DocumentInvalid);
+        }
+        // V1 tuples were not target-qualified. They cannot be safely
+        // attributed after a remap, so migration deliberately discards them
+        // rather than inheriting read/notification custody.
+        return Ok(state);
+    }
+    if schema != u64::from(ATTENTION_LOCAL_SCHEMA) {
         return Err(AttentionLocalStateError::DocumentInvalid);
     }
-    for entry in document.entries {
+    let document: AttentionLocalDocument = serde_json::from_slice(&bytes)?;
+    let (entries, retirements) = (document.entries, document.retirements);
+    if entries.len() > capacity || retirements.len() > capacity {
+        return Err(AttentionLocalStateError::DocumentInvalid);
+    }
+    for entry in entries {
         if !entry.read && !entry.notified {
             return Err(AttentionLocalStateError::DocumentInvalid);
         }
@@ -921,6 +1261,12 @@ fn load_local_state(
                 .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
         );
         let key = AttentionLocalKey::new(
+            PlatformAttentionTarget {
+                project: ProjectId::new(entry.project_id)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+                user_workspace: UserWorkspaceId::new(entry.workspace_id)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+            },
             AttentionItemKey::new(
                 source,
                 AttentionItemId::new(entry.item_id)
@@ -943,6 +1289,25 @@ fn load_local_state(
             return Err(AttentionLocalStateError::DocumentInvalid);
         }
     }
+    for retirement in retirements {
+        let retirement = AttentionRetirement::new(
+            PlatformAttentionTarget {
+                project: ProjectId::new(retirement.project_id)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+                user_workspace: UserWorkspaceId::new(retirement.workspace_id)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+            },
+            AttentionSource::new(
+                AttentionSourceKind::parse(&retirement.source_kind)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+                AttentionSourceId::new(retirement.source_id)
+                    .map_err(|_| AttentionLocalStateError::DocumentInvalid)?,
+            ),
+        );
+        if !state.retirements.insert(retirement) {
+            return Err(AttentionLocalStateError::DocumentInvalid);
+        }
+    }
     Ok(state)
 }
 
@@ -960,6 +1325,8 @@ fn encode_local_state(state: &AttentionLocalState) -> Result<Vec<u8>, AttentionL
         .entries
         .iter()
         .map(|(key, flags)| AttentionLocalEntry {
+            project_id: key.target().project.as_str().to_owned(),
+            workspace_id: key.target().user_workspace.as_str().to_owned(),
             source_kind: key.item().source().kind().as_str().to_owned(),
             source_id: key.item().source().id().as_str().to_owned(),
             item_id: key.item().item().as_str().to_owned(),
@@ -971,6 +1338,16 @@ fn encode_local_state(state: &AttentionLocalState) -> Result<Vec<u8>, AttentionL
     let document = AttentionLocalDocument {
         schema: ATTENTION_LOCAL_SCHEMA,
         entries,
+        retirements: state
+            .retirements
+            .iter()
+            .map(|retirement| AttentionLocalRetirement {
+                project_id: retirement.target().project.as_str().to_owned(),
+                workspace_id: retirement.target().user_workspace.as_str().to_owned(),
+                source_kind: retirement.source().kind().as_str().to_owned(),
+                source_id: retirement.source().id().as_str().to_owned(),
+            })
+            .collect(),
     };
     let bytes = serde_json::to_vec_pretty(&document)?;
     if bytes.len() as u64 > MAX_ATTENTION_LOCAL_FILE_BYTES {
@@ -1006,6 +1383,8 @@ pub enum AttentionError {
     WorkspaceProjectMismatch,
     #[error("attention source identity is invalid")]
     SourceInvalid,
+    #[error("attention provider source lacks its exact Platform session relation")]
+    ProviderSessionRelationInvalid,
     #[error("attention source is duplicated")]
     SourceDuplicate,
     #[error("attention source inventory exceeds its per-workspace bound")]
@@ -1028,6 +1407,24 @@ pub enum AttentionError {
     UiIdentityCollision,
 }
 
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum AttentionActivationError {
+    #[error("attention item is no longer present")]
+    ItemMissing,
+    #[error("attention item revision is stale")]
+    ItemStale,
+    #[error("attention workspace is missing or ambiguous in the current catalog")]
+    WorkspaceMissingOrAmbiguous,
+    #[error("attention provider coordinate is invalid")]
+    CoordinateInvalid,
+    #[error("attention provider session is missing or ambiguous")]
+    SessionMissingOrAmbiguous,
+    #[error("attention provider session is not fresh")]
+    SessionNotFresh,
+    #[error("attention provider session is retained by multiple panes")]
+    PaneAmbiguous,
+}
+
 #[derive(Debug, Error)]
 pub enum AttentionLocalStateError {
     #[error("attention local-state capacity is invalid")]
@@ -1038,6 +1435,8 @@ pub enum AttentionLocalStateError {
     DocumentInvalid,
     #[error("attention local-state reconciliation is not source-exact")]
     ReconciliationInvalid,
+    #[error("attention local-state source retirement is still pending")]
+    RetirementPending,
     #[error("attention local-state I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("attention local-state serialization failed: {0}")]
@@ -1047,13 +1446,24 @@ pub enum AttentionLocalStateError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::workspace_catalog::{
+        CatalogCheckoutId, CatalogProjectId, CheckoutHost, PlatformContextRef,
+        PlatformMappingReconciliation, ProjectCheckout, ProjectRecord, RepositoryIdentity,
+        WorkspaceLaunchIntake, WorkspaceLaunchRequest,
+    };
+    use crate::workspace_navigation::{
+        PaneId, PaneLeaf, ProviderSessionBinding, WorkspaceCardState, WorkspaceNavigationAction,
+        WorkspaceSurfaceState, WorkspaceTab, WorkspaceTabContent, WorkspaceTabId,
+    };
     use automonique_protocol::platform::{
-        ResourceAuthority, ResourceCoordinate, ResourceId, ResourceKind,
+        Freshness, FreshnessState, ResourceAuthority, ResourceCoordinate, ResourceId, ResourceKind,
+        ResourceRecord,
     };
     use automonique_protocol::platform_v2::{
         AttemptWorkspaceId, CheckoutId, V1SessionRef, WorkContextAttributes, WorkContextLabel,
         WorkContextLifecycle, WorkContextRelation, WorkSessionId,
     };
+    use automonique_protocol::primitives::EpochMillis;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
@@ -1083,7 +1493,7 @@ mod tests {
         .unwrap()
     }
 
-    fn provider_item(id: &str, revision: u64) -> AttentionItem {
+    fn provider_item_for(id: &str, revision: u64, session_id: &str) -> AttentionItem {
         AttentionItem::new(
             AttentionItemId::new(id).unwrap(),
             Revision::new(revision).unwrap(),
@@ -1096,12 +1506,16 @@ mod tests {
                 V1SessionRef::new(ResourceCoordinate::new(
                     ResourceAuthority::Automonique,
                     ResourceKind::Session,
-                    ResourceId::new("platform-session-1").unwrap(),
+                    ResourceId::new(session_id).unwrap(),
                 ))
                 .unwrap(),
             ),
         )
         .unwrap()
+    }
+
+    fn provider_item(id: &str, revision: u64) -> AttentionItem {
+        provider_item_for(id, revision, "platform-session-1")
     }
 
     fn snapshot(
@@ -1210,6 +1624,7 @@ mod tests {
 
     fn local_key(source_id: &str, item_id: &str, revision: u64) -> AttentionLocalKey {
         AttentionLocalKey::new(
+            target(),
             AttentionItemKey::new(
                 source(AttentionSourceKind::Orchestration, source_id),
                 AttentionItemId::new(item_id.to_owned()).unwrap(),
@@ -1602,13 +2017,18 @@ mod tests {
 
         let current = BTreeSet::from([next_revision.clone()]);
         restarted
-            .reconcile_source(next_revision.item().source(), current)
+            .reconcile_source(
+                next_revision.target(),
+                next_revision.item().source(),
+                current,
+            )
             .unwrap();
         assert!(!restarted.state().is_read(&first));
         assert!(restarted.state().is_notified(&next_revision));
         let before_wrong_source = std::fs::read(&path).unwrap();
         assert!(matches!(
             restarted.reconcile_source(
+                next_revision.target(),
                 &source(AttentionSourceKind::Review, "workspace-1"),
                 BTreeSet::from([next_revision.clone()]),
             ),
@@ -1670,6 +2090,7 @@ mod tests {
                 let item_id = format!("{index:04}{}", "i".repeat(252));
                 state.entries.insert(
                     AttentionLocalKey::new(
+                        target(),
                         AttentionItemKey::new(
                             oversized_source.clone(),
                             AttentionItemId::new(item_id).unwrap(),
@@ -1702,6 +2123,7 @@ mod tests {
             AttentionLocalStateStore::open(oversized_path.clone(), MAX_ATTENTION_LOCAL_ENTRIES)
                 .unwrap();
         let overflow_key = AttentionLocalKey::new(
+            target(),
             AttentionItemKey::new(
                 oversized_source,
                 AttentionItemId::new(format!("{fits:04}{}", "i".repeat(252))).unwrap(),
@@ -1717,6 +2139,84 @@ mod tests {
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
         std::fs::remove_dir_all(failing_path.parent().unwrap()).ok();
+    }
+
+    // SDTEST-1837 — SDUC-493
+    #[test]
+    fn sdtest_1837_retirement_fence_survives_failed_cleanup_and_restart() {
+        let path = temp_path("retirement-restart.json");
+        let key = local_key("workspace-1", "retired-item", 1);
+        let retirement = AttentionRetirement::new(
+            target(),
+            source(AttentionSourceKind::Orchestration, "workspace-1"),
+        );
+        let mut store = AttentionLocalStateStore::open(path.clone(), 4).unwrap();
+        assert!(store.record_read(key.clone()).unwrap());
+        assert!(store.begin_retirement(retirement.clone()).unwrap());
+        assert!(store.pending_retirements().contains(&retirement));
+        assert!(matches!(
+            store.record_read(key.clone()),
+            Err(AttentionLocalStateError::RetirementPending)
+        ));
+        assert!(matches!(
+            store.reserve_notification(key.clone(), true),
+            Err(AttentionLocalStateError::RetirementPending)
+        ));
+
+        let durable_fenced = std::fs::read(&path).unwrap();
+        let displaced = path.with_extension("fenced-backup");
+        std::fs::rename(&path, &displaced).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            store.finish_retirement(&retirement),
+            Err(AttentionLocalStateError::Io(_))
+        ));
+        assert!(store.state().is_read(&key));
+        assert!(store.pending_retirements().contains(&retirement));
+
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&displaced, &path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), durable_fenced);
+        let mut restarted = AttentionLocalStateStore::open(path.clone(), 4).unwrap();
+        assert!(restarted.state().is_read(&key));
+        assert!(restarted.pending_retirements().contains(&retirement));
+        assert!(restarted.finish_retirement(&retirement).unwrap());
+        assert!(!restarted.state().is_read(&key));
+        assert!(restarted.pending_retirements().is_empty());
+
+        let final_restart = AttentionLocalStateStore::open(path.clone(), 4).unwrap();
+        assert!(!final_restart.state().is_read(&key));
+        assert!(final_restart.pending_retirements().is_empty());
+
+        let legacy_path = temp_path("unscoped-v1.json");
+        prepare_local_storage(&legacy_path).unwrap();
+        std::fs::write(
+            &legacy_path,
+            br#"{
+              "schema": 1,
+              "entries": [{
+                "source_kind": "orchestration",
+                "source_id": "workspace-1",
+                "item_id": "retired-item",
+                "item_revision": 1,
+                "read": true,
+                "notified": true
+              }]
+            }"#,
+        )
+        .unwrap();
+        let mut migrated = AttentionLocalStateStore::open(legacy_path.clone(), 4).unwrap();
+        assert!(
+            !migrated.state().is_read(&key),
+            "unscoped v1 custody is discarded"
+        );
+        migrated.record_read(key.clone()).unwrap();
+        let migrated_document = std::fs::read_to_string(&legacy_path).unwrap();
+        assert!(migrated_document.contains("\"schema\": 2"));
+        assert!(migrated_document.contains("\"project_id\": \"project-1\""));
+        assert!(migrated_document.contains("\"workspace_id\": \"workspace-1\""));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+        std::fs::remove_dir_all(legacy_path.parent().unwrap()).ok();
     }
 
     // SDTEST-1820 — SDUC-493
@@ -1907,5 +2407,279 @@ mod tests {
         assert!(AttentionLocalStateStore::open(linked_path, 2).is_err());
         std::fs::remove_dir(private_root).ok();
         std::fs::remove_dir_all(base).ok();
+    }
+
+    fn activation_catalog() -> (ProjectCatalog, CatalogWorkspaceId, CatalogCheckoutId) {
+        let project = CatalogProjectId::from_uuid(Uuid::from_u128(900));
+        let checkout = CatalogCheckoutId::from_uuid(Uuid::from_u128(901));
+        let workspace = CatalogWorkspaceId::from_uuid(Uuid::from_u128(902));
+        let mut project_record = ProjectRecord::new(project, "Attention project");
+        project_record.add_checkout(ProjectCheckout::new(
+            checkout,
+            "main",
+            CheckoutHost::Local {
+                device_label: "local".into(),
+                root: std::env::temp_dir().join("shelldeck-attention-activation"),
+            },
+            RepositoryIdentity {
+                slug: "bext/shelldeck".into(),
+                canonical_url: None,
+            },
+        ));
+        let mut catalog = ProjectCatalog::default();
+        catalog.insert_project(project_record).unwrap();
+        catalog
+            .create_workspace(WorkspaceLaunchRequest {
+                id: workspace,
+                project_id: project,
+                checkout_id: checkout,
+                name: "Attention".into(),
+                intake: WorkspaceLaunchIntake::Manual,
+            })
+            .unwrap();
+        catalog
+            .set_platform_mapping(
+                workspace,
+                None,
+                PlatformV2Mapping {
+                    reconciliation_revision: 1,
+                    project: PlatformContextRef {
+                        id: "project-1".into(),
+                        revision: 1,
+                    },
+                    checkout: PlatformContextRef {
+                        id: "checkout-1".into(),
+                        revision: 1,
+                    },
+                    user_workspace: PlatformContextRef {
+                        id: "workspace-1".into(),
+                        revision: 1,
+                    },
+                    reconciliation: PlatformMappingReconciliation::Exact {
+                        reconciled_at_millis: 1,
+                    },
+                },
+            )
+            .unwrap();
+        (catalog, workspace, checkout)
+    }
+
+    fn provider_surface(count: usize) -> WorkspaceSurfaceState {
+        let tabs = (0..count)
+            .map(|index| WorkspaceTab {
+                id: WorkspaceTabId::from_uuid(Uuid::from_u128(920 + index as u128)),
+                title: "Provider".into(),
+                content: WorkspaceTabContent::ProviderSession(ProviderSessionBinding {
+                    platform_user_workspace_id: "workspace-1".into(),
+                    session_id: "platform-session-1".into(),
+                    run_id: None,
+                }),
+            })
+            .collect::<Vec<_>>();
+        let active_tab = tabs.first().map(|tab| tab.id);
+        WorkspaceSurfaceState {
+            root: Some(PaneNode::Leaf(PaneLeaf {
+                id: PaneId::from_uuid(Uuid::from_u128(919)),
+                tabs,
+                active_tab,
+            })),
+            focus: active_tab.map(|tab_id| WorkspaceFocus {
+                pane_id: PaneId::from_uuid(Uuid::from_u128(919)),
+                tab_id,
+            }),
+        }
+    }
+
+    fn authorized_session_with_freshness(state: FreshnessState) -> SessionRecord {
+        SessionRecord {
+            session: ResourceRecord {
+                resource: ResourceCoordinate::new(
+                    ResourceAuthority::Automonique,
+                    ResourceKind::Session,
+                    ResourceId::new("platform-session-1").unwrap(),
+                ),
+                freshness: Freshness {
+                    state,
+                    observed_at: EpochMillis::from_millis(1),
+                    revision: Revision::FIRST,
+                },
+                summary: automonique_protocol::platform::PlatformText::new("session").unwrap(),
+            },
+            run: None,
+            attachable: true,
+            controllable: false,
+        }
+    }
+
+    fn authorized_session() -> SessionRecord {
+        authorized_session_with_freshness(FreshnessState::Fresh)
+    }
+
+    // SDTEST-1829
+    #[test]
+    fn sdtest_1829_activation_re_resolves_exact_current_catalogues_and_refuses_ambiguity() {
+        let (catalog, workspace, _) = activation_catalog();
+        let mut navigation = WorkspaceNavigationState::default();
+        navigation
+            .reduce(
+                &catalog,
+                WorkspaceNavigationAction::Retain {
+                    id: workspace,
+                    surface: provider_surface(0),
+                    card: WorkspaceCardState::default(),
+                },
+            )
+            .unwrap();
+        let provider = source(AttentionSourceKind::ProviderSession, "session-1");
+        let mut board = PlatformAttentionBoard::new(inventory(ReviewAttentionPresence::Present));
+        board
+            .apply_authenticated_baseline_read(
+                &provider,
+                AttentionReadResult::Snapshot(Box::new(snapshot(
+                    provider.clone(),
+                    1,
+                    None,
+                    vec![provider_item("provider", 1)],
+                ))),
+            )
+            .unwrap();
+        let visible = board.visible_items().next().unwrap();
+        let activation = PlatformAttentionActivation {
+            workspace,
+            item: visible.ui_id(),
+            item_revision: visible.value().revision(),
+        };
+        let sessions = vec![authorized_session()];
+        assert!(matches!(
+            resolve_platform_attention_activation(
+                activation,
+                &board,
+                &catalog,
+                &navigation,
+                &sessions,
+            ),
+            Ok(PlatformAttentionDestination::FleetSession { .. })
+        ));
+        assert_eq!(
+            resolve_platform_attention_activation(activation, &board, &catalog, &navigation, &[],),
+            Err(AttentionActivationError::SessionMissingOrAmbiguous)
+        );
+        let duplicate = vec![authorized_session(), authorized_session()];
+        assert_eq!(
+            resolve_platform_attention_activation(
+                activation,
+                &board,
+                &catalog,
+                &navigation,
+                &duplicate,
+            ),
+            Err(AttentionActivationError::SessionMissingOrAmbiguous)
+        );
+        for state in [FreshnessState::Stale, FreshnessState::Unknown] {
+            assert_eq!(
+                resolve_platform_attention_activation(
+                    activation,
+                    &board,
+                    &catalog,
+                    &navigation,
+                    &[authorized_session_with_freshness(state)],
+                ),
+                Err(AttentionActivationError::SessionNotFresh)
+            );
+        }
+
+        let mut redirected =
+            PlatformAttentionBoard::new(inventory(ReviewAttentionPresence::Present));
+        redirected
+            .apply_authenticated_baseline_read(
+                &provider,
+                AttentionReadResult::Snapshot(Box::new(snapshot(
+                    provider.clone(),
+                    1,
+                    None,
+                    vec![provider_item_for("provider", 1, "platform-session-foreign")],
+                ))),
+            )
+            .unwrap();
+        let redirected_item = redirected.visible_items().next().unwrap();
+        let redirected_activation = PlatformAttentionActivation {
+            workspace,
+            item: redirected_item.ui_id(),
+            item_revision: redirected_item.value().revision(),
+        };
+        let mut foreign = authorized_session();
+        foreign.session.resource.id = ResourceId::new("platform-session-foreign").unwrap();
+        assert_eq!(
+            resolve_platform_attention_activation(
+                redirected_activation,
+                &redirected,
+                &catalog,
+                &navigation,
+                &[foreign],
+            ),
+            Err(AttentionActivationError::CoordinateInvalid),
+            "an item cannot redirect its provider source to another current session"
+        );
+
+        navigation
+            .reduce(
+                &catalog,
+                WorkspaceNavigationAction::UpdateSurface {
+                    id: workspace,
+                    surface: provider_surface(1),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            resolve_platform_attention_activation(
+                activation,
+                &board,
+                &catalog,
+                &navigation,
+                &sessions,
+            ),
+            Ok(PlatformAttentionDestination::RetainedProviderPane { .. })
+        ));
+        navigation
+            .reduce(
+                &catalog,
+                WorkspaceNavigationAction::UpdateSurface {
+                    id: workspace,
+                    surface: provider_surface(2),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_platform_attention_activation(
+                activation,
+                &board,
+                &catalog,
+                &navigation,
+                &sessions,
+            ),
+            Err(AttentionActivationError::PaneAmbiguous)
+        );
+
+        board
+            .apply_read(
+                &provider,
+                AttentionReadResult::Snapshot(Box::new(snapshot(
+                    provider.clone(),
+                    2,
+                    Some(1),
+                    vec![provider_item("provider", 2)],
+                ))),
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_platform_attention_activation(
+                activation,
+                &board,
+                &catalog,
+                &navigation,
+                &sessions,
+            ),
+            Err(AttentionActivationError::ItemStale)
+        );
     }
 }

@@ -32,6 +32,7 @@ use crate::icons::lucide_icon;
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
+use crate::workspace::platform_attention::{attention_reason_label, PlatformAttentionPresentation};
 
 #[derive(Debug, Clone)]
 pub enum FleetViewEvent {
@@ -43,6 +44,7 @@ pub enum FleetViewEvent {
     Execute(PlatformActionPreview),
     ExecuteReview(PlatformReviewActionPreview),
     FollowUp(PlatformFollowUp),
+    OpenAttention(shelldeck_core::config::platform_attention::PlatformAttentionActivation),
 }
 
 impl EventEmitter<FleetViewEvent> for FleetView {}
@@ -269,6 +271,7 @@ pub struct FleetView {
     loading: bool,
     operation_busy: bool,
     error: Option<String>,
+    platform_attention: Vec<PlatformAttentionPresentation>,
 }
 
 impl FleetView {
@@ -300,6 +303,7 @@ impl FleetView {
             loading: false,
             operation_busy: false,
             error: None,
+            platform_attention: Vec::new(),
         }
     }
 
@@ -889,6 +893,7 @@ impl FleetView {
         self.loading = false;
         self.operation_busy = false;
         self.error = None;
+        self.platform_attention.clear();
     }
 
     pub fn open_session_by_id(&mut self, session_id: &str) -> bool {
@@ -910,6 +915,87 @@ impl FleetView {
             }
         }
         exists
+    }
+
+    pub fn open_session_exact(&mut self, coordinate: &ResourceCoordinate) -> bool {
+        let matches = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .sessions
+                    .iter()
+                    .filter(|session| &session.session.resource == coordinate)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let [session] = matches.as_slice() else {
+            return false;
+        };
+        self.selected_session = Some(coordinate.id.as_str().to_owned());
+        self.cockpit.select(&session.session.resource);
+        true
+    }
+
+    pub(crate) fn session_is_open_exact(&self, coordinate: &ResourceCoordinate) -> bool {
+        self.selected_session.as_deref() == Some(coordinate.id.as_str())
+            && self.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .sessions
+                    .iter()
+                    .filter(|session| &session.session.resource == coordinate)
+                    .count()
+                    == 1
+            })
+    }
+
+    pub(crate) fn set_platform_attention(&mut self, rows: Vec<PlatformAttentionPresentation>) {
+        self.platform_attention = rows;
+    }
+
+    fn render_platform_attention(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.platform_attention.is_empty() {
+            return div().into_any_element();
+        }
+        let entity = cx.entity();
+        let mut row = div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(12.0))
+            .py(px(7.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                Badge::new(t!("platform_attention.title").to_string())
+                    .variant(BadgeVariant::Outline),
+            );
+        for item in &self.platform_attention {
+            let activation = item.activation;
+            let entity = entity.clone();
+            row = row.child(
+                Button::new(
+                    SharedString::from(format!(
+                        "fleet-attention-{}-{}",
+                        activation.item.uuid(),
+                        activation.item_revision.get()
+                    )),
+                    attention_reason_label(item.reason),
+                )
+                .size(ButtonSize::Sm)
+                .variant(if item.unread {
+                    ButtonVariant::Default
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |_this, cx| {
+                        cx.emit(FleetViewEvent::OpenAttention(activation));
+                    });
+                }),
+            );
+        }
+        row.into_any_element()
     }
 
     fn render_header(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -3066,6 +3152,7 @@ impl Render for FleetView {
             .child(self.render_header(compact, cx))
             .child(self.render_action_preview(compact, cx))
             .child(self.render_review_summary(cx))
+            .child(self.render_platform_attention(cx))
             .children(notice)
             .child(content)
     }

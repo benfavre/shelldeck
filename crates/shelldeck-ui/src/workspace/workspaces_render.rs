@@ -276,6 +276,7 @@ impl WorkspaceHubView {
         active: bool,
         creation: Option<&BackgroundWorkspaceCreateState>,
         attention_items: Vec<AttentionItemPresentation>,
+        platform_attention_items: Vec<PlatformAttentionPresentation>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entity = cx.entity();
@@ -445,7 +446,7 @@ impl WorkspaceHubView {
                 orchestration,
             ));
         }
-        if !attention_items.is_empty() {
+        if !attention_items.is_empty() || !platform_attention_items.is_empty() {
             content = content.child(
                 div()
                     .pt(px(3.0))
@@ -525,6 +526,70 @@ impl WorkspaceHubView {
                                         this.error = Some(attention_error_label(error));
                                         cx.notify();
                                     }
+                                });
+                            }),
+                        ),
+                ),
+            );
+        }
+        for item in platform_attention_items {
+            let activation = item.activation;
+            let attention_entity = entity.clone();
+            let path = if item.nested_agent_path.is_empty() {
+                t!("workspaces.attention.agent_root").to_string()
+            } else {
+                item.nested_agent_path.join(" › ")
+            };
+            content = content.child(
+                Card::new().content(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.0))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.0))
+                                .child(
+                                    Badge::new(platform_attention_state_label(item.state))
+                                        .variant(BadgeVariant::Outline),
+                                )
+                                .child(
+                                    Badge::new(if item.unread {
+                                        t!("workspaces.attention.unread").to_string()
+                                    } else {
+                                        t!("workspaces.attention.read").to_string()
+                                    })
+                                    .variant(if item.unread {
+                                        BadgeVariant::Destructive
+                                    } else {
+                                        BadgeVariant::Outline
+                                    }),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(10.0))
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(path),
+                                ),
+                        )
+                        .child(
+                            Button::new(
+                                SharedString::from(format!(
+                                    "platform-attention-{}-{}",
+                                    activation.item.uuid(),
+                                    activation.item_revision.get()
+                                )),
+                                attention_reason_label(item.reason),
+                            )
+                            .size(ButtonSize::Sm)
+                            .variant(ButtonVariant::Ghost)
+                            .on_click(move |_, _, cx| {
+                                attention_entity.update(cx, |_this, cx| {
+                                    cx.emit(WorkspaceHubEvent::OpenPlatformAttention(activation));
                                 });
                             }),
                         ),
@@ -833,11 +898,17 @@ impl Render for WorkspaceHubView {
                 self.cards.sources.get(&workspace.id()),
             ) {
                 let attention_items = self.attention_items(workspace.id());
+                let platform_attention_items = self
+                    .platform_attention
+                    .get(&workspace.id())
+                    .cloned()
+                    .unwrap_or_default();
                 workspace_cards = workspace_cards.child(self.render_workspace_card(
                     presentation,
                     self.navigation.active() == Some(workspace.id()),
                     self.creation.state(workspace.id()),
                     attention_items,
+                    platform_attention_items,
                     cx,
                 ));
             }

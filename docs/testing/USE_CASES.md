@@ -2840,11 +2840,32 @@ Local read and notification custody is stored separately under exact
 capacity, parse, or write failure suppresses new custody instead of evicting an
 older tuple. A private no-follow/reparse-fenced storage boundary and an
 exclusive sidecar lock serialize reload/compare/persist across independent
-processes, so only one process may reserve a notification tuple. The serialized
-document must fit its read bound before replacement. Navigation and OS
-notification activation remain separate native integration milestones. The
-retained native workspace surface continues to mark local items read only after
-exact native focus succeeds.
+processes, so only one process may reserve a notification tuple. Version-two
+overlay tuples also bind the exact Platform target; unqualified version-one
+tuples are discarded during migration rather than inherited after a remap.
+Target/source retirement fences are written to the same document before a
+board disappears, and successful cleanup atomically removes both old overlay
+and fence. A surviving fence blocks replacement custody after restart. The serialized
+document must fit its read bound before replacement. The native Workspace and
+Fleet surfaces now consume the same authoritative board. Every activation
+re-resolves the current exact catalog mapping, full authority-qualified session
+directory, and retained provider pane: missing, duplicate, foreign, or stale
+coordinates refuse without consuming unread state. Review and orchestration
+items open only their exact workspace attention surface; provider items open
+only the fresh session bound to their authoritative WorkContext source, either
+in Fleet or its unique retained pane. Whole-poll failures hide retained
+projections. Loss of all active context retires orphan boards; an exact context
+removal/remap retires only that workspace, so visiting a different retained
+workspace preserves the first board and overlay. A failed retirement-fence
+write leaves the old board unavailable and blocks replacement. Every destination
+queues its exact activation until the real Dev transition finishes, opens the
+required surface, then re-resolves authority and rendered visibility on a later
+UI turn before durable read custody. User, Support, Settings, or an unrelated
+in-flight transition cannot consume unread while the destination is hidden. Same-process
+OS notification handles remain alive through activation/dismissal and route the
+same tuple back through that current-catalog resolver. A failed durable
+notification reservation suppresses the toast. Native cold-launch/OS launch
+protocol remains intentionally outside this milestone.
 Delivery checks, review status, merge readiness, and delivery state carry their
 observed authority and freshness. Once Fresh, they cannot be overwritten by a
 Stale or Unknown projection even if that projection claims a higher revision.
@@ -2907,8 +2928,12 @@ an unavailable adapter refuses before any effect.
   reducer, source-scoped deterministic UI identities, and bounded durable local
   read/notification custody. Follow-up hardening added authenticated complete
   baseline/gap resync, cross-process notification reservation, size admission,
-  and no-follow/reparse-fenced storage. Native navigation and OS notifications
-  remain a separate integration milestone.
+  and no-follow/reparse-fenced storage. SDTEST-1829..1841 then activate the
+  authenticated board in Workspace/Fleet: provider coordinates stay bound to
+  their fresh WorkContext session, polling/remapping hides or retires stale
+  boards, visible native surface transitions precede read custody, and
+  same-process notifications retain exact revision-bound activation. Native
+  cold-launch/OS-launch routing remains a separate integration milestone.
 
 - **2026-08-28** — Hardened SDUC-435 and added SDTEST-1813..1815: Windows now
   handles Explorer's `TaskbarCreated` broadcast through an invisible top-level

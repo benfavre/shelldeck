@@ -16,7 +16,7 @@ use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::{
     settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus},
     AiCompanionController, AiCompanionEvent, AiDockView, AiDockVisibilityHandler,
-    CommandPaletteWindowView, Workspace, WorkspaceAiBindings,
+    CommandPaletteWindowView, PlatformAttentionNotification, Workspace, WorkspaceAiBindings,
 };
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
@@ -480,6 +480,34 @@ fn show_tray_notification(n: shelldeck_ui::TrayNotification) -> anyhow::Result<(
     Ok(())
 }
 
+/// Show one actionable same-process attention notification and retain its
+/// native handle until activation or dismissal. The returned activation is a
+/// local tuple only; cold-launch deep links are intentionally out of scope.
+fn show_platform_attention_notification(
+    notification: PlatformAttentionNotification,
+    activated: std::sync::mpsc::Sender<
+        shelldeck_core::config::platform_attention::PlatformAttentionActivation,
+    >,
+) -> anyhow::Result<()> {
+    let handle = notify_rust::Notification::new()
+        .appname("ShellDeck")
+        .summary(&notification.summary)
+        .body(&notification.body)
+        .icon("shelldeck")
+        .action("open", &notification.action_label)
+        .show()?;
+    handle.wait_for_action(move |action| {
+        if platform_attention_action_opens(action) {
+            let _ = activated.send(notification.activation);
+        }
+    });
+    Ok(())
+}
+
+fn platform_attention_action_opens(action: &str) -> bool {
+    matches!(action, "default" | "open")
+}
+
 #[derive(Clone, Default)]
 struct WorkspaceSlot(Rc<RefCell<Option<gpui::WeakEntity<Workspace>>>>);
 
@@ -735,6 +763,40 @@ impl CompanionRoot {
                 ws.publish_tray_state(cx);
             });
         }
+
+        let (attention_tx, attention_rx) = std::sync::mpsc::channel();
+        workspace.update(cx, |ws, _cx| {
+            ws.set_platform_attention_notifier(Box::new(move |notification| {
+                let activated = attention_tx.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) =
+                        show_platform_attention_notification(notification, activated)
+                    {
+                        tracing::warn!("Platform attention notification failed: {error}");
+                    }
+                });
+            }));
+        });
+        let attention_workspace = workspace.downgrade();
+        let attention_window = self.runtime.main_window;
+        cx.spawn(async move |_this, cx: &mut gpui::AsyncApp| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(100))
+                .await;
+            let Some(workspace) = attention_workspace.upgrade() else {
+                break;
+            };
+            while let Ok(activation) = attention_rx.try_recv() {
+                let _ = attention_window.update(cx, |_, window, cx| {
+                    window.show_window();
+                    window.activate_window();
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.activate_platform_attention(activation, cx);
+                    });
+                });
+            }
+        })
+        .detach();
 
         self.workspace_slot.set(&workspace);
         self.workspace = Some(workspace.clone());
@@ -2303,10 +2365,11 @@ mod tests {
     use super::{
         ai_dock_bounds, ai_dock_global_shortcut, ai_dock_window_action, character_asset_paths,
         command_palette_bounds, command_palette_global_shortcut, companion_main_window_visible,
-        companion_pointer, merge_workspace_connections, tray_command_requires_auth,
-        workspace_created_at_boot, AiDockRequest, AiDockWindowAction, Assets, CompanionCommand,
-        CompanionRuntime, GlobalHotkeyRegistry, GlobalShortcutRegistrationState,
-        ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID, COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
+        companion_pointer, merge_workspace_connections, platform_attention_action_opens,
+        tray_command_requires_auth, workspace_created_at_boot, AiDockRequest, AiDockWindowAction,
+        Assets, CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry,
+        GlobalShortcutRegistrationState, ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID,
+        COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
     };
     #[cfg(target_os = "linux")]
     use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
@@ -2743,5 +2806,14 @@ mod tests {
                 "contextual Monolith motion is not a WebP asset: {path}"
             );
         }
+    }
+
+    // SDTEST-1831
+    #[test]
+    fn same_process_attention_notifications_activate_only_explicit_open_actions() {
+        assert!(platform_attention_action_opens("default"));
+        assert!(platform_attention_action_opens("open"));
+        assert!(!platform_attention_action_opens("__closed"));
+        assert!(!platform_attention_action_opens("unknown"));
     }
 }

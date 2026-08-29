@@ -11,6 +11,9 @@ mod tests {
     };
     use crate::terminal_view::TerminalView;
     use gpui::{AppContext, TestAppContext};
+    use shelldeck_core::config::platform::{
+        ResourceAuthority, ResourceCoordinate, ResourceId, ResourceKind,
+    };
     use shelldeck_core::config::themes::TerminalTheme;
     use shelldeck_core::config::workspace_catalog::{
         CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, CheckoutHost, ExternalWorkItem,
@@ -19,10 +22,11 @@ mod tests {
         WorkspaceLaunchRequest,
     };
     use shelldeck_core::workspace_navigation::{
-        BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState, PaneId,
-        WorkspaceAgentState, WorkspaceCardState, WorkspaceCreateEvent, WorkspaceCreateFailure,
-        WorkspaceCreateFailureKind, WorkspaceCreatePhase, WorkspaceCreateProgress,
-        WorkspaceFreshness, WorkspaceNavigationAction, WorkspaceTabId,
+        BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState, PaneId, PaneLeaf,
+        ProviderSessionBinding, WorkspaceAgentState, WorkspaceCardState, WorkspaceCreateEvent,
+        WorkspaceCreateFailure, WorkspaceCreateFailureKind, WorkspaceCreatePhase,
+        WorkspaceCreateProgress, WorkspaceFocus, WorkspaceFreshness, WorkspaceNavigationAction,
+        WorkspaceSurfaceState, WorkspaceTab, WorkspaceTabContent, WorkspaceTabId,
     };
     use shelldeck_core::workspace_review::{
         AttentionError, AttentionItem, AttentionItemId, AttentionState, AttentionTarget,
@@ -331,6 +335,117 @@ mod tests {
                 .get(&workspace_a)
                 .unwrap()
                 .is_unread(attention_id));
+        });
+    }
+
+    // SDTEST-1832
+    #[test]
+    fn retained_provider_activation_focuses_only_the_exact_native_tab_and_mapping() {
+        let mut cx = TestAppContext::single();
+        let (mut catalog, workspace_a, workspace_b, _checkout, _ssh_checkout, _ssh_connection) =
+            fixture_catalog();
+        catalog
+            .set_platform_mapping(
+                workspace_a,
+                None,
+                PlatformV2Mapping {
+                    reconciliation_revision: 1,
+                    project: PlatformContextRef {
+                        id: "project-1".into(),
+                        revision: 1,
+                    },
+                    checkout: PlatformContextRef {
+                        id: "checkout-1".into(),
+                        revision: 1,
+                    },
+                    user_workspace: PlatformContextRef {
+                        id: "workspace-1".into(),
+                        revision: 1,
+                    },
+                    reconciliation: PlatformMappingReconciliation::Exact {
+                        reconciled_at_millis: 1,
+                    },
+                },
+            )
+            .unwrap();
+        let initial_terminal = cx.update(|cx| cx.new(TerminalView::new));
+        let hub = cx.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], initial_terminal, cx))
+        });
+        cx.run_until_parked();
+
+        let (other, _other_data, _other_input) =
+            TerminalSession::spawn_ssh("Other".into(), 24, 80).unwrap();
+        let other_id = other.id;
+        let (provider, _provider_data, _provider_input) =
+            TerminalSession::spawn_ssh("Provider".into(), 24, 80).unwrap();
+        let provider_id = provider.id;
+        let coordinate = ResourceCoordinate::new(
+            ResourceAuthority::Automonique,
+            ResourceKind::Session,
+            ResourceId::new("provider-session-1").unwrap(),
+        );
+
+        hub.update(&mut cx, |hub, cx| {
+            let terminal = hub
+                .retained
+                .get(&workspace_a)
+                .unwrap()
+                .read(cx)
+                .terminal
+                .clone();
+            terminal.update(cx, |terminal, _| {
+                terminal.add_session(other);
+                terminal.add_session(provider);
+                terminal.select_tab(other_id);
+            });
+            hub.switch_to(workspace_b, cx);
+            let focus = WorkspaceFocus {
+                pane_id: PaneId::from_uuid(workspace_a.as_uuid()),
+                tab_id: WorkspaceTabId::from_uuid(provider_id),
+            };
+            hub.navigation
+                .reduce(
+                    &hub.catalog,
+                    WorkspaceNavigationAction::UpdateSurface {
+                        id: workspace_a,
+                        surface: WorkspaceSurfaceState {
+                            root: Some(shelldeck_core::workspace_navigation::PaneNode::Leaf(
+                                PaneLeaf {
+                                    id: focus.pane_id,
+                                    tabs: vec![WorkspaceTab {
+                                        id: focus.tab_id,
+                                        title: "Provider".into(),
+                                        content: WorkspaceTabContent::ProviderSession(
+                                            ProviderSessionBinding {
+                                                platform_user_workspace_id: "workspace-1".into(),
+                                                session_id: coordinate.id.as_str().into(),
+                                                run_id: None,
+                                            },
+                                        ),
+                                    }],
+                                    active_tab: Some(focus.tab_id),
+                                },
+                            )),
+                            focus: Some(focus),
+                        },
+                    },
+                )
+                .unwrap();
+            assert!(hub.open_retained_provider_pane(workspace_a, &coordinate, focus, cx));
+            assert_eq!(hub.navigation.active(), Some(workspace_a));
+            assert_eq!(
+                terminal.read(cx).tabs[terminal.read(cx).active_tab_index()].id,
+                provider_id
+            );
+            assert_ne!(provider_id, other_id);
+
+            let foreign = ResourceCoordinate::new(
+                ResourceAuthority::Automonique,
+                ResourceKind::Session,
+                ResourceId::new("foreign-session").unwrap(),
+            );
+            assert!(!hub.open_retained_provider_pane(workspace_a, &foreign, focus, cx));
         });
     }
 

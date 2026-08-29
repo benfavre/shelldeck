@@ -64,4 +64,6 @@ pub use ai_companion::{AiCompanionController, AiCompanionEvent};
 pub use ai_dock::{AiDockView, AiDockVisibilityHandler};
 pub use command_palette_window::CommandPaletteWindowView;
 pub use i18n::{apply_ui_language, rel_time};
-pub use workspace::{TrayCounters, TrayNotification, Workspace, WorkspaceAiBindings};
+pub use workspace::{
+    PlatformAttentionNotification, TrayCounters, TrayNotification, Workspace, WorkspaceAiBindings,
+};

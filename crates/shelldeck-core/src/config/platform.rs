@@ -8,28 +8,37 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use automonique_platform_client::platform_v2_client::AttentionReadResult;
 use automonique_platform_client::platform_v2_client::{
     NegotiationResult, PlatformV2Client, PlatformV2ClientError, ReviewCapabilitiesResult,
-    ReviewReadResult, ReviewReceiptResult,
+    ReviewReadResult, ReviewReceiptResult, WorkContextQueryResult,
 };
-pub use automonique_platform_client::{ActionResult, ControlClaimResult};
+pub use automonique_platform_client::{ActionResult, ControlClaimResult, PlatformView};
 use automonique_platform_client::{
-    BearerToken, HttpsTransport, PlatformClient, PlatformView, SessionCommandStateResult,
-    SessionHistoryResult, SessionListResult, SubscriptionApply, SubscriptionResult,
+    BearerToken, HttpsTransport, PlatformClient, SessionCommandStateResult, SessionHistoryResult,
+    SessionListResult, SubscriptionApply, SubscriptionResult,
 };
 pub use automonique_protocol::platform::{
     ActionReceipt, Attachment, Capabilities, ClientId, ControlLease, ControlLeaseId,
     ExecuteRequest, FreshnessState, GetReceiptRequest, IdempotencyKey, PlatformAction,
     PlatformCursor, PlatformMethod, PlatformParameter, PlatformText, PlatformTransport, ReceiptId,
-    ReceiptOutcome, ReleaseControlRequest, ResourceAuthority, ResourceCoordinate, ResourceKind,
-    ResourceRecord, SessionCommandState, SessionFollowUpRequest, SessionHistoryEvent,
+    ReceiptOutcome, ReleaseControlRequest, ResourceAuthority, ResourceCoordinate, ResourceId,
+    ResourceKind, ResourceRecord, SessionCommandState, SessionFollowUpRequest, SessionHistoryEvent,
     SessionHistoryEvidence, SessionHistoryPage, SessionHistoryRole, SessionHistoryRunState,
     SessionHistoryToolState, SessionHistoryUnknownSource, SessionRecord,
 };
-use automonique_protocol::platform_v2::PlatformVersionOffer;
+use automonique_protocol::platform_v2::{
+    PlatformVersionOffer, WorkContextKind, WorkContextQuery, WorkContextRecord,
+    MAX_WORK_CONTEXT_PAGE_ITEMS,
+};
+use automonique_protocol::platform_v2_attention::AttentionSource;
 pub use automonique_protocol::primitives::Revision;
 use url::Url;
 
+use super::platform_attention::{
+    AttentionSourceInventory, PlatformAttentionTarget, ReviewAttentionPresence,
+    MAX_ATTENTION_INVENTORY_RECORDS,
+};
 use super::platform_review::{
     PlatformReviewActionPreview, PlatformReviewCapabilitiesLoad, PlatformReviewLoad,
     PlatformReviewSemantic, PlatformReviewTarget, PlatformReviewUnavailable, ReviewActionReceipt,
@@ -53,6 +62,12 @@ pub struct PlatformRefresh {
     pub attachments: Vec<AttachmentRefresh>,
     pub events: usize,
     pub resynchronized: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformAttentionLoad {
+    pub inventory: AttentionSourceInventory,
+    pub reads: Vec<(AttentionSource, AttentionReadResult)>,
 }
 
 const RETAINED_HISTORY_PAGE_LIMIT: u16 = 128;
@@ -639,6 +654,33 @@ impl PlatformConnection {
     ) -> Result<PlatformReviewCapabilitiesLoad> {
         let mut client = self.review_client()?;
         load_review_capabilities(&mut client, target)
+    }
+
+    /// Load one complete, bounded attention inventory and every source in it
+    /// through the negotiated read-only v2 lane.
+    pub fn attention(
+        &self,
+        target: PlatformAttentionTarget,
+        review: ReviewAttentionPresence,
+    ) -> Result<PlatformAttentionLoad> {
+        let mut client = self.review_client()?;
+        negotiate_review(&mut client)?;
+        let records = load_attention_inventory(&mut client, &target)?;
+        let inventory =
+            AttentionSourceInventory::from_authoritative_records(target.clone(), &records, review)
+                .map_err(|error| ShellDeckError::Connection(error.to_string()))?;
+        let mut reads = Vec::with_capacity(inventory.sources().len());
+        for source in inventory.sources() {
+            let read = client
+                .get_attention_source_snapshot(
+                    source.clone(),
+                    target.project.clone(),
+                    target.user_workspace.clone(),
+                )
+                .map_err(platform_v2_error)?;
+            reads.push((source.clone(), read));
+        }
+        Ok(PlatformAttentionLoad { inventory, reads })
     }
 
     /// Dispatch one already-confirmed review action exactly once.
@@ -1380,6 +1422,59 @@ fn negotiate_review<T>(client: &mut PlatformV2Client<T>) -> Result<()> {
             "platform v2 negotiation refused: {}",
             refusal.category().as_str()
         ))),
+    }
+}
+
+fn load_attention_inventory<T>(
+    client: &mut PlatformV2Client<T>,
+    target: &PlatformAttentionTarget,
+) -> Result<Vec<WorkContextRecord>> {
+    let kinds = vec![
+        WorkContextKind::Project,
+        WorkContextKind::UserWorkspace,
+        WorkContextKind::AttemptWorkspace,
+        WorkContextKind::Session,
+    ];
+    let mut records = Vec::new();
+    let mut after = None;
+    loop {
+        let query = WorkContextQuery::new(
+            kinds.clone(),
+            Vec::new(),
+            Some(target.project.clone()),
+            None,
+            after.clone(),
+            MAX_WORK_CONTEXT_PAGE_ITEMS as u16,
+        )
+        .map_err(|_| ShellDeckError::Connection("attention inventory query is invalid".into()))?;
+        let page = match client
+            .query_work_contexts(query)
+            .map_err(platform_v2_error)?
+        {
+            WorkContextQueryResult::Page(page) => page,
+            WorkContextQueryResult::Resync(_) => {
+                return Err(ShellDeckError::Connection(
+                    "attention inventory cursor expired".into(),
+                ));
+            }
+            WorkContextQueryResult::Refused(refusal) => {
+                return Err(ShellDeckError::Connection(format!(
+                    "attention inventory refused: {}",
+                    refusal.category().as_str()
+                )));
+            }
+        };
+        if records.len().saturating_add(page.items().len()) > MAX_ATTENTION_INVENTORY_RECORDS {
+            return Err(ShellDeckError::Connection(
+                "attention inventory exceeds its client bound".into(),
+            ));
+        }
+        let has_more = page.has_more();
+        after = page.next_cursor().cloned();
+        records.extend(page.into_items());
+        if !has_more {
+            return Ok(records);
+        }
     }
 }
 

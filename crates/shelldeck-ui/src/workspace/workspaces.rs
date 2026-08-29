@@ -4,10 +4,15 @@
 //! catalogue local autorisé, conserve les entités GPUI par workspace et remet
 //! les demandes de création à une frontière d'exécuteur injectée.
 
+use super::platform_attention::{
+    attention_reason_label, platform_attention_state_label, PlatformAttentionPresentation,
+};
 use super::*;
 use adabraka_ui::components::input::InputVariant;
 use adabraka_ui::display::card::Card;
 use adabraka_ui::prelude::{Alert, AlertVariant};
+use shelldeck_core::config::platform::ResourceCoordinate;
+use shelldeck_core::config::platform_attention::PlatformAttentionTarget;
 use shelldeck_core::config::platform_review::PlatformReviewTarget;
 use shelldeck_core::config::workspace_catalog::{
     CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, CheckoutHost, ExternalWorkItem,
@@ -540,10 +545,38 @@ fn terminal_surface(
     }
 }
 
+fn provider_focus_matches(
+    node: &shelldeck_core::workspace_navigation::PaneNode,
+    focus: shelldeck_core::workspace_navigation::WorkspaceFocus,
+    platform_user_workspace_id: &str,
+    session_id: &str,
+) -> bool {
+    match node {
+        shelldeck_core::workspace_navigation::PaneNode::Leaf(leaf) => {
+            leaf.id == focus.pane_id
+                && leaf.tabs.iter().any(|tab| {
+                    tab.id == focus.tab_id
+                        && matches!(
+                            &tab.content,
+                            WorkspaceTabContent::ProviderSession(binding)
+                                if binding.platform_user_workspace_id
+                                    == platform_user_workspace_id
+                                    && binding.session_id == session_id
+                        )
+                })
+        }
+        shelldeck_core::workspace_navigation::PaneNode::Split { first, second, .. } => {
+            provider_focus_matches(first, focus, platform_user_workspace_id, session_id)
+                || provider_focus_matches(second, focus, platform_user_workspace_id, session_id)
+        }
+    }
+}
+
 pub(super) struct WorkspaceHubView {
     catalog: ProjectCatalog,
     navigation: WorkspaceNavigationState,
     attention: BTreeMap<CatalogWorkspaceId, AttentionBoard>,
+    platform_attention: BTreeMap<CatalogWorkspaceId, Vec<PlatformAttentionPresentation>>,
     cards: WorkspaceCardAggregator,
     creation: WorkspaceCreationReducer,
     retained: BTreeMap<CatalogWorkspaceId, Entity<RetainedWorkspaceSurface>>,
@@ -577,6 +610,7 @@ pub(super) struct WorkspaceHubView {
 
 pub(super) enum WorkspaceHubEvent {
     ActiveTerminal(Entity<TerminalView>),
+    OpenPlatformAttention(shelldeck_core::config::platform_attention::PlatformAttentionActivation),
 }
 
 impl EventEmitter<WorkspaceHubEvent> for WorkspaceHubView {}
@@ -588,6 +622,166 @@ impl WorkspaceHubView {
         let active = self.navigation.active()?;
         let mapping = self.catalog.workspace(active).ok()?.platform_mapping()?;
         PlatformReviewTarget::from_exact_mapping(mapping).ok()
+    }
+
+    pub(super) fn active_platform_attention_target(
+        &self,
+    ) -> Option<(CatalogWorkspaceId, PlatformAttentionTarget)> {
+        let (active, target) = self.active_platform_attention_context()?;
+        target.map(|target| (active, target))
+    }
+
+    /// The current local workspace remains meaningful even when its Platform
+    /// mapping was removed or became non-exact. Callers use that distinction
+    /// to retire a formerly authoritative board instead of silently retaining
+    /// it as if the old mapping were still current.
+    pub(super) fn active_platform_attention_context(
+        &self,
+    ) -> Option<(CatalogWorkspaceId, Option<PlatformAttentionTarget>)> {
+        let active = self.navigation.active()?;
+        let target = self
+            .catalog
+            .workspace(active)
+            .ok()
+            .and_then(|workspace| workspace.platform_mapping())
+            .and_then(|mapping| PlatformAttentionTarget::from_exact_mapping(mapping).ok());
+        Some((active, target))
+    }
+
+    pub(super) const fn catalog(&self) -> &ProjectCatalog {
+        &self.catalog
+    }
+
+    pub(super) const fn navigation(&self) -> &WorkspaceNavigationState {
+        &self.navigation
+    }
+
+    pub(super) fn set_platform_attention(
+        &mut self,
+        rows: BTreeMap<CatalogWorkspaceId, Vec<PlatformAttentionPresentation>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.platform_attention = rows;
+        cx.notify();
+    }
+
+    pub(super) fn open_platform_attention_surface(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.switch_to_checked(workspace, cx)
+    }
+
+    pub(super) fn platform_attention_surface_is_visible(
+        &self,
+        workspace: CatalogWorkspaceId,
+    ) -> bool {
+        self.navigation.active() == Some(workspace)
+    }
+
+    pub(super) fn open_retained_provider_pane(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        session: &ResourceCoordinate,
+        focus: shelldeck_core::workspace_navigation::WorkspaceFocus,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(platform_user_workspace_id) = self
+            .catalog
+            .workspace(workspace)
+            .ok()
+            .and_then(|workspace| workspace.platform_mapping())
+            .filter(|mapping| mapping.is_exact())
+            .map(|mapping| mapping.user_workspace.id.as_str())
+        else {
+            return false;
+        };
+        let Some(retained) = self.navigation.workspace(workspace) else {
+            return false;
+        };
+        let mut surface = retained.surface.clone();
+        let exact = surface.root.as_ref().is_some_and(|root| {
+            provider_focus_matches(root, focus, platform_user_workspace_id, session.id.as_str())
+        });
+        let Some(retained_entity) = self.retained.get(&workspace).cloned() else {
+            return false;
+        };
+        let terminal = retained_entity.read(cx).terminal.clone();
+        let native_matches = terminal
+            .read(cx)
+            .tabs
+            .iter()
+            .filter(|tab| tab.id == focus.tab_id.as_uuid())
+            .count();
+        if !exact || native_matches != 1 || !self.switch_to_checked(workspace, cx) {
+            return false;
+        }
+        terminal.update(cx, |terminal, _| {
+            terminal.select_tab(focus.tab_id.as_uuid());
+        });
+        if terminal
+            .read(cx)
+            .tabs
+            .get(terminal.read(cx).active_tab_index())
+            .is_none_or(|tab| tab.id != focus.tab_id.as_uuid())
+        {
+            return false;
+        }
+        surface.focus = Some(focus);
+        self.navigation
+            .reduce(
+                &self.catalog,
+                WorkspaceNavigationAction::UpdateSurface {
+                    id: workspace,
+                    surface,
+                },
+            )
+            .is_ok()
+    }
+
+    pub(super) fn retained_provider_pane_is_visible(
+        &self,
+        workspace: CatalogWorkspaceId,
+        session: &ResourceCoordinate,
+        focus: shelldeck_core::workspace_navigation::WorkspaceFocus,
+        cx: &App,
+    ) -> bool {
+        if self.navigation.active() != Some(workspace) {
+            return false;
+        }
+        let Some(platform_user_workspace_id) = self
+            .catalog
+            .workspace(workspace)
+            .ok()
+            .and_then(|workspace| workspace.platform_mapping())
+            .filter(|mapping| mapping.is_exact())
+            .map(|mapping| mapping.user_workspace.id.as_str())
+        else {
+            return false;
+        };
+        let surface_matches = self
+            .navigation
+            .workspace(workspace)
+            .is_some_and(|retained| {
+                retained.surface.focus == Some(focus)
+                    && retained.surface.root.as_ref().is_some_and(|root| {
+                        provider_focus_matches(
+                            root,
+                            focus,
+                            platform_user_workspace_id,
+                            session.id.as_str(),
+                        )
+                    })
+            });
+        let native_matches = self.retained.get(&workspace).is_some_and(|retained| {
+            let terminal = retained.read(cx).terminal.read(cx);
+            terminal
+                .tabs
+                .get(terminal.active_tab_index())
+                .is_some_and(|tab| tab.id == focus.tab_id.as_uuid())
+        });
+        surface_matches && native_matches
     }
 
     pub(super) fn configure_terminals(
@@ -734,6 +928,7 @@ impl WorkspaceHubView {
             catalog,
             navigation,
             attention,
+            platform_attention: BTreeMap::new(),
             cards: WorkspaceCardAggregator::default(),
             creation: WorkspaceCreationReducer::default(),
             retained,

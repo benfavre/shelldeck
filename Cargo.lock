@@ -7348,6 +7348,7 @@ dependencies = [
  "anyhow",
  "async-io",
  "async-process",
+ "automonique-protocol",
  "chrono",
  "futures-lite 2.6.1",
  "image",

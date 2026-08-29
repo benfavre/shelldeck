@@ -489,6 +489,7 @@ impl Workspace {
         self.monique_processes = None;
         self.fleet_request_epoch = self.fleet_request_epoch.wrapping_add(1);
         self.fleet_snapshot = None;
+        self.clear_platform_attention(cx);
         self.fleet_view.update(cx, |view, cx| {
             view.reset();
             cx.notify();
