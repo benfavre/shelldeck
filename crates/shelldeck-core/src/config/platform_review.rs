@@ -34,6 +34,16 @@ pub use custody::{
     ReviewCustodyRecovery,
 };
 
+mod worktree;
+pub use worktree::{
+    advertised_staging_capability, review_safe_preview, review_safe_text, review_staging_control,
+    ReviewPreviewWithheld, ReviewSafeHtml, ReviewSafeImage, ReviewSafePreview, ReviewSafeText,
+    ReviewStagingProposal, ReviewStagingWithheld, ReviewWorktreeFile, ReviewWorktreeHunk,
+    ReviewWorktreeLane, ReviewWorktreeLaneGroup, ReviewWorktreeProjection, MAX_SAFE_PREVIEW_BYTES,
+    MAX_SAFE_PREVIEW_EDGE, MAX_SAFE_PREVIEW_LINES, MAX_SAFE_PREVIEW_LINE_CHARS,
+    MAX_SAFE_PREVIEW_PIXELS, SAFE_PREVIEW_BOX_EDGE,
+};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlatformReviewTarget {
     pub project: ProjectId,
