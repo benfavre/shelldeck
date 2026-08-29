@@ -24,17 +24,24 @@ use shelldeck_core::config::platform::{
 use shelldeck_core::config::platform_review::{
     ConflictResolution, PlatformReviewActionPreview, PlatformReviewCapabilitiesLoad,
     PlatformReviewConfirmationCoordinates, PlatformReviewCustodyStore, PlatformReviewLoad,
-    PlatformReviewRenderSemantic, PlatformReviewSemantic, PlatformReviewTarget, ReviewAction,
-    ReviewAnchorSemantic, ReviewCustodyRecovery, ReviewPreviewWithheld, ReviewProposalKind,
-    ReviewReceiptOutcome, ReviewSafePreview, ReviewSafeText, ReviewStagingWithheld,
-    ReviewWorktreeFile, ReviewWorktreeLane, ReviewWorktreeLaneGroup, ReviewWorktreeProjection,
+    PlatformReviewNote, PlatformReviewNoteStore, PlatformReviewRenderSemantic,
+    PlatformReviewSemantic, PlatformReviewTarget, ReviewAction, ReviewAnchorSemantic,
+    ReviewCustodyRecovery, ReviewPreviewWithheld, ReviewProposalKind, ReviewReceiptOutcome,
+    ReviewSafePreview, ReviewSafeText, ReviewStagingWithheld, ReviewWorktreeFile,
+    ReviewWorktreeLane, ReviewWorktreeLaneGroup, ReviewWorktreeProjection,
 };
 
 use crate::icons::lucide_icon;
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
-use crate::workspace::platform_attention::{attention_reason_label, PlatformAttentionPresentation};
+use crate::workspace::platform_attention::{
+    attention_reason_label, platform_attention_state_label, PlatformAttentionPresentation,
+};
+
+/// Bound on the chronological activity rows drawn at once. The full count
+/// stays visible in the section badge so nothing is silently dropped.
+const MAX_ATTENTION_ACTIVITY_ROWS: usize = 8;
 
 #[derive(Debug, Clone)]
 pub enum FleetViewEvent {
@@ -122,6 +129,34 @@ fn review_rerun_is_visible(
                 && capability.authority().kind() == check.authority.kind
                 && capability.authority().id().as_str() == check.authority.id
         })
+}
+
+/// Why a preparation was refused, so the surface can say which fence stopped
+/// it instead of blaming the snapshot for a custody problem.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReviewPrepareRefusal {
+    Preview,
+    Custody,
+    Note,
+}
+
+impl ReviewPrepareRefusal {
+    fn detail(self) -> String {
+        match self {
+            Self::Preview => t!("fleet.review.invalid_preview"),
+            Self::Custody => t!("fleet.review.custody_failed"),
+            Self::Note => t!("fleet.review.note_failed"),
+        }
+        .to_string()
+    }
+}
+
+/// Every review mutation Fleet exposes now crosses the durable dispatch
+/// fence, so an unavailable custody store disables preparation outright
+/// rather than letting a comment or an approval reach the provider outside
+/// the at-most-once boundary.
+const fn review_preparation_gate(busy: bool, unresolved: bool, custody_available: bool) -> bool {
+    !busy && !unresolved && custody_available
 }
 
 const fn review_rerun_control_gate(
@@ -312,6 +347,8 @@ pub struct FleetView {
     review_capabilities: Option<PlatformReviewCapabilitiesLoad>,
     review_target: Option<PlatformReviewTarget>,
     review_custody: Option<PlatformReviewCustodyStore>,
+    review_notes: Option<PlatformReviewNoteStore>,
+    review_note_rows: Vec<PlatformReviewNote>,
     cockpit: PlatformCockpitState,
     search_state: Entity<InputState>,
     search_query: String,
@@ -338,12 +375,15 @@ pub struct FleetView {
 impl FleetView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let review_custody = PlatformReviewCustodyStore::open_default().ok();
+        let review_notes = PlatformReviewNoteStore::open_default().ok();
         Self {
             snapshot: None,
             review: None,
             review_capabilities: None,
             review_target: None,
             review_custody,
+            review_notes,
+            review_note_rows: Vec::new(),
             cockpit: PlatformCockpitState::default(),
             search_state: cx.new(InputState::new),
             search_query: String::new(),
@@ -443,6 +483,16 @@ impl FleetView {
         self.review = review;
         self.review_capabilities = capabilities;
         self.restore_review_custody();
+        self.refresh_review_notes();
+    }
+
+    /// Reload the durable notes for the exact active target. A read failure
+    /// shows no notes rather than a partial or foreign list.
+    fn refresh_review_notes(&mut self) {
+        self.review_note_rows = match (&self.review_notes, &self.review_target) {
+            (Some(store), Some(target)) => store.notes(target).unwrap_or_default(),
+            _ => Vec::new(),
+        };
     }
 
     fn available_review_capabilities(
@@ -718,54 +768,132 @@ impl FleetView {
         }
     }
 
-    fn prepare_review_comment(&mut self) -> Result<(), &'static str> {
+    /// Reserve the inert preview in durable custody before it may be
+    /// confirmed. Comments, approvals and reruns share this one fence: none of
+    /// them reaches the provider without a record that survives restart.
+    fn admit_review_preview(
+        &mut self,
+        preview: PlatformReviewActionPreview,
+    ) -> Result<(), ReviewPrepareRefusal> {
+        self.review_custody
+            .as_ref()
+            .ok_or(ReviewPrepareRefusal::Custody)?
+            .prepare(&preview)
+            .map_err(|_| ReviewPrepareRefusal::Custody)?;
+        self.pending_review_preview = Some(preview);
+        Ok(())
+    }
+
+    fn prepare_review_comment(&mut self) -> Result<(), ReviewPrepareRefusal> {
         let target = self
             .review_target
             .clone()
-            .ok_or("exact review target is unavailable")?;
+            .ok_or(ReviewPrepareRefusal::Preview)?;
         let anchor = self
             .selected_review_anchor
             .clone()
-            .ok_or("exact review anchor is unavailable")?;
+            .ok_or(ReviewPrepareRefusal::Preview)?;
         let body = self.review_comment_value.clone();
         let preview = PlatformReviewActionPreview::add_comment(
             target,
-            self.available_review()?,
+            self.available_review()
+                .map_err(|_| ReviewPrepareRefusal::Preview)?,
             &anchor,
             &body,
-        )?;
-        self.pending_review_preview = Some(preview);
-        Ok(())
+        )
+        .map_err(|_| ReviewPrepareRefusal::Preview)?;
+        self.admit_review_preview(preview)
     }
 
-    fn prepare_review_approval(&mut self) -> Result<(), &'static str> {
+    /// Promote one persisted note into the typed comment mutation. The note is
+    /// never re-anchored: a snapshot the note was not written against refuses.
+    fn prepare_review_note_comment(&mut self, id: &str) -> Result<(), ReviewPrepareRefusal> {
         let target = self
             .review_target
             .clone()
-            .ok_or("exact review target is unavailable")?;
-        let preview = PlatformReviewActionPreview::approve(target, self.available_review()?)?;
-        self.pending_review_preview = Some(preview);
-        Ok(())
+            .ok_or(ReviewPrepareRefusal::Preview)?;
+        let review = self
+            .available_review()
+            .map_err(|_| ReviewPrepareRefusal::Preview)?;
+        let note = self
+            .review_note_rows
+            .iter()
+            .find(|note| note.id == id)
+            .filter(|note| note.is_actionable(review))
+            .ok_or(ReviewPrepareRefusal::Note)?
+            .clone();
+        let preview =
+            PlatformReviewActionPreview::add_comment(target, review, &note.anchor, &note.body)
+                .map_err(|_| ReviewPrepareRefusal::Preview)?;
+        self.admit_review_preview(preview)
     }
 
-    fn prepare_review_check_rerun(&mut self, check_id: &str) -> Result<(), &'static str> {
+    fn prepare_review_approval(&mut self) -> Result<(), ReviewPrepareRefusal> {
         let target = self
             .review_target
             .clone()
-            .ok_or("exact review target is unavailable")?;
+            .ok_or(ReviewPrepareRefusal::Preview)?;
+        let preview = PlatformReviewActionPreview::approve(
+            target,
+            self.available_review()
+                .map_err(|_| ReviewPrepareRefusal::Preview)?,
+        )
+        .map_err(|_| ReviewPrepareRefusal::Preview)?;
+        self.admit_review_preview(preview)
+    }
+
+    fn prepare_review_check_rerun(&mut self, check_id: &str) -> Result<(), ReviewPrepareRefusal> {
+        let target = self
+            .review_target
+            .clone()
+            .ok_or(ReviewPrepareRefusal::Preview)?;
         let preview = PlatformReviewActionPreview::rerun_check(
             target,
-            self.available_review()?,
-            self.available_review_capabilities()?,
+            self.available_review()
+                .map_err(|_| ReviewPrepareRefusal::Preview)?,
+            self.available_review_capabilities()
+                .map_err(|_| ReviewPrepareRefusal::Preview)?,
             check_id,
-        )?;
-        self.review_custody
+        )
+        .map_err(|_| ReviewPrepareRefusal::Preview)?;
+        self.admit_review_preview(preview)
+    }
+
+    /// Persist one line-anchored note against the exact active snapshot.
+    fn save_review_note(&mut self) -> Result<(), ReviewPrepareRefusal> {
+        let target = self
+            .review_target
+            .clone()
+            .ok_or(ReviewPrepareRefusal::Preview)?;
+        let anchor = self
+            .selected_review_anchor
+            .clone()
+            .ok_or(ReviewPrepareRefusal::Preview)?;
+        let body = self.review_comment_value.clone();
+        let review = self
+            .available_review()
+            .map_err(|_| ReviewPrepareRefusal::Preview)?;
+        self.review_notes
             .as_ref()
-            .ok_or("review custody is unavailable")?
-            .prepare(&preview)
-            .map_err(|_| "review custody refused the preview")?;
-        self.pending_review_preview = Some(preview);
+            .ok_or(ReviewPrepareRefusal::Note)?
+            .add(&target, review, &anchor, &body)
+            .map_err(|_| ReviewPrepareRefusal::Note)?;
+        self.refresh_review_notes();
         Ok(())
+    }
+
+    fn set_review_note_selected(&mut self, id: &str, selected: bool) {
+        if let (Some(store), Some(target)) = (&self.review_notes, &self.review_target) {
+            let _ = store.set_selected(target, id, selected);
+        }
+        self.refresh_review_notes();
+    }
+
+    fn remove_review_note(&mut self, id: &str) {
+        if let (Some(store), Some(target)) = (&self.review_notes, &self.review_target) {
+            let _ = store.remove(target, id);
+        }
+        self.refresh_review_notes();
     }
 
     fn dispatch_review_preview(&mut self) -> Option<PlatformReviewActionPreview> {
@@ -786,18 +914,21 @@ impl FleetView {
                 ));
                 return None;
             }
-            if self
-                .review_custody
-                .as_ref()?
-                .mark_dispatched(preview)
-                .is_err()
-            {
-                self.review_receipt = Some((
-                    t!("fleet.review.state_refused").to_string(),
-                    t!("fleet.review.custody_failed").to_string(),
-                ));
-                return None;
-            }
+        }
+        // The durable dispatch fence is crossed for every action family, not
+        // only the confirmed ones: a comment or an approval that is posted
+        // once must also be recoverable as posted once after a restart.
+        if self
+            .review_custody
+            .as_ref()?
+            .mark_dispatched(preview)
+            .is_err()
+        {
+            self.review_receipt = Some((
+                t!("fleet.review.state_refused").to_string(),
+                t!("fleet.review.custody_failed").to_string(),
+            ));
+            return None;
         }
         let preview = self.pending_review_preview.take()?;
         self.operation_busy = true;
@@ -813,10 +944,10 @@ impl FleetView {
         let Some(preview) = self.pending_review_preview.take() else {
             return;
         };
-        if preview.confirmation().is_some() {
-            if let Some(store) = &self.review_custody {
-                let _ = store.cancel_prepared(&preview);
-            }
+        if let Some(store) = &self.review_custody {
+            // Only a record that provably never crossed the fence is removed;
+            // custody itself refuses anything already dispatched.
+            let _ = store.cancel_prepared(&preview);
         }
     }
 
@@ -827,44 +958,42 @@ impl FleetView {
     ) {
         let keep_lookup = result.requires_lookup();
         let preview = result.preview().clone();
-        if preview.confirmation().is_some() {
-            let persisted = match &result {
-                PlatformReviewActionResult::Receipt { receipt, .. } => self
-                    .review_custody
-                    .as_ref()
-                    .ok_or("review custody is unavailable")
-                    .and_then(|store| {
-                        store
-                            .record_receipt(&preview, receipt)
-                            .map_err(|_| "review receipt custody failed")
-                    }),
-                PlatformReviewActionResult::Refused {
-                    category,
-                    explanation,
-                    ..
-                } => self
-                    .review_custody
-                    .as_ref()
-                    .ok_or("review custody is unavailable")
-                    .and_then(|store| {
-                        store
-                            .record_refusal(&preview, category, explanation)
-                            .map_err(|_| "review refusal custody failed")
-                    }),
-                PlatformReviewActionResult::ReconciliationPending { .. } => Ok(()),
-            };
-            if let Err(category) = persisted {
-                self.review_receipt = Some((
-                    t!("fleet.review.state_ambiguous").to_string(),
-                    category.to_owned(),
-                ));
-                self.unresolved_review_actions
-                    .retain(|candidate| candidate.idempotency_key() != preview.idempotency_key());
-                self.unresolved_review_actions.push(preview);
-                self.operation_busy = false;
-                self.loading = false;
-                return;
-            }
+        let persisted = match &result {
+            PlatformReviewActionResult::Receipt { receipt, .. } => self
+                .review_custody
+                .as_ref()
+                .ok_or("review custody is unavailable")
+                .and_then(|store| {
+                    store
+                        .record_receipt(&preview, receipt)
+                        .map_err(|_| "review receipt custody failed")
+                }),
+            PlatformReviewActionResult::Refused {
+                category,
+                explanation,
+                ..
+            } => self
+                .review_custody
+                .as_ref()
+                .ok_or("review custody is unavailable")
+                .and_then(|store| {
+                    store
+                        .record_refusal(&preview, category, explanation)
+                        .map_err(|_| "review refusal custody failed")
+                }),
+            PlatformReviewActionResult::ReconciliationPending { .. } => Ok(()),
+        };
+        if let Err(category) = persisted {
+            self.review_receipt = Some((
+                t!("fleet.review.state_ambiguous").to_string(),
+                category.to_owned(),
+            ));
+            self.unresolved_review_actions
+                .retain(|candidate| candidate.idempotency_key() != preview.idempotency_key());
+            self.unresolved_review_actions.push(preview);
+            self.operation_busy = false;
+            self.loading = false;
+            return;
         }
         match result {
             PlatformReviewActionResult::Receipt { receipt, .. } => {
@@ -947,6 +1076,7 @@ impl FleetView {
         self.review_comment_value.clear();
         self.selected_review_anchor = None;
         self.selected_review_comments.clear();
+        self.review_note_rows.clear();
         self.cancel_pending_review_preview();
         self.unresolved_review_actions.clear();
         self.review_receipt = None;
@@ -1014,49 +1144,118 @@ impl FleetView {
         self.platform_attention = rows;
     }
 
+    /// Chronological attention activity, newest first.
+    ///
+    /// The rows arrive already ordered on the authoritative observation
+    /// instant; this surface only bounds how many of them it draws. Each row
+    /// carries the exact activation token, so opening it re-resolves the
+    /// workspace, session and pane against the live catalogue instead of
+    /// following a destination captured when the row was built.
     fn render_platform_attention(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.platform_attention.is_empty() {
             return div().into_any_element();
         }
         let entity = cx.entity();
-        let mut row = div()
+        let mut column = div()
             .flex()
-            .items_center()
-            .gap(px(6.0))
+            .flex_col()
+            .gap(px(4.0))
             .px(px(12.0))
             .py(px(7.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(
-                Badge::new(t!("platform_attention.title").to_string())
-                    .variant(BadgeVariant::Outline),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        Badge::new(t!("platform_attention.activity_title").to_string())
+                            .variant(BadgeVariant::Outline),
+                    )
+                    .child(
+                        Badge::new(self.platform_attention.len().to_string())
+                            .variant(BadgeVariant::Secondary),
+                    ),
             );
-        for item in &self.platform_attention {
+        for item in self
+            .platform_attention
+            .iter()
+            .take(MAX_ATTENTION_ACTIVITY_ROWS)
+        {
             let activation = item.activation;
             let entity = entity.clone();
-            row = row.child(
-                Button::new(
-                    SharedString::from(format!(
-                        "fleet-attention-{}-{}",
-                        activation.item.uuid(),
-                        activation.item_revision.get()
-                    )),
-                    attention_reason_label(item.reason),
+            let mut row = div().flex().items_center().gap(px(6.0)).min_w(px(0.0));
+            row = row
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .w(px(76.0))
+                        .truncate()
+                        .text_size(px(10.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(crate::i18n::rel_time(item.observed_at_ms as f64)),
                 )
-                .size(ButtonSize::Sm)
-                .variant(if item.unread {
-                    ButtonVariant::Default
-                } else {
-                    ButtonVariant::Ghost
-                })
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |_this, cx| {
-                        cx.emit(FleetViewEvent::OpenAttention(activation));
-                    });
-                }),
+                .child(
+                    div().flex_shrink_0().child(
+                        Badge::new(platform_attention_state_label(item.state))
+                            .variant(BadgeVariant::Outline),
+                    ),
+                )
+                .child(
+                    Button::new(
+                        SharedString::from(format!(
+                            "fleet-attention-{}-{}",
+                            activation.item.uuid(),
+                            activation.item_revision.get()
+                        )),
+                        attention_reason_label(item.reason),
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(if item.unread {
+                        ButtonVariant::Default
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |_this, cx| {
+                            cx.emit(FleetViewEvent::OpenAttention(activation));
+                        });
+                    }),
+                );
+            if !item.workspace_label.is_empty() {
+                row = row.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_size(px(10.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(
+                            t!(
+                                "platform_attention.activity_workspace",
+                                workspace = item.workspace_label.clone()
+                            )
+                            .to_string(),
+                        ),
+                );
+            }
+            column = column.child(row);
+        }
+        if let Some(hidden) = self
+            .platform_attention
+            .len()
+            .checked_sub(MAX_ATTENTION_ACTIVITY_ROWS)
+            .filter(|hidden| *hidden > 0)
+        {
+            column = column.child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("platform_attention.activity_more", count = hidden).to_string()),
             );
         }
-        row.into_any_element()
+        column.into_any_element()
     }
 
     fn render_header(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -1422,7 +1621,13 @@ impl FleetView {
     ) -> AnyElement {
         let entity = cx.entity();
         let unresolved = self.current_unresolved_review_action().is_some();
-        let can_prepare = !self.operation_busy && !unresolved;
+        let can_anchor = !self.operation_busy && !unresolved;
+        let can_prepare = review_preparation_gate(
+            self.operation_busy,
+            unresolved,
+            self.review_custody.is_some(),
+        );
+        let can_note = can_anchor && self.review_notes.is_some();
         let selected_anchor = self.selected_review_anchor.as_ref();
         let projection = ReviewWorktreeProjection::new(
             review,
@@ -1437,7 +1642,7 @@ impl FleetView {
                     group.lane,
                     file,
                     selected_anchor,
-                    can_prepare,
+                    can_anchor,
                     &entity,
                 ));
             }
@@ -1522,11 +1727,149 @@ impl FleetView {
             );
         }
 
+        // Durable line-anchored notes. They are local drafts: nothing here
+        // observes the server and nothing here dispatches. A note keeps the
+        // snapshot revision it was written against, so a newer snapshot makes
+        // it explicitly stale instead of quietly moving it to another line.
+        let mut notes = div().flex().flex_col().gap(px(5.0));
+        let mut selected_notes = 0_usize;
+        for note in &self.review_note_rows {
+            let actionable = note.is_actionable(review);
+            if note.selected && actionable {
+                selected_notes += 1;
+            }
+            let select_entity = entity.clone();
+            let prepare_entity = entity.clone();
+            let delete_entity = entity.clone();
+            let select_id = note.id.clone();
+            let prepare_id = note.id.clone();
+            let delete_id = note.id.clone();
+            let next_selected = !note.selected;
+            let mut actions = div().flex().items_center().flex_wrap().gap(px(5.0)).child(
+                Button::new(
+                    ElementId::from(SharedString::from(format!(
+                        "review-note-select-{}",
+                        note.id
+                    ))),
+                    if note.selected {
+                        t!("fleet.review.comment_selected").to_string()
+                    } else {
+                        t!("fleet.review.comment_select").to_string()
+                    },
+                )
+                .size(ButtonSize::Sm)
+                .variant(if note.selected {
+                    ButtonVariant::Default
+                } else {
+                    ButtonVariant::Outline
+                })
+                .disabled(!can_anchor)
+                .on_click(move |_, _, cx| {
+                    select_entity.update(cx, |this, cx| {
+                        this.set_review_note_selected(&select_id, next_selected);
+                        cx.notify();
+                    });
+                }),
+            );
+            if actionable {
+                actions = actions.child(
+                    Button::new(
+                        ElementId::from(SharedString::from(format!(
+                            "review-note-prepare-{}",
+                            note.id
+                        ))),
+                        t!("fleet.review.note_prepare").to_string(),
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Outline)
+                    .disabled(!can_prepare)
+                    .on_click(move |_, _, cx| {
+                        prepare_entity.update(cx, |this, cx| {
+                            if let Err(refusal) = this.prepare_review_note_comment(&prepare_id) {
+                                this.review_receipt = Some((
+                                    t!("fleet.review.state_refused").to_string(),
+                                    refusal.detail(),
+                                ));
+                            }
+                            cx.notify();
+                        });
+                    }),
+                );
+            } else {
+                actions = actions.child(
+                    Badge::new(t!("fleet.review.note_stale").to_string())
+                        .variant(BadgeVariant::Secondary),
+                );
+            }
+            actions = actions.child(
+                Button::new(
+                    ElementId::from(SharedString::from(format!(
+                        "review-note-delete-{}",
+                        note.id
+                    ))),
+                    t!("fleet.review.note_delete").to_string(),
+                )
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Ghost)
+                .disabled(!can_anchor)
+                .on_click(move |_, _, cx| {
+                    delete_entity.update(cx, |this, cx| {
+                        this.remove_review_note(&delete_id);
+                        cx.notify();
+                    });
+                }),
+            );
+            notes = notes.child(
+                div()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .p(px(6.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .rounded(px(6.0))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(
+                                t!(
+                                    "fleet.review.note",
+                                    file = note.anchor.file_id.as_str(),
+                                    side = note.anchor.side.as_str(),
+                                    line = note.anchor.line,
+                                    revision = note.captured_revision.get(),
+                                    body = note.body.as_str()
+                                )
+                                .to_string(),
+                            ),
+                    )
+                    .child(actions),
+            );
+        }
+        if selected_notes > 0 {
+            // The selection is durable and ready, but Platform v2 advertises
+            // no capability for delivering it to the authorized session, so
+            // Fleet states that instead of offering a control that cannot
+            // honour its own at-most-once contract.
+            notes = notes.child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::warning())
+                    .child(t!("fleet.review.batch_blocked", count = selected_notes).to_string()),
+            );
+        }
+
         let comment_entity = entity.clone();
         let approve_entity = entity.clone();
+        let note_entity = entity.clone();
         let can_comment = can_prepare
             && selected_anchor.is_some()
             && !self.review_comment_value.trim().is_empty();
+        let can_save_note =
+            can_note && selected_anchor.is_some() && !self.review_comment_value.trim().is_empty();
         let selected_label = selected_anchor.map_or_else(
             || t!("fleet.review.anchor_none").to_string(),
             |anchor| {
@@ -1572,10 +1915,10 @@ impl FleetView {
                 .disabled(!can_prepare)
                 .on_click(move |_, _, cx| {
                     check_entity.update(cx, |this, cx| {
-                        if this.prepare_review_check_rerun(&check_id).is_err() {
+                        if let Err(refusal) = this.prepare_review_check_rerun(&check_id) {
                             this.review_receipt = Some((
                                 t!("fleet.review.state_refused").to_string(),
-                                t!("fleet.review.invalid_preview").to_string(),
+                                refusal.detail(),
                             ));
                         }
                         cx.notify();
@@ -1613,7 +1956,7 @@ impl FleetView {
                         Input::new(&self.review_comment_state)
                             .size(InputSize::Sm)
                             .placeholder(t!("fleet.review.comment_placeholder").to_string())
-                            .disabled(!can_prepare)
+                            .disabled(!can_anchor)
                             .on_change({
                                 let entity = entity.clone();
                                 move |value, cx| {
@@ -1635,15 +1978,39 @@ impl FleetView {
                         .disabled(!can_comment)
                         .on_click(move |_, _, cx| {
                             comment_entity.update(cx, |this, cx| {
-                                if this.prepare_review_comment().is_err() {
+                                if let Err(refusal) = this.prepare_review_comment() {
                                     this.review_receipt = Some((
                                         t!("fleet.review.state_refused").to_string(),
-                                        t!("fleet.review.invalid_preview").to_string(),
+                                        refusal.detail(),
                                     ));
                                 }
                                 cx.notify();
                             });
                         }),
+                    )
+                    .child(
+                        Button::new("save-review-note", t!("fleet.review.save_note").to_string())
+                            .size(ButtonSize::Sm)
+                            .variant(ButtonVariant::Outline)
+                            .disabled(!can_save_note)
+                            .on_click(move |_, _, cx| {
+                                note_entity.update(cx, |this, cx| {
+                                    match this.save_review_note() {
+                                        Ok(()) => {
+                                            this.review_comment_value.clear();
+                                            this.review_comment_state
+                                                .update(cx, |state, cx| state.reset(cx));
+                                        }
+                                        Err(refusal) => {
+                                            this.review_receipt = Some((
+                                                t!("fleet.review.state_refused").to_string(),
+                                                refusal.detail(),
+                                            ));
+                                        }
+                                    }
+                                    cx.notify();
+                                });
+                            }),
                     )
                     .child(
                         Button::new(
@@ -1655,10 +2022,10 @@ impl FleetView {
                         .disabled(!can_prepare || !review.approval_is_actionable())
                         .on_click(move |_, _, cx| {
                             approve_entity.update(cx, |this, cx| {
-                                if this.prepare_review_approval().is_err() {
+                                if let Err(refusal) = this.prepare_review_approval() {
                                     this.review_receipt = Some((
                                         t!("fleet.review.state_refused").to_string(),
-                                        t!("fleet.review.invalid_preview").to_string(),
+                                        refusal.detail(),
                                     ));
                                 }
                                 cx.notify();
@@ -1706,6 +2073,11 @@ impl FleetView {
                                 review.comments.len(),
                             ))
                             .child(comments)
+                            .child(Self::review_column_title(
+                                t!("fleet.review.notes_title").to_string(),
+                                self.review_note_rows.len(),
+                            ))
+                            .child(notes)
                             .child(Self::review_column_title(
                                 t!("fleet.review.attention_title").to_string(),
                                 review.attention_events.len(),
@@ -1848,11 +2220,15 @@ impl FleetView {
         }
     }
 
+    /// `can_anchor` gates line selection only. Selecting an anchor prepares
+    /// nothing: it feeds both the durable note and the typed comment, so it
+    /// stays available even when the custody store that fences a mutation is
+    /// not.
     fn render_review_file(
         lane: ReviewWorktreeLane,
         file: &ReviewWorktreeFile,
         selected_anchor: Option<&ReviewAnchorSemantic>,
-        can_prepare: bool,
+        can_anchor: bool,
         entity: &Entity<Self>,
     ) -> AnyElement {
         let mut hunks = div().flex().flex_col().gap(px(4.0));
@@ -1884,7 +2260,7 @@ impl FleetView {
                         } else {
                             ButtonVariant::Outline
                         })
-                        .disabled(!can_prepare)
+                        .disabled(!can_anchor)
                         .on_click(move |_, _, cx| {
                             select_entity.update(cx, |this, cx| {
                                 this.selected_review_anchor = Some(anchor_for_click.clone());
@@ -3421,9 +3797,9 @@ mod review_render_tests {
     use super::{
         exact_review_target_index, fleet_uses_compact_layout, review_anchor_element_id,
         review_dispatch_directive, review_lane_label_key, review_lane_variant,
-        review_preview_withheld_key, review_rerun_control_gate, review_staging_withheld_key,
-        same_exact_review_snapshot, semantic_words, visible_review_lanes, BadgeVariant,
-        ReviewDispatchDirective,
+        review_preparation_gate, review_preview_withheld_key, review_rerun_control_gate,
+        review_staging_withheld_key, same_exact_review_snapshot, semantic_words,
+        visible_review_lanes, BadgeVariant, ReviewDispatchDirective, ReviewPrepareRefusal,
     };
     use shelldeck_core::config::platform_review::PlatformReviewTarget;
     use shelldeck_core::config::workspace_catalog::{
@@ -3743,5 +4119,37 @@ mod review_render_tests {
             ids[0],
             "the identity must be stable across renders"
         );
+    }
+
+    // SDTEST-1859 — SDUC-495
+    #[test]
+    fn preparation_requires_custody_for_every_action_family() {
+        // Idle and unblocked is no longer enough: comments and approvals used
+        // to prepare on `!busy && !unresolved` alone, which let them reach the
+        // provider with no durable record of having been sent once.
+        assert!(!review_preparation_gate(false, false, false));
+        assert!(review_preparation_gate(false, false, true));
+        assert!(!review_preparation_gate(true, false, true));
+        assert!(!review_preparation_gate(false, true, true));
+        // The rerun gate stays strictly narrower: it also needs the server
+        // capability that only the rerun family has.
+        assert!(!review_rerun_control_gate(false, true));
+
+        // A custody refusal must never be reported as a moved snapshot: the
+        // user's next action differs (retry later vs. re-anchor).
+        let details = [
+            ReviewPrepareRefusal::Preview.detail(),
+            ReviewPrepareRefusal::Custody.detail(),
+            ReviewPrepareRefusal::Note.detail(),
+        ];
+        assert_eq!(
+            details
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3,
+            "{details:?}"
+        );
+        assert!(details.iter().all(|detail| !detail.trim().is_empty()));
     }
 }

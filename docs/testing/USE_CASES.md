@@ -2864,7 +2864,15 @@ UI turn before durable read custody. User, Support, Settings, or an unrelated
 in-flight transition cannot consume unread while the destination is hidden. Same-process
 OS notification handles remain alive through activation/dismissal and route the
 same tuple back through that current-catalog resolver. A failed durable
-notification reservation suppresses the toast. Native cold-launch/OS launch
+notification reservation suppresses the toast, whose body names the destination
+workspace and degrades to the reason alone when the catalog no longer names it.
+Attention is also presented as one chronological activity list ordered on the
+authoritative `observed_at_ms`, never on poll arrival or source order; equal
+observations fall back to the item revision and then to the authoritative
+`(source,item)` key, so the sequence is identical in every process and stable
+across workspaces. A hidden source contributes no chronology. Each row carries
+only the activation token and re-resolves its workspace, session and pane
+through the same resolver when opened. Native cold-launch/OS launch
 protocol remains intentionally outside this milestone.
 Delivery checks, review status, merge readiness, and delivery state carry their
 observed authority and freshness. Once Fresh, they cannot be overwritten by a
@@ -2892,10 +2900,18 @@ The persisted local workspace-review schema remains independent and unmigrated.
 For an exactly reconciled Platform project/workspace, ShellDeck expands the
 canonical review snapshot into bounded files, hunks, conflicts, safe preview
 metadata, attributed comments, and attention chronology. A user may select an
-exact hunk line and prepare one typed comment or review approval. A terminal CI
-check exposes rerun only when a separately fetched server capability matches
-the exact project, workspace, snapshot revision, check revision, authority,
-confirmation digest, and receipt-correlation digest. Batch-to-agent, Git
+exact hunk line and either persist a durable line-anchored note or prepare one
+typed comment or review approval. A note retains the file, hunk, side, line and
+captured snapshot revision it was written against, plus a durable
+batch-delivery selection; a note captured on a superseded snapshot is retained
+but reported non-actionable rather than re-anchored, and it is stored under the
+same bounded, no-follow, cross-process-locked private boundary as review
+custody. Batch delivery of a selection to the authorized session remains
+unexposed and is stated as unavailable, because `ReviewCapabilities` advertises
+only check reruns. A terminal CI check exposes rerun only when a separately
+fetched server capability matches the exact project, workspace, snapshot
+revision, check revision, authority, confirmation digest, and
+receipt-correlation digest. Batch-to-agent, Git
 proposal, and merge preview constructors remain inert core semantics: Fleet
 does not expose those controls until their own explicit server capabilities and
 custody lanes exist. Every exposed confirmation names the exact workspace and
@@ -2927,10 +2943,13 @@ a declared size or raster above the client budget, and a kind disagreeing with
 its media type or content are each withheld with a distinct localized reason
 present in both shipped locales.
 
-Before a confirmed rerun crosses the network, ShellDeck persists the inert
-preview and then a dispatched marker under a bounded, no-follow,
-cross-process-locked custody store. Accepted, unknown, or transport-ambiguous
-outcomes retain the original idempotency key and use correlated receipt lookup
+Before any exposed review mutation crosses the network — comment, approval or
+confirmed rerun — ShellDeck persists the inert preview and then a dispatched
+marker under a bounded, no-follow, cross-process-locked custody store. A
+workspace owns at most one non-terminal effect at a time, and preparation is
+refused outright when that store is unavailable. Accepted, unknown, or
+transport-ambiguous outcomes retain the original idempotency key and use
+correlated receipt lookup
 only; restart never reposts a dispatched action, while an unconfirmed prepared
 preview is reported as never started. Terminal receipts retain the server actor
 for presentation. Async results are admitted only if both the complete
@@ -2943,6 +2962,29 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-08-29** — Expanded SDUC-495 with durable line-anchored review notes
+  and extended the custody fence to every exposed mutation; added
+  SDTEST-1853..1855, SDTEST-1858 and SDTEST-1859. Comments and approvals
+  previously dispatched with no durable record at all: only the confirmed
+  rerun crossed the fence, so a restart mid-dispatch left a posted comment
+  indistinguishable from an unstarted one and its receipt actor was never
+  retained. Notes are drafts bound to the snapshot revision they were written
+  on, so a newer snapshot makes one explicitly stale instead of quietly moving
+  it to a different line. Batch delivery of a selected note set to the
+  authorized session stays unexposed:
+  `automonique_protocol::platform_v2_transport::ReviewCapabilities` carries
+  only `rerunnable_checks`, so the server can advertise no authority for that
+  action and no receipt-correlation digest exists to make an ambiguous outcome
+  recoverable.
+
+- **2026-08-29** — Expanded SDUC-493 with a chronological attention activity
+  surface and added SDTEST-1856/1857. The board carried the authoritative
+  `observed_at_ms` but never used it: rows reached both surfaces in
+  source-key order, so what looked like a feed was arbitrary, and a
+  cross-workspace list kept every row of the first board ahead of the second.
+  The desktop toast also named no destination, which made an actionable
+  notification say only why it fired and never where it went.
 
 - **2026-08-29** — Expanded SDUC-495 and added SDTEST-1843..1852: the review
   snapshot now projects into one combined conflicted/staged/unstaged/untracked

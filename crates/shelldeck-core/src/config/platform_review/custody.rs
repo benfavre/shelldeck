@@ -709,6 +709,28 @@ mod tests {
         PlatformReviewActionPreview::approve(target(&review), &review).unwrap()
     }
 
+    fn comment(body: &str) -> PlatformReviewActionPreview {
+        let review = semantic();
+        let file = review
+            .files
+            .iter()
+            .find(|file| !file.hunks.is_empty())
+            .unwrap();
+        let hunk = &file.hunks[0];
+        let (side, line) = if hunk.new_lines > 0 {
+            (DiffSide::New, hunk.new_start)
+        } else {
+            (DiffSide::Old, hunk.old_start)
+        };
+        let anchor = ReviewAnchorSemantic {
+            file_id: file.id.clone(),
+            hunk_id: hunk.id.clone(),
+            side,
+            line,
+        };
+        PlatformReviewActionPreview::add_comment(target(&review), &review, &anchor, body).unwrap()
+    }
+
     struct TempRoot(PathBuf);
 
     impl TempRoot {
@@ -888,6 +910,49 @@ mod tests {
             Err(ReviewCustodyError::DocumentInvalid)
         ));
         assert_eq!(std::fs::read(path).unwrap(), oversized);
+    }
+
+    // SDTEST-1858 — the unconfirmed comment family crosses the same durable
+    // fence as a confirmed rerun: restart never reposts it, its receipt keeps
+    // the server actor, and a second comment cannot open a parallel effect.
+    #[test]
+    fn unconfirmed_comment_is_fenced_restart_safe_and_actor_attributed() {
+        let directory = TempRoot::new();
+        let preview = comment("borne exacte");
+        assert!(preview.confirmation().is_none());
+        let store = PlatformReviewCustodyStore::open(store_path(&directory)).unwrap();
+        store.prepare(&preview).unwrap();
+
+        // A second comment for the same workspace cannot reserve its own
+        // effect while the first is still non-terminal.
+        assert!(matches!(
+            store.prepare(&comment("seconde borne")),
+            Err(ReviewCustodyError::EffectAlreadyPending)
+        ));
+
+        store.mark_dispatched(&preview).unwrap();
+        let restarted = PlatformReviewCustodyStore::open(store_path(&directory)).unwrap();
+        assert_eq!(
+            restarted.recovery(preview.target()).unwrap(),
+            Some(ReviewCustodyRecovery::LookupOnly(preview.clone()))
+        );
+        restarted
+            .record_receipt(
+                &preview,
+                &receipt(&preview, ReviewReceiptOutcome::Completed, "reviewer-7"),
+            )
+            .unwrap();
+        assert_eq!(
+            PlatformReviewCustodyStore::open(store_path(&directory))
+                .unwrap()
+                .recovery(preview.target())
+                .unwrap(),
+            Some(ReviewCustodyRecovery::Terminal(ReviewCustodyPresentation {
+                outcome: "completed".to_owned(),
+                detail: "action-1 · final".to_owned(),
+                actor: Some("reviewer-7".to_owned()),
+            }))
+        );
     }
 
     #[cfg(unix)]
