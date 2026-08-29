@@ -2871,16 +2871,22 @@ The persisted local workspace-review schema remains independent and unmigrated.
 For an exactly reconciled Platform project/workspace, ShellDeck expands the
 canonical review snapshot into bounded files, hunks, conflicts, safe preview
 metadata, attributed comments, and attention chronology. A user may select an
-exact hunk line and prepare one typed comment or review approval. Comments in
-`not_sent`/`refused` state can be selected into one batch-to-agent action.
-Server-projected Git proposals, terminal CI checks, and a fresh ready pull
-request can prepare their corresponding stage/unstage/commit, rerun, or merge
-action. Every confirmation names the exact workspace and captured snapshot or
-target revision before dispatch.
+exact hunk line and prepare one typed comment or review approval. A terminal CI
+check exposes rerun only when a separately fetched server capability matches
+the exact project, workspace, snapshot revision, check revision, authority,
+confirmation digest, and receipt-correlation digest. Batch-to-agent, Git
+proposal, and merge preview constructors remain inert core semantics: Fleet
+does not expose those controls until their own explicit server capabilities and
+custody lanes exist. Every exposed confirmation names the exact workspace and
+captured snapshot or target revision before dispatch.
 
-The client dispatches that canonical SDK `ReviewAction` at most once. Accepted,
-unknown, or transport-ambiguous outcomes retain the original idempotency key and
-use receipt lookup only. Async results are admitted only if both the complete
+Before a confirmed rerun crosses the network, ShellDeck persists the inert
+preview and then a dispatched marker under a bounded, no-follow,
+cross-process-locked custody store. Accepted, unknown, or transport-ambiguous
+outcomes retain the original idempotency key and use correlated receipt lookup
+only; restart never reposts a dispatched action, while an unconfirmed prepared
+preview is reported as never started. Terminal receipts retain the server actor
+for presentation. Async results are admitted only if both the complete
 captured authenticated connection and `PlatformReviewTarget` still match the
 active context. A missing proposal, wrong authority kind, unresolved-conflict
 proposal, stale check, duplicate comment selection, or non-ready pull request
@@ -2890,6 +2896,11 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-08-28** — Narrowed SDUC-495 to the controls that have explicit server
+  authority and added SDTEST-1822..1828 for confirmed-rerun capability fencing,
+  durable pre-dispatch custody, restart lookup-only recovery, correlated-only
+  receipt routing, actor retention, storage refusal, and absent unsupported UI.
 
 - **2026-08-28** — Expanded SDUC-493 and added SDTEST-1816..1821 for the
   canonical Platform v2 attention source inventory, source-atomic revision
