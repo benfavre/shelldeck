@@ -34,7 +34,13 @@ use crate::icons::lucide_icon;
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
-use crate::workspace::platform_attention::{attention_reason_label, PlatformAttentionPresentation};
+use crate::workspace::platform_attention::{
+    attention_reason_label, platform_attention_state_label, PlatformAttentionPresentation,
+};
+
+/// Bound on the chronological activity rows drawn at once. The full count
+/// stays visible in the section badge so nothing is silently dropped.
+const MAX_ATTENTION_ACTIVITY_ROWS: usize = 8;
 
 #[derive(Debug, Clone)]
 pub enum FleetViewEvent {
@@ -1014,49 +1020,118 @@ impl FleetView {
         self.platform_attention = rows;
     }
 
+    /// Chronological attention activity, newest first.
+    ///
+    /// The rows arrive already ordered on the authoritative observation
+    /// instant; this surface only bounds how many of them it draws. Each row
+    /// carries the exact activation token, so opening it re-resolves the
+    /// workspace, session and pane against the live catalogue instead of
+    /// following a destination captured when the row was built.
     fn render_platform_attention(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.platform_attention.is_empty() {
             return div().into_any_element();
         }
         let entity = cx.entity();
-        let mut row = div()
+        let mut column = div()
             .flex()
-            .items_center()
-            .gap(px(6.0))
+            .flex_col()
+            .gap(px(4.0))
             .px(px(12.0))
             .py(px(7.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(
-                Badge::new(t!("platform_attention.title").to_string())
-                    .variant(BadgeVariant::Outline),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        Badge::new(t!("platform_attention.activity_title").to_string())
+                            .variant(BadgeVariant::Outline),
+                    )
+                    .child(
+                        Badge::new(self.platform_attention.len().to_string())
+                            .variant(BadgeVariant::Secondary),
+                    ),
             );
-        for item in &self.platform_attention {
+        for item in self
+            .platform_attention
+            .iter()
+            .take(MAX_ATTENTION_ACTIVITY_ROWS)
+        {
             let activation = item.activation;
             let entity = entity.clone();
-            row = row.child(
-                Button::new(
-                    SharedString::from(format!(
-                        "fleet-attention-{}-{}",
-                        activation.item.uuid(),
-                        activation.item_revision.get()
-                    )),
-                    attention_reason_label(item.reason),
+            let mut row = div().flex().items_center().gap(px(6.0)).min_w(px(0.0));
+            row = row
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .w(px(76.0))
+                        .truncate()
+                        .text_size(px(10.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(crate::i18n::rel_time(item.observed_at_ms as f64)),
                 )
-                .size(ButtonSize::Sm)
-                .variant(if item.unread {
-                    ButtonVariant::Default
-                } else {
-                    ButtonVariant::Ghost
-                })
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |_this, cx| {
-                        cx.emit(FleetViewEvent::OpenAttention(activation));
-                    });
-                }),
+                .child(
+                    div().flex_shrink_0().child(
+                        Badge::new(platform_attention_state_label(item.state))
+                            .variant(BadgeVariant::Outline),
+                    ),
+                )
+                .child(
+                    Button::new(
+                        SharedString::from(format!(
+                            "fleet-attention-{}-{}",
+                            activation.item.uuid(),
+                            activation.item_revision.get()
+                        )),
+                        attention_reason_label(item.reason),
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(if item.unread {
+                        ButtonVariant::Default
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |_this, cx| {
+                            cx.emit(FleetViewEvent::OpenAttention(activation));
+                        });
+                    }),
+                );
+            if !item.workspace_label.is_empty() {
+                row = row.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_size(px(10.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(
+                            t!(
+                                "platform_attention.activity_workspace",
+                                workspace = item.workspace_label.clone()
+                            )
+                            .to_string(),
+                        ),
+                );
+            }
+            column = column.child(row);
+        }
+        if let Some(hidden) = self
+            .platform_attention
+            .len()
+            .checked_sub(MAX_ATTENTION_ACTIVITY_ROWS)
+            .filter(|hidden| *hidden > 0)
+        {
+            column = column.child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("platform_attention.activity_more", count = hidden).to_string()),
             );
         }
-        row.into_any_element()
+        column.into_any_element()
     }
 
     fn render_header(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {

@@ -129,6 +129,40 @@ pub(crate) struct PlatformAttentionPresentation {
     pub reason: shelldeck_core::config::platform_attention::AttentionItemReason,
     pub unread: bool,
     pub nested_agent_path: Vec<String>,
+    /// The authoritative observation instant, carried so the chronological
+    /// surface orders on what the server observed rather than on when this
+    /// process happened to poll.
+    pub observed_at_ms: u64,
+    /// Exact catalog name of the workspace this row activates into. Empty
+    /// when the catalog no longer names it; the destination is still resolved
+    /// again at activation and never taken from this label.
+    pub workspace_label: String,
+}
+
+/// Order attention rows newest observation first.
+///
+/// Boards are per workspace, so a cross-workspace list has to be re-ordered
+/// after flattening. Equal observations fall back to the item revision and
+/// then to the stable presentation identity, so the sequence is total and
+/// does not depend on which board was merged first.
+pub(crate) fn sort_platform_attention_chronologically(rows: &mut [PlatformAttentionPresentation]) {
+    rows.sort_by(|left, right| {
+        right
+            .observed_at_ms
+            .cmp(&left.observed_at_ms)
+            .then_with(|| {
+                right
+                    .activation
+                    .item_revision
+                    .cmp(&left.activation.item_revision)
+            })
+            .then_with(|| {
+                left.activation
+                    .item
+                    .uuid()
+                    .cmp(&right.activation.item.uuid())
+            })
+    });
 }
 
 /// Same-process only notification payload. No URI/deep-link or cold-launch
@@ -157,6 +191,13 @@ impl Workspace {
         load: PlatformAttentionLoad,
         cx: &mut Context<Self>,
     ) {
+        let workspace_label = self
+            .workspace_hub
+            .read(cx)
+            .catalog()
+            .workspace(workspace)
+            .map(|record| record.name().to_owned())
+            .unwrap_or_default();
         if self
             .platform_attention_boards
             .get(&workspace)
@@ -278,7 +319,10 @@ impl Workspace {
                                 item_revision: item.value().revision(),
                             },
                             summary: t!("notification.attention.summary").to_string(),
-                            body: attention_reason_label(item.value().reason()),
+                            body: notification_body(
+                                item.value().reason(),
+                                workspace_label.as_str(),
+                            ),
                             action_label: t!("notification.attention.open").to_string(),
                         })
                     }
@@ -428,10 +472,26 @@ impl Workspace {
     }
 
     fn sync_platform_attention_presentations(&mut self, cx: &mut Context<Self>) {
+        let labels = self
+            .platform_attention_boards
+            .keys()
+            .copied()
+            .map(|workspace| {
+                let label = self
+                    .workspace_hub
+                    .read(cx)
+                    .catalog()
+                    .workspace(workspace)
+                    .map(|record| record.name().to_owned())
+                    .unwrap_or_default();
+                (workspace, label)
+            })
+            .collect::<BTreeMap<_, _>>();
         let mut rows = BTreeMap::<CatalogWorkspaceId, Vec<PlatformAttentionPresentation>>::new();
         for (workspace, board) in &self.platform_attention_boards {
             let items = board
-                .visible_items()
+                .chronology()
+                .into_iter()
                 .map(|item| {
                     let key = AttentionLocalKey::new(
                         board.inventory().target().clone(),
@@ -457,16 +517,20 @@ impl Workspace {
                             .iter()
                             .map(|id| id.as_str().to_owned())
                             .collect(),
+                        observed_at_ms: item.value().observed_at_ms(),
+                        workspace_label: labels.get(workspace).cloned().unwrap_or_default(),
                     }
                 })
                 .collect();
             rows.insert(*workspace, items);
         }
+        let mut chronology = rows.values().flatten().cloned().collect::<Vec<_>>();
+        sort_platform_attention_chronologically(&mut chronology);
         self.workspace_hub.update(cx, |hub, cx| {
-            hub.set_platform_attention(rows.clone(), cx);
+            hub.set_platform_attention(rows, cx);
         });
         self.fleet_view.update(cx, |fleet, cx| {
-            fleet.set_platform_attention(rows.into_values().flatten().collect());
+            fleet.set_platform_attention(chronology);
             cx.notify();
         });
     }
@@ -697,6 +761,27 @@ impl Workspace {
     }
 }
 
+/// Name the destination in the toast body.
+///
+/// Only the workspace is named: it is part of the activation itself. The
+/// session and pane are resolved against the live catalogue when the toast is
+/// activated, so naming them here would be a guess with a shelf life.
+fn notification_body(
+    reason: shelldeck_core::config::platform_attention::AttentionItemReason,
+    workspace_label: &str,
+) -> String {
+    let reason = attention_reason_label(reason);
+    if workspace_label.is_empty() {
+        return reason;
+    }
+    t!(
+        "notification.attention.body",
+        reason = reason,
+        workspace = workspace_label
+    )
+    .to_string()
+}
+
 pub(crate) fn attention_reason_label(
     reason: shelldeck_core::config::platform_attention::AttentionItemReason,
 ) -> String {
@@ -749,9 +834,11 @@ pub(crate) fn platform_attention_state_label(
 mod tests {
     use super::{
         apply_attention_read_with_resync, attention_context_requires_retirement,
-        attention_context_retirements, mark_attention_boards_unavailable,
-        platform_attention_destination_view, platform_attention_surface_verified,
-        record_attention_read_after_visible_open, retire_attention_board_state,
+        attention_context_retirements, attention_reason_label, mark_attention_boards_unavailable,
+        notification_body, platform_attention_destination_view,
+        platform_attention_surface_verified, record_attention_read_after_visible_open,
+        retire_attention_board_state, sort_platform_attention_chronologically,
+        PlatformAttentionPresentation,
     };
     use crate::workspace::workspaces::WorkspaceHubView;
     use crate::workspace::ActiveView;
@@ -1573,5 +1660,71 @@ mod tests {
                 .platform_attention_visible_confirmations
                 .is_empty());
         });
+    }
+
+    // SDTEST-1857 — SDUC-493
+    #[test]
+    fn sdtest_1857_cross_workspace_activity_is_ordered_by_observation_not_by_board() {
+        fn row(
+            workspace: CatalogWorkspaceId,
+            item: &str,
+            item_revision: u64,
+            observed_at_ms: u64,
+        ) -> PlatformAttentionPresentation {
+            PlatformAttentionPresentation {
+                activation: PlatformAttentionActivation {
+                    workspace,
+                    item: shelldeck_core::config::platform_attention::AttentionUiItemId::
+                        from_authoritative_key(&AttentionItemKey::new(
+                            shelldeck_core::config::platform_attention::AttentionSource::new(
+                                AttentionSourceKind::Orchestration,
+                                AttentionSourceId::new("source-1".to_owned()).unwrap(),
+                            ),
+                            AttentionItemId::new(item.to_owned()).unwrap(),
+                        )),
+                    item_revision: Revision::new(item_revision).unwrap(),
+                },
+                state: AttentionItemState::Working,
+                reason: AttentionItemReason::AgentWorking,
+                unread: true,
+                nested_agent_path: Vec::new(),
+                observed_at_ms,
+                workspace_label: String::new(),
+            }
+        }
+
+        let first = CatalogWorkspaceId::new();
+        let second = CatalogWorkspaceId::new();
+        // Board-by-board flattening would keep every `first` row ahead of
+        // every `second` row regardless of when the server observed them.
+        let mut rows = vec![
+            row(first, "old-first", 4, 100),
+            row(first, "tie-low-revision", 2, 500),
+            row(second, "newest", 9, 900),
+            row(second, "tie-high-revision", 7, 500),
+        ];
+        sort_platform_attention_chronologically(&mut rows);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.observed_at_ms)
+                .collect::<Vec<_>>(),
+            vec![900, 500, 500, 100]
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.activation.item_revision.get())
+                .collect::<Vec<_>>(),
+            vec![9, 7, 2, 4],
+            "equal observations fall back to the item revision"
+        );
+
+        // The toast names the destination workspace, and degrades to the
+        // reason alone when the catalogue no longer names it.
+        let named = notification_body(AttentionItemReason::AgentWorking, "espace-1");
+        assert!(named.contains("espace-1"), "{named}");
+        assert_eq!(
+            notification_body(AttentionItemReason::AgentWorking, ""),
+            attention_reason_label(AttentionItemReason::AgentWorking)
+        );
     }
 }

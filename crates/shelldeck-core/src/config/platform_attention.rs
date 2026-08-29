@@ -787,6 +787,27 @@ impl PlatformAttentionBoard {
         })
     }
 
+    /// Every visible item, newest observation first.
+    ///
+    /// The authoritative `observed_at_ms` is the only chronology ShellDeck
+    /// has: order is never inferred from poll arrival, source order, or when
+    /// a row reached this process. Equal observations fall back to the item
+    /// revision and then to the authoritative `(source, item)` key, so the
+    /// order is total, deterministic, and identical in every process.
+    #[must_use]
+    pub fn chronology(&self) -> Vec<&AuthoritativeAttentionItem> {
+        let mut items = self.visible_items().collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            right
+                .value()
+                .observed_at_ms()
+                .cmp(&left.value().observed_at_ms())
+                .then_with(|| right.value().revision().cmp(&left.value().revision()))
+                .then_with(|| left.key().cmp(right.key()))
+        });
+        items
+    }
+
     #[must_use]
     pub fn item_by_ui_id(&self, id: AttentionUiItemId) -> Option<&AuthoritativeAttentionItem> {
         let key = self.ui_index.get(&id)?;
@@ -2967,6 +2988,106 @@ mod tests {
         assert!(
             matched,
             "case {case} expected {outcome}, board reached {actual:?}"
+        );
+    }
+
+    // SDTEST-1856 — SDUC-493
+    #[test]
+    fn sdtest_1856_chronology_follows_authoritative_observation_not_source_order() {
+        fn observed(id: &str, revision: u64, observed_at_ms: u64) -> AttentionItem {
+            AttentionItem::new(
+                AttentionItemId::new(id.to_owned()).unwrap(),
+                Revision::new(revision).unwrap(),
+                observed_at_ms,
+                AttentionItemState::Blocked,
+                AttentionItemReason::ExternalBlocker,
+                true,
+                Vec::new(),
+                None,
+            )
+            .unwrap()
+        }
+
+        let review = source(AttentionSourceKind::Review, "workspace-1");
+        let orchestration = source(AttentionSourceKind::Orchestration, "workspace-1");
+        let mut board = PlatformAttentionBoard::new(inventory(ReviewAttentionPresence::Present));
+        board
+            .replace_source(
+                AttentionSourceSnapshot::new(
+                    review.clone(),
+                    target().project,
+                    target().user_workspace,
+                    Revision::FIRST,
+                    None,
+                    900,
+                    vec![observed("review-old", 1, 100)],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        board
+            .apply_authenticated_baseline_read(
+                &orchestration,
+                AttentionReadResult::Snapshot(Box::new(
+                    AttentionSourceSnapshot::new(
+                        orchestration.clone(),
+                        target().project,
+                        target().user_workspace,
+                        Revision::new(3).unwrap(),
+                        Some(Revision::new(2).unwrap()),
+                        900,
+                        vec![
+                            observed("orchestration-newest", 3, 800),
+                            observed("orchestration-tie-high", 3, 400),
+                            observed("orchestration-tie-low", 2, 400),
+                        ],
+                    )
+                    .unwrap(),
+                )),
+            )
+            .unwrap();
+
+        // Key order alone would put the review source first: it is the lowest
+        // source kind. Chronology must contradict that.
+        assert_eq!(
+            board
+                .visible_items()
+                .map(|item| item.key().item().as_str().to_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                "review-old",
+                "orchestration-newest",
+                "orchestration-tie-high",
+                "orchestration-tie-low",
+            ]
+        );
+        assert_eq!(
+            board
+                .chronology()
+                .iter()
+                .map(|item| item.key().item().as_str().to_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                "orchestration-newest",
+                // Equal observation falls back to the higher item revision.
+                "orchestration-tie-high",
+                "orchestration-tie-low",
+                "review-old",
+            ]
+        );
+
+        // A hidden source contributes no chronology, and hiding it never
+        // reorders what survives.
+        board
+            .mark_unavailable(&orchestration, AttentionUnavailableReason::Transport)
+            .unwrap();
+        assert_eq!(
+            board
+                .chronology()
+                .iter()
+                .map(|item| item.key().item().as_str().to_owned())
+                .collect::<Vec<_>>(),
+            vec!["review-old"]
         );
     }
 

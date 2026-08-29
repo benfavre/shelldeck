@@ -2864,7 +2864,15 @@ UI turn before durable read custody. User, Support, Settings, or an unrelated
 in-flight transition cannot consume unread while the destination is hidden. Same-process
 OS notification handles remain alive through activation/dismissal and route the
 same tuple back through that current-catalog resolver. A failed durable
-notification reservation suppresses the toast. Native cold-launch/OS launch
+notification reservation suppresses the toast, whose body names the destination
+workspace and degrades to the reason alone when the catalog no longer names it.
+Attention is also presented as one chronological activity list ordered on the
+authoritative `observed_at_ms`, never on poll arrival or source order; equal
+observations fall back to the item revision and then to the authoritative
+`(source,item)` key, so the sequence is identical in every process and stable
+across workspaces. A hidden source contributes no chronology. Each row carries
+only the activation token and re-resolves its workspace, session and pane
+through the same resolver when opened. Native cold-launch/OS launch
 protocol remains intentionally outside this milestone.
 Delivery checks, review status, merge readiness, and delivery state carry their
 observed authority and freshness. Once Fresh, they cannot be overwritten by a
@@ -2943,6 +2951,14 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-08-29** — Expanded SDUC-493 with a chronological attention activity
+  surface and added SDTEST-1856/1857. The board carried the authoritative
+  `observed_at_ms` but never used it: rows reached both surfaces in
+  source-key order, so what looked like a feed was arbitrary, and a
+  cross-workspace list kept every row of the first board ahead of the second.
+  The desktop toast also named no destination, which made an actionable
+  notification say only why it fired and never where it went.
 
 - **2026-08-29** — Expanded SDUC-495 and added SDTEST-1843..1852: the review
   snapshot now projects into one combined conflicted/staged/unstaged/untracked
