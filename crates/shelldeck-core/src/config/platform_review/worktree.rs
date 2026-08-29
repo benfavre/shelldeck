@@ -5,15 +5,44 @@
 //! staged/unstaged/untracked/conflicted lane every observed file belongs to,
 //! and what — if anything — may be painted for that file's preview.
 //!
-//! It grants no authority. Staging is a Git mutation, so the projection
-//! reports the server's *proposed* transitions as observations and separately
-//! reports why no staging control may be offered. See
-//! [`advertised_staging_capability`] for the exact contract gap.
+//! It grants no authority of its own. Staging is a Git mutation, so a control
+//! exists only where the server advertised a slot for that exact proposal, and
+//! the projection otherwise reports which fence is missing so the surface can
+//! say so instead of offering a control that would refuse.
+//!
+//! # What the server has to prove before a control exists
+//!
+//! A worktree is shared substrate: any other process running as the daemon uid
+//! can move `HEAD` and rewrite the index between an advertisement and the
+//! action arriving, and the snapshot revision does not help — it tracks what
+//! the projection observed, not what the repository now is. So every entry in
+//! `staging` and `conflict_resolutions` names both mutable things the write
+//! depends on, and its confirmation digest commits to them. This module
+//! carries that observation verbatim ([`ReviewWorktreeObservation`]) so a
+//! reader can see what the server read rather than having to trust that it
+//! read anything.
+//!
+//! # Absence is the withholding
+//!
+//! The three staging kinds share one capability type but not one grant: an
+//! operator withholds committing separately from index writes, and conflict
+//! resolution separately again. A deployment that grants stage and unstage but
+//! not commit therefore produces a `staging` list with `Stage` and `Unstage`
+//! entries and no `Commit` entry — and the commit control must simply not
+//! exist. A disabled button with a tooltip would claim the grant is present
+//! and merely unavailable, which is the opposite of what the list says.
+//!
+//! # No hunk granularity
+//!
+//! [`super::ReviewProposalId`] names a proposal and a proposal lists file ids;
+//! `ReviewAnchor`'s hunk id exists for comments only. File-level staging is
+//! all the contract can express, so it is all this module offers. A hunk
+//! control here would be advertising something no action can name.
 
 use super::{
-    ConflictState, DiffChangeKind, DiffSide, PlatformReviewSemantic, PreviewKind,
-    ReviewAnchorSemantic, ReviewCapabilities, ReviewFileSemantic, ReviewProposalKind,
-    WorktreeFileState,
+    ConflictResolution, ConflictState, DiffChangeKind, DiffSide, PlatformReviewSemantic,
+    PlatformReviewTarget, PreviewKind, ReviewAnchorSemantic, ReviewAuthorityKind,
+    ReviewCapabilities, ReviewFileSemantic, ReviewProposalKind, WorktreeFileState,
 };
 use automonique_protocol::primitives::Revision;
 
@@ -98,21 +127,32 @@ impl ReviewWorktreeLane {
 /// Why the projection offers no Git staging control.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReviewStagingWithheld {
-    /// The separately fetched capability response advertises no staging
-    /// capability for this exact project, workspace, and snapshot revision.
+    /// No capability response is attributed to this exact project, workspace
+    /// and snapshot revision, so nothing has been advertised at all.
     NoServerCapability,
+    /// The capability response is exact and both its git lists are empty.
+    /// That is the server's honest fail-closed answer — no registry binding
+    /// granting index writes, a repository the preflight could not read, an
+    /// unborn `HEAD`, or a worktree in a state no staging write can be fenced
+    /// against — and it must produce no control.
+    NoStageableProposal,
     /// No durable at-most-once custody store is available in this process.
     NoCustodyLane,
 }
 
 impl ReviewStagingWithheld {
     /// Every reason a surface must be able to explain.
-    pub const ALL: [Self; 2] = [Self::NoServerCapability, Self::NoCustodyLane];
+    pub const ALL: [Self; 3] = [
+        Self::NoServerCapability,
+        Self::NoStageableProposal,
+        Self::NoCustodyLane,
+    ];
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NoServerCapability => "no_server_capability",
+            Self::NoStageableProposal => "no_stageable_proposal",
             Self::NoCustodyLane => "no_custody_lane",
         }
     }
@@ -123,38 +163,187 @@ impl ReviewStagingWithheld {
     }
 }
 
-/// Whether the server advertised an exact Git staging capability.
+/// The one repository read every git capability in a response was minted from.
 ///
-/// [`ReviewCapabilities`] carries `rerunnable_checks` and nothing else. The
-/// Platform v2 contract defines no staging capability, no staging confirmation
-/// digest, and no staging receipt-correlation digest, and
-/// [`super::PlatformReviewActionPreview`] structurally refuses a confirmation
-/// on `Stage`, `Unstage`, `Commit`, and `ResolveConflict`. There is therefore
-/// nothing a client could examine that would prove staging authority, and a
-/// proposal's `git` authority inside the read snapshot is an observation, not
-/// a capability. This stays `false` for every capability load until the
-/// contract grows the missing lane.
-#[must_use]
-pub const fn advertised_staging_capability(_capabilities: Option<&ReviewCapabilities>) -> bool {
-    false
+/// `ReviewCapabilities::new` refuses a response whose git entries disagree on
+/// either field, so this is a property of the whole document rather than of an
+/// entry. It is carried here for the reason the server carries it at all: a
+/// client must be able to see the `HEAD` and index the preflight observed, and
+/// decline to offer a control once it holds a document that read a different
+/// worktree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewWorktreeObservation {
+    /// The commit `HEAD` resolved to when the server read the repository.
+    pub head_revision: String,
+    /// A digest over the whole index as the preflight read it.
+    pub index_digest: String,
 }
 
-/// Decide whether a Git staging control may be rendered at all.
+/// One staging transition the server proved it can perform, carried verbatim.
 ///
-/// Both fences must hold, exactly like the confirmed check rerun: the server
-/// must advertise the capability, and the durable custody store must be able
-/// to record the at-most-once boundary before dispatch. A missing fence makes
-/// the control absent, never optimistically disabled.
+/// The two confirmation digests are deliberately absent. They are minted per
+/// entry and must cross the wire exactly as the server spelled them, so
+/// [`super::PlatformReviewActionPreview`] reads them straight off the
+/// capability rather than through a render-side copy that could drift.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdvertisedReviewStaging {
+    pub proposal_id: String,
+    pub kind: ReviewProposalKind,
+    pub expected_head_revision: String,
+    pub expected_index_digest: String,
+    pub authority_id: String,
+}
+
+/// One conflicted file the server proved it can collapse to one recorded side.
+///
+/// The server lists **one entry per admissible side**, not one per file with
+/// the side left to the client: the side decides which bytes land, so it is
+/// inside the confirmation digest, and a digest cannot commit to a choice not
+/// yet made. A file with both stage 2 and stage 3 recorded therefore yields
+/// two entries here, and the surface renders two controls. A delete/modify
+/// conflict has one side recorded and yields one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdvertisedReviewConflictResolution {
+    pub proposal_id: String,
+    pub file_id: String,
+    pub resolution: ConflictResolution,
+    pub expected_head_revision: String,
+    pub expected_index_digest: String,
+    pub authority_id: String,
+}
+
+/// Whether a capability response is attributed to this exact review read.
+fn exact_capability_attribution(
+    capabilities: &ReviewCapabilities,
+    target: &PlatformReviewTarget,
+    review: &PlatformReviewSemantic,
+) -> bool {
+    capabilities.project() == &target.project
+        && capabilities.workspace() == &target.workspace
+        && capabilities.snapshot_revision() == review.revision
+        && review.workspace_kind == target.workspace.kind()
+        && review.workspace_id == target.workspace.id()
+}
+
+/// The exact advertised staging set for one active snapshot.
+///
+/// Every entry survives three checks, exactly like the delivery lane: the
+/// capability response is attributed to this project, workspace and snapshot
+/// revision; its authority is a Git authority the proposal itself names; and
+/// the proposal is present in that same snapshot, at the same kind, and
+/// locally actionable.
+///
+/// The third check is a torn-read guard, not a second source of authority. The
+/// capability list and the snapshot are two separate reads; a disagreement
+/// means they straddled a change, and refusing the entry is the fail-closed
+/// answer. It can never *add* an entry the server did not advertise, which is
+/// what makes a withheld `commit` grant render as absence.
+#[must_use]
+pub fn advertised_staging_proposals(
+    capabilities: Option<&ReviewCapabilities>,
+    target: &PlatformReviewTarget,
+    review: &PlatformReviewSemantic,
+) -> Vec<AdvertisedReviewStaging> {
+    let Some(capabilities) = capabilities else {
+        return Vec::new();
+    };
+    if !exact_capability_attribution(capabilities, target, review) {
+        return Vec::new();
+    }
+    capabilities
+        .staging()
+        .iter()
+        .filter(|capability| capability.authority().kind() == ReviewAuthorityKind::Git)
+        .filter(|capability| {
+            review.proposals.iter().any(|proposal| {
+                proposal.id == capability.proposal_id().as_str()
+                    && proposal.kind == capability.kind()
+                    && proposal.authority.as_ref().is_some_and(|authority| {
+                        authority.kind == ReviewAuthorityKind::Git
+                            && authority.id == capability.authority().id().as_str()
+                    })
+            }) && review.proposal_is_actionable(capability.proposal_id().as_str())
+        })
+        .map(|capability| AdvertisedReviewStaging {
+            proposal_id: capability.proposal_id().as_str().to_owned(),
+            kind: capability.kind(),
+            expected_head_revision: capability.expected_head_revision().as_str().to_owned(),
+            expected_index_digest: capability.expected_index_digest().as_str().to_owned(),
+            authority_id: capability.authority().id().as_str().to_owned(),
+        })
+        .collect()
+}
+
+/// The exact advertised conflict-resolution set for one active snapshot.
+///
+/// The snapshot-side guard differs from the staging one because the domain
+/// does: the proposal must be a `ResolveConflict` on a Git authority, the file
+/// must be one the proposal names, and that file must still be unmerged in
+/// this snapshot. A file git no longer reports as conflicted cannot be
+/// collapsed to a side, whatever an older capability read said.
+#[must_use]
+pub fn advertised_conflict_resolutions(
+    capabilities: Option<&ReviewCapabilities>,
+    target: &PlatformReviewTarget,
+    review: &PlatformReviewSemantic,
+) -> Vec<AdvertisedReviewConflictResolution> {
+    let Some(capabilities) = capabilities else {
+        return Vec::new();
+    };
+    if !exact_capability_attribution(capabilities, target, review) {
+        return Vec::new();
+    }
+    capabilities
+        .conflict_resolutions()
+        .iter()
+        .filter(|capability| capability.authority().kind() == ReviewAuthorityKind::Git)
+        .filter(|capability| {
+            review.conflict_resolution_is_actionable(
+                capability.proposal_id().as_str(),
+                capability.file_id().as_str(),
+            ) && review.proposals.iter().any(|proposal| {
+                proposal.id == capability.proposal_id().as_str()
+                    && proposal.authority.as_ref().is_some_and(|authority| {
+                        authority.id == capability.authority().id().as_str()
+                    })
+            })
+        })
+        .map(|capability| AdvertisedReviewConflictResolution {
+            proposal_id: capability.proposal_id().as_str().to_owned(),
+            file_id: capability.file_id().as_str().to_owned(),
+            resolution: capability.resolution(),
+            expected_head_revision: capability.expected_head_revision().as_str().to_owned(),
+            expected_index_digest: capability.expected_index_digest().as_str().to_owned(),
+            authority_id: capability.authority().id().as_str().to_owned(),
+        })
+        .collect()
+}
+
+/// Decide whether any Git staging control may be rendered at all.
+///
+/// Three fences must hold, exactly like the batch delivery lane: a capability
+/// response attributed to this exact snapshot, at least one entry inside it,
+/// and a durable custody store able to record the at-most-once boundary before
+/// dispatch. A missing fence makes the control absent, never optimistically
+/// disabled.
+///
+/// This is the lane-level answer. It says a control *may* exist, never that
+/// any particular one does: each proposal still needs its own advertised slot,
+/// which is how a deployment withholding `commit` while granting `stage` and
+/// `unstage` produces two controls and not three.
 ///
 /// # Errors
 ///
 /// Returns the first unmet fence.
 pub const fn review_staging_control(
-    server_capability: bool,
+    exact_capability: bool,
+    advertised: bool,
     custody_available: bool,
 ) -> Result<(), ReviewStagingWithheld> {
-    if !server_capability {
+    if !exact_capability {
         Err(ReviewStagingWithheld::NoServerCapability)
+    } else if !advertised {
+        Err(ReviewStagingWithheld::NoStageableProposal)
     } else if !custody_available {
         Err(ReviewStagingWithheld::NoCustodyLane)
     } else {
@@ -313,10 +502,13 @@ pub struct ReviewWorktreeLaneGroup {
 pub struct ReviewWorktreeProjection {
     pub source_revision: Revision,
     pub lanes: Vec<ReviewWorktreeLaneGroup>,
-    /// `Ok` only when a real server capability and a durable custody lane both
-    /// back a staging mutation. Platform v2 advertises none, so this reports
-    /// the exact missing fence instead of a control.
+    /// `Ok` only when an exact server capability, at least one advertised
+    /// entry, and a durable custody lane all back a staging mutation.
+    /// Otherwise it names the exact missing fence instead of a control.
     pub staging: Result<(), ReviewStagingWithheld>,
+    advertised_staging: Vec<AdvertisedReviewStaging>,
+    advertised_conflict_resolutions: Vec<AdvertisedReviewConflictResolution>,
+    observation: Option<ReviewWorktreeObservation>,
 }
 
 impl ReviewWorktreeProjection {
@@ -324,16 +516,53 @@ impl ReviewWorktreeProjection {
     ///
     /// `custody_available` is the caller's durable at-most-once store; it is
     /// never inferred from the snapshot.
+    /// `target` is optional because the lanes are not: a surface with no
+    /// exactly reconciled target still renders the combined read, it simply
+    /// has nothing a capability response could be attributed to, so every
+    /// control is withheld for want of a server capability.
     #[must_use]
     pub fn new(
         review: &PlatformReviewSemantic,
+        target: Option<&PlatformReviewTarget>,
         capabilities: Option<&ReviewCapabilities>,
         custody_available: bool,
     ) -> Self {
+        // "Exact" is about attribution, not content: a capability response for
+        // this project, workspace and snapshot revision was received. Two
+        // empty git lists inside it is a different, more specific answer, and
+        // the surface must be able to say which one it got.
+        let exact_capability = target
+            .zip(capabilities)
+            .is_some_and(|(target, capabilities)| {
+                exact_capability_attribution(capabilities, target, review)
+            });
+        let advertised_staging = target.map_or_else(Vec::new, |target| {
+            advertised_staging_proposals(capabilities, target, review)
+        });
+        let advertised_conflict_resolutions = target.map_or_else(Vec::new, |target| {
+            advertised_conflict_resolutions(capabilities, target, review)
+        });
         let staging = review_staging_control(
-            advertised_staging_capability(capabilities),
+            exact_capability,
+            !advertised_staging.is_empty() || !advertised_conflict_resolutions.is_empty(),
             custody_available,
         );
+        // Every git entry in one response shares one repository read, so the
+        // first admitted entry carries the whole document's observation.
+        let observation = advertised_staging
+            .first()
+            .map(|entry| ReviewWorktreeObservation {
+                head_revision: entry.expected_head_revision.clone(),
+                index_digest: entry.expected_index_digest.clone(),
+            })
+            .or_else(|| {
+                advertised_conflict_resolutions
+                    .first()
+                    .map(|entry| ReviewWorktreeObservation {
+                        head_revision: entry.expected_head_revision.clone(),
+                        index_digest: entry.expected_index_digest.clone(),
+                    })
+            });
         let lanes = ReviewWorktreeLane::ALL
             .into_iter()
             .map(|lane| ReviewWorktreeLaneGroup {
@@ -351,6 +580,9 @@ impl ReviewWorktreeProjection {
             source_revision: review.revision,
             lanes,
             staging,
+            advertised_staging,
+            advertised_conflict_resolutions,
+            observation,
         }
     }
 
@@ -366,6 +598,49 @@ impl ReviewWorktreeProjection {
         ids.sort_unstable();
         ids.dedup();
         ids.len()
+    }
+
+    /// The advertised staging set, in the capability's own order.
+    #[must_use]
+    pub fn advertised_staging(&self) -> &[AdvertisedReviewStaging] {
+        &self.advertised_staging
+    }
+
+    /// The advertised conflict-resolution set, in the capability's own order.
+    #[must_use]
+    pub fn advertised_conflict_resolutions(&self) -> &[AdvertisedReviewConflictResolution] {
+        &self.advertised_conflict_resolutions
+    }
+
+    /// The `HEAD` and index the server read, when it advertised anything.
+    #[must_use]
+    pub const fn observation(&self) -> Option<&ReviewWorktreeObservation> {
+        self.observation.as_ref()
+    }
+
+    /// Whether this exact proposal may carry a staging control.
+    ///
+    /// This is the whole of the withholding rule at the render site: a
+    /// `Commit` proposal the server did not advertise answers `false` here and
+    /// simply grows no button, while its `Stage` and `Unstage` siblings do.
+    #[must_use]
+    pub fn advertises_staging(&self, proposal_id: &str) -> bool {
+        self.advertised_staging
+            .iter()
+            .any(|entry| entry.proposal_id == proposal_id)
+    }
+
+    /// Every admissible side for one conflicted file, in advertisement order.
+    ///
+    /// The server lists one entry per side it actually recorded, so this
+    /// returns two for a file holding both and one for a delete/modify pair.
+    #[must_use]
+    pub fn advertised_sides(&self, proposal_id: &str, file_id: &str) -> Vec<ConflictResolution> {
+        self.advertised_conflict_resolutions
+            .iter()
+            .filter(|entry| entry.proposal_id == proposal_id && entry.file_id == file_id)
+            .map(|entry| entry.resolution)
+            .collect()
     }
 }
 
@@ -594,14 +869,19 @@ mod tests {
     use crate::config::platform_review::{
         AttentionState, DeliverySemantic, DeliveryState, MergeReadiness,
         PlatformReviewActionPreview, PlatformReviewTarget, PullRequestSemantic, PullRequestState,
-        ReviewAttentionSemantic, ReviewAuthorityKind, ReviewAuthoritySemantic, ReviewDecision,
-        ReviewFreshnessSemantic, ReviewFreshnessState, ReviewHunkSemantic, ReviewPreviewSemantic,
-        ReviewProposalSemantic, ReviewSchemaVersion, ReviewStatusSemantic,
+        ReviewAction, ReviewAttentionSemantic, ReviewAuthority, ReviewAuthorityKind,
+        ReviewAuthoritySemantic, ReviewConfirmationDigest, ReviewConflictResolutionCapability,
+        ReviewDecision, ReviewField, ReviewFreshnessSemantic, ReviewFreshnessState,
+        ReviewGitStagingCapabilities, ReviewHunkSemantic, ReviewIndexDigest, ReviewPreviewSemantic,
+        ReviewProposalId, ReviewProposalSemantic, ReviewPullRequestCapabilities,
+        ReviewReceiptCorrelationDigest, ReviewSchemaVersion, ReviewStagingCapability,
+        ReviewStatusSemantic,
     };
     use crate::config::workspace_catalog::{
         PlatformContextRef, PlatformMappingReconciliation, PlatformV2Mapping,
     };
     use automonique_protocol::platform_v2::WorkContextTargetKind;
+    use automonique_protocol::platform_v2_review::{ReviewAuthorityId, ReviewFileId};
     use automonique_protocol::platform_v2_review_api::decode_review_snapshot;
 
     const CANONICAL_FIXTURE: &[u8] =
@@ -772,7 +1052,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        let projection = ReviewWorktreeProjection::new(&review, None, true);
+        let projection = ReviewWorktreeProjection::new(&review, None, None, true);
 
         assert_eq!(
             projection
@@ -837,7 +1117,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        let projection = ReviewWorktreeProjection::new(&review, None, true);
+        let projection = ReviewWorktreeProjection::new(&review, None, None, true);
         let anchors = projection
             .lanes
             .iter()
@@ -1037,16 +1317,102 @@ mod tests {
         );
     }
 
-    // SDTEST-1848 — a snapshot proposal carrying a `git` authority is an
-    // observation. Platform v2 advertises no staging capability, so the
-    // projection reports the missing fence and never an offerable control.
-    #[test]
-    fn sdtest_1848_staging_stays_withheld_for_every_capability_load() {
-        let review = review_with(
+    const OBSERVED_HEAD: &str = "1f0e4b8c2a6d9e3f7051c8b4a2d6e9f30517b2c4";
+    const OTHER_HEAD: &str = "9a8b7c6d5e4f30219a8b7c6d5e4f30219a8b7c6d";
+
+    fn index_digest(seed: char) -> ReviewIndexDigest {
+        ReviewIndexDigest::new(seed.to_string().repeat(64)).expect("index digest")
+    }
+
+    /// Two distinct lowercase-hex digests per seed, so a test can assert that
+    /// the confirmation and the correlation are carried separately rather than
+    /// one being reused for both.
+    fn digests(seed: char) -> (ReviewConfirmationDigest, ReviewReceiptCorrelationDigest) {
+        let confirmation = format!("{}{}", seed.to_string().repeat(63), '0');
+        let correlation = format!("{}{}", seed.to_string().repeat(63), '1');
+        (
+            ReviewConfirmationDigest::new(confirmation).expect("confirmation"),
+            ReviewReceiptCorrelationDigest::new(correlation).expect("correlation"),
+        )
+    }
+
+    fn git_authority() -> ReviewAuthority {
+        ReviewAuthority::new(
+            ReviewAuthorityKind::Git,
+            ReviewAuthorityId::new("authority-1".to_owned()).expect("authority id"),
+        )
+    }
+
+    fn staging_capability(
+        proposal_id: &str,
+        kind: ReviewProposalKind,
+        head: &str,
+        index: char,
+        seed: char,
+    ) -> ReviewStagingCapability {
+        let (confirmation, correlation) = digests(seed);
+        ReviewStagingCapability::new(
+            ReviewProposalId::new(proposal_id.to_owned()).expect("proposal id"),
+            kind,
+            ReviewField::new(head.to_owned()).expect("head revision"),
+            index_digest(index),
+            git_authority(),
+            confirmation,
+            correlation,
+        )
+        .expect("staging capability")
+    }
+
+    fn conflict_capability(
+        proposal_id: &str,
+        file_id: &str,
+        resolution: ConflictResolution,
+        index: char,
+        seed: char,
+    ) -> ReviewConflictResolutionCapability {
+        let (confirmation, correlation) = digests(seed);
+        ReviewConflictResolutionCapability::new(
+            ReviewProposalId::new(proposal_id.to_owned()).expect("proposal id"),
+            ReviewFileId::new(file_id.to_owned()).expect("file id"),
+            resolution,
+            ReviewField::new(OBSERVED_HEAD.to_owned()).expect("head revision"),
+            index_digest(index),
+            git_authority(),
+            confirmation,
+            correlation,
+        )
+        .expect("conflict capability")
+    }
+
+    fn capabilities(
+        target: &PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+        git: ReviewGitStagingCapabilities,
+    ) -> ReviewCapabilities {
+        ReviewCapabilities::new(
+            target.project.clone(),
+            target.workspace.clone(),
+            review.revision,
+            revision(91),
+            Vec::new(),
+            Vec::new(),
+            ReviewPullRequestCapabilities::default(),
+            git,
+        )
+        .expect("capability response")
+    }
+
+    /// One unstaged file with a `Stage` proposal, one with an `Unstage`, one
+    /// with a `Commit`, and one unmerged file carrying a `ResolveConflict`
+    /// proposal over both sides.
+    fn staging_review() -> PlatformReviewSemantic {
+        review_with(
             vec![
                 text_file("file-1", WorktreeFileState::Unstaged, ConflictState::None),
+                text_file("file-2", WorktreeFileState::Staged, ConflictState::None),
+                text_file("file-3", WorktreeFileState::Staged, ConflictState::None),
                 text_file(
-                    "file-2",
+                    "file-conflict",
                     WorktreeFileState::Unstaged,
                     ConflictState::Unresolved,
                 ),
@@ -1060,47 +1426,410 @@ mod tests {
                     subject: None,
                 },
                 ReviewProposalSemantic {
-                    id: "proposal-blocked".to_owned(),
-                    kind: ReviewProposalKind::Stage,
+                    id: "proposal-unstage".to_owned(),
+                    kind: ReviewProposalKind::Unstage,
                     authority: Some(authority(ReviewAuthorityKind::Git)),
                     files: vec!["file-2".to_owned()],
                     subject: None,
                 },
+                ReviewProposalSemantic {
+                    id: "proposal-commit".to_owned(),
+                    kind: ReviewProposalKind::Commit,
+                    authority: Some(authority(ReviewAuthorityKind::Git)),
+                    files: vec!["file-3".to_owned()],
+                    subject: Some("record the reviewed change".to_owned()),
+                },
+                ReviewProposalSemantic {
+                    id: "proposal-conflict".to_owned(),
+                    kind: ReviewProposalKind::ResolveConflict,
+                    authority: Some(authority(ReviewAuthorityKind::Git)),
+                    files: vec!["file-conflict".to_owned()],
+                    subject: None,
+                },
             ],
+        )
+    }
+
+    // SDTEST-1867 — the withholding demonstration. A deployment that installs
+    // `index_write` but not `commit` advertises `Stage` and `Unstage` and no
+    // `Commit`. The commit control must be *absent*, not disabled: the three
+    // kinds share one capability type but not one grant, so the only honest
+    // rendering of a missing grant is a missing control. The two granted kinds
+    // must go all the way through to a dispatchable confirmed preview in the
+    // same run, or the test would prove nothing about the ones that are there.
+    #[test]
+    fn sdtest_1867_withheld_commit_grant_renders_no_control_while_its_siblings_go_end_to_end() {
+        let review = staging_review();
+        let target = target();
+        let granted = capabilities(
+            &target,
+            &review,
+            ReviewGitStagingCapabilities {
+                staging: vec![
+                    staging_capability(
+                        "proposal-stage",
+                        ReviewProposalKind::Stage,
+                        OBSERVED_HEAD,
+                        'a',
+                        'c',
+                    ),
+                    staging_capability(
+                        "proposal-unstage",
+                        ReviewProposalKind::Unstage,
+                        OBSERVED_HEAD,
+                        'a',
+                        'd',
+                    ),
+                ],
+                conflict_resolutions: Vec::new(),
+            },
         );
 
-        assert!(!advertised_staging_capability(None));
+        let projection =
+            ReviewWorktreeProjection::new(&review, Some(&target), Some(&granted), true);
+        assert_eq!(projection.staging, Ok(()));
         assert_eq!(
-            ReviewWorktreeProjection::new(&review, None, true).staging,
+            projection
+                .advertised_staging()
+                .iter()
+                .map(|entry| (entry.proposal_id.as_str(), entry.kind))
+                .collect::<Vec<_>>(),
+            [
+                ("proposal-stage", ReviewProposalKind::Stage),
+                ("proposal-unstage", ReviewProposalKind::Unstage),
+            ]
+        );
+        assert!(
+            !projection.advertises_staging("proposal-commit"),
+            "a grant the server withheld must produce no control at all"
+        );
+        // The commit proposal is still *observed* — the read side never lost
+        // it — which is exactly what distinguishes absence-of-control from
+        // absence-of-proposal.
+        let staged = lane(&projection, ReviewWorktreeLane::Staged);
+        assert!(staged.iter().any(|file| file
+            .staging
+            .iter()
+            .any(|proposal| proposal.proposal_id == "proposal-commit" && proposal.admissible)));
+
+        // The withheld kind refuses at the preview constructor too, so nothing
+        // downstream can reconstruct it from the snapshot's own proposal.
+        assert!(PlatformReviewActionPreview::stage_proposal(
+            target.clone(),
+            &review,
+            &granted,
+            "proposal-commit",
+        )
+        .is_err());
+
+        // The two granted kinds go end to end: a confirmed preview carrying the
+        // server's own digests verbatim, which the fresh capability document
+        // still admits.
+        for (proposal_id, seed) in [("proposal-stage", 'c'), ("proposal-unstage", 'd')] {
+            let preview = PlatformReviewActionPreview::stage_proposal(
+                target.clone(),
+                &review,
+                &granted,
+                proposal_id,
+            )
+            .expect("granted staging proposal is dispatchable");
+            let (confirmation, correlation) = digests(seed);
+            let carried = preview.confirmation().expect("staging is a confirmed lane");
+            assert_eq!(carried.confirmation_digest(), &confirmation);
+            assert_eq!(carried.receipt_correlation_digest(), &correlation);
+            assert_eq!(carried.expected_workspace_revision(), revision(91));
+            assert!(preview.requires_capability_revalidation());
+            assert!(preview.matches_capabilities(&granted));
+        }
+
+        // Grant the commit too and the third control appears, from the same
+        // projection code and with no other change.
+        let full = capabilities(
+            &target,
+            &review,
+            ReviewGitStagingCapabilities {
+                staging: vec![
+                    staging_capability(
+                        "proposal-stage",
+                        ReviewProposalKind::Stage,
+                        OBSERVED_HEAD,
+                        'a',
+                        'c',
+                    ),
+                    staging_capability(
+                        "proposal-unstage",
+                        ReviewProposalKind::Unstage,
+                        OBSERVED_HEAD,
+                        'a',
+                        'd',
+                    ),
+                    staging_capability(
+                        "proposal-commit",
+                        ReviewProposalKind::Commit,
+                        OBSERVED_HEAD,
+                        'a',
+                        'e',
+                    ),
+                ],
+                conflict_resolutions: Vec::new(),
+            },
+        );
+        let projection = ReviewWorktreeProjection::new(&review, Some(&target), Some(&full), true);
+        assert!(projection.advertises_staging("proposal-commit"));
+        assert!(PlatformReviewActionPreview::stage_proposal(
+            target.clone(),
+            &review,
+            &full,
+            "proposal-commit",
+        )
+        .is_ok());
+    }
+
+    // SDTEST-1868 — every other way the lane can be withheld, and the fence
+    // that a worktree moving under the daemon has to trip.
+    #[test]
+    fn sdtest_1868_staging_lane_names_its_missing_fence_and_refuses_a_moved_worktree() {
+        let review = staging_review();
+        let target = target();
+        let granted = capabilities(
+            &target,
+            &review,
+            ReviewGitStagingCapabilities {
+                staging: vec![staging_capability(
+                    "proposal-stage",
+                    ReviewProposalKind::Stage,
+                    OBSERVED_HEAD,
+                    'a',
+                    'c',
+                )],
+                conflict_resolutions: Vec::new(),
+            },
+        );
+
+        assert_eq!(
+            ReviewWorktreeProjection::new(&review, Some(&target), None, true).staging,
             Err(ReviewStagingWithheld::NoServerCapability)
         );
         assert_eq!(
-            ReviewWorktreeProjection::new(&review, None, false).staging,
+            ReviewWorktreeProjection::new(&review, None, Some(&granted), true).staging,
             Err(ReviewStagingWithheld::NoServerCapability),
-            "the absent server capability is reported before the custody lane"
+            "no exactly reconciled target means nothing can be attributed"
+        );
+        // An exact response with two empty git lists is a different, more
+        // specific answer than no response at all, and the surface must be
+        // able to say which one it got.
+        let empty = capabilities(&target, &review, ReviewGitStagingCapabilities::default());
+        assert_eq!(
+            ReviewWorktreeProjection::new(&review, Some(&target), Some(&empty), true).staging,
+            Err(ReviewStagingWithheld::NoStageableProposal)
         );
         assert_eq!(
-            review_staging_control(true, false),
-            Err(ReviewStagingWithheld::NoCustodyLane)
+            ReviewWorktreeProjection::new(&review, Some(&target), Some(&granted), false).staging,
+            Err(ReviewStagingWithheld::NoCustodyLane),
+            "the durable lane is reported last, once the server has proved a slot"
         );
-        assert_eq!(review_staging_control(true, true), Ok(()));
+        // The lanes render in every one of those states; only the control is
+        // withheld.
+        for projection in [
+            ReviewWorktreeProjection::new(&review, Some(&target), None, true),
+            ReviewWorktreeProjection::new(&review, Some(&target), Some(&empty), true),
+        ] {
+            assert_eq!(projection.distinct_file_count(), 4);
+            assert!(projection.advertised_staging().is_empty());
+            assert!(projection.observation().is_none());
+        }
 
-        let projection = ReviewWorktreeProjection::new(&review, None, true);
-        let unstaged = lane(&projection, ReviewWorktreeLane::Unstaged);
-        assert_eq!(unstaged.len(), 1);
-        assert_eq!(
-            unstaged[0].staging,
-            vec![ReviewStagingProposal {
-                proposal_id: "proposal-stage".to_owned(),
-                kind: ReviewProposalKind::Stage,
-                admissible: true,
-            }]
+        // The observation is exposed so a reader can see the fence.
+        let projection =
+            ReviewWorktreeProjection::new(&review, Some(&target), Some(&granted), true);
+        let observation = projection
+            .observation()
+            .expect("granted lane names its read");
+        assert_eq!(observation.head_revision, OBSERVED_HEAD);
+        assert_eq!(observation.index_digest, "a".repeat(64));
+
+        // A preview minted against one worktree read must stop matching once a
+        // fresher document reports a different `HEAD` or a different index.
+        // The server mints the digest over both, so the comparison is the
+        // digest — and the refusal is local, before anything reaches the
+        // daemon.
+        let preview = PlatformReviewActionPreview::stage_proposal(
+            target.clone(),
+            &review,
+            &granted,
+            "proposal-stage",
+        )
+        .expect("advertised proposal");
+        for moved in [
+            staging_capability(
+                "proposal-stage",
+                ReviewProposalKind::Stage,
+                OTHER_HEAD,
+                'a',
+                'f',
+            ),
+            staging_capability(
+                "proposal-stage",
+                ReviewProposalKind::Stage,
+                OBSERVED_HEAD,
+                'b',
+                'f',
+            ),
+        ] {
+            let refreshed = capabilities(
+                &target,
+                &review,
+                ReviewGitStagingCapabilities {
+                    staging: vec![moved],
+                    conflict_resolutions: Vec::new(),
+                },
+            );
+            assert!(
+                !preview.matches_capabilities(&refreshed),
+                "a worktree that moved must withdraw the control locally"
+            );
+        }
+
+        // A capability whose kind disagrees with the snapshot's proposal is a
+        // torn read between two server-side reads, and is refused rather than
+        // letting the client pick which one to believe.
+        let torn = capabilities(
+            &target,
+            &review,
+            ReviewGitStagingCapabilities {
+                staging: vec![staging_capability(
+                    "proposal-stage",
+                    ReviewProposalKind::Commit,
+                    OBSERVED_HEAD,
+                    'a',
+                    'c',
+                )],
+                conflict_resolutions: Vec::new(),
+            },
         );
-        let conflicted = lane(&projection, ReviewWorktreeLane::Conflicted);
-        assert_eq!(conflicted.len(), 1);
         assert!(
-            !conflicted[0].staging[0].admissible,
-            "an unresolved conflict blocks its own staging proposal"
+            ReviewWorktreeProjection::new(&review, Some(&target), Some(&torn), true)
+                .advertised_staging()
+                .is_empty()
+        );
+    }
+
+    // SDTEST-1869 — `conflict_resolutions` lists one entry per admissible
+    // side, so a file with both sides recorded yields two controls and a
+    // delete/modify pair yields one. The side is part of the identity, not a
+    // parameter chosen after the fact: each entry carries the digest minted
+    // over the blob that side would write.
+    #[test]
+    fn sdtest_1869_both_recorded_sides_render_two_controls_and_a_single_side_renders_one() {
+        let review = staging_review();
+        let target = target();
+        let both = capabilities(
+            &target,
+            &review,
+            ReviewGitStagingCapabilities {
+                staging: Vec::new(),
+                conflict_resolutions: vec![
+                    conflict_capability(
+                        "proposal-conflict",
+                        "file-conflict",
+                        ConflictResolution::KeepCurrent,
+                        'a',
+                        'c',
+                    ),
+                    conflict_capability(
+                        "proposal-conflict",
+                        "file-conflict",
+                        ConflictResolution::KeepIncoming,
+                        'a',
+                        'd',
+                    ),
+                ],
+            },
+        );
+        let projection = ReviewWorktreeProjection::new(&review, Some(&target), Some(&both), true);
+        assert_eq!(projection.staging, Ok(()));
+        assert_eq!(
+            projection.advertised_sides("proposal-conflict", "file-conflict"),
+            [
+                ConflictResolution::KeepCurrent,
+                ConflictResolution::KeepIncoming
+            ],
+            "one entry per admissible side means two buttons, not one with a choice"
+        );
+
+        for (resolution, seed) in [
+            (ConflictResolution::KeepCurrent, 'c'),
+            (ConflictResolution::KeepIncoming, 'd'),
+        ] {
+            let preview = PlatformReviewActionPreview::resolve_conflict(
+                target.clone(),
+                &review,
+                &both,
+                "proposal-conflict",
+                "file-conflict",
+                resolution,
+            )
+            .expect("advertised side");
+            let (confirmation, correlation) = digests(seed);
+            let carried = preview.confirmation().expect("confirmed lane");
+            assert_eq!(
+                carried.confirmation_digest(),
+                &confirmation,
+                "each side carries its own digest, so they can never be swapped"
+            );
+            assert_eq!(carried.receipt_correlation_digest(), &correlation);
+            assert!(matches!(
+                preview.action(),
+                ReviewAction::ResolveConflict { resolution: sent, .. } if *sent == resolution
+            ));
+            assert!(preview.matches_capabilities(&both));
+        }
+
+        // A delete/modify conflict has one side recorded, so only that side is
+        // ever offered and the other refuses locally.
+        let one_side = capabilities(
+            &target,
+            &review,
+            ReviewGitStagingCapabilities {
+                staging: Vec::new(),
+                conflict_resolutions: vec![conflict_capability(
+                    "proposal-conflict",
+                    "file-conflict",
+                    ConflictResolution::KeepCurrent,
+                    'a',
+                    'c',
+                )],
+            },
+        );
+        let projection =
+            ReviewWorktreeProjection::new(&review, Some(&target), Some(&one_side), true);
+        assert_eq!(
+            projection.advertised_sides("proposal-conflict", "file-conflict"),
+            [ConflictResolution::KeepCurrent]
+        );
+        assert!(PlatformReviewActionPreview::resolve_conflict(
+            target.clone(),
+            &review,
+            &one_side,
+            "proposal-conflict",
+            "file-conflict",
+            ConflictResolution::KeepIncoming,
+        )
+        .is_err());
+
+        // A file the snapshot no longer reports as unmerged cannot be
+        // collapsed, whatever an older capability read said.
+        let mut resolved = review.clone();
+        resolved
+            .files
+            .iter_mut()
+            .find(|file| file.id == "file-conflict")
+            .expect("conflicted file")
+            .conflict = ConflictState::Resolved;
+        assert!(
+            ReviewWorktreeProjection::new(&resolved, Some(&target), Some(&both), true)
+                .advertised_conflict_resolutions()
+                .is_empty()
         );
     }
 
@@ -1111,7 +1840,7 @@ mod tests {
     fn sdtest_1849_canonical_snapshot_projects_to_lanes_previews_and_observations() {
         let snapshot = decode_review_snapshot(CANONICAL_FIXTURE).expect("canonical fixture");
         let review = PlatformReviewSemantic::from(&snapshot);
-        let projection = ReviewWorktreeProjection::new(&review, None, true);
+        let projection = ReviewWorktreeProjection::new(&review, None, None, true);
 
         assert_eq!(projection.source_revision, review.revision);
         assert_eq!(projection.distinct_file_count(), 1);

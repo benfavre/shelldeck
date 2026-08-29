@@ -1684,7 +1684,8 @@ mod tests {
         use automonique_protocol::platform_v2_transport::{
             PlatformNegotiationResponse, PlatformV2Refusal, PlatformV2Request, PlatformV2Response,
             ReviewCapabilities, ReviewCheckRerunCapability, ReviewConfirmationDigest,
-            ReviewPullRequestCapabilities, ReviewReceiptCorrelationDigest,
+            ReviewGitStagingCapabilities, ReviewPullRequestCapabilities,
+            ReviewReceiptCorrelationDigest,
         };
 
         let snapshot = decode_review_snapshot(include_bytes!(
@@ -1718,6 +1719,7 @@ mod tests {
             .unwrap()],
             Vec::new(),
             ReviewPullRequestCapabilities::default(),
+            ReviewGitStagingCapabilities::default(),
         )
         .unwrap();
         let negotiated = || {
