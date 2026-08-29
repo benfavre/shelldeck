@@ -768,7 +768,7 @@ mod tests {
         .unwrap()
     }
 
-    // SDTEST-1823
+    // SDTEST-1830
     #[test]
     fn orchestration_attention_remains_discoverable_without_a_review_snapshot() {
         let missing = PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {

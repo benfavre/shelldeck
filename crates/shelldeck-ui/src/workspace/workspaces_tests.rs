@@ -338,7 +338,7 @@ mod tests {
         });
     }
 
-    // SDTEST-1825
+    // SDTEST-1832
     #[test]
     fn retained_provider_activation_focuses_only_the_exact_native_tab_and_mapping() {
         let mut cx = TestAppContext::single();

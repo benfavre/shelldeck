@@ -2141,9 +2141,9 @@ mod tests {
         std::fs::remove_dir_all(failing_path.parent().unwrap()).ok();
     }
 
-    // SDTEST-1830 — SDUC-493
+    // SDTEST-1837 — SDUC-493
     #[test]
-    fn sdtest_1830_retirement_fence_survives_failed_cleanup_and_restart() {
+    fn sdtest_1837_retirement_fence_survives_failed_cleanup_and_restart() {
         let path = temp_path("retirement-restart.json");
         let key = local_key("workspace-1", "retired-item", 1);
         let retirement = AttentionRetirement::new(
@@ -2515,9 +2515,9 @@ mod tests {
         authorized_session_with_freshness(FreshnessState::Fresh)
     }
 
-    // SDTEST-1822
+    // SDTEST-1829
     #[test]
-    fn sdtest_1822_activation_re_resolves_exact_current_catalogues_and_refuses_ambiguity() {
+    fn sdtest_1829_activation_re_resolves_exact_current_catalogues_and_refuses_ambiguity() {
         let (catalog, workspace, _) = activation_catalog();
         let mut navigation = WorkspaceNavigationState::default();
         navigation

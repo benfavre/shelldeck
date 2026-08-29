@@ -2928,7 +2928,7 @@ an unavailable adapter refuses before any effect.
   reducer, source-scoped deterministic UI identities, and bounded durable local
   read/notification custody. Follow-up hardening added authenticated complete
   baseline/gap resync, cross-process notification reservation, size admission,
-  and no-follow/reparse-fenced storage. SDTEST-1822..1829 then activate the
+  and no-follow/reparse-fenced storage. SDTEST-1829..1841 then activate the
   authenticated board in Workspace/Fleet: provider coordinates stay bound to
   their fresh WorkContext session, polling/remapping hides or retires stale
   boards, visible native surface transitions precede read custody, and

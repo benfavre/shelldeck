@@ -1037,7 +1037,7 @@ mod tests {
         (entity, activation, key, temp)
     }
 
-    // SDTEST-1826
+    // SDTEST-1833
     #[test]
     fn workspace_attention_gap_hides_the_source_until_the_next_poll_baseline() {
         let workspace = CatalogWorkspaceId::from_uuid(Uuid::from_u128(1826));
@@ -1098,7 +1098,7 @@ mod tests {
         assert_eq!(board.visible_items().count(), 1);
     }
 
-    // SDTEST-1827
+    // SDTEST-1834
     #[test]
     fn whole_poll_failure_hides_every_board_and_mapping_replacement_recovers_cleanly() {
         let workspace = CatalogWorkspaceId::from_uuid(Uuid::from_u128(1827));
@@ -1161,7 +1161,7 @@ mod tests {
         );
     }
 
-    // SDTEST-1828
+    // SDTEST-1835
     #[test]
     fn activation_routes_each_destination_to_a_visible_surface_before_read_custody() {
         let workspace = CatalogWorkspaceId::from_uuid(Uuid::from_u128(1828));
@@ -1258,7 +1258,7 @@ mod tests {
         assert!(store.state().is_read(&local));
     }
 
-    // SDTEST-1829
+    // SDTEST-1836
     #[test]
     fn attention_mode_admission_closes_settings_and_stages_dev_mode() {
         let mut cx = gpui::TestAppContext::single();
@@ -1307,7 +1307,7 @@ mod tests {
         });
     }
 
-    // SDTEST-1831
+    // SDTEST-1838
     #[test]
     fn workspace_context_removal_and_restart_flush_durable_retirement_custody() {
         let mut cx = gpui::TestAppContext::single();
@@ -1421,7 +1421,7 @@ mod tests {
         });
     }
 
-    // SDTEST-1832
+    // SDTEST-1839
     #[test]
     fn inactive_workspace_revisit_preserves_distinct_board_and_overlay_custody() {
         let mut boards = BTreeMap::new();
@@ -1447,7 +1447,7 @@ mod tests {
         assert_eq!(attention_context_retirements(&boards, None).len(), 2);
     }
 
-    // SDTEST-1833
+    // SDTEST-1840
     #[test]
     fn real_workspace_waits_for_dev_visibility_across_modes_settings_and_inflight_transition() {
         fn advance_all(cx: &gpui::TestAppContext) {
@@ -1545,7 +1545,7 @@ mod tests {
         });
     }
 
-    // SDTEST-1834
+    // SDTEST-1841
     #[test]
     fn authority_change_between_open_and_visible_confirmation_stays_unread() {
         let mut cx = gpui::TestAppContext::single();

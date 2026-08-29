@@ -2808,7 +2808,7 @@ mod tests {
         }
     }
 
-    // SDTEST-1824
+    // SDTEST-1831
     #[test]
     fn same_process_attention_notifications_activate_only_explicit_open_actions() {
         assert!(platform_attention_action_opens("default"));
