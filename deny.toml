@@ -10,12 +10,12 @@ all-features = true
 unmaintained = "workspace"
 unsound = "all"
 ignore = [
-    { id = "RUSTSEC-2023-0071", reason = "rsa is transitive through russh and RustSec has no patched release; retained temporarily for RSA SSH key compatibility" },
-    { id = "RUSTSEC-2024-0384", reason = "instant is transitive through the vendored GPUI futures-lite 1 stack" },
-    { id = "RUSTSEC-2024-0436", reason = "paste is transitive through image codecs used by GPUI and has no in-place maintained release" },
-    { id = "RUSTSEC-2025-0052", reason = "async-std is transitive through the vendored GPUI HTTP and async-tar stack" },
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is transitive through zed-reqwest in the vendored GPUI HTTP client" },
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25 is transitive through cosmic-text/fontdb; the latest cosmic-text still constrains fontdb below its maintained parser migration" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa is transitive through russh's default rsa feature; the advisory records no patched release at all, and dropping the feature would remove RSA SSH key support" },
+    { id = "RUSTSEC-2024-0384", reason = "instant is transitive through futures-lite 1 in adabraka_util 0.5.1, a crates.io sibling of the vendored GPUI that we do not fork" },
+    { id = "RUSTSEC-2024-0436", reason = "paste reaches the lockfile through three independent chains (metal on macOS, pulp/exr, rav1e/ravif), all still on paste 1 at their latest releases" },
+    { id = "RUSTSEC-2025-0052", reason = "async-std is a non-optional dependency of async-tar 0.5, pinned by adabraka_http_client 0.5.1; async-tar 0.6 gates it but the requirement cannot resolve there" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is transitive through zed-reqwest 0.12.15-zed, a Zed fork of reqwest 0.12.15 that stopped publishing; upstream reqwest already dropped it" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25 is transitive through cosmic-text 0.19 -> fontdb 0.23; fontdb 0.24 dropped it and pop-os/cosmic-text#526 is the open bump" },
 ]
 
 [bans]
