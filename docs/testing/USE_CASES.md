@@ -2906,15 +2906,41 @@ captured snapshot revision it was written against, plus a durable
 batch-delivery selection; a note captured on a superseded snapshot is retained
 but reported non-actionable rather than re-anchored, and it is stored under the
 same bounded, no-follow, cross-process-locked private boundary as review
-custody. Batch delivery of a selection to the authorized session remains
-unexposed and is stated as unavailable, because `ReviewCapabilities` advertises
-only check reruns. A terminal CI check exposes rerun only when a separately
+custody. A note is a local draft and carries no server comment id, so its
+durable selection marks which drafts to prepare, never what is delivered.
+
+Batch delivery to the authorized session is exposed for exactly the comments
+the server advertised in `agent_deliverable_comments` for this project,
+workspace and snapshot revision. Each comment's id and expected revision are
+sent verbatim from that capability, at the capability's own snapshot revision,
+in the strictly ordered form the contract requires; the snapshot is consulted
+only to prove the two reads agree and supplies no value that crosses the
+network. A capability list for another coordinate, an entry the snapshot
+contradicts or does not carry, a comment already delivered, a review that is
+not fresh, and an empty advertised list each withhold the control with their
+own stated reason.
+
+This lane carries no confirmation digest and no receipt correlation, and that
+is deliberate. The target session is registry-owned and never on the wire, the
+snapshot revision is fenced twice server-side, and the note set is fenced by
+the server's own batch arm, so exactly-once falls out of the domain state
+machine; a minted correlation would additionally make the client's own receipt
+unfindable, because the host's receipt lookup skips a retained action carrying
+one. What replaces the digest is the advertisement, so ShellDeck re-reads it
+after every settlement rather than reusing it: a batch preview is revalidated
+against the current advertisement before it crosses the dispatch fence, and the
+persisted selection is retained against that advertisement rather than the
+snapshot, so a settled delivery empties it instead of allowing a stale list to
+be posted under a fresh idempotency key.
+
+A terminal CI check exposes rerun only when a separately
 fetched server capability matches the exact project, workspace, snapshot
 revision, check revision, authority, confirmation digest, and
-receipt-correlation digest. Batch-to-agent, Git
-proposal, and merge preview constructors remain inert core semantics: Fleet
-does not expose those controls until their own explicit server capabilities and
-custody lanes exist. Every exposed confirmation names the exact workspace and
+receipt-correlation digest. Git proposal and merge preview constructors remain
+inert core semantics: Fleet does not expose those controls until their own
+explicit server capabilities and custody lanes exist, and the three
+pull-request slots ship empty because no provider adapter can preflight one.
+Every exposed confirmation names the exact workspace and
 captured snapshot or target revision before dispatch.
 
 The read side presents those files as one combined worktree: conflicted first,
@@ -2926,9 +2952,9 @@ file, and hunk so a twice-listed file cannot route one lane's click to the
 other. The server's own stage, unstage, commit, and conflict-resolution
 proposals are shown as per-file observations with their admissibility, and the
 surface states which fence is missing instead of offering a control: Platform
-v2 `ReviewCapabilities` advertises rerunnable checks only, defines no staging
-capability, confirmation digest, or receipt-correlation digest, and the action
-preview structurally refuses a confirmation on those four actions. Hunk-level
+v2 `ReviewCapabilities` defines no staging capability, confirmation digest, or
+receipt-correlation digest, and the action preview structurally refuses a
+confirmation on those four actions. Hunk-level
 staging is not representable at all — a proposal names files, never hunks.
 
 Previews are decided from declared metadata, never from trust. Text is painted
@@ -2943,8 +2969,9 @@ a declared size or raster above the client budget, and a kind disagreeing with
 its media type or content are each withheld with a distinct localized reason
 present in both shipped locales.
 
-Before any exposed review mutation crosses the network — comment, approval or
-confirmed rerun — ShellDeck persists the inert preview and then a dispatched
+Before any exposed review mutation crosses the network — comment, approval,
+confirmed rerun or unconfirmed batch delivery — ShellDeck persists the inert
+preview and then a dispatched
 marker under a bounded, no-follow, cross-process-locked custody store. A
 workspace owns at most one non-terminal effect at a time, and preparation is
 refused outright when that store is unavailable. Accepted, unknown, or
@@ -2962,6 +2989,35 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-08-29** — Expanded SDUC-495 with capability-fenced batch delivery of
+  review comments to the authorized session, and added SDTEST-1863..1866. The
+  item was blocked on a contract gap, not a client one: `ReviewCapabilities`
+  advertised only `rerunnable_checks`, so nothing could fence the control.
+  `bext-stack/automonique` PR #221 lands `agent_deliverable_comments`, and the
+  send control now exists only for the comments it names, with every coordinate
+  taken verbatim from it.
+
+  This is the unconfirmed lane, deliberately. A rerun needs a digest because
+  the client names the target and the effect fires in a system the daemon does
+  not own; delivery reaches a registry-owned session that is never on the wire,
+  at a snapshot revision fenced twice server-side, over a note set fenced by
+  the server's batch arm. Minting a receipt correlation would have been worse
+  than redundant — the host's receipt lookup skips a retained action carrying
+  one, so the client would have made its own receipt unfindable.
+
+  The advertisement is what replaces the digest, so it must be re-read after a
+  receipt settles rather than reused; a reused list is stale by construction,
+  because settling moves the comment out of `not_sent`/`refused` and bumps both
+  the snapshot revision and the comment's own. SDTEST-1863 demonstrates that
+  rather than asserting it: it replays the server's own eligibility rule, shows
+  the advertisement retracting exactly the delivered comment, and shows the
+  reused list refused even under a fresh idempotency key.
+
+  The custody fence was not weakened to fit the lane. Batch delivery needs no
+  confirmation digest but is still an exposed mutation, and the custody disk
+  format knew only `AddComment`, `ApproveReview` and `RerunCheck` — so it could
+  not be recorded at all and would have refused at the fence.
 
 - **2026-08-29** — Expanded SDUC-495 with durable line-anchored review notes
   and extended the custody fence to every exposed mutation; added

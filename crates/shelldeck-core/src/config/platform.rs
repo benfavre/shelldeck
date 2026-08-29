@@ -1684,7 +1684,7 @@ mod tests {
         use automonique_protocol::platform_v2_transport::{
             PlatformNegotiationResponse, PlatformV2Refusal, PlatformV2Request, PlatformV2Response,
             ReviewCapabilities, ReviewCheckRerunCapability, ReviewConfirmationDigest,
-            ReviewReceiptCorrelationDigest,
+            ReviewPullRequestCapabilities, ReviewReceiptCorrelationDigest,
         };
 
         let snapshot = decode_review_snapshot(include_bytes!(
@@ -1716,6 +1716,8 @@ mod tests {
                 correlation.clone(),
             )
             .unwrap()],
+            Vec::new(),
+            ReviewPullRequestCapabilities::default(),
         )
         .unwrap();
         let negotiated = || {
@@ -1738,7 +1740,7 @@ mod tests {
         let mut capability_client = PlatformV2Client::new_testing(capability_transport);
         assert_eq!(
             load_review_capabilities(&mut capability_client, &target).unwrap(),
-            PlatformReviewCapabilitiesLoad::Available(capabilities.clone())
+            PlatformReviewCapabilitiesLoad::Available(Box::new(capabilities.clone()))
         );
         assert!(matches!(
             capability_client.transport().requests()[0].request(),
