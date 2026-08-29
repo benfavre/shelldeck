@@ -29,10 +29,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::workspace_catalog::PlatformV2Mapping;
 
 mod custody;
+mod notes;
 pub use custody::{
     PlatformReviewCustodyStore, ReviewCustodyError, ReviewCustodyPresentation,
     ReviewCustodyRecovery,
 };
+pub use notes::{PlatformReviewNote, PlatformReviewNoteStore, ReviewNoteError};
 
 mod worktree;
 pub use worktree::{
