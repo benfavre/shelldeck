@@ -45,10 +45,12 @@ pub use notes::{PlatformReviewNote, PlatformReviewNoteStore, ReviewNoteError};
 
 mod worktree;
 pub use worktree::{
-    advertised_staging_capability, review_safe_preview, review_safe_text, review_staging_control,
-    ReviewPreviewWithheld, ReviewSafeHtml, ReviewSafeImage, ReviewSafePreview, ReviewSafeText,
-    ReviewStagingProposal, ReviewStagingWithheld, ReviewWorktreeFile, ReviewWorktreeHunk,
-    ReviewWorktreeLane, ReviewWorktreeLaneGroup, ReviewWorktreeProjection, MAX_SAFE_PREVIEW_BYTES,
+    advertised_conflict_resolutions, advertised_staging_proposals, review_safe_preview,
+    review_safe_text, review_staging_control, AdvertisedReviewConflictResolution,
+    AdvertisedReviewStaging, ReviewPreviewWithheld, ReviewSafeHtml, ReviewSafeImage,
+    ReviewSafePreview, ReviewSafeText, ReviewStagingProposal, ReviewStagingWithheld,
+    ReviewWorktreeFile, ReviewWorktreeHunk, ReviewWorktreeLane, ReviewWorktreeLaneGroup,
+    ReviewWorktreeObservation, ReviewWorktreeProjection, MAX_SAFE_PREVIEW_BYTES,
     MAX_SAFE_PREVIEW_EDGE, MAX_SAFE_PREVIEW_LINES, MAX_SAFE_PREVIEW_LINE_CHARS,
     MAX_SAFE_PREVIEW_PIXELS, SAFE_PREVIEW_BOX_EDGE,
 };
@@ -235,30 +237,125 @@ impl PlatformReviewActionPreview {
         )
     }
 
-    pub fn apply_proposal(
+    /// Prepare one confirmed index-level staging transition.
+    ///
+    /// The *kind* is taken from the capability, never from the snapshot's
+    /// proposal. Both agree on a coherent read — [`advertised_staging_proposals`]
+    /// checks that — but the value the confirmation digest was minted over is
+    /// this one, so this is the one that crosses the wire.
+    ///
+    /// This is the confirmed lane. `Stage`, `Unstage` and `Commit` now require
+    /// a server-minted confirmation, and their unconfirmed spelling cannot be
+    /// encoded at all, so an unadvertised proposal refuses here rather than
+    /// being posted and refused remotely. A deployment withholding the commit
+    /// grant advertises no `Commit` entry, so this refuses for it while
+    /// admitting its `Stage` and `Unstage` siblings — the withholding is the
+    /// absence, and nothing here can invent the missing entry.
+    pub fn stage_proposal(
         target: PlatformReviewTarget,
         review: &PlatformReviewSemantic,
+        capabilities: &ReviewCapabilities,
         proposal_id: &str,
     ) -> Result<Self, &'static str> {
         validate_review_target(&target, review)?;
-        let proposal = review
-            .proposals
+        let advertised = advertised_staging_proposals(Some(capabilities), &target, review);
+        if !advertised
             .iter()
-            .find(|proposal| proposal.id == proposal_id)
-            .filter(|proposal| review.proposal_is_actionable(&proposal.id))
-            .ok_or("review proposal is not actionable")?;
-        let proposal_id = ReviewProposalId::new(proposal.id.clone())
+            .any(|entry| entry.proposal_id == proposal_id)
+        {
+            return Err("review staging proposal is not advertised");
+        }
+        let capability = capabilities
+            .staging()
+            .iter()
+            .find(|capability| capability.proposal_id().as_str() == proposal_id)
+            .ok_or("review staging capability is unavailable or stale")?;
+        let id = ReviewProposalId::new(proposal_id.to_owned())
             .map_err(|_| "review proposal identity is invalid")?;
-        let action = match proposal.kind {
-            ReviewProposalKind::Stage => ReviewAction::Stage { proposal_id },
-            ReviewProposalKind::Unstage => ReviewAction::Unstage { proposal_id },
-            ReviewProposalKind::Commit => ReviewAction::Commit { proposal_id },
+        let action = match capability.kind() {
+            ReviewProposalKind::Stage => ReviewAction::Stage { proposal_id: id },
+            ReviewProposalKind::Unstage => ReviewAction::Unstage { proposal_id: id },
+            ReviewProposalKind::Commit => ReviewAction::Commit { proposal_id: id },
+            // Unreachable: `ReviewStagingCapability::new` refuses this kind,
+            // because collapsing a conflict writes worktree bytes rather than
+            // index entries and carries its own capability.
             ReviewProposalKind::ResolveConflict => {
                 return Err("conflict resolution requires an explicit resolution")
             }
         };
+        let confirmation = ReviewActionConfirmation::new(
+            capability.confirmation_digest().clone(),
+            capabilities.workspace_revision(),
+            capability.receipt_correlation_digest().clone(),
+        );
         let nonce = review_nonce();
-        Self::review_action(target, review.revision, action, &nonce, None)
+        Self::review_action(
+            target,
+            capabilities.snapshot_revision(),
+            action,
+            &nonce,
+            Some(confirmation),
+        )
+    }
+
+    /// Prepare one confirmed collapse of a conflicted file to a recorded side.
+    ///
+    /// `resolution` is not a free choice: the server advertises one entry per
+    /// side git actually recorded, and this refuses any other. That is why the
+    /// side has to arrive as an argument rather than be defaulted — the
+    /// confirmation digest commits to it, so a control that guessed would
+    /// carry a digest for the other blob.
+    ///
+    /// No content crosses this wire in either direction. What lands is exactly
+    /// the blob git is already holding as stage 2 (`keep_current`) or stage 3
+    /// (`keep_incoming`) for the one path the action names.
+    pub fn resolve_conflict(
+        target: PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+        capabilities: &ReviewCapabilities,
+        proposal_id: &str,
+        file_id: &str,
+        resolution: ConflictResolution,
+    ) -> Result<Self, &'static str> {
+        validate_review_target(&target, review)?;
+        let advertised = advertised_conflict_resolutions(Some(capabilities), &target, review);
+        if !advertised.iter().any(|entry| {
+            entry.proposal_id == proposal_id
+                && entry.file_id == file_id
+                && entry.resolution == resolution
+        }) {
+            return Err("review conflict resolution is not advertised");
+        }
+        let capability = capabilities
+            .conflict_resolutions()
+            .iter()
+            .find(|capability| {
+                capability.proposal_id().as_str() == proposal_id
+                    && capability.file_id().as_str() == file_id
+                    && capability.resolution() == resolution
+            })
+            .ok_or("review conflict resolution capability is unavailable or stale")?;
+        let confirmation = ReviewActionConfirmation::new(
+            capability.confirmation_digest().clone(),
+            capabilities.workspace_revision(),
+            capability.receipt_correlation_digest().clone(),
+        );
+        let nonce = review_nonce();
+        Self::review_action(
+            target,
+            capabilities.snapshot_revision(),
+            ReviewAction::ResolveConflict {
+                proposal_id: ReviewProposalId::new(proposal_id.to_owned())
+                    .map_err(|_| "review proposal identity is invalid")?,
+                file_id: automonique_protocol::platform_v2_review::ReviewFileId::new(
+                    file_id.to_owned(),
+                )
+                .map_err(|_| "review file identity is invalid")?,
+                resolution,
+            },
+            &nonce,
+            Some(confirmation),
+        )
     }
 
     pub fn rerun_check(
@@ -309,36 +406,63 @@ impl PlatformReviewActionPreview {
         )
     }
 
+    /// Prepare the confirmed merge of the advertised pull request.
+    ///
+    /// This became a confirmed lane with the same protocol revision that
+    /// earned the staging capability: `MergePullRequest` is now inside
+    /// `requires_confirmation`, so its unconfirmed spelling no longer encodes
+    /// and the previous constructor minted a preview the transport could not
+    /// have sent. Every coordinate is therefore taken from the capability the
+    /// server minted, and the snapshot is consulted only to prove the two
+    /// reads agree.
+    ///
+    /// The server ships this slot empty for every workspace today — no
+    /// provider adapter can preflight a pull-request write — so this refuses
+    /// in production, which is the honest answer rather than a silent one.
     pub fn merge_pull_request(
         target: PlatformReviewTarget,
         review: &PlatformReviewSemantic,
+        capabilities: &ReviewCapabilities,
     ) -> Result<Self, &'static str> {
         validate_review_target(&target, review)?;
-        let pull = &review.pull_request;
         if !review.pull_request_is_mergeable() {
             return Err("pull request is not mergeable");
         }
-        let id = pull
-            .id
-            .as_ref()
-            .ok_or("pull request identity is unavailable")?;
-        let head = pull
-            .head_revision
-            .as_ref()
-            .ok_or("pull request head revision is unavailable")?;
+        if capabilities.project() != &target.project
+            || capabilities.workspace() != &target.workspace
+            || capabilities.snapshot_revision() != review.revision
+        {
+            return Err("review capabilities are stale or belong to another workspace");
+        }
+        let pull = &review.pull_request;
+        let capability = capabilities
+            .merge_pull_request()
+            .filter(|capability| {
+                Some(capability.pull_request_id().as_str()) == pull.id.as_deref()
+                    && capability.expected_pull_request_revision()
+                        == pull.freshness.observed_revision
+                    && Some(capability.expected_head_revision().as_str())
+                        == pull.head_revision.as_deref()
+                    && capability.authority().kind() == pull.authority.kind
+                    && capability.authority().id().as_str() == pull.authority.id
+            })
+            .ok_or("pull request merge capability is unavailable or stale")?;
+        let confirmation = ReviewActionConfirmation::new(
+            capability.confirmation_digest().clone(),
+            capabilities.workspace_revision(),
+            capability.receipt_correlation_digest().clone(),
+        );
         let nonce = review_nonce();
         Self::review_action(
             target,
-            review.revision,
+            capabilities.snapshot_revision(),
             ReviewAction::MergePullRequest {
-                pull_request_id: PullRequestId::new(id.clone())
-                    .map_err(|_| "pull request identity is invalid")?,
-                expected_pull_request_revision: pull.freshness.observed_revision,
-                expected_head_revision: ReviewField::new(head.clone())
-                    .map_err(|_| "pull request head revision is invalid")?,
+                pull_request_id: capability.pull_request_id().clone(),
+                expected_pull_request_revision: capability.expected_pull_request_revision(),
+                expected_head_revision: capability.expected_head_revision().clone(),
             },
             &nonce,
-            None,
+            Some(confirmation),
         )
     }
 
@@ -352,7 +476,12 @@ impl PlatformReviewActionPreview {
         action
             .validate_client_shape()
             .map_err(|_| "review action is invalid")?;
-        if matches!(action, ReviewAction::RerunCheck { .. }) != confirmation.is_some() {
+        // Ask the contract rather than restate it. The confirmed set grew from
+        // the check rerun alone to the three pull-request writes and the four
+        // staging writes, and a local `matches!` would have kept accepting the
+        // unconfirmed spelling of each new member long after the transport
+        // stopped encoding it.
+        if action.requires_confirmation() != confirmation.is_some() {
             return Err("review action confirmation does not match its action");
         }
         let idempotency_key = IdempotencyKey::new(format!("shelldeck-review-{nonce}"))
@@ -451,6 +580,90 @@ impl PlatformReviewActionPreview {
                                     && capability.expected_comment_revision()
                                         == comment.expected_revision()
                             })
+                    })
+            }
+            // The staging lane is fenced by its digest, and the digest is what
+            // makes a moved worktree refuse *here* rather than at the daemon.
+            // The server mints it over the commit `HEAD` resolved to, the
+            // whole index, and every named path's objects and stat identity,
+            // so any of those moving between two capability reads yields a
+            // different digest and no match. Comparing the exposed
+            // `expected_head_revision` and `expected_index_digest` separately
+            // would restate a subset of the same commitment.
+            //
+            // Only a fresh capability document can supply that comparison,
+            // which is why every staging preview reports
+            // `requires_capability_revalidation`.
+            (
+                ReviewAction::Stage { proposal_id }
+                | ReviewAction::Unstage { proposal_id }
+                | ReviewAction::Commit { proposal_id },
+                Some(confirmation),
+            ) => {
+                let kind = match &self.action {
+                    ReviewAction::Stage { .. } => ReviewProposalKind::Stage,
+                    ReviewAction::Unstage { .. } => ReviewProposalKind::Unstage,
+                    _ => ReviewProposalKind::Commit,
+                };
+                self.capability_coordinates_match(capabilities)
+                    && capabilities.workspace_revision()
+                        == confirmation.expected_workspace_revision()
+                    && capabilities.staging().iter().any(|capability| {
+                        capability.proposal_id() == proposal_id
+                            && capability.kind() == kind
+                            && capability.confirmation_digest()
+                                == confirmation.confirmation_digest()
+                            && capability.receipt_correlation_digest()
+                                == confirmation.receipt_correlation_digest()
+                    })
+            }
+            // The side is part of the identity, not a parameter of it: two
+            // entries for one file differ only by `resolution`, and each
+            // carries the digest minted over the blob that side would write.
+            (
+                ReviewAction::ResolveConflict {
+                    proposal_id,
+                    file_id,
+                    resolution,
+                },
+                Some(confirmation),
+            ) => {
+                self.capability_coordinates_match(capabilities)
+                    && capabilities.workspace_revision()
+                        == confirmation.expected_workspace_revision()
+                    && capabilities
+                        .conflict_resolutions()
+                        .iter()
+                        .any(|capability| {
+                            capability.proposal_id() == proposal_id
+                                && capability.file_id() == file_id
+                                && capability.resolution() == *resolution
+                                && capability.confirmation_digest()
+                                    == confirmation.confirmation_digest()
+                                && capability.receipt_correlation_digest()
+                                    == confirmation.receipt_correlation_digest()
+                        })
+            }
+            (
+                ReviewAction::MergePullRequest {
+                    pull_request_id,
+                    expected_pull_request_revision,
+                    expected_head_revision,
+                },
+                Some(confirmation),
+            ) => {
+                self.capability_coordinates_match(capabilities)
+                    && capabilities.workspace_revision()
+                        == confirmation.expected_workspace_revision()
+                    && capabilities.merge_pull_request().is_some_and(|capability| {
+                        capability.pull_request_id() == pull_request_id
+                            && capability.expected_pull_request_revision()
+                                == *expected_pull_request_revision
+                            && capability.expected_head_revision() == expected_head_revision
+                            && capability.confirmation_digest()
+                                == confirmation.confirmation_digest()
+                            && capability.receipt_correlation_digest()
+                                == confirmation.receipt_correlation_digest()
                     })
             }
             (_, None) => true,
@@ -717,6 +930,37 @@ impl PlatformReviewSemantic {
                             file.id == *id && file.conflict == ConflictState::Unresolved
                         })
                     }))
+            })
+    }
+
+    /// Whether one conflicted file inside one proposal may be collapsed to a
+    /// side git recorded.
+    ///
+    /// Deliberately not folded into [`Self::proposal_is_actionable`], which
+    /// answers a different question: staging moves index entries for a whole
+    /// proposal and is refused outright while any of its files is unmerged,
+    /// whereas this is admissible *only* while the one named file is unmerged.
+    /// The two predicates are near-inverses, so sharing one would make each
+    /// caller re-derive which half it meant.
+    ///
+    /// Which side may be written is never decided here: the server advertises
+    /// one entry per side it actually recorded, and the client may name no
+    /// other.
+    #[must_use]
+    pub fn conflict_resolution_is_actionable(&self, proposal_id: &str, file_id: &str) -> bool {
+        self.proposals
+            .iter()
+            .find(|proposal| proposal.id == proposal_id)
+            .is_some_and(|proposal| {
+                proposal.kind == ReviewProposalKind::ResolveConflict
+                    && proposal
+                        .authority
+                        .as_ref()
+                        .is_some_and(|authority| authority.kind == ReviewAuthorityKind::Git)
+                    && proposal.files.iter().any(|id| id == file_id)
+                    && self.files.iter().any(|file| {
+                        file.id == file_id && file.conflict == ConflictState::Unresolved
+                    })
             })
     }
 
@@ -1294,6 +1538,85 @@ mod tests {
         .unwrap()
     }
 
+    /// The advertisement a coherent server would mint for this snapshot's
+    /// first proposal, at the `HEAD` and index its preflight read.
+    fn staging_capabilities(
+        target: &PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+    ) -> ReviewCapabilities {
+        let proposal = &review.proposals[0];
+        ReviewCapabilities::new(
+            target.project.clone(),
+            target.workspace.clone(),
+            review.revision,
+            Revision::new(91).unwrap(),
+            Vec::new(),
+            Vec::new(),
+            ReviewPullRequestCapabilities::default(),
+            ReviewGitStagingCapabilities {
+                staging: vec![ReviewStagingCapability::new(
+                    ReviewProposalId::new(proposal.id.clone()).unwrap(),
+                    proposal.kind,
+                    ReviewField::new("4".repeat(40)).unwrap(),
+                    ReviewIndexDigest::new("a".repeat(64)).unwrap(),
+                    ReviewAuthority::new(
+                        ReviewAuthorityKind::Git,
+                        automonique_protocol::platform_v2_review::ReviewAuthorityId::new(
+                            proposal.authority.as_ref().unwrap().id.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    ReviewConfirmationDigest::new("c".repeat(64)).unwrap(),
+                    ReviewReceiptCorrelationDigest::new("d".repeat(64)).unwrap(),
+                )
+                .unwrap()],
+                conflict_resolutions: Vec::new(),
+            },
+        )
+        .unwrap()
+    }
+
+    /// The merge slot the server ships empty in production. It exists here
+    /// because `MergePullRequest` is a confirmed lane now, so the unconfirmed
+    /// spelling cannot be constructed at all.
+    fn merge_capabilities(
+        target: &PlatformReviewTarget,
+        review: &PlatformReviewSemantic,
+    ) -> ReviewCapabilities {
+        let pull = &review.pull_request;
+        ReviewCapabilities::new(
+            target.project.clone(),
+            target.workspace.clone(),
+            review.revision,
+            Revision::new(91).unwrap(),
+            Vec::new(),
+            Vec::new(),
+            ReviewPullRequestCapabilities {
+                merge: Some(
+                    ReviewPullRequestMergeCapability::new(
+                        PullRequestId::new(pull.id.clone().unwrap()).unwrap(),
+                        pull.freshness.observed_revision,
+                        ReviewField::new(pull.head_revision.clone().unwrap()).unwrap(),
+                        pull.readiness,
+                        ReviewAuthority::new(
+                            pull.authority.kind,
+                            automonique_protocol::platform_v2_review::ReviewAuthorityId::new(
+                                pull.authority.id.clone(),
+                            )
+                            .unwrap(),
+                        ),
+                        ReviewConfirmationDigest::new("e".repeat(64)).unwrap(),
+                        ReviewReceiptCorrelationDigest::new("f".repeat(64)).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                ..ReviewPullRequestCapabilities::default()
+            },
+            ReviewGitStagingCapabilities::default(),
+        )
+        .unwrap()
+    }
+
     #[derive(Deserialize)]
     struct RenderCorpus {
         schema: String,
@@ -1685,9 +2008,10 @@ mod tests {
             })
         );
 
-        let proposal = PlatformReviewActionPreview::apply_proposal(
+        let proposal = PlatformReviewActionPreview::stage_proposal(
             target.clone(),
             &semantic,
+            &staging_capabilities(&target, &semantic),
             &semantic.proposals[0].id,
         )
         .unwrap();
@@ -1707,6 +2031,16 @@ mod tests {
                 kind: ReviewProposalKind::Commit,
                 proposal_id: semantic.proposals[0].id.clone(),
             })
+        );
+        // Staging is a confirmed lane: the digests are the server's, verbatim.
+        let staging_confirmation = proposal.confirmation().unwrap();
+        assert_eq!(
+            staging_confirmation.confirmation_digest().as_str(),
+            "c".repeat(64)
+        );
+        assert_eq!(
+            staging_confirmation.receipt_correlation_digest().as_str(),
+            "d".repeat(64)
         );
 
         let rerun = PlatformReviewActionPreview::rerun_check(
@@ -1739,8 +2073,12 @@ mod tests {
             })
         );
 
-        let merge =
-            PlatformReviewActionPreview::merge_pull_request(target.clone(), &semantic).unwrap();
+        let merge = PlatformReviewActionPreview::merge_pull_request(
+            target.clone(),
+            &semantic,
+            &merge_capabilities(&target, &semantic),
+        )
+        .unwrap();
         assert_eq!(merge.target(), &target);
         assert_eq!(merge.expected_revision(), semantic.revision);
         assert_eq!(
@@ -1776,9 +2114,24 @@ mod tests {
             })
         );
 
+        let merge_confirmation = merge.confirmation().unwrap();
+        assert_eq!(
+            merge_confirmation.confirmation_digest().as_str(),
+            "e".repeat(64)
+        );
+        assert_eq!(
+            merge_confirmation.receipt_correlation_digest().as_str(),
+            "f".repeat(64)
+        );
+
         let mut stale = semantic.clone();
         stale.pull_request.freshness.state = ReviewFreshnessState::Stale;
-        assert!(PlatformReviewActionPreview::merge_pull_request(target.clone(), &stale).is_err());
+        assert!(PlatformReviewActionPreview::merge_pull_request(
+            target.clone(),
+            &stale,
+            &merge_capabilities(&target, &semantic),
+        )
+        .is_err());
         stale = semantic.clone();
         stale.checks[0].freshness.state = ReviewFreshnessState::Stale;
         assert!(PlatformReviewActionPreview::rerun_check(
@@ -1796,9 +2149,10 @@ mod tests {
             .find(|file| file.id == proposal_file)
             .unwrap()
             .conflict = ConflictState::Unresolved;
-        assert!(PlatformReviewActionPreview::apply_proposal(
+        assert!(PlatformReviewActionPreview::stage_proposal(
             target.clone(),
             &conflicted,
+            &staging_capabilities(&target, &semantic),
             &conflicted.proposals[0].id,
         )
         .is_err());
@@ -1822,9 +2176,10 @@ mod tests {
             &[wrong_authority.comments[0].id.clone()],
         )
         .is_err());
-        assert!(PlatformReviewActionPreview::apply_proposal(
+        assert!(PlatformReviewActionPreview::stage_proposal(
             target.clone(),
             &wrong_authority,
+            &staging_capabilities(&target, &semantic),
             &wrong_authority.proposals[0].id,
         )
         .is_err());
@@ -1835,10 +2190,12 @@ mod tests {
             &wrong_authority.checks[0].id,
         )
         .is_err());
-        assert!(
-            PlatformReviewActionPreview::merge_pull_request(target.clone(), &wrong_authority,)
-                .is_err()
-        );
+        assert!(PlatformReviewActionPreview::merge_pull_request(
+            target.clone(),
+            &wrong_authority,
+            &merge_capabilities(&target, &semantic),
+        )
+        .is_err());
         let foreign_target = PlatformReviewTarget {
             project: target.project.clone(),
             workspace: WorkContextIdentity::parse_local(
@@ -1847,12 +2204,16 @@ mod tests {
             )
             .unwrap(),
         };
-        assert!(
-            PlatformReviewActionPreview::merge_pull_request(foreign_target, &semantic).is_err()
-        );
-        assert!(PlatformReviewActionPreview::apply_proposal(
+        assert!(PlatformReviewActionPreview::merge_pull_request(
+            foreign_target,
+            &semantic,
+            &merge_capabilities(&target, &semantic),
+        )
+        .is_err());
+        assert!(PlatformReviewActionPreview::stage_proposal(
             target.clone(),
             &semantic,
+            &staging_capabilities(&target, &semantic),
             "proposal-missing",
         )
         .is_err());

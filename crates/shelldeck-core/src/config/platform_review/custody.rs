@@ -314,7 +314,11 @@ impl ReviewCustodyRecord {
             .as_ref()
             .map(ReviewConfirmationDisk::to_confirmation)
             .transpose()?;
-        if matches!(action, ReviewAction::RerunCheck { .. }) != confirmation.is_some() {
+        // Same contract predicate the preview constructor uses, for the same
+        // reason: a record whose confirmation no longer matches its family is
+        // a document that cannot be replayed onto the wire, so it is rejected
+        // as invalid rather than recovered into an unsendable preview.
+        if action.requires_confirmation() != confirmation.is_some() {
             return Err(ReviewCustodyError::DocumentInvalid);
         }
         action
@@ -358,6 +362,48 @@ enum ReviewActionDisk {
     /// idempotency key.
     BatchSendCommentsToAgent {
         comments: Vec<ReviewCommentTargetDisk>,
+    },
+    /// The three confirmed index-level staging lanes.
+    ///
+    /// Each is a separate variant rather than one variant carrying a `kind`
+    /// string, because the three are separately granted: an operator withholds
+    /// committing independently of index writes, and a recovered plan that
+    /// could be re-read as another kind would let the narrower grant replay as
+    /// the wider one.
+    ///
+    /// The disk format did not understand these before this slice, exactly as
+    /// it did not understand the batch delivery before PR #161: preparation
+    /// would have returned "unsupported action" and the dispatch would have
+    /// died at the custody fence.
+    Stage {
+        proposal_id: String,
+    },
+    Unstage {
+        proposal_id: String,
+    },
+    Commit {
+        proposal_id: String,
+    },
+    /// Collapsing one conflicted path to one side git already recorded.
+    ///
+    /// The side is persisted because it is part of the effect's identity: it
+    /// decides which blob lands, and the confirmation digest was minted over
+    /// it. A record that lost it could be replayed as the other side.
+    ResolveConflict {
+        proposal_id: String,
+        file_id: String,
+        resolution: String,
+    },
+    /// The confirmed pull-request merge.
+    ///
+    /// Unreachable in production — the server advertises no merge capability —
+    /// but the record has to exist for the same reason as the others: the
+    /// action is now confirmed, so it crosses the durable fence, and a family
+    /// the format cannot spell fails at `prepare` rather than at the wire.
+    MergePullRequest {
+        pull_request_id: String,
+        expected_pull_request_revision: u64,
+        expected_head_revision: String,
     },
 }
 
@@ -404,6 +450,33 @@ impl ReviewActionDisk {
                         expected_revision: comment.expected_revision().get(),
                     })
                     .collect(),
+            },
+            ReviewAction::Stage { proposal_id } => Self::Stage {
+                proposal_id: proposal_id.as_str().to_owned(),
+            },
+            ReviewAction::Unstage { proposal_id } => Self::Unstage {
+                proposal_id: proposal_id.as_str().to_owned(),
+            },
+            ReviewAction::Commit { proposal_id } => Self::Commit {
+                proposal_id: proposal_id.as_str().to_owned(),
+            },
+            ReviewAction::ResolveConflict {
+                proposal_id,
+                file_id,
+                resolution,
+            } => Self::ResolveConflict {
+                proposal_id: proposal_id.as_str().to_owned(),
+                file_id: file_id.as_str().to_owned(),
+                resolution: resolution.as_str().to_owned(),
+            },
+            ReviewAction::MergePullRequest {
+                pull_request_id,
+                expected_pull_request_revision,
+                expected_head_revision,
+            } => Self::MergePullRequest {
+                pull_request_id: pull_request_id.as_str().to_owned(),
+                expected_pull_request_revision: expected_pull_request_revision.get(),
+                expected_head_revision: expected_head_revision.as_str().to_owned(),
             },
             _ => return Err(ReviewCustodyError::UnsupportedAction),
         })
@@ -469,8 +542,49 @@ impl ReviewActionDisk {
                         .collect::<Result<Vec<_>, ReviewCustodyError>>()?,
                 }
             }
+            Self::Stage { proposal_id } => ReviewAction::Stage {
+                proposal_id: disk_proposal_id(proposal_id)?,
+            },
+            Self::Unstage { proposal_id } => ReviewAction::Unstage {
+                proposal_id: disk_proposal_id(proposal_id)?,
+            },
+            Self::Commit { proposal_id } => ReviewAction::Commit {
+                proposal_id: disk_proposal_id(proposal_id)?,
+            },
+            Self::ResolveConflict {
+                proposal_id,
+                file_id,
+                resolution,
+            } => ReviewAction::ResolveConflict {
+                proposal_id: disk_proposal_id(proposal_id)?,
+                file_id: ReviewFileId::new(file_id.clone())
+                    .map_err(|_| ReviewCustodyError::DocumentInvalid)?,
+                resolution: ConflictResolution::parse(resolution)
+                    .map_err(|_| ReviewCustodyError::DocumentInvalid)?,
+            },
+            Self::MergePullRequest {
+                pull_request_id,
+                expected_pull_request_revision,
+                expected_head_revision,
+            } => ReviewAction::MergePullRequest {
+                pull_request_id: PullRequestId::new(pull_request_id.clone())
+                    .map_err(|_| ReviewCustodyError::DocumentInvalid)?,
+                expected_pull_request_revision: Revision::new(*expected_pull_request_revision)
+                    .map_err(|_| ReviewCustodyError::DocumentInvalid)?,
+                expected_head_revision: ReviewField::new(expected_head_revision.clone())
+                    .map_err(|_| ReviewCustodyError::DocumentInvalid)?,
+            },
         })
     }
+}
+
+/// Re-parse a persisted proposal id through the protocol's own grammar.
+///
+/// The looser of two spellings is the one a recovered plan replays through, so
+/// a document this process has not yet trusted is never allowed to widen what
+/// a proposal id may be.
+fn disk_proposal_id(value: &str) -> Result<ReviewProposalId, ReviewCustodyError> {
+    ReviewProposalId::new(value.to_owned()).map_err(|_| ReviewCustodyError::DocumentInvalid)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1102,6 +1216,144 @@ mod tests {
                 actor: Some("reviewer-9".to_owned()),
             }))
         );
+    }
+
+    /// One confirmed staging preview, built from the advertisement a coherent
+    /// server would mint for this snapshot's `Commit` proposal.
+    fn staging_preview() -> PlatformReviewActionPreview {
+        let review = semantic();
+        let target = target(&review);
+        let proposal = &review.proposals[0];
+        let capabilities = ReviewCapabilities::new(
+            target.project.clone(),
+            target.workspace.clone(),
+            review.revision,
+            Revision::new(91).unwrap(),
+            Vec::new(),
+            Vec::new(),
+            ReviewPullRequestCapabilities::default(),
+            ReviewGitStagingCapabilities {
+                staging: vec![ReviewStagingCapability::new(
+                    ReviewProposalId::new(proposal.id.clone()).unwrap(),
+                    proposal.kind,
+                    ReviewField::new("7".repeat(40)).unwrap(),
+                    ReviewIndexDigest::new("a".repeat(64)).unwrap(),
+                    ReviewAuthority::new(
+                        ReviewAuthorityKind::Git,
+                        automonique_protocol::platform_v2_review::ReviewAuthorityId::new(
+                            proposal.authority.as_ref().unwrap().id.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    ReviewConfirmationDigest::new("c".repeat(64)).unwrap(),
+                    ReviewReceiptCorrelationDigest::new("d".repeat(64)).unwrap(),
+                )
+                .unwrap()],
+                conflict_resolutions: Vec::new(),
+            },
+        )
+        .unwrap();
+        PlatformReviewActionPreview::stage_proposal(target, &review, &capabilities, &proposal.id)
+            .unwrap()
+    }
+
+    // SDTEST-1870 — the confirmed staging families take the same durable
+    // at-most-once lane as every other exposed mutation, and survive the round
+    // trip through disk with their exact coordinates and digests intact.
+    //
+    // The disk format did not know these actions before this slice, exactly as
+    // it did not know the batch delivery before PR #161: `prepare` would have
+    // returned `UnsupportedAction` and the dispatch would have died at the
+    // fence. That assumption was wrong once already, which is why this test
+    // drives the whole store rather than only the enum.
+    #[test]
+    fn confirmed_staging_is_fenced_and_survives_the_disk_round_trip() {
+        let directory = TempRoot::new();
+        let preview = staging_preview();
+        // Staging is a confirmed lane now: the unconfirmed spelling cannot be
+        // constructed at all, so a record without a confirmation would be an
+        // unsendable document.
+        let confirmation = preview.confirmation().expect("staging carries a digest");
+        assert_eq!(confirmation.confirmation_digest().as_str(), "c".repeat(64));
+        assert_eq!(
+            confirmation.receipt_correlation_digest().as_str(),
+            "d".repeat(64)
+        );
+        assert!(preview.requires_capability_revalidation());
+
+        let store = PlatformReviewCustodyStore::open(store_path(&directory)).unwrap();
+        store.prepare(&preview).unwrap();
+        assert!(matches!(
+            store.prepare(&staging_preview()),
+            Err(ReviewCustodyError::EffectAlreadyPending)
+        ));
+
+        // A restart before dispatch reports it as never started, and the exact
+        // action plus both digests survive serialization.
+        let restarted = PlatformReviewCustodyStore::open(store_path(&directory)).unwrap();
+        assert_eq!(
+            restarted.recovery(preview.target()).unwrap(),
+            Some(ReviewCustodyRecovery::NeverStarted(preview.clone()))
+        );
+
+        restarted.mark_dispatched(&preview).unwrap();
+        assert_eq!(
+            PlatformReviewCustodyStore::open(store_path(&directory))
+                .unwrap()
+                .recovery(preview.target())
+                .unwrap(),
+            Some(ReviewCustodyRecovery::LookupOnly(preview.clone())),
+            "a restart mid-write must look the receipt up through its correlation, never re-post"
+        );
+    }
+
+    // SDTEST-1871 — every confirmed staging family round-trips through the
+    // disk enum, and the side of a conflict resolution is part of the persisted
+    // identity rather than a value recomputed on recovery.
+    #[test]
+    fn every_staging_family_round_trips_and_a_resolution_keeps_its_side() {
+        for action in [
+            ReviewAction::Stage {
+                proposal_id: ReviewProposalId::new("proposal-1".to_owned()).unwrap(),
+            },
+            ReviewAction::Unstage {
+                proposal_id: ReviewProposalId::new("proposal-1".to_owned()).unwrap(),
+            },
+            ReviewAction::Commit {
+                proposal_id: ReviewProposalId::new("proposal-1".to_owned()).unwrap(),
+            },
+            ReviewAction::ResolveConflict {
+                proposal_id: ReviewProposalId::new("proposal-1".to_owned()).unwrap(),
+                file_id: ReviewFileId::new("file-1".to_owned()).unwrap(),
+                resolution: ConflictResolution::KeepCurrent,
+            },
+            ReviewAction::ResolveConflict {
+                proposal_id: ReviewProposalId::new("proposal-1".to_owned()).unwrap(),
+                file_id: ReviewFileId::new("file-1".to_owned()).unwrap(),
+                resolution: ConflictResolution::KeepIncoming,
+            },
+        ] {
+            let disk = ReviewActionDisk::from_action(&action).expect("family is spelled on disk");
+            let json = serde_json::to_string(&disk).expect("serializable");
+            let decoded: ReviewActionDisk = serde_json::from_str(&json).expect("decodable");
+            assert_eq!(
+                decoded.to_action().expect("re-parses through the grammar"),
+                action,
+                "a persisted staging action must replay as exactly itself"
+            );
+        }
+
+        // A document whose confirmation no longer matches its family cannot be
+        // replayed onto the wire, so it is rejected as invalid rather than
+        // recovered into an unsendable preview.
+        let mut record =
+            ReviewCustodyRecord::from_preview(&staging_preview(), ReviewCustodyState::Prepared)
+                .unwrap();
+        record.confirmation = None;
+        assert!(matches!(
+            record.to_preview(),
+            Err(ReviewCustodyError::DocumentInvalid)
+        ));
     }
 
     #[cfg(unix)]

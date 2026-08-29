@@ -171,9 +171,12 @@ const fn review_rerun_control_gate(
 ///
 /// An empty lane is omitted rather than rendered as a zero-count header: a
 /// clean index should not look like four unfinished sections.
-fn visible_review_lanes(projection: &ReviewWorktreeProjection) -> Vec<&ReviewWorktreeLaneGroup> {
-    projection
-        .lanes
+///
+/// Takes the lane slice rather than the projection: this decision is about
+/// lane contents alone, and the projection also carries the advertisement,
+/// which has no bearing on which lanes are drawn.
+fn visible_review_lanes(lanes: &[ReviewWorktreeLaneGroup]) -> Vec<&ReviewWorktreeLaneGroup> {
+    lanes
         .iter()
         .filter(|group| !group.files.is_empty())
         .collect()
@@ -222,7 +225,38 @@ const fn review_staging_withheld_key(reason: ReviewStagingWithheld) -> &'static 
         ReviewStagingWithheld::NoServerCapability => {
             "fleet.review.staging_withheld_no_server_capability"
         }
+        ReviewStagingWithheld::NoStageableProposal => {
+            "fleet.review.staging_withheld_no_stageable_proposal"
+        }
         ReviewStagingWithheld::NoCustodyLane => "fleet.review.staging_withheld_no_custody_lane",
+    }
+}
+
+/// The label for one side of a conflict, named by what it keeps.
+///
+/// A file with both sides recorded renders both, so the two labels have to be
+/// distinguishable at a glance rather than differing only by a suffix.
+const fn review_conflict_side_key(resolution: ConflictResolution) -> &'static str {
+    match resolution {
+        ConflictResolution::KeepCurrent => "fleet.review.resolve_keep_current",
+        ConflictResolution::KeepIncoming => "fleet.review.resolve_keep_incoming",
+    }
+}
+
+/// The label for one advertised staging control.
+///
+/// Separate from [`localized_review_proposal_kind`], which yields the phrase
+/// embedded in a confirmation sentence. A button needs the bare verb, and the
+/// three verbs are separately granted, so each gets its own key rather than
+/// one parameterised string that could render a grant nobody installed.
+const fn review_staging_button_key(kind: ReviewProposalKind) -> &'static str {
+    match kind {
+        ReviewProposalKind::Stage => "fleet.review.prepare_stage",
+        ReviewProposalKind::Unstage => "fleet.review.prepare_unstage",
+        ReviewProposalKind::Commit => "fleet.review.prepare_commit",
+        // Unreachable: a conflict resolution is never advertised as a staging
+        // capability, so it never reaches a staging button.
+        ReviewProposalKind::ResolveConflict => "fleet.review.action_resolve_conflict",
     }
 }
 
@@ -905,6 +939,57 @@ impl FleetView {
             self.available_review_capabilities()
                 .map_err(|_| ReviewPrepareRefusal::Preview)?,
             &selected,
+        )
+        .map_err(|_| ReviewPrepareRefusal::Preview)?;
+        self.admit_review_preview(preview)
+    }
+
+    /// Prepare one confirmed index-level staging transition.
+    ///
+    /// The preview takes the kind and both digests from the capability, so
+    /// this refuses locally whenever the advertisement no longer covers the
+    /// proposal — including when it covers it at a `HEAD` or an index that has
+    /// since moved, because the server minted the digest over both.
+    fn prepare_review_staging(&mut self, proposal_id: &str) -> Result<(), ReviewPrepareRefusal> {
+        let target = self
+            .review_target
+            .clone()
+            .ok_or(ReviewPrepareRefusal::Preview)?;
+        let preview = PlatformReviewActionPreview::stage_proposal(
+            target,
+            self.available_review()
+                .map_err(|_| ReviewPrepareRefusal::Preview)?,
+            self.available_review_capabilities()
+                .map_err(|_| ReviewPrepareRefusal::Preview)?,
+            proposal_id,
+        )
+        .map_err(|_| ReviewPrepareRefusal::Preview)?;
+        self.admit_review_preview(preview)
+    }
+
+    /// Prepare one confirmed collapse of a conflicted file to a recorded side.
+    ///
+    /// `resolution` names which of the two blobs git is already holding would
+    /// land. No content is supplied here or anywhere below it.
+    fn prepare_review_conflict_resolution(
+        &mut self,
+        proposal_id: &str,
+        file_id: &str,
+        resolution: ConflictResolution,
+    ) -> Result<(), ReviewPrepareRefusal> {
+        let target = self
+            .review_target
+            .clone()
+            .ok_or(ReviewPrepareRefusal::Preview)?;
+        let preview = PlatformReviewActionPreview::resolve_conflict(
+            target,
+            self.available_review()
+                .map_err(|_| ReviewPrepareRefusal::Preview)?,
+            self.available_review_capabilities()
+                .map_err(|_| ReviewPrepareRefusal::Preview)?,
+            proposal_id,
+            file_id,
+            resolution,
         )
         .map_err(|_| ReviewPrepareRefusal::Preview)?;
         self.admit_review_preview(preview)
@@ -1716,20 +1801,26 @@ impl FleetView {
         );
         let can_note = can_anchor && self.review_notes.is_some();
         let selected_anchor = self.selected_review_anchor.as_ref();
+        // The lanes render either way; without an exactly reconciled target no
+        // capability response can be attributed to this read, so every control
+        // is withheld for want of a server capability.
         let projection = ReviewWorktreeProjection::new(
             review,
+            self.review_target.as_ref(),
             self.available_review_capabilities().ok(),
             self.review_custody.is_some(),
         );
         let mut files = div().flex().flex_col().gap(px(10.0));
-        for group in visible_review_lanes(&projection) {
+        for group in visible_review_lanes(&projection.lanes) {
             let mut lane_files = div().flex().flex_col().gap(px(6.0));
             for file in &group.files {
                 lane_files = lane_files.child(Self::render_review_file(
                     group.lane,
                     file,
+                    &projection,
                     selected_anchor,
                     can_anchor,
+                    can_prepare,
                     &entity,
                 ));
             }
@@ -1755,13 +1846,48 @@ impl FleetView {
                     .child(lane_files),
             );
         }
+        // The lane-level answer, shown only when the snapshot holds something
+        // a staging control could have applied to. A review with no actionable
+        // proposal and no unresolved conflict has no gap to explain, and a
+        // permanent "nothing to stage" banner would be noise rather than an
+        // answer — the same rule the delivery sibling follows.
         if let Err(reason) = projection.staging {
+            let has_local_candidate = review
+                .proposals
+                .iter()
+                .any(|proposal| review.proposal_is_actionable(&proposal.id))
+                || review.files.iter().any(|file| {
+                    review.proposals.iter().any(|proposal| {
+                        review.conflict_resolution_is_actionable(&proposal.id, &file.id)
+                    })
+                });
+            if has_local_candidate {
+                files = files.child(
+                    div().min_w(px(0.0)).overflow_hidden().child(
+                        Alert::info()
+                            .title(t!("fleet.review.staging_withheld_title").to_string())
+                            .description(t!(review_staging_withheld_key(reason)).to_string()),
+                    ),
+                );
+            }
+        } else if let Some(observation) = projection.observation() {
+            // What the server read, so a reader can see the fence rather than
+            // trust that one exists. The controls below are bound to exactly
+            // this `HEAD` and this index.
             files = files.child(
-                div().min_w(px(0.0)).overflow_hidden().child(
-                    Alert::info()
-                        .title(t!("fleet.review.staging_withheld_title").to_string())
-                        .description(t!(review_staging_withheld_key(reason)).to_string()),
-                ),
+                div()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(
+                        t!(
+                            "fleet.review.staging_observation",
+                            head = observation.head_revision.as_str(),
+                            index = observation.index_digest.as_str()
+                        )
+                        .to_string(),
+                    ),
             );
         }
 
@@ -2402,8 +2528,10 @@ impl FleetView {
     fn render_review_file(
         lane: ReviewWorktreeLane,
         file: &ReviewWorktreeFile,
+        projection: &ReviewWorktreeProjection,
         selected_anchor: Option<&ReviewAnchorSemantic>,
         can_anchor: bool,
+        can_prepare: bool,
         entity: &Entity<Self>,
     ) -> AnyElement {
         let mut hunks = div().flex().flex_col().gap(px(4.0));
@@ -2490,8 +2618,13 @@ impl FleetView {
                     .variant(BadgeVariant::Warning),
             );
         }
-        // Server-proposed staging transitions are shown as observations. No
-        // control accompanies them: see `projection.staging`.
+        // Server-proposed staging transitions, shown as observations. A
+        // control joins one only where the server advertised a slot for that
+        // exact proposal; the rest stay observations. That is the whole of the
+        // withholding rule: a deployment granting index writes but not
+        // committing advertises `Stage` and `Unstage` and no `Commit`, so the
+        // commit proposal keeps its badge and simply grows no button.
+        let mut staging_controls = div().flex().items_center().flex_wrap().gap(px(5.0));
         for proposal in &file.staging {
             let action = localized_review_proposal_kind(proposal.kind);
             header = header.child(
@@ -2517,6 +2650,74 @@ impl FleetView {
                     BadgeVariant::Destructive
                 }),
             );
+            if projection.advertises_staging(&proposal.proposal_id) {
+                let stage_entity = entity.clone();
+                let stage_id = proposal.proposal_id.clone();
+                staging_controls = staging_controls.child(
+                    Button::new(
+                        ElementId::from(SharedString::from(format!(
+                            "review-stage-{}-{}-{}",
+                            lane.as_str(),
+                            file.id,
+                            proposal.proposal_id
+                        ))),
+                        t!(review_staging_button_key(proposal.kind)).to_string(),
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Outline)
+                    .disabled(!can_prepare)
+                    .on_click(move |_, _, cx| {
+                        stage_entity.update(cx, |this, cx| {
+                            if let Err(refusal) = this.prepare_review_staging(&stage_id) {
+                                this.review_receipt = Some((
+                                    t!("fleet.review.state_refused").to_string(),
+                                    refusal.detail(),
+                                ));
+                            }
+                            cx.notify();
+                        });
+                    }),
+                );
+            }
+            // One control per admissible side, because the server advertises
+            // one entry per side git actually recorded and the side is inside
+            // the confirmation digest. A file holding both stage 2 and stage 3
+            // therefore renders two buttons; a delete/modify pair renders one.
+            for side in projection.advertised_sides(&proposal.proposal_id, &file.id) {
+                let resolve_entity = entity.clone();
+                let resolve_proposal = proposal.proposal_id.clone();
+                let resolve_file = file.id.clone();
+                staging_controls = staging_controls.child(
+                    Button::new(
+                        ElementId::from(SharedString::from(format!(
+                            "review-resolve-{}-{}-{}-{}",
+                            lane.as_str(),
+                            file.id,
+                            proposal.proposal_id,
+                            side.as_str()
+                        ))),
+                        t!(review_conflict_side_key(side)).to_string(),
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Outline)
+                    .disabled(!can_prepare)
+                    .on_click(move |_, _, cx| {
+                        resolve_entity.update(cx, |this, cx| {
+                            if let Err(refusal) = this.prepare_review_conflict_resolution(
+                                &resolve_proposal,
+                                &resolve_file,
+                                side,
+                            ) {
+                                this.review_receipt = Some((
+                                    t!("fleet.review.state_refused").to_string(),
+                                    refusal.detail(),
+                                ));
+                            }
+                            cx.notify();
+                        });
+                    }),
+                );
+            }
         }
 
         div()
@@ -2527,6 +2728,7 @@ impl FleetView {
             .border_color(ShellDeckColors::border())
             .rounded(px(6.0))
             .child(header)
+            .child(staging_controls)
             .child(Self::render_review_preview(&file.preview))
             .child(hunks)
             .into_any_element()
@@ -3971,10 +4173,11 @@ impl Render for FleetView {
 mod review_render_tests {
     use super::{
         exact_review_target_index, fleet_uses_compact_layout, review_anchor_element_id,
-        review_delivery_withheld_key, review_dispatch_directive, review_lane_label_key,
-        review_lane_variant, review_preparation_gate, review_preview_withheld_key,
-        review_rerun_control_gate, review_staging_withheld_key, same_exact_review_snapshot,
-        semantic_words, visible_review_lanes, BadgeVariant, ReviewDeliveryWithheld,
+        review_conflict_side_key, review_delivery_withheld_key, review_dispatch_directive,
+        review_lane_label_key, review_lane_variant, review_preparation_gate,
+        review_preview_withheld_key, review_rerun_control_gate, review_staging_button_key,
+        review_staging_withheld_key, same_exact_review_snapshot, semantic_words,
+        visible_review_lanes, BadgeVariant, ConflictResolution, ReviewDeliveryWithheld,
         ReviewDispatchDirective, ReviewPrepareRefusal,
     };
     use shelldeck_core::config::platform_review::PlatformReviewTarget;
@@ -4151,8 +4354,8 @@ mod review_render_tests {
     fn sdtest_1850_only_populated_lanes_render_and_conflicts_lead() {
         use shelldeck_core::config::platform_review::{
             review_safe_text, ConflictState, DiffChangeKind, ReviewPreviewWithheld,
-            ReviewSafePreview, ReviewStagingWithheld, ReviewWorktreeFile, ReviewWorktreeLane,
-            ReviewWorktreeLaneGroup, ReviewWorktreeProjection, WorktreeFileState,
+            ReviewSafePreview, ReviewWorktreeFile, ReviewWorktreeLane, ReviewWorktreeLaneGroup,
+            WorktreeFileState,
         };
 
         let file = |id: &str| ReviewWorktreeFile {
@@ -4166,35 +4369,31 @@ mod review_render_tests {
             hunks: Vec::new(),
             staging: Vec::new(),
         };
-        let projection = ReviewWorktreeProjection {
-            source_revision: automonique_protocol::primitives::Revision::new(9).unwrap(),
-            lanes: vec![
-                ReviewWorktreeLaneGroup {
-                    lane: ReviewWorktreeLane::Conflicted,
-                    semantic_key: ReviewWorktreeLane::Conflicted.semantic_key(),
-                    files: vec![file("file-conflict")],
-                },
-                ReviewWorktreeLaneGroup {
-                    lane: ReviewWorktreeLane::Staged,
-                    semantic_key: ReviewWorktreeLane::Staged.semantic_key(),
-                    files: Vec::new(),
-                },
-                ReviewWorktreeLaneGroup {
-                    lane: ReviewWorktreeLane::Unstaged,
-                    semantic_key: ReviewWorktreeLane::Unstaged.semantic_key(),
-                    files: vec![file("file-unstaged")],
-                },
-                ReviewWorktreeLaneGroup {
-                    lane: ReviewWorktreeLane::Untracked,
-                    semantic_key: ReviewWorktreeLane::Untracked.semantic_key(),
-                    files: Vec::new(),
-                },
-            ],
-            staging: Err(ReviewStagingWithheld::NoServerCapability),
-        };
+        let lanes = vec![
+            ReviewWorktreeLaneGroup {
+                lane: ReviewWorktreeLane::Conflicted,
+                semantic_key: ReviewWorktreeLane::Conflicted.semantic_key(),
+                files: vec![file("file-conflict")],
+            },
+            ReviewWorktreeLaneGroup {
+                lane: ReviewWorktreeLane::Staged,
+                semantic_key: ReviewWorktreeLane::Staged.semantic_key(),
+                files: Vec::new(),
+            },
+            ReviewWorktreeLaneGroup {
+                lane: ReviewWorktreeLane::Unstaged,
+                semantic_key: ReviewWorktreeLane::Unstaged.semantic_key(),
+                files: vec![file("file-unstaged")],
+            },
+            ReviewWorktreeLaneGroup {
+                lane: ReviewWorktreeLane::Untracked,
+                semantic_key: ReviewWorktreeLane::Untracked.semantic_key(),
+                files: Vec::new(),
+            },
+        ];
 
         assert_eq!(
-            visible_review_lanes(&projection)
+            visible_review_lanes(&lanes)
                 .iter()
                 .map(|group| group.lane)
                 .collect::<Vec<_>>(),
@@ -4367,6 +4566,97 @@ mod review_render_tests {
                 crate::t!("fleet.review.capability_stale", locale = locale).to_string(),
                 "{locale} tells a retracted advertisement and a changed rerun digest apart"
             );
+        }
+    }
+
+    // SDTEST-1872 — SDUC-495. Every staging control the surface can paint has
+    // its own label in both shipped locales, and the three staging verbs never
+    // collapse onto one string.
+    //
+    // They are separately granted: a deployment can install `index_write`
+    // without `commit`, so a shared label would let a reader believe the
+    // control they are looking at is the one they were denied. The two
+    // conflict sides matter for the same reason — a file with both recorded
+    // renders both buttons side by side, and only the label distinguishes
+    // which blob would land.
+    #[test]
+    fn sdtest_1872_every_staging_control_has_its_own_label_in_both_shipped_locales() {
+        use shelldeck_core::config::platform_review::ReviewProposalKind;
+        use std::collections::BTreeSet;
+
+        let keys = [
+            review_staging_button_key(ReviewProposalKind::Stage),
+            review_staging_button_key(ReviewProposalKind::Unstage),
+            review_staging_button_key(ReviewProposalKind::Commit),
+            review_conflict_side_key(ConflictResolution::KeepCurrent),
+            review_conflict_side_key(ConflictResolution::KeepIncoming),
+        ];
+        assert_eq!(
+            keys.iter().collect::<BTreeSet<_>>().len(),
+            keys.len(),
+            "two separately granted controls must not share one label"
+        );
+
+        for locale in ["fr", "en"] {
+            let copies = keys
+                .iter()
+                .map(|key| {
+                    let copy = crate::t!(*key, locale = locale).to_string();
+                    assert_ne!(&copy, key, "{locale} is missing {key}");
+                    assert!(!copy.trim().is_empty(), "{locale} {key} is empty");
+                    copy
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(copies.len(), keys.len(), "{locale} reuses one label");
+        }
+    }
+
+    // SDTEST-1873 — SDUC-495. The staging lane's own withheld reasons stay
+    // distinct from each other and from the delivery lane's, including the new
+    // "the server proved nothing" answer that only exists once a capability
+    // response can be attributed at all.
+    #[test]
+    fn sdtest_1873_staging_withheld_reasons_stay_distinct_from_the_delivery_lane() {
+        use shelldeck_core::config::platform_review::ReviewStagingWithheld;
+        use std::collections::BTreeSet;
+
+        let staging = ReviewStagingWithheld::ALL
+            .iter()
+            .map(|reason| review_staging_withheld_key(*reason))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(staging.len(), ReviewStagingWithheld::ALL.len());
+
+        for locale in ["fr", "en"] {
+            let staging_copies = staging
+                .iter()
+                .map(|key| {
+                    let copy = crate::t!(*key, locale = locale).to_string();
+                    assert_ne!(&copy, *key, "{locale} is missing {key}");
+                    copy
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                staging_copies.len(),
+                staging.len(),
+                "{locale} reuses one staging explanation"
+            );
+            for reason in ReviewDeliveryWithheld::ALL {
+                let delivery =
+                    crate::t!(review_delivery_withheld_key(reason), locale = locale).to_string();
+                assert!(
+                    !staging_copies.contains(&delivery),
+                    "{locale} explains staging with the delivery lane's copy"
+                );
+            }
+            // The retired copy named a contract gap that no longer exists: the
+            // server now defines both staging digests. Shipping it would tell
+            // the user to wait for something that already landed.
+            for copy in &staging_copies {
+                assert!(
+                    !copy.contains("Platform v2") && !copy.contains("hunk"),
+                    "{locale} still explains staging by the closed contract gap: {copy}"
+                );
+            }
         }
     }
 }
