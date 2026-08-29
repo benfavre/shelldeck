@@ -2936,12 +2936,41 @@ be posted under a fresh idempotency key.
 A terminal CI check exposes rerun only when a separately
 fetched server capability matches the exact project, workspace, snapshot
 revision, check revision, authority, confirmation digest, and
-receipt-correlation digest. Git proposal and merge preview constructors remain
-inert core semantics: Fleet does not expose those controls until their own
-explicit server capabilities and custody lanes exist, and the three
-pull-request slots ship empty because no provider adapter can preflight one.
-Every exposed confirmation names the exact workspace and
-captured snapshot or target revision before dispatch.
+receipt-correlation digest. Every exposed confirmation names the exact
+workspace and captured snapshot or target revision before dispatch.
+
+File-level staging, unstaging, committing and conflict resolution are exposed
+on the same terms, against `ReviewCapabilities`' `staging` and
+`conflict_resolutions` lists. Each entry names the commit `HEAD` the server's
+preflight resolved to and a digest over the whole index it read, because a
+worktree is shared substrate: another process running as the daemon uid can
+move either between the advertisement and the action, and the snapshot revision
+tracks only what the projection observed. The four actions require a
+server-minted confirmation, so their unconfirmed spelling cannot be encoded on
+either side of the wire, and their receipts are recovered through the
+correlation digest rather than by re-sending an action whose confirmation the
+write itself invalidated. A capability whose observation disagrees with a
+fresher document stops matching, so the control withdraws locally rather than
+being refused by the daemon.
+
+A control exists only where a slot exists for that exact proposal. The three
+staging kinds share one capability type but not one grant — an operator
+installs index writes, committing and conflict resolution independently — so a
+deployment that grants stage and unstage but not commit produces two controls
+and not three, and the withheld one is *absent* rather than disabled. Absence
+of the whole lane is reported with its own stated reason: no capability
+response attributed to this coordinate, an exact response that advertised
+nothing, or no durable custody lane. `conflict_resolutions` lists one entry per
+side git actually recorded, because the side decides which blob lands and is
+inside the confirmation digest, so a file holding both sides renders two
+controls and a delete/modify pair renders one; nothing but a side ever crosses
+that wire, so no caller-supplied content can be written.
+
+Hunk-level staging remains unrepresentable: a proposal names file ids, and
+`ReviewAnchor`'s hunk id serves comments only. The three pull-request slots
+still ship empty because no provider adapter can preflight one, and the merge
+preview is now a confirmed lane too, so it refuses at construction rather than
+minting a request the transport cannot encode.
 
 The read side presents those files as one combined worktree: conflicted first,
 then staged, unstaged, and untracked, with empty lanes omitted. A partially
@@ -2950,11 +2979,9 @@ only as conflicted, because git reports it unmerged and refuses to stage it,
 while a resolved conflict returns to its own lane. Anchor identities bind lane,
 file, and hunk so a twice-listed file cannot route one lane's click to the
 other. The server's own stage, unstage, commit, and conflict-resolution
-proposals are shown as per-file observations with their admissibility, and the
-surface states which fence is missing instead of offering a control: Platform
-v2 `ReviewCapabilities` defines no staging capability, confirmation digest, or
-receipt-correlation digest, and the action preview structurally refuses a
-confirmation on those four actions. Hunk-level
+proposals are shown as per-file observations with their admissibility; a
+control joins one only where the server advertised a slot for that exact
+proposal, and the surface otherwise states which fence is missing. Hunk-level
 staging is not representable at all — a proposal names files, never hunks.
 
 Previews are decided from declared metadata, never from trust. Text is painted
@@ -2989,6 +3016,51 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-08-29** — Amended SDUC-495 with capability-fenced file-level staging,
+  unstaging, committing and conflict resolution, and added SDTEST-1867..1873.
+  This was the last open item of `benfavre/shelldeck#128`, and it was blocked
+  on the same kind of contract gap as the batch delivery before it: a proposal
+  id plus a snapshot revision does not pin a worktree, so a staging
+  confirmation digest would have had to commit to the `HEAD` object id and the
+  index state, and no projection carried either. `bext-stack/automonique`
+  PR #225 earned that field set from a mutation-free preflight of the
+  repository, and ShellDeck now consumes it.
+
+  The controls follow `delivery.rs` rather than a second shape: a read-side
+  projection reporting what the server proved, plus the exact missing fence
+  when it proved nothing. Absence *is* the withholding — the three staging
+  kinds share one capability type but not one grant, so a deployment that
+  installs index writes without committing advertises no `Commit` entry and
+  that proposal keeps its observation badge and grows no button. SDTEST-1867
+  demonstrates that rather than asserting it: the same run drives stage and
+  unstage end to end to a dispatchable confirmed preview, then grants the
+  commit and watches the third control appear from unchanged projection code.
+
+  `conflict_resolutions` lists one entry per side git actually recorded,
+  because the side decides which blob lands and is therefore inside the
+  confirmation digest; a file holding both sides renders two controls
+  (SDTEST-1869). A stale worktree withdraws the control locally: the server
+  mints the digest over the commit `HEAD`, the whole index and every named
+  path, so comparing it against a fresher capability document is the
+  head-and-index comparison, and the observation is exposed so a reader can see
+  the fence rather than trust one exists (SDTEST-1868).
+
+  Two findings worth recording. The confirmation guard in `review_action` was a
+  local `matches!` on the rerun rather than the contract's own
+  `requires_confirmation()`; the confirmed set grew from one member to eight
+  with this protocol revision, and the stale spelling was already letting
+  `merge_pull_request` mint previews the transport could no longer encode. And
+  the custody disk format did not understand any of the four staging families,
+  so preparation would have returned "unsupported action" and the dispatch
+  would have died at the fence — the same defect PR #161 found for the batch
+  delivery after PR #160 asserted the format already knew "these actions".
+  SDTEST-1870/1871 drive the whole store rather than only the enum.
+
+  Hunk-level staging is still not representable and was not invented: proposals
+  list file ids, and `ReviewAnchor`'s hunk id serves comments only. The #128
+  item therefore ticks for the file half and needs the hunk half called out as
+  a protocol follow-up.
 
 - **2026-08-29** — Expanded SDUC-495 with capability-fenced batch delivery of
   review comments to the authorized session, and added SDTEST-1863..1866. The
