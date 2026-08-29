@@ -1852,15 +1852,12 @@ impl FleetView {
         // permanent "nothing to stage" banner would be noise rather than an
         // answer — the same rule the delivery sibling follows.
         if let Err(reason) = projection.staging {
-            let has_local_candidate = review
-                .proposals
-                .iter()
-                .any(|proposal| review.proposal_is_actionable(&proposal.id))
-                || review.files.iter().any(|file| {
-                    review.proposals.iter().any(|proposal| {
-                        review.conflict_resolution_is_actionable(&proposal.id, &file.id)
+            let has_local_candidate = review.proposals.iter().any(|proposal| {
+                review.proposal_is_actionable(&proposal.id)
+                    || proposal.files.iter().any(|file_id| {
+                        review.conflict_resolution_is_actionable(&proposal.id, file_id)
                     })
-                });
+            });
             if has_local_candidate {
                 files = files.child(
                     div().min_w(px(0.0)).overflow_hidden().child(
@@ -2624,7 +2621,14 @@ impl FleetView {
         // withholding rule: a deployment granting index writes but not
         // committing advertises `Stage` and `Unstage` and no `Commit`, so the
         // commit proposal keeps its badge and simply grows no button.
+        //
+        // These sit on the file card rather than in the footer's
+        // `effect_controls` row, unlike the check rerun and the batch send: a
+        // staging proposal names files, so the control belongs beside the
+        // badge naming it. Same widgets and same sizing as those two — the
+        // placement is the only divergence.
         let mut staging_controls = div().flex().items_center().flex_wrap().gap(px(5.0));
+        let mut has_staging_control = false;
         for proposal in &file.staging {
             let action = localized_review_proposal_kind(proposal.kind);
             header = header.child(
@@ -2651,6 +2655,7 @@ impl FleetView {
                 }),
             );
             if projection.advertises_staging(&proposal.proposal_id) {
+                has_staging_control = true;
                 let stage_entity = entity.clone();
                 let stage_id = proposal.proposal_id.clone();
                 staging_controls = staging_controls.child(
@@ -2684,6 +2689,7 @@ impl FleetView {
             // the confirmation digest. A file holding both stage 2 and stage 3
             // therefore renders two buttons; a delete/modify pair renders one.
             for side in projection.advertised_sides(&proposal.proposal_id, &file.id) {
+                has_staging_control = true;
                 let resolve_entity = entity.clone();
                 let resolve_proposal = proposal.proposal_id.clone();
                 let resolve_file = file.id.clone();
@@ -2718,6 +2724,12 @@ impl FleetView {
                     }),
                 );
             }
+        }
+
+        // Only claim the row's height when it holds something: an empty
+        // control row would still push the preview down by its own margin.
+        if has_staging_control {
+            staging_controls = staging_controls.mb(px(6.0));
         }
 
         div()
