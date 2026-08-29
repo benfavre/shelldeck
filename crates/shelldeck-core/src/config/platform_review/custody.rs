@@ -1029,6 +1029,7 @@ mod tests {
             )
             .unwrap()],
             ReviewPullRequestCapabilities::default(),
+            ReviewGitStagingCapabilities::default(),
         )
         .unwrap();
         PlatformReviewActionPreview::batch_send_comments(

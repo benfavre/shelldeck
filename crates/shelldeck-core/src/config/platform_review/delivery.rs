@@ -245,7 +245,8 @@ impl ReviewAgentDeliveryProjection {
 mod tests {
     use super::super::{
         CommentAgentState, PlatformReviewSemantic, ReviewAgentDeliveryCapability, ReviewAuthority,
-        ReviewCommentId, ReviewFreshnessState, ReviewPullRequestCapabilities,
+        ReviewCommentId, ReviewFreshnessState, ReviewGitStagingCapabilities,
+        ReviewPullRequestCapabilities,
     };
     use super::*;
     use automonique_protocol::platform_v2::{ProjectId, WorkContextIdentity};
@@ -296,6 +297,7 @@ mod tests {
             Vec::new(),
             advertised,
             ReviewPullRequestCapabilities::default(),
+            ReviewGitStagingCapabilities::default(),
         )
         .unwrap()
     }

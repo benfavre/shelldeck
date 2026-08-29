@@ -19,7 +19,9 @@ pub use automonique_protocol::platform_v2_review::{
 };
 pub use automonique_protocol::platform_v2_transport::{
     ReviewAgentDeliveryCapability, ReviewCapabilities, ReviewCheckRerunCapability,
-    ReviewConfirmationDigest, ReviewPullRequestCapabilities, ReviewReceiptCorrelationDigest,
+    ReviewConfirmationDigest, ReviewConflictResolutionCapability, ReviewGitStagingCapabilities,
+    ReviewIndexDigest, ReviewPullRequestCapabilities, ReviewPullRequestMergeCapability,
+    ReviewReceiptCorrelationDigest, ReviewStagingCapability,
 };
 use automonique_protocol::primitives::Revision;
 use std::collections::BTreeSet;
@@ -1194,6 +1196,7 @@ mod tests {
             Vec::new(),
             advertised,
             ReviewPullRequestCapabilities::default(),
+            ReviewGitStagingCapabilities::default(),
         )
         .unwrap()
     }
@@ -1286,6 +1289,7 @@ mod tests {
             .unwrap()],
             Vec::new(),
             ReviewPullRequestCapabilities::default(),
+            ReviewGitStagingCapabilities::default(),
         )
         .unwrap()
     }
