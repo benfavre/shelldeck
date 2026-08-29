@@ -16,7 +16,7 @@ enum PlatformActionResult {
     ControlClaimed(ControlClaimResult),
     ControlReleased(ResourceCoordinate),
     Executed(ActionResult),
-    Review(AttributedPlatformReviewActionResult),
+    Review(Box<AttributedPlatformReviewActionResult>),
     FollowedUp(PlatformFollowUpResult),
 }
 
@@ -463,12 +463,12 @@ impl Workspace {
                             .map(PlatformActionResult::Executed),
                         FleetViewEvent::ExecuteReview(preview) => {
                             let target = preview.target().clone();
-                            Ok(PlatformActionResult::Review(
+                            Ok(PlatformActionResult::Review(Box::new(
                                 AttributedPlatformReviewActionResult {
                                     target,
                                     result: connection.execute_review_action(preview),
                                 },
-                            ))
+                            )))
                         }
                         FleetViewEvent::FollowUp(follow_up) => {
                             Ok(PlatformActionResult::FollowedUp(
@@ -541,7 +541,7 @@ impl Workspace {
                             current_connection.as_ref(),
                             &request_connection,
                             active_target.as_ref(),
-                            attributed,
+                            *attributed,
                         ) {
                             workspace.fleet_view.update(cx, |view, cx| {
                                 view.set_review_action_result(result, cx);
