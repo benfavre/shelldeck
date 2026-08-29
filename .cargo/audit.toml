@@ -5,11 +5,11 @@
 ignore = [
     # GPUI / Linux platform stack. Track removal in
     # docs/security-advisory-baseline.md instead of one bot issue per crate.
-    "RUSTSEC-2024-0384", # instant through GPUI's futures-lite 1 stack
-    "RUSTSEC-2024-0436", # paste through image codecs
-    "RUSTSEC-2025-0052", # async-std through GPUI's HTTP/tar stack
+    "RUSTSEC-2024-0384", # instant through futures-lite 1 in adabraka_util
+    "RUSTSEC-2024-0436", # paste through metal, pulp/exr and rav1e/ravif
+    "RUSTSEC-2025-0052", # async-std through async-tar 0.5 in adabraka_http_client
     "RUSTSEC-2025-0134", # rustls-pemfile through zed-reqwest
-    "RUSTSEC-2026-0192", # ttf-parser through cosmic-text/fontdb
+    "RUSTSEC-2026-0192", # ttf-parser through cosmic-text/fontdb; pop-os/cosmic-text#526
 
     # Existing protocol/backend constraints.
     "RUSTSEC-2023-0071", # rsa: no patched release; transitive through russh
