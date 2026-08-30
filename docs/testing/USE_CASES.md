@@ -3017,6 +3017,43 @@ an unavailable adapter refuses before any effect.
 
 ## Change log
 
+- **2026-08-30** — Settled the hunk half of `benfavre/shelldeck#128` as a
+  design record rather than a feature. No behaviour changes and no new SDUC or
+  SDTEST: the outcome of `benfavre/shelldeck#163` is that hunk-level staging is
+  not representable, and would not become representable by adding a field.
+  SDUC-495 is already correct as written, because it describes the hunk as what
+  it is: the anchor a comment resolves a line against.
+
+  Three findings, each sufficient on its own. **A hunk has no identity to close
+  a write over.** It is not a property of the repository but of a rendering:
+  the same pair of blobs decomposes into three hunks at `-U2` and two at `-U3`,
+  the boundary and the added lines both move when `diff.indentHeuristic` is
+  toggled, `-w` yields a different set from the default, and a `.gitattributes`
+  textconv driver makes the same blob pair produce none at all. Two hunks in
+  one file can carry byte-identical bodies with their full context, so content
+  addressing alone is ambiguous inside a single file. **The hunk on the wire is
+  not an observation of the worktree a write would touch.** At the pinned
+  revision, `DiffHunk` and `ReviewFile` are constructed in exactly one
+  non-test place, the decoder, so nothing in `bext-stack/automonique` builds a
+  hunk from a repository, and the git worktree adapter that PR #225 added
+  contains no occurrence of "hunk" at all. A path is both server-owned and
+  observed; a hunk id can only ever be the first. **And git offers no fenced
+  mechanism.** `git add -p` is `git diff-files -p` followed by `git apply
+  --cached`, which matches context at any line offset: it exits 0 against an
+  index the patch was not minted from, and when the reviewed region has been
+  removed it writes the change into a different, similar region instead, with
+  no error.
+
+  What *is* representable is a partial-file index write closed on the resulting
+  blob object id, with the selection re-derived server-side from a pinned blob
+  pair rather than named by the client. That keeps the file as the unit the
+  server closes over, but it needs an upstream family and it inverts the
+  invariant PR #225 was built on, where every write names a path and lets git
+  supply the content. It is deliberately not built. The dormant `StageHunks` /
+  `UnstageHunks` reducer in `workspace_review.rs` now carries the reason at the
+  site, because its `MutationTargetFence::LocalReview` pins this crate's own
+  review revision and would fence a git write against nothing.
+
 - **2026-08-29** — Amended SDUC-495 with capability-fenced file-level staging,
   unstaging, committing and conflict resolution, and added SDTEST-1867..1873.
   This was the last open item of `benfavre/shelldeck#128`, and it was blocked

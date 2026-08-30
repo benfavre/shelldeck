@@ -696,12 +696,38 @@ pub enum ApprovalDecision {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ReviewMutationKind {
-    StageHunks {
-        hunks: Vec<ReviewHunkId>,
-    },
-    UnstageHunks {
-        hunks: Vec<ReviewHunkId>,
-    },
+    /// Modelled, and deliberately without an adapter. Do not give it one as
+    /// written; `benfavre/shelldeck#163` records the investigation, and the
+    /// short version is that nothing here can close a git write.
+    ///
+    /// * A hunk has no identity to close over. It is not a property of the
+    ///   repository but of a rendering: the same pair of blobs decomposes into
+    ///   a different number of hunks at a different context width, moves when
+    ///   `diff.indentHeuristic` is toggled, yields a different set under `-w`,
+    ///   and produces no hunks at all under a `.gitattributes` textconv driver.
+    ///   Two hunks in one file can also have byte-identical bodies, context
+    ///   included, so content addressing alone is ambiguous within one file.
+    /// * `ReviewHunkId` is a v4 UUID and nothing outside tests produces a
+    ///   [`ReviewHunk`], so it labels a projection rather than naming anything
+    ///   a worktree holds. The platform contract agrees: its own hunk id exists
+    ///   for comment anchors, and its `DiffHunk` carries positions plus a
+    ///   bounded preview, never the hunk's content.
+    /// * [`MutationTargetFence::LocalReview`] pins the checkout and this
+    ///   crate's `review_revision`. Neither moves when another process running
+    ///   as the same uid moves `HEAD`, the index or the file, so it would fence
+    ///   a staging write against nothing. `bext-stack/automonique#225` is the
+    ///   standard a local git write has to meet, and `config::platform_review`
+    ///   is where the file-level controls that meet it live: a confirmation
+    ///   minted over the observed `HEAD` object id, a digest of the whole
+    ///   index, and each named path's objects.
+    /// * Git offers no fenced mechanism anyway. `git add -p` is `git diff-files
+    ///   -p` followed by `git apply --cached`, and `git apply` matches context
+    ///   at any line offset: it exits 0 against an index the patch was not
+    ///   minted from, and it will write into a different region of the file
+    ///   when the reviewed one is gone.
+    StageHunks { hunks: Vec<ReviewHunkId> },
+    /// Unwired for the same reasons as [`ReviewMutationKind::StageHunks`].
+    UnstageHunks { hunks: Vec<ReviewHunkId> },
     SendComments {
         session_id: String,
         comments: Vec<ReviewCommentDraft>,
