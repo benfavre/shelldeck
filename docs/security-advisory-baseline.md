@@ -33,6 +33,18 @@ three then-installed `ttf-parser` versions and the two then-installed
 | Yanked `chacha20` 0.10.1 | Lockfile updated to the compatible 0.10.2 release. |
 | RUSTSEC-2026-0173 (`proc-macro-error2`) | Vendored GPUI moved from `stacksafe` 0.1 to 1.0, whose procedural macro uses maintained Syn diagnostics. |
 
+## Resolved during the 2026-08-30 review
+
+Nothing. This pass re-tested all six remaining entries against the live registry
+and the live upstream trackers rather than against the previous write-up, on the
+assumption that a blocker recorded days ago may have quietly cleared. None had.
+No advisory ID was removed, none was added, and no dependency was upgraded.
+
+The one substantive change is a correction, not progress: the claim that the
+`adabraka_*` advisories had "no upstream tracker to file against" was wrong, and
+is fixed under RUSTSEC-2024-0384 below. The real blocker there is stronger than
+the one previously recorded.
+
 ## Reviewed transitive baseline
 
 | Owner / migration boundary | Advisory IDs | Current dependency path |
@@ -43,10 +55,22 @@ three then-installed `ttf-parser` versions and the two then-installed
 
 ## Why each remaining ID is still blocked
 
-Re-verified on **2026-08-29** against the committed `Cargo.lock`. `cargo audit`
+Re-verified on **2026-08-30** against the committed `Cargo.lock`. `cargo audit`
 run without this repository's ignore list reports exactly these six IDs and
 nothing else, so no baseline entry is stale and none was widened. Every claim
 below was checked against the crates.io sparse index, not from memory.
+
+Two whole-graph checks back that up, and both are cheap to repeat:
+
+- `cargo tree -i <package> --target all` still resolves every path recorded
+  below, unchanged.
+- `cargo update --dry-run` over the whole workspace moves **nothing** in any of
+  the six chains. The single chain crate it touches at all is `exr`
+  1.74.1 -> 1.74.2, which still requires `pulp ^0.22.3` and therefore still
+  reaches `paste`. No semver-compatible release exists that removes any of the
+  six. Do not act on that dry run: it also proposes `pathfinder_simd`
+  0.5.5 -> 0.5.6, which breaks the macOS release build against our pinned
+  nightly (see the pin note in `AGENTS.md`).
 
 ### RUSTSEC-2024-0384: `instant` 0.1.13 (unmaintained)
 
@@ -62,10 +86,29 @@ it, so the whole fix is "`adabraka_util` moves to `futures-lite` 2".
 
 **Blocked because we do not own that crate.** Only `adabraka-gpui` and
 `adabraka-ui` are vendored under `patches/`; `adabraka_util` is a plain
-crates.io dependency. 0.5.1 (2026-02-17) is still the newest release of every
-`adabraka_*` crate, and `https://github.com/Augani/adabraka-gpui` returns 404,
-so there is no upstream tracker to file against. The only public source
-snapshot (`philippremy/adabraka-gpui`) mirrors 0.5.1 with the same constraint.
+crates.io dependency, and in the vendored fork's manifest it is the
+**non-optional** `[dependencies.util]` entry, so no feature switch on our side
+reaches it either. GPUI uses it across 46 files (`util::ResultExt`,
+`util::defer`, `util::maybe`, ...), so it is not droppable in our code.
+0.5.1 (2026-02-17) is still the newest release of every `adabraka_*` crate.
+
+**Upstream is abandoned, not merely unreachable.** The 2026-08-29 revision of
+this note said there was "no upstream tracker to file against". That is
+overstated and is corrected here. `https://github.com/Augani/adabraka-gpui`
+does still return 404 (re-checked 2026-08-30, over HTTP and via `gh api`), but
+the same author's `Augani/adabraka-ui` is live, unarchived and has issues
+enabled. [`Augani/adabraka-ui#10`](https://github.com/Augani/adabraka-ui/issues/10)
+("[BUG] adabraka-gpui source is unavailable", open since 2026-06-04) already
+tracks exactly the missing-source problem, and a commenter states that "the
+kael project supersedes this". `kael` is not published on crates.io, and the
+repository's last push was 2026-02-19.
+
+So a tracker does exist, but filing there would not help: the crate line is
+declared superseded and has shipped nothing for six months. That is a stronger
+reason to keep the exception than the "no tracker" claim it replaces. The only
+public source snapshot (`philippremy/adabraka-gpui`) has issues disabled and
+mirrors 0.5.1 with the same `futures-lite = "1.13"` constraint, confirmed by
+reading its `crates/util/Cargo.toml`, so no unpublished fix is waiting either.
 
 **Why no workaround.** Changing the constraint means vendoring a third crate or
 adding a `[patch.crates-io]` entry. Those are steps 4 and 5 of the decision
@@ -82,6 +125,11 @@ async-std 1.13.2 <- async-tar 0.5.1 <- adabraka_http_client 0.5.1
 
 `adabraka_http_client` declares `async-tar = "^0.5.1"` non-optional, and
 `async-tar` 0.5.1 declares `async-std` non-optional with no feature gate at all.
+`adabraka_http_client` is itself the non-optional `[dependencies.http_client]`
+entry of the vendored fork, and GPUI uses it directly (`http_client::AsyncBody`,
+`Request`, `Response`, `Uri`, ...), so there is no feature to switch off on our
+side of the boundary either. The same holds for RUSTSEC-2025-0134 below, which
+enters through the same crate.
 
 **The upstream migration exists but is out of reach.** `async-tar` 0.6.0 /
 0.6.1 (2026-01 / 2026-06) made `async-std` optional behind `runtime-async-std`
@@ -109,13 +157,25 @@ upstream `reqwest` instead of the Zed fork, or when Zed publishes a rebased
 
 ### RUSTSEC-2024-0436: `paste` 1.0.15 (unmaintained)
 
-Three independent chains, each already at its newest upstream release:
+Three independent chains, each still declaring `paste` at its newest upstream
+release:
 
 | Chain | Latest checked | Still declares `paste`? |
 | --- | --- | --- |
 | `metal` <- GPUI macOS renderer (also `adabraka_media`, `core-video`) | 0.33.0 (2025-12-17) | yes, `paste ^1`, non-optional, in 0.29 through 0.33 |
 | `pulp` <- `exr` <- `image` 0.25.10 | `pulp` 0.22.3 (2026-06-20) | yes, `paste ^1`; `exr` 1.74.2 still requires `pulp ^0.22.3` |
 | `rav1e` <- `ravif` <- `image` 0.25.10 | 0.8.1 (2025-06-16) | yes, `paste ^1.0` |
+
+Our lockfile sits *behind* two of those, for two different reasons, and neither
+gap matters here:
+
+- `metal` 0.29.0, because the vendored fork's manifest requires `metal = "0.29"`.
+  Reaching 0.33 is a manifest edit across a semver-major renderer boundary, and
+  `paste ^1` is non-optional in 0.29 and 0.33 alike, so it would buy nothing.
+- `exr` 1.74.1, which is plain lockfile lag. 1.74.2 is semver-compatible and a
+  `cargo update` would take it, but it still requires `pulp ^0.22.3`.
+
+`paste` itself is frozen at 1.0.15 with no successor release.
 
 The advisory suggests `pastey` as a drop-in fork, but adopting it is `metal`'s,
 `pulp`'s and `rav1e`'s decision, not ours.
@@ -141,11 +201,20 @@ already moved to `harfrust` + `skrifa`, and `lopdf` 0.44 declares `ttf-parser`
 only behind an optional feature we do not enable.
 
 **This is the closest ID to clearing, and it is one upstream merge away.**
-`fontdb` 0.24.0 (2026-07-29) removed `ttf-parser` entirely, and
-[pop-os/cosmic-text#526](https://github.com/pop-os/cosmic-text/pull/526)
-("chore: bump fontdb to 0.24") has been open since 2026-07-30.
+`fontdb` 0.24.0 (2026-07-29) removed `ttf-parser` entirely (its index entry
+declares no `ttf-parser` dependency at all), while `fontdb` 0.23.0 declares
+`ttf-parser ^0.25` **non-optional**, so no feature switch removes it.
 `cosmic-text` 0.19.0 (2026-04-22) is the newest release and pins `fontdb ^0.23`,
-so no lockfile move can reach 0.24 today.
+also non-optional, so neither a lockfile move nor `default-features = false`
+can reach 0.24 today.
+
+Re-checked on 2026-08-30, and the blocker is not stale:
+[pop-os/cosmic-text#526](https://github.com/pop-os/cosmic-text/pull/526)
+("chore: bump fontdb to 0.24") is **still open**, `merged: false`, last touched
+2026-07-30. The bump has not landed by any other route either: `Cargo.toml` on
+`cosmic-text` `main` still reads `fontdb = { version = "0.23", … }`, and the most
+recent commit touching that file is the 0.19.0 release of 2026-04-22. There is
+no 0.20 release, prerelease included.
 
 **When it lands**: bump the `cosmic-text` constraint in
 `patches/adabraka-gpui/Cargo.toml`, a manifest-only fork patch of the same
@@ -159,11 +228,17 @@ rsa 0.10.0-rc.16 <- russh 0.60.3 (default feature `rsa`)
                  <- internal-russh-forked-ssh-key 0.6.18 (via `ssh-key/rsa`)
 ```
 
-**No fixed version exists.** The advisory records `patched = []`;
-[RustCrypto/RSA#626](https://github.com/RustCrypto/RSA/issues/626) is still
-open and the constant-time rewrite has not shipped. Upgrading `russh` does not
-help either: 0.63.1 (2026-08-23) moved to `rsa =0.10.0-rc.18`, which the
-advisory covers just the same.
+**No fixed version exists.** Re-read from a freshly fetched advisory database on
+2026-08-30, the advisory still records `patched = []`, and `cargo audit` prints
+"No fixed upgrade is available!" for it.
+[RustCrypto/RSA#626](https://github.com/RustCrypto/RSA/issues/626) ("Padding
+implementation is not constant-time") is still open, last updated 2026-06-02,
+and the constant-time rewrite has not shipped. `rsa` has never published a
+stable 0.10: the registry holds only `0.10.0-rc.13` through `0.10.0-rc.18`.
+Upgrading `russh` does not help either: 0.63.1 (2026-08-23) moved to
+`rsa =0.10.0-rc.18`, which the advisory covers just the same. This is the one
+baseline entry that cannot clear by any action of ours, ever, until upstream
+ships the rewrite.
 
 **Why no workaround.** The only way to drop `rsa` is to build `russh` with
 `default-features = false` and leave the `rsa` feature off, which removes RSA
@@ -199,3 +274,24 @@ Anything beyond the six IDs above is a genuinely new finding and must be
 resolved, not appended here. `cargo update --dry-run --verbose` shows, per
 crate, whether a newer compatible release exists. That is the fastest way to
 confirm a baseline entry is still pinned by a requirement we do not control.
+
+> **Dry run only.** Never let that command talk you into an actual
+> `cargo update`. It proposes `pathfinder_simd` 0.5.5 -> 0.5.6, which breaks the
+> macOS release build against our pinned nightly and which `cargo check` will
+> not catch. If you ever do run it, follow immediately with
+> `cargo update -p pathfinder_simd --precise 0.5.5`. See `AGENTS.md`.
+
+Do not re-derive a blocker from this document alone. Each entry names an upstream
+release, pull request or issue: re-check those at their source before repeating
+the conclusion. A blocker that was real last week may have merged since, and the
+whole point of this file is to make that cheap to test rather than cheap to
+assume. Checking the six takes about ten minutes:
+
+```bash
+# still reachable, and by which path?
+cargo tree -i <package> --target all
+# does a newer release exist that changes the requirement?
+curl -s https://index.crates.io/<a>/<b>/<crate> | jq -r '.vers'
+# did the upstream PR/issue that gates it move?
+gh api repos/<owner>/<repo>/pulls/<n> --jq '{state,merged,updated_at}'
+```
