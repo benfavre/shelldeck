@@ -23,12 +23,12 @@ use shelldeck_core::config::workspace_catalog::{
 use shelldeck_core::models::connection::Connection;
 use shelldeck_core::workspace_navigation::{
     AgentSessionBinding, BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState,
-    PaneId, PaneLeaf, ProviderSessionBinding, TerminalAuthority, TerminalBinding,
-    TerminalBindingId, TerminalSurface, TerminalViewport, WorkspaceAgentState, WorkspaceCardState,
-    WorkspaceCreateConflict, WorkspaceCreateEvent, WorkspaceCreateFailure,
-    WorkspaceCreateFailureKind, WorkspaceCreatePhase, WorkspaceCreationReducer, WorkspaceFocus,
-    WorkspaceFreshness, WorkspaceNavigationAction, WorkspaceNavigationState, WorkspaceSurfaceState,
-    WorkspaceTab, WorkspaceTabContent, WorkspaceTabId,
+    PaneId, PaneLeaf, TerminalAuthority, TerminalBinding, TerminalBindingId, TerminalSurface,
+    TerminalViewport, WorkspaceAgentState, WorkspaceCardState, WorkspaceCreateConflict,
+    WorkspaceCreateEvent, WorkspaceCreateFailure, WorkspaceCreateFailureKind, WorkspaceCreatePhase,
+    WorkspaceCreationReducer, WorkspaceFocus, WorkspaceFreshness, WorkspaceNavigationAction,
+    WorkspaceNavigationState, WorkspaceSurfaceState, WorkspaceTab, WorkspaceTabContent,
+    WorkspaceTabId,
 };
 use shelldeck_core::workspace_review::{
     AttentionBoard, AttentionError, AttentionItem, AttentionItemId, AttentionState,
@@ -1138,46 +1138,6 @@ impl WorkspaceHubView {
             retained.activate_tab(focus, cx);
         });
         Ok(focus)
-    }
-
-    pub(super) fn open_or_focus_provider_session(
-        &mut self,
-        workspace: CatalogWorkspaceId,
-        title: impl Into<String>,
-        binding: ProviderSessionBinding,
-        cx: &mut Context<Self>,
-    ) -> Result<WorkspaceFocus, String> {
-        fn matching_tab(
-            node: &shelldeck_core::workspace_navigation::PaneNode,
-            binding: &ProviderSessionBinding,
-        ) -> Option<WorkspaceTabId> {
-            match node {
-                shelldeck_core::workspace_navigation::PaneNode::Leaf(leaf) => leaf.tabs.iter().find_map(|tab| {
-                    matches!(&tab.content, WorkspaceTabContent::ProviderSession(candidate)
-                        if candidate.platform_user_workspace_id == binding.platform_user_workspace_id
-                            && candidate.session_id == binding.session_id)
-                    .then_some(tab.id)
-                }),
-                shelldeck_core::workspace_navigation::PaneNode::Split { first, second, .. } => {
-                    matching_tab(first, binding).or_else(|| matching_tab(second, binding))
-                }
-            }
-        }
-        let id = self
-            .navigation
-            .workspace(workspace)
-            .and_then(|retained| retained.surface.root.as_ref())
-            .and_then(|root| matching_tab(root, &binding))
-            .unwrap_or_else(|| WorkspaceTabId::from_uuid(Uuid::new_v4()));
-        self.open_or_focus_tab(
-            workspace,
-            WorkspaceTab {
-                id,
-                title: title.into(),
-                content: WorkspaceTabContent::ProviderSession(binding),
-            },
-            cx,
-        )
     }
 
     pub(super) fn open_or_focus_agent_session(
