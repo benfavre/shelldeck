@@ -871,9 +871,12 @@ at a short cadence; background runtime refreshes never erase an in-flight chat.
 ### SDUC-475 — Coding agents run on an explicit local or SSH target
 
 Dev mode exposes one provider-neutral agent console for Claude Code, Codex,
-DeepSeek through Jcode, and Jcode's configured/default provider. Every run names an absolute working directory, an
-explicit local machine or existing ShellDeck SSH connection, a model override,
-and a closed access level. Read-only is the default. Workspace-write and full
+Automonique ACP, DeepSeek through Jcode, and Jcode's configured/default provider.
+Every run names a target-valid working directory (a native absolute path locally,
+an absolute POSIX path or the exact remote-home sentinel over SSH), an explicit
+local machine or existing ShellDeck SSH connection, an optional model override
+when the provider supports one, and a closed access level. Read-only is the
+default. Workspace-write and full
 access require a separate confirmation that repeats the provider, target,
 working directory, and permission level. Output streams into the console and
 Stop terminates the local process or closes the remote SSH channel. The
@@ -912,6 +915,12 @@ the normal Send action, with an explicit tooltip rather than a competing text
 button. The Markdown renderer receives that conversation measure as a definite
 width, so structured output such as tables wraps inside it instead of being
 laid out intrinsically and clipped at the right edge.
+When a session changes from the local machine to an SSH target without an
+authorized catalog checkout, its canonical working-directory default is `~`;
+the remote shell expands that exact sentinel to its own `$HOME`. ShellDeck
+never sends a quoted literal tilde and never treats an inherited client-only
+absolute path as the remote default. An explicit catalog checkout root remains
+authoritative when one is available.
 
 ### SDUC-499 — Agent work remains independently identifiable and observable
 
@@ -937,7 +946,17 @@ its exact retained Workspace cockpit; local checkouts place an
 authority-resolved file pane beside the agent, while typed split controls can
 keep the retained terminal visible concurrently. A session-to-checkout binding
 is immutable until that session closes, and closing it removes every retained
-pane reference.
+pane reference. On wide desktops the session navigator is the single session
+selector rather than being repeated as a second tab strip. A persistent
+inspector shows the actual local working-directory tree and opens selected
+local files through a typed event only after canonical containment beneath the
+selected session root. SSH trees are requested through the exact
+selected session, connection, and requested path; asynchronous results must
+match all three before their separately resolved canonical directory may
+replace the current listing. The `~` default becomes a remote path only after
+that host returns one bounded, valid absolute home directory. The Changes tab projects changed files, diff
+counts, and bounded previews from structured trace events, and selecting one
+highlights that exact event in the ordered timeline.
 
 ---
 
@@ -2608,7 +2627,15 @@ Permission requests reach an injected user-decision broker and only an option
 the agent actually offered can be returned. With no broker the request is
 cancelled. ShellDeck advertises no filesystem or terminal service, so ACP
 cannot bypass its typed confirmation paths or Automonique's execution
-authority. Automonique is the built-in launch profile (`automonique acp`).
+authority. Automonique is the built-in launch profile (`automonique acp`) and
+is a first-class coding-agent provider: its message chunks and tool lifecycle
+stream into the shared Agent timeline, its durable session ID resumes only in
+the exact execution context, and Stop sends `session/cancel` before the guarded
+ACP process tree is dropped. The local ACP launch never substitutes for an SSH
+selection; remote Automonique work remains reachable only through an exact AI
+Operations Platform workspace/session mapping. Read-only cancels every ACP
+permission request, while a separately confirmed mutating run may select only
+an exact one-shot allow option the agent offered and never persists that grant.
 
 ### SDUC-483 — Successful sign-in progress completes exactly once
 
@@ -3043,6 +3070,18 @@ an unavailable adapter refuses before any effect.
 
 ## Change log
 
+- **2026-09-01** — Amended SDUC-499 with SDTEST-1902/1903/1909: the wide cockpit
+  removes its duplicate session tab strip, adds a real local tree plus a
+  session/host/path-fenced SSH browsing contract, and projects trace-backed
+  changes into a persistent inspector. Manual Local↔SSH target switches now
+  choose target-valid working-directory defaults instead of submitting a
+  client-only path or rejecting the remote-home sentinel.
+
+- **2026-09-01** — Amended SDUC-475 with SDTEST-1904/1905/1908: manual SSH
+  targets use an exact remote-home sentinel instead of inheriting a local
+  absolute path, while catalog-backed runs translate the matching checkout
+  root and preserve their validated relative suffix. Remote browsing admits
+  only one bounded absolute home returned by the selected SSH host.
 - **2026-09-01** — Hardened SDUC-499 with SDTEST-1895..1898: a session-wide
   monotonic sequence now orders equal-time conversation and trace rows, while
   the shared local/SSH stream framer bounds newline-free provider output and
