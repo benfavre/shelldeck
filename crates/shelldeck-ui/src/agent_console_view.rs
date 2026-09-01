@@ -5,6 +5,7 @@
 //! Workspace retains process and SSH lifetimes.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
 use adabraka_ui::components::icon_source::IconSource;
@@ -20,7 +21,8 @@ use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::agent_runtime::{
     AgentAccessMode, AgentProvider, AgentRunRequest, AgentStreamEvent, AgentTarget,
-    MAX_AGENT_MODEL_BYTES, MAX_AGENT_PROMPT_BYTES, MAX_AGENT_WORKDIR_BYTES,
+    AGENT_REMOTE_HOME_WORKDIR, MAX_AGENT_MODEL_BYTES, MAX_AGENT_PROMPT_BYTES,
+    MAX_AGENT_WORKDIR_BYTES,
 };
 use shelldeck_core::agent_session::{
     AgentExecutionContext, AgentMessage, AgentMessageRole, AgentSession, AgentSessionAttention,
@@ -29,6 +31,7 @@ use shelldeck_core::agent_session::{
 };
 use uuid::Uuid;
 
+use crate::file_editor::file_browser::FileBrowserPanel;
 use crate::follow_scroll::{follow_latest_if_at_end, pin_to_latest};
 use crate::icons::lucide_icon;
 use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
@@ -38,12 +41,46 @@ use crate::theme::ShellDeckColors;
 
 const MAX_ACTIVITY_BYTES: usize = 4 * 1024;
 const NAVIGATOR_WIDTH: f32 = 238.0;
+const INSPECTOR_WIDTH: f32 = 286.0;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum AgentInspectorTab {
+    #[default]
+    Files,
+    Changes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectorFile {
+    path: String,
+    latest_trace_id: Uuid,
+    latest_sequence: u64,
+    diff: Option<InspectorDiff>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectorDiff {
+    trace_id: Uuid,
+    sequence: u64,
+    additions: u32,
+    deletions: u32,
+    preview: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub enum AgentConsoleEvent {
     Run(AgentRunRequest),
     Stop(Uuid),
     CloseSession(Uuid),
+    OpenLocalFile {
+        session_id: Uuid,
+        path: PathBuf,
+    },
+    BrowseRemoteDirectory {
+        session_id: Uuid,
+        connection_id: Uuid,
+        path: String,
+    },
 }
 
 impl EventEmitter<AgentConsoleEvent> for AgentConsoleView {}
@@ -53,6 +90,13 @@ pub struct AgentConnectionOption {
     pub id: Uuid,
     pub label: String,
     pub host: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRemoteFileEntry {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
 }
 
 /// Project/worktree data supplied by the workspace catalog. Sessions are
@@ -129,6 +173,7 @@ pub struct AgentConsoleView {
     provider_select: Entity<Select<AgentProvider>>,
     access_select: Entity<Select<AgentAccessMode>>,
     target_select: Entity<Select<Option<Uuid>>>,
+    default_local_workdir: String,
     workdir_state: Entity<InputState>,
     model_state: Entity<InputState>,
     navigator_search: Entity<InputState>,
@@ -139,6 +184,16 @@ pub struct AgentConsoleView {
     context_locks: HashSet<Uuid>,
     pending_confirm: Option<PendingRun>,
     context_expanded: bool,
+    inspector_tab: AgentInspectorTab,
+    focused_trace: Option<Uuid>,
+    inspector_local_browser: FileBrowserPanel,
+    inspector_remote_path: Option<String>,
+    inspector_remote_pending_path: Option<String>,
+    inspector_remote_session: Option<Uuid>,
+    inspector_remote_connection: Option<Uuid>,
+    inspector_remote_entries: Vec<AgentRemoteFileEntry>,
+    inspector_remote_loading: bool,
+    inspector_remote_error: Option<String>,
     scroll: ScrollHandle,
 }
 
@@ -176,6 +231,8 @@ impl AgentConsoleView {
             .expect("default agent execution context is valid");
         let mut session_ui = HashMap::new();
         session_ui.insert(session_id, AgentSessionUi::new(cx));
+        let mut inspector_local_browser = FileBrowserPanel::new();
+        inspector_local_browser.set_root(PathBuf::from(&default_workdir));
         Self {
             provider: AgentProvider::Claude,
             access: AgentAccessMode::ReadOnly,
@@ -184,6 +241,7 @@ impl AgentConsoleView {
             provider_select,
             access_select,
             target_select,
+            default_local_workdir: default_workdir.clone(),
             workdir_state: input_state(cx, default_workdir),
             model_state: input_state(cx, String::new()),
             navigator_search: input_state(cx, String::new()),
@@ -194,6 +252,16 @@ impl AgentConsoleView {
             context_locks: HashSet::new(),
             pending_confirm: None,
             context_expanded: false,
+            inspector_tab: AgentInspectorTab::Files,
+            focused_trace: None,
+            inspector_local_browser,
+            inspector_remote_path: None,
+            inspector_remote_pending_path: None,
+            inspector_remote_session: None,
+            inspector_remote_connection: None,
+            inspector_remote_entries: Vec::new(),
+            inspector_remote_loading: false,
+            inspector_remote_error: None,
             scroll: ScrollHandle::new(),
         }
     }
@@ -208,6 +276,8 @@ impl AgentConsoleView {
             SelectOption::new(AgentProvider::Claude, "Claude Code")
                 .with_icon("icons/simple/claudecode.svg"),
             SelectOption::new(AgentProvider::Codex, "Codex").with_icon("icons/simple/openai.svg"),
+            SelectOption::new(AgentProvider::Automonique, "Automonique ACP")
+                .with_icon("icons/lucide/bot.svg"),
             SelectOption::new(AgentProvider::Jcode, "Jcode").with_icon("icons/lucide/sparkles.svg"),
             SelectOption::new(AgentProvider::DeepSeek, "DeepSeek")
                 .with_icon("icons/lucide/bot.svg"),
@@ -219,9 +289,14 @@ impl AgentConsoleView {
                 .selected_index(selected_index)
                 .disabled(disabled)
                 .context_label(t!("agents.provider").to_string())
-                .on_change(move |provider, _window, cx| {
+                .on_change(move |provider, window, cx| {
                     parent.update(cx, |this, cx| {
                         this.provider = *provider;
+                        if *provider == AgentProvider::Automonique {
+                            this.model_state.update(cx, |state, cx| {
+                                state.set_value("", window, cx);
+                            });
+                        }
                         cx.notify();
                     });
                 })
@@ -296,8 +371,18 @@ impl AgentConsoleView {
                 .searchable(true)
                 .search_placeholder(t!("agents.target.search").to_string())
                 .context_label(t!("agents.target.label").to_string())
-                .on_change(move |connection_id, _window, cx| {
+                .on_change(move |connection_id, window, cx| {
                     parent.update(cx, |this, cx| {
+                        if let Some(next_workdir) = target_switch_workdir(
+                            this.selected_connection,
+                            *connection_id,
+                            this.workdir_state.read(cx).content(),
+                            &this.default_local_workdir,
+                        ) {
+                            this.workdir_state.update(cx, |state, cx| {
+                                state.set_value(next_workdir, window, cx);
+                            });
+                        }
                         this.selected_connection = *connection_id;
                         cx.notify();
                     });
@@ -337,6 +422,69 @@ impl AgentConsoleView {
         cx: &mut Context<Self>,
     ) {
         self.project_groups = project_groups;
+        cx.notify();
+    }
+
+    pub fn set_remote_directory_listing(
+        &mut self,
+        session_id: Uuid,
+        connection_id: Uuid,
+        requested_path: String,
+        resolved_path: String,
+        result: Result<Vec<AgentRemoteFileEntry>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let selected_matches = self.sessions.selected().is_some_and(|session| {
+            session.id == session_id
+                && matches!(
+                    session.context.target,
+                    AgentTarget::Ssh {
+                        connection_id: selected,
+                        ..
+                    } if selected == connection_id
+                )
+        });
+        if !selected_matches
+            || self.inspector_remote_connection != Some(connection_id)
+            || self.inspector_remote_session != Some(session_id)
+            || self.inspector_remote_pending_path.as_deref() != Some(requested_path.as_str())
+        {
+            return;
+        }
+        self.inspector_remote_loading = false;
+        self.inspector_remote_pending_path = None;
+        match result {
+            Ok(entries) => {
+                self.inspector_remote_path = Some(resolved_path);
+                self.inspector_remote_entries = entries;
+                self.inspector_remote_error = None;
+            }
+            Err(error) => {
+                self.inspector_remote_entries.clear();
+                self.inspector_remote_error = Some(bounded_utf8(error, MAX_ACTIVITY_BYTES));
+            }
+        }
+        cx.notify();
+    }
+
+    fn request_remote_directory(
+        &mut self,
+        session_id: Uuid,
+        connection_id: Uuid,
+        path: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.inspector_remote_session = Some(session_id);
+        self.inspector_remote_connection = Some(connection_id);
+        self.inspector_remote_path = Some(path.clone());
+        self.inspector_remote_pending_path = Some(path.clone());
+        self.inspector_remote_loading = true;
+        self.inspector_remote_error = None;
+        cx.emit(AgentConsoleEvent::BrowseRemoteDirectory {
+            session_id,
+            connection_id,
+            path,
+        });
         cx.notify();
     }
 
@@ -565,6 +713,34 @@ impl AgentConsoleView {
         );
         self.workdir_state = input_state(cx, session.context.workdir.clone());
         self.model_state = input_state(cx, session.context.model.clone().unwrap_or_default());
+        match &session.context.target {
+            AgentTarget::Local => {
+                let root = PathBuf::from(&session.context.workdir);
+                if root.is_dir() && self.inspector_local_browser.root() != root.as_path() {
+                    self.inspector_local_browser.set_root(root);
+                }
+                self.inspector_remote_connection = None;
+                self.inspector_remote_path = None;
+                self.inspector_remote_pending_path = None;
+                self.inspector_remote_session = None;
+                self.inspector_remote_entries.clear();
+                self.inspector_remote_error = None;
+                self.inspector_remote_loading = false;
+            }
+            AgentTarget::Ssh { connection_id, .. } => {
+                if self.inspector_remote_session != Some(session.id)
+                    || self.inspector_remote_connection != Some(*connection_id)
+                {
+                    self.inspector_remote_session = Some(session.id);
+                    self.inspector_remote_connection = Some(*connection_id);
+                    self.inspector_remote_path = None;
+                    self.inspector_remote_pending_path = None;
+                    self.inspector_remote_entries.clear();
+                    self.inspector_remote_error = None;
+                    self.inspector_remote_loading = false;
+                }
+            }
+        }
     }
 
     fn context_from_controls(&self, cx: &Context<Self>) -> Result<AgentExecutionContext, String> {
@@ -579,7 +755,7 @@ impl AgentConsoleView {
         }
         let workdir = self.workdir_state.read(cx).content().trim().to_string();
         let model = self.model_state.read(cx).content().trim().to_string();
-        if workdir.is_empty() || !std::path::Path::new(&workdir).is_absolute() {
+        if !workdir_is_valid_for_target(&workdir, self.selected_connection.is_some()) {
             return Err(t!("agents.error.workdir_absolute").to_string());
         }
         if workdir.len() > MAX_AGENT_WORKDIR_BYTES {
@@ -607,7 +783,8 @@ impl AgentConsoleView {
             target,
             access: self.access,
             workdir,
-            model: (!model.is_empty()).then_some(model),
+            model: (self.provider != AgentProvider::Automonique && !model.is_empty())
+                .then_some(model),
         };
         context
             .run_request("validate")
@@ -976,7 +1153,7 @@ impl AgentConsoleView {
                         .pt(px(6.0))
                         .pb(px(3.0))
                         .child(lucide_icon(
-                            "folder-git-2",
+                            "git-branch",
                             12.0,
                             ShellDeckColors::text_muted(),
                         ))
@@ -1073,7 +1250,7 @@ impl AgentConsoleView {
                     .px(px(10.0))
                     .border_b_1()
                     .border_color(ShellDeckColors::border())
-                    .child(lucide_icon("boxes", 14.0, ShellDeckColors::primary()))
+                    .child(lucide_icon("grid-2x2", 14.0, ShellDeckColors::primary()))
                     .child(
                         div()
                             .flex_1()
@@ -1145,7 +1322,7 @@ impl AgentConsoleView {
                     .child(t!("workspaces.agent.running").to_string())
                     .child(div().flex_1())
                     .when(unread_count > 0, |row| {
-                        row.child(lucide_icon("circle-dot", 10.0, ShellDeckColors::primary()))
+                        row.child(lucide_icon("activity", 10.0, ShellDeckColors::primary()))
                             .child(unread_count.to_string())
                             .child(t!("workspaces.attention.unread").to_string())
                     }),
@@ -1373,7 +1550,7 @@ impl AgentConsoleView {
         tabs.into_any_element()
     }
 
-    fn render_trace(trace: &AgentTraceEvent) -> AnyElement {
+    fn render_trace(trace: &AgentTraceEvent, focused: bool) -> AnyElement {
         let (icon, color, title, detail, stats) = trace_presentation(&trace.detail);
         div()
             .id(("agent-trace", uuid_key(trace.id)))
@@ -1384,9 +1561,17 @@ impl AgentConsoleView {
             .px(px(9.0))
             .py(px(7.0))
             .border_1()
-            .border_color(ShellDeckColors::border())
+            .border_color(if focused {
+                ShellDeckColors::primary()
+            } else {
+                ShellDeckColors::border()
+            })
             .rounded(px(5.0))
-            .bg(ShellDeckColors::bg_surface())
+            .bg(if focused {
+                ShellDeckColors::primary().opacity(0.08)
+            } else {
+                ShellDeckColors::bg_surface()
+            })
             .child(
                 div()
                     .mt(px(1.0))
@@ -1446,6 +1631,449 @@ impl AgentConsoleView {
             .into_any_element()
     }
 
+    fn render_inspector(&mut self, session: &AgentSession, cx: &mut Context<Self>) -> AnyElement {
+        let remote = matches!(session.context.target, AgentTarget::Ssh { .. });
+        let files = inspector_files(session);
+        let changed_count = files.iter().filter(|file| file.diff.is_some()).count();
+        let files_selected = self.inspector_tab == AgentInspectorTab::Files;
+        let changes_selected = self.inspector_tab == AgentInspectorTab::Changes;
+        let remote_parent = remote
+            .then(|| {
+                self.inspector_remote_path
+                    .as_deref()
+                    .unwrap_or(&session.context.workdir)
+            })
+            .and_then(remote_parent_path);
+
+        let tabs = div()
+            .h(px(42.0))
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .px(px(8.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                Button::new(
+                    "agent-inspector-files",
+                    t!("agents.inspector.files").to_string(),
+                )
+                .variant(if files_selected {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("file-text"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.inspector_tab = AgentInspectorTab::Files;
+                    cx.notify();
+                })),
+            )
+            .child(
+                Button::new(
+                    "agent-inspector-changes",
+                    t!("agents.inspector.changes").to_string(),
+                )
+                .variant(if changes_selected {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("git-branch"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.inspector_tab = AgentInspectorTab::Changes;
+                    cx.notify();
+                })),
+            );
+
+        let mut list = div()
+            .id("agent-inspector-list")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .px(px(7.0))
+            .py(px(6.0))
+            .gap(px(4.0));
+        if files_selected && !remote {
+            let entries = self.inspector_local_browser.visible_entries();
+            if entries.is_empty() {
+                list = list.child(inspector_empty_state(
+                    "file-text",
+                    t!("agents.inspector.empty_files").to_string(),
+                ));
+            } else {
+                for entry in entries {
+                    let path = entry.path.clone();
+                    let event_path = path.clone();
+                    let is_dir = entry.is_dir;
+                    let session_id = session.id;
+                    let icon = if is_dir {
+                        if entry.is_expanded {
+                            "chevron-down"
+                        } else {
+                            "chevron-right"
+                        }
+                    } else {
+                        "file-text"
+                    };
+                    list = list.child(
+                        div()
+                            .id(SharedString::from(format!("agent-file-{}", path.display())))
+                            .h(px(25.0))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .pl(px(6.0 + entry.depth as f32 * 12.0))
+                            .pr(px(6.0))
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if is_dir {
+                                    this.inspector_local_browser.toggle_dir(&path);
+                                    cx.notify();
+                                } else {
+                                    cx.emit(AgentConsoleEvent::OpenLocalFile {
+                                        session_id,
+                                        path: event_path.clone(),
+                                    });
+                                }
+                            }))
+                            .child(lucide_icon(icon, 11.0, ShellDeckColors::text_muted()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(px(10.0))
+                                    .text_color(if is_dir {
+                                        ShellDeckColors::text_primary()
+                                    } else {
+                                        ShellDeckColors::text_muted()
+                                    })
+                                    .child(entry.name),
+                            ),
+                    );
+                }
+            }
+        } else if files_selected {
+            let (session_id, connection_id) = match &session.context.target {
+                AgentTarget::Ssh { connection_id, .. } => (session.id, *connection_id),
+                AgentTarget::Local => unreachable!("local files use the local browser"),
+            };
+            let request_path = self
+                .inspector_remote_path
+                .clone()
+                .unwrap_or_else(|| session.context.workdir.clone());
+            if self.inspector_remote_loading {
+                list = list.child(inspector_empty_state(
+                    "refresh-cw",
+                    t!("agents.inspector.remote_loading").to_string(),
+                ));
+            } else if let Some(error) = self.inspector_remote_error.clone() {
+                let retry_path = request_path.clone();
+                list = list
+                    .child(inspector_empty_state("circle-alert", error))
+                    .child(
+                        Button::new(
+                            "agent-remote-files-retry",
+                            t!("agents.inspector.retry").to_string(),
+                        )
+                        .variant(ButtonVariant::Secondary)
+                        .size(ButtonSize::Sm)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.request_remote_directory(
+                                session_id,
+                                connection_id,
+                                retry_path.clone(),
+                                cx,
+                            );
+                        })),
+                    );
+            } else if self.inspector_remote_entries.is_empty() {
+                let load_path = request_path.clone();
+                list = list
+                    .child(inspector_empty_state(
+                        "server",
+                        t!("agents.inspector.remote_empty").to_string(),
+                    ))
+                    .child(
+                        Button::new(
+                            "agent-remote-files-load",
+                            t!("agents.inspector.remote_load").to_string(),
+                        )
+                        .variant(ButtonVariant::Secondary)
+                        .size(ButtonSize::Sm)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.request_remote_directory(
+                                session_id,
+                                connection_id,
+                                load_path.clone(),
+                                cx,
+                            );
+                        })),
+                    );
+            } else {
+                for entry in self.inspector_remote_entries.clone() {
+                    let path = entry.path.clone();
+                    let is_dir = entry.is_dir;
+                    let mut row = div()
+                        .id(SharedString::from(format!(
+                            "agent-remote-file-{}",
+                            entry.path
+                        )))
+                        .h(px(25.0))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .px(px(6.0))
+                        .rounded(px(4.0))
+                        .text_size(px(10.0))
+                        .text_color(if is_dir {
+                            ShellDeckColors::text_primary()
+                        } else {
+                            ShellDeckColors::text_muted()
+                        })
+                        .child(lucide_icon(
+                            if is_dir { "archive" } else { "file-text" },
+                            11.0,
+                            ShellDeckColors::text_muted(),
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(entry.name),
+                        );
+                    if is_dir {
+                        row = row
+                            .cursor_pointer()
+                            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.request_remote_directory(
+                                    session_id,
+                                    connection_id,
+                                    path.clone(),
+                                    cx,
+                                );
+                            }));
+                    } else {
+                        row = row.child(
+                            Badge::new(t!("agents.inspector.remote").to_string())
+                                .variant(BadgeVariant::Secondary),
+                        );
+                    }
+                    list = list.child(row);
+                }
+            }
+        } else {
+            let visible = files
+                .iter()
+                .filter(|file| file.diff.is_some())
+                .collect::<Vec<_>>();
+            if visible.is_empty() {
+                list = list.child(inspector_empty_state(
+                    "git-branch",
+                    t!("agents.inspector.empty_changes").to_string(),
+                ));
+            }
+            for file in visible {
+                let diff = file.diff.as_ref().expect("changed file has a diff");
+                let trace_id = diff.trace_id;
+                let selected = self.focused_trace == Some(trace_id);
+                let mut row = div()
+                    .id(("agent-inspector-trace", uuid_key(trace_id)))
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .px(px(8.0))
+                    .py(px(7.0))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(if selected {
+                        ShellDeckColors::primary()
+                    } else {
+                        ShellDeckColors::border()
+                    })
+                    .rounded(px(5.0))
+                    .bg(if selected {
+                        ShellDeckColors::primary().opacity(0.08)
+                    } else {
+                        ShellDeckColors::bg_surface()
+                    })
+                    .cursor_pointer()
+                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.focused_trace = Some(trace_id);
+                        pin_to_latest(&this.scroll);
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(lucide_icon("git-branch", 12.0, ShellDeckColors::warning()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .font_family("JetBrains Mono")
+                                    .text_size(px(9.5))
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(file.path.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .font_family("JetBrains Mono")
+                                    .text_size(px(8.5))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(format!("+{} −{}", diff.additions, diff.deletions)),
+                            ),
+                    );
+                if let Some(preview) = diff.preview.as_ref() {
+                    row = row.child(
+                        div()
+                            .max_h(px(88.0))
+                            .overflow_hidden()
+                            .font_family("JetBrains Mono")
+                            .text_size(px(8.5))
+                            .line_height(relative(1.3))
+                            .text_color(ShellDeckColors::text_muted())
+                            .whitespace_normal()
+                            .child(preview.clone()),
+                    );
+                }
+                list = list.child(row);
+            }
+        }
+
+        div()
+            .w(px(INSPECTOR_WIDTH))
+            .h_full()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .border_l_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_sidebar())
+            .child(tabs)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .border_b_1()
+                    .border_color(ShellDeckColors::border())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .when_some(remote_parent, |row, parent_path| {
+                                let (session_id, connection_id) = match &session.context.target {
+                                    AgentTarget::Ssh { connection_id, .. } => {
+                                        (session.id, *connection_id)
+                                    }
+                                    AgentTarget::Local => {
+                                        unreachable!("a remote parent requires an SSH target")
+                                    }
+                                };
+                                row.child(
+                                    Button::new("agent-remote-files-parent", "")
+                                        .variant(ButtonVariant::Ghost)
+                                        .size(ButtonSize::Icon)
+                                        .icon(IconSource::from("arrow-up"))
+                                        .tooltip(t!("agents.inspector.remote_parent").to_string())
+                                        .w(px(24.0))
+                                        .h(px(24.0))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.request_remote_directory(
+                                                session_id,
+                                                connection_id,
+                                                parent_path.clone(),
+                                                cx,
+                                            );
+                                        })),
+                                )
+                            })
+                            .child(
+                                Badge::new(if remote {
+                                    t!("agents.inspector.remote").to_string()
+                                } else {
+                                    t!("agents.inspector.local").to_string()
+                                })
+                                .variant(BadgeVariant::Secondary),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .font_family("JetBrains Mono")
+                                    .text_size(px(9.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(session.context.workdir.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .text_size(px(9.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(format!(
+                                "{} · {} {}",
+                                t!("agents.inspector.observed"),
+                                files.len(),
+                                t!("agents.inspector.files")
+                            ))
+                            .when(changed_count > 0, |row| {
+                                row.child(format!(
+                                    "· {changed_count} {}",
+                                    t!("agents.inspector.changes")
+                                ))
+                            }),
+                    ),
+            )
+            .child(list)
+            .when(changes_selected, |panel| {
+                panel.child(
+                    div()
+                        .flex_shrink_0()
+                        .px(px(10.0))
+                        .py(px(7.0))
+                        .border_t_1()
+                        .border_color(ShellDeckColors::border())
+                        .text_size(px(8.5))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("agents.inspector.focus_hint").to_string()),
+                )
+            })
+            .into_any_element()
+    }
+
     fn render_context(&self, narrow: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let locked = self
             .sessions
@@ -1493,7 +2121,7 @@ impl AgentConsoleView {
                     .px(px(9.0))
                     .border_t_1()
                     .border_color(ShellDeckColors::border())
-                    .child(lucide_icon("folder", 12.0, ShellDeckColors::text_muted()))
+                    .child(lucide_icon("archive", 12.0, ShellDeckColors::text_muted()))
                     .child(
                         div()
                             .flex_1()
@@ -1523,17 +2151,26 @@ impl AgentConsoleView {
 impl Render for AgentConsoleView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let wide = window.viewport_size().width >= px(840.0).to_pixels(window.rem_size());
+        let inspector_wide =
+            window.viewport_size().width >= px(1180.0).to_pixels(window.rem_size());
         let session = self
             .sessions
             .selected()
+            .cloned()
             .expect("cockpit retains one session");
+        if matches!(session.context.target, AgentTarget::Local) {
+            let root = PathBuf::from(&session.context.workdir);
+            if root.is_dir() && self.inspector_local_browser.root() != root.as_path() {
+                self.inspector_local_browser.set_root(root);
+            }
+        }
         let session_id = session.id;
         let session_name = session.name.clone();
         let context = session.context.clone();
         let status = session.status;
         let attention = session.attention;
-        let elapsed = session_elapsed(session);
-        let timeline = merged_timeline(session);
+        let elapsed = session_elapsed(&session);
+        let timeline = merged_timeline(&session);
         let running = self.session_ui.get(&session_id).and_then(|ui| ui.run_id);
         let received_output = self
             .session_ui
@@ -1572,7 +2209,7 @@ impl Render for AgentConsoleView {
                     .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
             );
         let metadata = div()
-            .h(px(38.0))
+            .h(if wide { px(42.0) } else { px(38.0) })
             .flex()
             .items_center()
             .gap(px(8.0))
@@ -1585,15 +2222,25 @@ impl Render for AgentConsoleView {
                 14.0,
                 ShellDeckColors::primary(),
             ))
-            .child(
-                div()
-                    .max_w(px(260.0))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_size(px(11.5))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(session_name),
-            )
+            .when(!wide, |row| {
+                row.child(
+                    div()
+                        .max_w(px(260.0))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(session_name),
+                )
+            })
+            .when(wide, |row| {
+                row.child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(context.provider.display_name()),
+                )
+            })
             .child(div().size(px(6.0)).rounded_full().bg(status_color(status)))
             .when_some(elapsed, |row, elapsed| {
                 row.child(
@@ -1625,20 +2272,39 @@ impl Render for AgentConsoleView {
                 )
             })
             .child(div().flex_1())
-            .child(
-                div()
-                    .text_size(px(9.5))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(context.provider.display_name()),
-            )
+            .when(wide, |row| {
+                row.child(
+                    Badge::new(target_label(&context.target)).variant(BadgeVariant::Secondary),
+                )
+                .child(
+                    div()
+                        .max_w(px(300.0))
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .font_family("JetBrains Mono")
+                        .text_size(px(9.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(context.workdir.clone()),
+                )
+            })
+            .when(!wide, |row| {
+                row.child(
+                    div()
+                        .text_size(px(9.5))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(context.provider.display_name()),
+                )
+            })
             .child(
                 Button::new("agent-context-toggle", "")
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Icon)
                     .icon(IconSource::from(if context_expanded {
-                        "panel-top-close"
+                        "panel-right-close"
                     } else {
-                        "sliders-horizontal"
+                        "settings"
                     }))
                     .w(px(28.0))
                     .h(px(28.0))
@@ -1738,7 +2404,10 @@ impl Render for AgentConsoleView {
                         );
                     }
                     TimelineItem::Trace(trace) => {
-                        timeline_view = timeline_view.child(Self::render_trace(trace));
+                        timeline_view = timeline_view.child(Self::render_trace(
+                            trace,
+                            self.focused_trace == Some(trace.id),
+                        ));
                     }
                 }
             }
@@ -1772,8 +2441,10 @@ impl Render for AgentConsoleView {
             .min_rows(2)
             .max_rows(8)
             .disabled(status.is_active())
-            .on_commit(submit)
-            .option(self.render_model_popover(cx));
+            .on_commit(submit);
+        if context.provider != AgentProvider::Automonique {
+            composer = composer.option(self.render_model_popover(cx));
+        }
         if let Some(run_id) = running {
             composer = composer.without_commit().option(
                 Button::new(("agent-stop", uuid_key(run_id)), "")
@@ -1794,9 +2465,11 @@ impl Render for AgentConsoleView {
             .flex_col()
             .flex_1()
             .min_w(px(0.0))
-            .min_h(px(0.0))
-            .child(header)
-            .child(metadata);
+            .min_h(px(0.0));
+        if !wide {
+            content = content.child(header);
+        }
+        content = content.child(metadata);
         if context_expanded {
             content = content.child(self.render_context(!wide, window, cx));
         }
@@ -1821,6 +2494,9 @@ impl Render for AgentConsoleView {
             root = root.child(self.render_navigator(cx));
         }
         root = root.child(content);
+        if inspector_wide {
+            root = root.child(self.render_inspector(&session, cx));
+        }
         if let Some(pending) = self.pending_confirm.as_ref() {
             root = root.child(self.render_confirmation(pending, cx));
         }
@@ -1835,6 +2511,22 @@ fn context_select_cell<T: Clone + 'static>(select: Entity<Select<T>>) -> Div {
         .min_w(px(0.0))
         .overflow_hidden()
         .child(select)
+}
+
+fn inspector_empty_state(icon: &'static str, label: String) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .flex_1()
+        .gap(px(8.0))
+        .px(px(18.0))
+        .text_align(TextAlign::Center)
+        .text_size(px(10.5))
+        .text_color(ShellDeckColors::text_muted())
+        .child(lucide_icon(icon, 22.0, ShellDeckColors::text_muted()))
+        .child(label)
 }
 
 fn now_ms() -> i64 {
@@ -1883,6 +2575,109 @@ fn merged_timeline(session: &AgentSession) -> Vec<TimelineItem> {
     timeline
 }
 
+fn target_switch_workdir(
+    previous_connection: Option<Uuid>,
+    next_connection: Option<Uuid>,
+    current_workdir: &str,
+    local_workdir: &str,
+) -> Option<String> {
+    match (previous_connection, next_connection) {
+        (None, Some(_)) if current_workdir == local_workdir => {
+            Some(AGENT_REMOTE_HOME_WORKDIR.to_string())
+        }
+        (Some(_), None) => Some(local_workdir.to_string()),
+        _ => None,
+    }
+}
+
+fn workdir_is_valid_for_target(workdir: &str, remote: bool) -> bool {
+    if workdir.is_empty() {
+        return false;
+    }
+    if remote {
+        workdir == AGENT_REMOTE_HOME_WORKDIR || workdir.starts_with('/')
+    } else {
+        std::path::Path::new(workdir).is_absolute()
+    }
+}
+
+fn remote_parent_path(path: &str) -> Option<String> {
+    if path == AGENT_REMOTE_HOME_WORKDIR || path == "/" {
+        return None;
+    }
+    let path = path.trim_end_matches('/');
+    let separator = path.rfind('/')?;
+    Some(if separator == 0 {
+        "/".to_string()
+    } else {
+        path[..separator].to_string()
+    })
+}
+
+fn inspector_files(session: &AgentSession) -> Vec<InspectorFile> {
+    let mut by_path = HashMap::<String, InspectorFile>::new();
+    for trace in &session.trace {
+        match &trace.detail {
+            AgentTraceKind::FileRead { path, .. } => {
+                let entry = by_path
+                    .entry(path.clone())
+                    .or_insert_with(|| InspectorFile {
+                        path: path.clone(),
+                        latest_trace_id: trace.id,
+                        latest_sequence: trace.sequence,
+                        diff: None,
+                    });
+                if trace.sequence >= entry.latest_sequence {
+                    entry.latest_trace_id = trace.id;
+                    entry.latest_sequence = trace.sequence;
+                }
+            }
+            AgentTraceKind::Diff {
+                path,
+                additions,
+                deletions,
+                preview,
+                ..
+            } => {
+                let entry = by_path
+                    .entry(path.clone())
+                    .or_insert_with(|| InspectorFile {
+                        path: path.clone(),
+                        latest_trace_id: trace.id,
+                        latest_sequence: trace.sequence,
+                        diff: None,
+                    });
+                if trace.sequence >= entry.latest_sequence {
+                    entry.latest_trace_id = trace.id;
+                    entry.latest_sequence = trace.sequence;
+                }
+                if entry
+                    .diff
+                    .as_ref()
+                    .is_none_or(|diff| trace.sequence >= diff.sequence)
+                {
+                    entry.diff = Some(InspectorDiff {
+                        trace_id: trace.id,
+                        sequence: trace.sequence,
+                        additions: *additions,
+                        deletions: *deletions,
+                        preview: preview.clone(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut files = by_path.into_values().collect::<Vec<_>>();
+    files.sort_by(|left, right| {
+        right
+            .latest_sequence
+            .cmp(&left.latest_sequence)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    files
+}
+
 fn session_name(prompt: &str) -> String {
     let first = prompt.lines().next().unwrap_or_default().trim();
     let mut name = bounded_utf8(first.to_string(), 72);
@@ -1899,9 +2694,10 @@ fn session_name(prompt: &str) -> String {
 fn provider_icon(provider: AgentProvider) -> &'static str {
     match provider {
         AgentProvider::Claude => "bot",
-        AgentProvider::Codex => "braces",
+        AgentProvider::Codex => "terminal",
+        AgentProvider::Automonique => "bot",
         AgentProvider::Jcode => "sparkles",
-        AgentProvider::DeepSeek => "brain-circuit",
+        AgentProvider::DeepSeek => "bot",
     }
 }
 
@@ -2040,7 +2836,7 @@ fn trace_presentation(
             line_end,
             ..
         } => (
-            "file-search",
+            "search",
             ShellDeckColors::text_muted(),
             path.clone(),
             None,
@@ -2057,7 +2853,7 @@ fn trace_presentation(
             preview,
             ..
         } => (
-            "file-diff",
+            "git-branch",
             ShellDeckColors::warning(),
             path.clone(),
             preview.clone(),
@@ -2079,7 +2875,7 @@ fn trace_presentation(
             status,
             summary,
         } => (
-            "wrench",
+            "settings",
             trace_status_color(*status),
             name.clone(),
             summary.clone(),
@@ -2110,12 +2906,16 @@ fn bounded_utf8(mut value: String, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        context_for_worktree, session_name, terminal_session_status, trace_presentation,
-        worktree_bound_session, AgentWorktreeOption,
+        context_for_worktree, inspector_files, remote_parent_path, session_name,
+        target_switch_workdir, terminal_session_status, trace_presentation,
+        workdir_is_valid_for_target, worktree_bound_session, AgentWorktreeOption,
     };
-    use shelldeck_core::agent_runtime::{AgentAccessMode, AgentProvider, AgentTarget};
+    use shelldeck_core::agent_runtime::{
+        AgentAccessMode, AgentProvider, AgentTarget, AGENT_REMOTE_HOME_WORKDIR,
+    };
     use shelldeck_core::agent_session::{
-        AgentExecutionContext, AgentSession, AgentSessionStatus, AgentTraceKind, AgentTraceStatus,
+        AgentExecutionContext, AgentSession, AgentSessionStatus, AgentTraceEvent, AgentTraceKind,
+        AgentTraceStatus,
     };
 
     // SDTEST-1882
@@ -2234,5 +3034,111 @@ mod tests {
         session.begin_run("inspect", 2).expect("run starts");
         assert!(session.request_stop(3));
         assert_eq!(session.status, AgentSessionStatus::Stopping);
+    }
+
+    // SDTEST-1902
+    #[test]
+    fn sdtest_1902_inspector_projects_latest_files_and_diff_focus_from_trace() {
+        let context = AgentExecutionContext {
+            provider: AgentProvider::Claude,
+            target: AgentTarget::Local,
+            access: AgentAccessMode::ReadOnly,
+            workdir: "/srv/project".to_string(),
+            model: None,
+        };
+        let mut session = AgentSession::new("inspect", context, 1).expect("valid session");
+        let read_id = uuid::Uuid::new_v4();
+        let diff_id = uuid::Uuid::new_v4();
+        session.trace = vec![
+            AgentTraceEvent {
+                id: read_id,
+                sequence: 1,
+                at_ms: 2,
+                correlation_id: None,
+                detail: AgentTraceKind::FileRead {
+                    path: "src/lib.rs".to_string(),
+                    status: AgentTraceStatus::Succeeded,
+                    line_start: Some(1),
+                    line_end: Some(40),
+                },
+            },
+            AgentTraceEvent {
+                id: diff_id,
+                sequence: 2,
+                at_ms: 3,
+                correlation_id: None,
+                detail: AgentTraceKind::Diff {
+                    path: "src/lib.rs".to_string(),
+                    status: AgentTraceStatus::Succeeded,
+                    additions: 7,
+                    deletions: 2,
+                    preview: Some("+safe change".to_string()),
+                },
+            },
+            AgentTraceEvent {
+                id: uuid::Uuid::new_v4(),
+                sequence: 3,
+                at_ms: 4,
+                correlation_id: None,
+                detail: AgentTraceKind::FileRead {
+                    path: "README.md".to_string(),
+                    status: AgentTraceStatus::Succeeded,
+                    line_start: None,
+                    line_end: None,
+                },
+            },
+        ];
+
+        let files = inspector_files(&session);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "README.md");
+        let changed = files
+            .iter()
+            .find(|file| file.path == "src/lib.rs")
+            .expect("changed file remains in the projection");
+        assert_eq!(changed.latest_trace_id, diff_id);
+        assert_eq!(
+            changed.diff.as_ref().map(|diff| diff.trace_id),
+            Some(diff_id)
+        );
+        assert_eq!(changed.diff.as_ref().map(|diff| diff.additions), Some(7));
+    }
+
+    // SDTEST-1903
+    #[test]
+    fn sdtest_1903_target_switch_defaults_and_validation_are_target_aware() {
+        let host = uuid::Uuid::new_v4();
+        assert_eq!(
+            target_switch_workdir(None, Some(host), "/home/me/project", "/home/me/project"),
+            Some(AGENT_REMOTE_HOME_WORKDIR.to_string())
+        );
+        assert_eq!(
+            target_switch_workdir(None, Some(host), "/srv/explicit", "/home/me/project"),
+            None,
+            "an explicit remote/worktree path is retained"
+        );
+        assert_eq!(
+            target_switch_workdir(
+                Some(host),
+                None,
+                AGENT_REMOTE_HOME_WORKDIR,
+                "/home/me/project"
+            ),
+            Some("/home/me/project".to_string())
+        );
+        assert!(workdir_is_valid_for_target(AGENT_REMOTE_HOME_WORKDIR, true));
+        assert!(workdir_is_valid_for_target("/srv/project", true));
+        assert!(!workdir_is_valid_for_target("relative/project", true));
+        assert!(!workdir_is_valid_for_target(
+            AGENT_REMOTE_HOME_WORKDIR,
+            false
+        ));
+        assert!(workdir_is_valid_for_target("/home/me/project", false));
+        assert_eq!(
+            remote_parent_path("/home/me/project/"),
+            Some("/home/me".to_string())
+        );
+        assert_eq!(remote_parent_path("/home"), Some("/".to_string()));
+        assert_eq!(remote_parent_path("/"), None);
     }
 }

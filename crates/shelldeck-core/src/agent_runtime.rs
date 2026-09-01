@@ -11,6 +11,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use uuid::Uuid;
 
+use agent_client_protocol::schema::v1::{
+    ContentBlock, PermissionOptionId, PermissionOptionKind, RequestPermissionRequest,
+    SessionNotification, SessionUpdate, ToolCallStatus,
+};
+
 use crate::agent_session::{AgentTraceKind, AgentTraceStatus, AgentTraceUpdate};
 use crate::{Result, ShellDeckError};
 
@@ -23,6 +28,10 @@ pub const MAX_AGENT_STREAM_TEXT_BYTES: usize = 128 * 1024;
 pub const MAX_AGENT_TRACE_FIELD_BYTES: usize = 8 * 1024;
 pub const MAX_AGENT_ACTIVITY_BYTES: usize = 512;
 pub const AGENT_STREAM_OVERSIZED_LABEL: &str = "Provider event omitted (too large)";
+/// Canonical workdir used when an SSH agent should start in the remote
+/// account's home directory. It is expanded by [`AgentCommandSpec`] on the
+/// remote shell; it is never passed through as a literal filesystem path.
+pub const AGENT_REMOTE_HOME_WORKDIR: &str = "~";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentStreamFrame {
@@ -113,6 +122,8 @@ impl AgentStreamFramer {
 pub enum AgentProvider {
     Claude,
     Codex,
+    /// Automonique's stable ACP v1 agent surface.
+    Automonique,
     /// Jcode with the provider selected by its configuration on the target.
     Jcode,
     /// DeepSeek models are launched through the managed Jcode runner. Jcode
@@ -125,6 +136,7 @@ impl AgentProvider {
         match self {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
+            Self::Automonique => "Automonique (ACP)",
             Self::Jcode => "Jcode (auto)",
             Self::DeepSeek => "DeepSeek (Jcode)",
         }
@@ -134,6 +146,7 @@ impl AgentProvider {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Automonique => "automonique",
             Self::Jcode | Self::DeepSeek => "jcode",
         }
     }
@@ -227,7 +240,9 @@ impl AgentRunRequest {
         let absolute = match self.target {
             AgentTarget::Local => Path::new(workdir).is_absolute(),
             // Remote agent transport is POSIX shell based on every host OS.
-            AgentTarget::Ssh { .. } => workdir.starts_with('/'),
+            AgentTarget::Ssh { .. } => {
+                workdir == AGENT_REMOTE_HOME_WORKDIR || workdir.starts_with('/')
+            }
         };
         if workdir.is_empty() || !absolute {
             return Err(ShellDeckError::Config(
@@ -281,6 +296,11 @@ impl AgentCommandSpec {
             .filter(|value| !value.is_empty());
 
         let (args, stdin, remove_env) = match request.provider {
+            AgentProvider::Automonique => {
+                return Err(ShellDeckError::Config(
+                    "Automonique uses the ACP transport, not a command stream".to_string(),
+                ));
+            }
             AgentProvider::Claude => {
                 let permission_mode = match request.access {
                     AgentAccessMode::ReadOnly => "plan",
@@ -341,6 +361,16 @@ impl AgentCommandSpec {
                 (args, Some(request.prompt.as_bytes().to_vec()), Vec::new())
             }
             AgentProvider::Jcode | AgentProvider::DeepSeek => {
+                // The SSH home sentinel is expanded by the outer `cd`. Keep
+                // Jcode rooted in that resulting directory rather than
+                // passing a quoted literal `~`, which no shell would expand.
+                let provider_workdir = if matches!(request.target, AgentTarget::Ssh { .. })
+                    && request.workdir.trim() == AGENT_REMOTE_HOME_WORKDIR
+                {
+                    "."
+                } else {
+                    request.workdir.trim()
+                };
                 let mut args = vec![
                     "run".to_string(),
                     "--ndjson".to_string(),
@@ -348,7 +378,7 @@ impl AgentCommandSpec {
                     "--no-update".to_string(),
                     "--no-selfdev".to_string(),
                     "-C".to_string(),
-                    request.workdir.trim().to_string(),
+                    provider_workdir.to_string(),
                 ];
                 if request.provider == AgentProvider::DeepSeek {
                     args.push("--provider".to_string());
@@ -420,9 +450,16 @@ impl AgentCommandSpec {
             }
             None => command,
         };
+        let workdir = self.cwd.to_string_lossy();
+        let workdir = if workdir == AGENT_REMOTE_HOME_WORKDIR {
+            // This exact constant is the only unquoted workdir expression.
+            // Every user-controlled absolute path still crosses shell_quote.
+            "\"$HOME\"".to_string()
+        } else {
+            shell_quote(&workdir)
+        };
         format!(
-            "export PATH=\"$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; cd -- {} && {command}",
-            shell_quote(&self.cwd.to_string_lossy())
+            "export PATH=\"$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; cd -- {workdir} && {command}"
         )
     }
 }
@@ -710,9 +747,113 @@ pub fn parse_stream_line(provider: AgentProvider, line: &str) -> Vec<AgentStream
         return vec![AgentStreamEvent::Activity(label)];
     };
     match provider {
+        AgentProvider::Automonique => vec![AgentStreamEvent::Activity(
+            "Unexpected raw Automonique ACP record".to_string(),
+        )],
         AgentProvider::Claude => parse_claude_event(&value),
         AgentProvider::Codex => parse_codex_event(&value),
         AgentProvider::Jcode | AgentProvider::DeepSeek => parse_jcode_event(&value),
+    }
+}
+
+/// Map one typed ACP update into the same bounded timeline vocabulary used by
+/// CLI providers. Raw ACP metadata, tool input and tool output never cross
+/// into the transcript.
+pub fn acp_notification_events(notification: &SessionNotification) -> Vec<AgentStreamEvent> {
+    let mut events = vec![AgentStreamEvent::Session(
+        notification.session_id.0.to_string(),
+    )];
+    match &notification.update {
+        SessionUpdate::AgentMessageChunk(chunk) => {
+            if let ContentBlock::Text(text) = &chunk.content {
+                events.push(AgentStreamEvent::TextDelta(safe_visible_text(&text.text)));
+            }
+        }
+        SessionUpdate::AgentThoughtChunk(chunk) => {
+            if let ContentBlock::Text(text) = &chunk.content {
+                events.push(AgentStreamEvent::Trace(AgentTraceUpdate {
+                    correlation_id: None,
+                    detail: AgentTraceKind::Activity {
+                        label: safe_provider_text(&text.text, MAX_AGENT_ACTIVITY_BYTES),
+                    },
+                }));
+            }
+        }
+        SessionUpdate::ToolCall(call) => {
+            events.push(AgentStreamEvent::Trace(AgentTraceUpdate {
+                correlation_id: Some(call.tool_call_id.0.to_string()),
+                detail: AgentTraceKind::Tool {
+                    name: safe_provider_text(&call.title, MAX_AGENT_TRACE_FIELD_BYTES),
+                    status: acp_trace_status(call.status),
+                    summary: None,
+                },
+            }));
+        }
+        SessionUpdate::ToolCallUpdate(update) => {
+            if let Some(status) = update.fields.status {
+                events.push(AgentStreamEvent::TraceStatus {
+                    correlation_id: update.tool_call_id.0.to_string(),
+                    status: acp_trace_status(status),
+                    summary: update
+                        .fields
+                        .title
+                        .as_deref()
+                        .map(|title| safe_provider_text(title, MAX_AGENT_TRACE_FIELD_BYTES)),
+                });
+            }
+        }
+        SessionUpdate::Plan(plan) => {
+            events.push(AgentStreamEvent::Trace(AgentTraceUpdate {
+                correlation_id: None,
+                detail: AgentTraceKind::Activity {
+                    label: format!("Plan updated ({} steps)", plan.entries.len()),
+                },
+            }));
+        }
+        SessionUpdate::AvailableCommandsUpdate(_)
+        | SessionUpdate::CurrentModeUpdate(_)
+        | SessionUpdate::ConfigOptionUpdate(_)
+        | SessionUpdate::SessionInfoUpdate(_)
+        | SessionUpdate::UsageUpdate(_) => {}
+        SessionUpdate::UserMessageChunk(_) => {}
+        _ => {}
+    }
+    events
+}
+
+fn acp_trace_status(status: ToolCallStatus) -> AgentTraceStatus {
+    match status {
+        ToolCallStatus::Pending | ToolCallStatus::InProgress => AgentTraceStatus::Running,
+        ToolCallStatus::Completed => AgentTraceStatus::Succeeded,
+        ToolCallStatus::Failed => AgentTraceStatus::Failed,
+        _ => AgentTraceStatus::Running,
+    }
+}
+
+/// ACP permission policy derived from the run-level access confirmation.
+/// Read-only never grants a tool request; mutating modes grant only the exact
+/// one-shot option offered by Automonique and never persist an allow decision.
+pub struct AcpAgentPermissionBroker {
+    access: AgentAccessMode,
+}
+
+impl AcpAgentPermissionBroker {
+    #[must_use]
+    pub const fn new(access: AgentAccessMode) -> Self {
+        Self { access }
+    }
+}
+
+impl crate::acp::AcpPermissionBroker for AcpAgentPermissionBroker {
+    fn select(&self, request: &RequestPermissionRequest) -> Option<PermissionOptionId> {
+        if self.access == AgentAccessMode::ReadOnly {
+            return None;
+        }
+        request
+            .options
+            .iter()
+            .find(|option| option.kind == PermissionOptionKind::AllowOnce)
+            .map(|option| option.option_id.clone())
     }
 }
 
@@ -1192,6 +1333,83 @@ fn humanize_kind(kind: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::AcpPermissionBroker as _;
+    use agent_client_protocol::schema::v1::{
+        ContentBlock, ContentChunk, PermissionOption, PermissionOptionKind, SessionNotification,
+        SessionUpdate, TextContent, ToolCall, ToolCallStatus,
+    };
+
+    // SDTEST-1906 — SDUC-475, SDUC-480
+    #[test]
+    fn sdtest_1906_automonique_acp_updates_and_permissions_keep_typed_boundaries() {
+        let message = SessionNotification::new(
+            "acp-session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                TextContent::new("working"),
+            ))),
+        );
+        assert_eq!(
+            acp_notification_events(&message),
+            vec![
+                AgentStreamEvent::Session("acp-session-1".to_string()),
+                AgentStreamEvent::TextDelta("working".to_string()),
+            ]
+        );
+
+        let tool = SessionNotification::new(
+            "acp-session-1",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "Read workspace")
+                    .status(ToolCallStatus::InProgress)
+                    .raw_input(serde_json::json!({"token":"must-not-render"})),
+            ),
+        );
+        let events = acp_notification_events(&tool);
+        assert!(matches!(
+            &events[1],
+            AgentStreamEvent::Trace(AgentTraceUpdate {
+                correlation_id: Some(id),
+                detail: AgentTraceKind::Tool { name, status: AgentTraceStatus::Running, .. },
+            }) if id == "tool-1" && name == "Read workspace"
+        ));
+        assert!(!format!("{events:?}").contains("must-not-render"));
+
+        let permission = RequestPermissionRequest::new(
+            "acp-session-1",
+            agent_client_protocol::schema::v1::ToolCallUpdate::new(
+                "tool-1",
+                agent_client_protocol::schema::v1::ToolCallUpdateFields::new(),
+            ),
+            vec![
+                PermissionOption::new("reject", "Reject", PermissionOptionKind::RejectOnce),
+                PermissionOption::new("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
+                PermissionOption::new("allow-always", "Always", PermissionOptionKind::AllowAlways),
+            ],
+        );
+        assert!(AcpAgentPermissionBroker::new(AgentAccessMode::ReadOnly)
+            .select(&permission)
+            .is_none());
+        assert_eq!(
+            AcpAgentPermissionBroker::new(AgentAccessMode::WorkspaceWrite)
+                .select(&permission)
+                .map(|id| id.0.to_string()),
+            Some("allow-once".to_string())
+        );
+
+        let serialized = serde_json::to_string(&AgentProvider::Automonique).unwrap();
+        assert_eq!(serialized, "\"automonique\"");
+        assert!(AgentCommandSpec::for_request(&AgentRunRequest::new(
+            AgentProvider::Automonique,
+            AgentTarget::Local,
+            AgentAccessMode::ReadOnly,
+            std::env::temp_dir().display().to_string(),
+            None,
+            "hello",
+        ))
+        .unwrap_err()
+        .to_string()
+        .contains("ACP transport"));
+    }
 
     #[cfg(not(windows))]
     const LOCAL_TEST_WORKDIR: &str = "/srv/project";
@@ -1521,6 +1739,80 @@ mod tests {
         assert!(status.success());
         assert_eq!(fs::read_to_string(&capture).unwrap(), prompt);
         assert!(!marker.exists(), "prompt text became remote shell syntax");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // SDTEST-1904 — SDUC-475
+    #[cfg(unix)]
+    #[test]
+    fn sdtest_1904_ssh_home_workdir_expands_once_and_never_becomes_literal_tilde() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = std::env::temp_dir().join(format!("shelldeck-agent-home-{}", Uuid::new_v4()));
+        let home = root.join("remote home");
+        fs::create_dir_all(&home).unwrap();
+        let capture = root.join("cwd.txt");
+        let fake = root.join("fake-agent");
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\npwd > {}\n",
+                shell_quote(&capture.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&fake, permissions).unwrap();
+
+        let target = AgentTarget::Ssh {
+            connection_id: Uuid::nil(),
+            connection_label: "remote".to_string(),
+        };
+        let request = AgentRunRequest::new(
+            AgentProvider::Jcode,
+            target.clone(),
+            AgentAccessMode::ReadOnly,
+            AGENT_REMOTE_HOME_WORKDIR,
+            None,
+            "inspect",
+        );
+        request.validate().unwrap();
+        let jcode = AgentCommandSpec::for_request(&request).unwrap();
+        assert!(jcode.args.windows(2).any(|pair| pair == ["-C", "."]));
+
+        let invalid = AgentRunRequest::new(
+            AgentProvider::Claude,
+            target,
+            AgentAccessMode::ReadOnly,
+            "~/project",
+            None,
+            "inspect",
+        );
+        assert!(invalid.validate().is_err());
+
+        let spec = AgentCommandSpec {
+            program: fake.display().to_string(),
+            args: Vec::new(),
+            cwd: PathBuf::from(AGENT_REMOTE_HOME_WORKDIR),
+            stdin: None,
+            remove_env: Vec::new(),
+        };
+        let command = spec.remote_shell_command();
+        assert!(command.contains("cd -- \"$HOME\""));
+        assert!(!command.contains("cd -- '~'"));
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .env("HOME", &home)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            fs::canonicalize(fs::read_to_string(&capture).unwrap().trim()).unwrap(),
+            fs::canonicalize(&home).unwrap()
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
