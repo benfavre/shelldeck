@@ -454,6 +454,17 @@ impl Workspace {
     /// console just became visible.
     pub(super) fn on_active_view_changed(&mut self, cx: &mut Context<Self>) {
         self.close_titlebar_menus();
+        let workspace_agent = (self.active_view == ActiveView::Workspaces)
+            .then(|| self.workspace_hub.read(cx).active_agent_session_id())
+            .flatten();
+        let agent_visible = !self.settings_open
+            && (self.active_view == ActiveView::Agents || workspace_agent.is_some());
+        self.agent_console.update(cx, |view, cx| {
+            if let Some(session_id) = workspace_agent {
+                view.select_session(session_id, cx);
+            }
+            view.set_surface_visible(agent_visible, cx);
+        });
         self.sync_monique_poll(cx);
         self.sync_fleet_view_poll(cx);
         self.sync_bext_poll(cx);

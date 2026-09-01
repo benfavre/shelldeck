@@ -1,10 +1,18 @@
 use super::*;
+use crate::agent_console_view::{AgentProjectGroup, AgentWorktreeOption};
 use shelldeck_core::agent_runtime::{
     configure_local_process, parse_stream_line, terminate_local_process, AgentCommandSpec,
-    AgentRunRequest, AgentStreamEvent, AgentTarget, LocalProcessTree,
+    AgentRunRequest, AgentStreamEvent, AgentStreamFrame, AgentStreamFramer, AgentTarget,
+    LocalProcessTree, AGENT_STREAM_OVERSIZED_LABEL,
 };
+use shelldeck_core::agent_session::DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS;
+use shelldeck_core::config::workspace_catalog::{
+    CatalogCheckoutId, CatalogWorkspaceId, CheckoutHost, ProjectCatalog, RemotePosixPath,
+    UserWorkspaceLifecycle,
+};
+use shelldeck_core::workspace_navigation::AgentSessionBinding;
 use shelldeck_ssh::client::SshClient;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
 pub(super) struct ActiveAgentRun {
@@ -20,6 +28,13 @@ impl ActiveAgentRun {
 
 type AgentDone = (Option<i32>, Option<String>);
 
+/// Keep parallel coding work useful without allowing an accidental prompt
+/// fan-out to exhaust the desktop host. Every admitted run still owns an
+/// independently stoppable process tree or SSH channel.
+fn agent_run_has_capacity(active: usize) -> bool {
+    active < DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS
+}
+
 impl Workspace {
     pub(super) fn handle_agent_console_event(
         &mut self,
@@ -32,22 +47,47 @@ impl Workspace {
         match event {
             AgentConsoleEvent::Run(request) => self.start_agent_run(request, cx),
             AgentConsoleEvent::Stop(run_id) => self.stop_agent_run(run_id, cx),
+            AgentConsoleEvent::CloseSession(session_id) => {
+                self.agent_session_bindings.remove(&session_id);
+                self.workspace_hub.update(cx, |hub, cx| {
+                    if let Err(error) = hub.remove_agent_session_tabs(session_id, cx) {
+                        tracing::warn!(%error, %session_id, "could not remove closed agent session tabs");
+                    }
+                });
+                if self.active_view == ActiveView::Workspaces {
+                    let visible_session = self.workspace_hub.read(cx).active_agent_session_id();
+                    self.agent_console.update(cx, |view, cx| {
+                        if let Some(session_id) = visible_session {
+                            view.select_session(session_id, cx);
+                        }
+                        view.set_surface_visible(visible_session.is_some(), cx);
+                    });
+                }
+            }
         }
     }
 
     fn start_agent_run(&mut self, request: AgentRunRequest, cx: &mut Context<Self>) {
-        if !self.active_agent_runs.is_empty() {
-            self.show_toast(
-                t!("agents.error.already_running").to_string(),
-                ToastLevel::Warning,
-                cx,
-            );
+        if !agent_run_has_capacity(self.active_agent_runs.len()) {
+            let message = t!(
+                "agents.error.parallel_limit",
+                count = DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS.to_string()
+            )
+            .to_string();
+            self.agent_console.update(cx, |view, cx| {
+                view.reject_run_for(request.id, message.clone(), cx)
+            });
+            self.show_toast(message, ToastLevel::Warning, cx);
             return;
         }
         let mut spec = match AgentCommandSpec::for_request(&request) {
             Ok(spec) => spec,
             Err(error) => {
-                self.show_toast(error.to_string(), ToastLevel::Error, cx);
+                let message = error.to_string();
+                self.agent_console.update(cx, |view, cx| {
+                    view.reject_run_for(request.id, message.clone(), cx)
+                });
+                self.show_toast(message, ToastLevel::Error, cx);
                 return;
             }
         };
@@ -60,11 +100,11 @@ impl Workspace {
                     .find(|connection| connection.id == *connection_id)
                     .cloned()
                 else {
-                    self.show_toast(
-                        t!("agents.error.target_missing").to_string(),
-                        ToastLevel::Error,
-                        cx,
-                    );
+                    let message = t!("agents.error.target_missing").to_string();
+                    self.agent_console.update(cx, |view, cx| {
+                        view.reject_run_for(request.id, message.clone(), cx)
+                    });
+                    self.show_toast(message, ToastLevel::Error, cx);
                     return;
                 };
                 Some(connection)
@@ -79,8 +119,9 @@ impl Workspace {
                     binary = spec.program.as_str()
                 )
                 .to_string();
-                self.agent_console
-                    .update(cx, |view, cx| view.reject_run(message.clone(), cx));
+                self.agent_console.update(cx, |view, cx| {
+                    view.reject_run_for(request.id, message.clone(), cx)
+                });
                 self.show_toast(message, ToastLevel::Error, cx);
                 return;
             }
@@ -91,8 +132,9 @@ impl Workspace {
                 workdir = request.workdir.as_str()
             )
             .to_string();
-            self.agent_console
-                .update(cx, |view, cx| view.reject_run(message.clone(), cx));
+            self.agent_console.update(cx, |view, cx| {
+                view.reject_run_for(request.id, message.clone(), cx)
+            });
             self.show_toast(message, ToastLevel::Error, cx);
             return;
         }
@@ -101,6 +143,13 @@ impl Workspace {
         let provider = request.provider;
         self.agent_console
             .update(cx, |view, cx| view.begin_run(request.clone(), cx));
+        if let Err(message) = self.bind_agent_run_to_workspace(&request, cx) {
+            self.agent_console.update(cx, |view, cx| {
+                view.reject_run_for(request.id, message.clone(), cx)
+            });
+            self.show_toast(message, ToastLevel::Error, cx);
+            return;
+        }
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
         let (event_tx, event_rx) = std::sync::mpsc::channel::<AgentStreamEvent>();
@@ -146,7 +195,7 @@ impl Workspace {
             if !events.is_empty() {
                 let _ = console.update(cx, |view, cx| {
                     for event in events {
-                        view.push_stream_event(event, cx);
+                        view.push_stream_event_for(run_id, event, cx);
                     }
                 });
             }
@@ -237,7 +286,158 @@ impl Workspace {
             .collect();
         self.agent_console
             .update(cx, |view, cx| view.set_connections(connections, cx));
+        self.refresh_agent_projects(cx);
     }
+
+    pub(super) fn refresh_agent_projects(&mut self, cx: &mut Context<Self>) {
+        let groups = agent_project_groups(self.workspace_hub.read(cx).catalog(), &self.connections);
+        self.agent_console
+            .update(cx, |view, cx| view.set_project_groups(groups, cx));
+    }
+
+    fn bind_agent_run_to_workspace(
+        &mut self,
+        request: &AgentRunRequest,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(session_id) = self.agent_console.read(cx).session_id_for_run(request.id) else {
+            return Err(t!("agents.error.session_missing").to_string());
+        };
+        let candidate = catalog_workspace_for_run(self.workspace_hub.read(cx).catalog(), request);
+        if let Some(bound) = self.agent_session_bindings.get(&session_id).copied() {
+            if candidate != Some(bound) {
+                return Err(t!("agents.error.session_checkout_changed").to_string());
+            }
+        }
+        let Some((workspace, checkout_id)) = candidate else {
+            return Ok(());
+        };
+        let title = self
+            .agent_console
+            .read(cx)
+            .sessions()
+            .iter()
+            .find(|session| session.id == session_id)
+            .map(|session| session.name.clone())
+            .unwrap_or_else(|| t!("agents.session.new").to_string());
+        self.workspace_hub.update(cx, |hub, cx| {
+            hub.open_or_focus_agent_session(
+                workspace,
+                title,
+                AgentSessionBinding {
+                    checkout_id,
+                    session_id,
+                },
+                cx,
+            )
+            .map(|_| ())
+        })?;
+        self.agent_session_bindings
+            .insert(session_id, (workspace, checkout_id));
+        self.agent_console.update(cx, |view, cx| {
+            view.set_session_context_locked(session_id, true, cx)
+        });
+        self.active_view = ActiveView::Workspaces;
+        self.on_active_view_changed(cx);
+        Ok(())
+    }
+}
+
+pub(super) fn agent_project_groups(
+    catalog: &ProjectCatalog,
+    connections: &[Connection],
+) -> Vec<AgentProjectGroup> {
+    catalog
+        .projects()
+        .map(|project| AgentProjectGroup {
+            id: project.id().to_string(),
+            label: project.name().to_string(),
+            worktrees: project
+                .checkouts()
+                .enumerate()
+                .map(|(index, checkout)| {
+                    let (path, target) = match checkout.host() {
+                        CheckoutHost::Local { root, .. } => {
+                            (root.display().to_string(), AgentTarget::Local)
+                        }
+                        CheckoutHost::Ssh {
+                            connection_id,
+                            root,
+                        } => {
+                            let connection_label = connections
+                                .iter()
+                                .find(|connection| connection.id == *connection_id)
+                                .map(|connection| connection.display_name().to_string())
+                                .unwrap_or_else(|| connection_id.to_string());
+                            (
+                                root.as_str().to_string(),
+                                AgentTarget::Ssh {
+                                    connection_id: *connection_id,
+                                    connection_label,
+                                },
+                            )
+                        }
+                    };
+                    AgentWorktreeOption {
+                        id: checkout.id().to_string(),
+                        label: checkout.label().to_string(),
+                        path,
+                        target,
+                        branch: None,
+                        is_primary: index == 0,
+                    }
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn catalog_workspace_for_run(
+    catalog: &ProjectCatalog,
+    request: &AgentRunRequest,
+) -> Option<(CatalogWorkspaceId, CatalogCheckoutId)> {
+    catalog
+        .workspaces()
+        .filter(|workspace| workspace.lifecycle() == UserWorkspaceLifecycle::Active)
+        .filter_map(|workspace| {
+            let checkout = catalog
+                .checkout_in_project(workspace.project_id(), workspace.checkout_id())
+                .ok()?;
+            let authority_len = match (&request.target, checkout.host()) {
+                (AgentTarget::Local, CheckoutHost::Local { root, .. }) => {
+                    let canonical_root = std::fs::canonicalize(root).ok()?;
+                    let canonical_workdir = std::fs::canonicalize(&request.workdir).ok()?;
+                    if !canonical_workdir.starts_with(&canonical_root) {
+                        return None;
+                    }
+                    canonical_root.as_os_str().len()
+                }
+                (
+                    AgentTarget::Ssh { connection_id, .. },
+                    CheckoutHost::Ssh {
+                        connection_id: expected,
+                        root,
+                    },
+                ) if connection_id == expected
+                    && RemotePosixPath::new(request.workdir.clone()).is_ok_and(|candidate| {
+                        remote_path_contains(root.as_str(), candidate.as_str())
+                    }) =>
+                {
+                    root.as_str().len()
+                }
+                _ => return None,
+            };
+            Some((authority_len, workspace.id(), workspace.checkout_id()))
+        })
+        .max_by_key(|(authority_len, _, _)| *authority_len)
+        .map(|(_, workspace, checkout)| (workspace, checkout))
+}
+
+fn remote_path_contains(root: &str, candidate: &str) -> bool {
+    candidate == root
+        || candidate
+            .strip_prefix(root.trim_end_matches('/'))
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn resolve_local_agent_program(program: &str) -> Option<String> {
@@ -275,18 +475,51 @@ fn resolve_local_agent_program(program: &str) -> Option<String> {
     None
 }
 
-fn complete_stream_lines(pending: &mut Vec<u8>, bytes: &[u8]) -> Vec<String> {
-    pending.extend_from_slice(bytes);
-    let mut lines = Vec::new();
-    while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
-        let mut line = pending[..newline].to_vec();
-        pending.drain(..=newline);
-        if line.last() == Some(&b'\r') {
-            line.pop();
+fn send_stream_frames(
+    frames: Vec<AgentStreamFrame>,
+    provider: shelldeck_core::agent_runtime::AgentProvider,
+    parse_json: bool,
+    event_tx: &std::sync::mpsc::Sender<AgentStreamEvent>,
+) {
+    for frame in frames {
+        match frame {
+            AgentStreamFrame::Line(line) if parse_json => {
+                for event in parse_stream_line(provider, &line) {
+                    let _ = event_tx.send(event);
+                }
+            }
+            AgentStreamFrame::Line(line) => {
+                if !line.trim().is_empty() {
+                    let _ = event_tx.send(AgentStreamEvent::Activity(line));
+                }
+            }
+            AgentStreamFrame::Oversized => {
+                let _ = event_tx.send(AgentStreamEvent::Activity(
+                    AGENT_STREAM_OVERSIZED_LABEL.to_string(),
+                ));
+            }
         }
-        lines.push(String::from_utf8_lossy(&line).into_owned());
     }
-    lines
+}
+
+fn forward_local_stream(
+    mut reader: impl Read,
+    provider: shelldeck_core::agent_runtime::AgentProvider,
+    parse_json: bool,
+    event_tx: &std::sync::mpsc::Sender<AgentStreamEvent>,
+) {
+    let mut framer = AgentStreamFramer::default();
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                send_stream_frames(framer.push(&chunk[..read]), provider, parse_json, event_tx)
+            }
+            Err(_) => break,
+        }
+    }
+    send_stream_frames(framer.finish(), provider, parse_json, event_tx);
 }
 
 fn spawn_local_agent(
@@ -344,18 +577,12 @@ fn spawn_local_agent(
             let stdout_tx = event_tx.clone();
             let stdout_thread = std::thread::spawn(move || {
                 if let Some(stdout) = stdout {
-                    for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
-                        for event in parse_stream_line(provider, &line) {
-                            let _ = stdout_tx.send(event);
-                        }
-                    }
+                    forward_local_stream(stdout, provider, true, &stdout_tx);
                 }
             });
             let stderr_thread = std::thread::spawn(move || {
                 if let Some(stderr) = stderr {
-                    for line in BufReader::new(stderr).lines().map_while(|line| line.ok()) {
-                        let _ = event_tx.send(AgentStreamEvent::Activity(line));
-                    }
+                    forward_local_stream(stderr, provider, false, &event_tx);
                 }
             });
 
@@ -431,22 +658,11 @@ fn spawn_remote_agent(
                 };
                 let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                 let forward = tokio::spawn(async move {
-                    let mut pending = Vec::new();
+                    let mut framer = AgentStreamFramer::default();
                     while let Some(bytes) = output_rx.recv().await {
-                        for line in complete_stream_lines(&mut pending, &bytes) {
-                            for event in parse_stream_line(provider, &line) {
-                                let _ = event_tx.send(event);
-                            }
-                        }
+                        send_stream_frames(framer.push(&bytes), provider, true, &event_tx);
                     }
-                    if !pending.is_empty() {
-                        let pending = String::from_utf8_lossy(&pending);
-                        if !pending.trim().is_empty() {
-                            for event in parse_stream_line(provider, pending.trim()) {
-                                let _ = event_tx.send(event);
-                            }
-                        }
-                    }
+                    send_stream_frames(framer.finish(), provider, true, &event_tx);
                 });
                 let result = session
                     .exec_cancellable(&spec.remote_shell_command(), output_tx, shutdown_rx)
@@ -466,7 +682,11 @@ fn spawn_remote_agent(
 
 #[cfg(test)]
 mod tests {
-    use super::{complete_stream_lines, spawn_local_agent, AgentCommandSpec, AgentStreamEvent};
+    use super::{
+        agent_run_has_capacity, forward_local_stream, spawn_local_agent, AgentCommandSpec,
+        AgentStreamEvent, AgentStreamFrame, AgentStreamFramer, AGENT_STREAM_OVERSIZED_LABEL,
+        DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS,
+    };
     use std::time::Duration;
     use uuid::Uuid;
 
@@ -519,12 +739,54 @@ mod tests {
             .position(|pair| pair[0] == 0xc3 && pair[1] == 0xa9)
             .unwrap()
             + 1;
-        let mut pending = Vec::new();
-        assert!(complete_stream_lines(&mut pending, &payload[..split]).is_empty());
+        let mut framer = AgentStreamFramer::default();
+        assert!(framer.push(&payload[..split]).is_empty());
         assert_eq!(
-            complete_stream_lines(&mut pending, &payload[split..]),
-            vec!["{\"type\":\"content.delta\",\"delta\":\"terminé ✅\"}".to_string()]
+            framer.push(&payload[split..]),
+            vec![AgentStreamFrame::Line(
+                "{\"type\":\"content.delta\",\"delta\":\"terminé ✅\"}".to_string()
+            )]
         );
-        assert!(pending.is_empty());
+        assert_eq!(framer.buffered_bytes(), 0);
+    }
+
+    // SDTEST-1897 — SDUC-499
+    #[test]
+    fn sdtest_1897_local_stream_discards_newline_free_oversize_then_recovers() {
+        use shelldeck_core::agent_runtime::MAX_AGENT_STREAM_LINE_BYTES;
+
+        let mut payload = vec![b'x'; MAX_AGENT_STREAM_LINE_BYTES + 17];
+        payload.extend_from_slice(b"\n{\"type\":\"content.delta\",\"delta\":\"recovered\"}\n");
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        forward_local_stream(
+            std::io::Cursor::new(payload),
+            shelldeck_core::agent_runtime::AgentProvider::Jcode,
+            true,
+            &event_tx,
+        );
+        drop(event_tx);
+        assert_eq!(
+            event_rx.into_iter().collect::<Vec<_>>(),
+            vec![
+                AgentStreamEvent::Activity(AGENT_STREAM_OVERSIZED_LABEL.to_string()),
+                AgentStreamEvent::TextDelta("recovered".to_string()),
+            ]
+        );
+    }
+
+    // SDTEST-1883 — SDUC-475
+    #[test]
+    fn sdtest_1883_parallel_agent_runs_are_bounded_without_a_singleton_gate() {
+        assert!(agent_run_has_capacity(0));
+        assert!(agent_run_has_capacity(1));
+        assert!(agent_run_has_capacity(
+            DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS - 1
+        ));
+        assert!(!agent_run_has_capacity(
+            DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS
+        ));
+        assert!(!agent_run_has_capacity(
+            DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS + 1
+        ));
     }
 }

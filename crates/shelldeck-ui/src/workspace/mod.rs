@@ -499,6 +499,15 @@ pub struct Workspace {
     active_scripts: HashMap<Uuid, ActiveScript>,
     /// Explicit local/SSH coding-agent runs, keyed by run ID.
     active_agent_runs: HashMap<Uuid, agents::ActiveAgentRun>,
+    /// Exact catalog authority owned by each retained local-agent session.
+    /// Once established this binding is immutable for the session lifetime.
+    agent_session_bindings: HashMap<
+        Uuid,
+        (
+            shelldeck_core::config::workspace_catalog::CatalogWorkspaceId,
+            shelldeck_core::config::workspace_catalog::CatalogCheckoutId,
+        ),
+    >,
     // Keep subscriptions alive
     _sidebar_sub: Subscription,
     _workspace_hub_sub: Subscription,
@@ -977,6 +986,14 @@ impl Workspace {
             );
             view
         });
+        workspace_hub.update(cx, |hub, cx| {
+            hub.attach_agent_host(agent_console.clone(), cx);
+        });
+        let agent_projects =
+            agents::agent_project_groups(workspace_hub.read(cx).catalog(), &connections);
+        agent_console.update(cx, |view, cx| {
+            view.set_project_groups(agent_projects, cx);
+        });
         let scripts = cx.new(ScriptEditorView::new);
         let port_forwards = cx.new(|_| PortForwardView::new());
         let server_sync = cx.new(|cx| {
@@ -1178,6 +1195,13 @@ impl Workspace {
             &workspace_hub,
             |this, _hub, event: &workspaces::WorkspaceHubEvent, cx| match event {
                 workspaces::WorkspaceHubEvent::ActiveTerminal(terminal) => {
+                    let visible_session = this.workspace_hub.read(cx).active_agent_session_id();
+                    this.agent_console.update(cx, |view, cx| {
+                        if let Some(session_id) = visible_session {
+                            view.select_session(session_id, cx);
+                        }
+                        view.set_surface_visible(visible_session.is_some(), cx);
+                    });
                     this.terminal = terminal.clone();
                     this._terminal_sub =
                         cx.subscribe(terminal, |this, _terminal, event: &TerminalEvent, cx| {
@@ -1188,6 +1212,26 @@ impl Workspace {
                 }
                 workspaces::WorkspaceHubEvent::OpenPlatformAttention(activation) => {
                     this.activate_platform_attention(*activation, cx);
+                }
+                workspaces::WorkspaceHubEvent::OpenWorkspacePane(activation) => {
+                    let visible_session = this.workspace_hub.read(cx).active_agent_session_id();
+                    this.agent_console.update(cx, |view, cx| {
+                        if let Some(session_id) = visible_session {
+                            view.select_session(session_id, cx);
+                        }
+                        view.set_surface_visible(visible_session.is_some(), cx);
+                    });
+                    if let shelldeck_core::workspace_navigation::WorkspaceTabContent::AgentSession(
+                        binding,
+                    ) = &activation.content
+                    {
+                        this.agent_console.update(cx, |view, cx| {
+                            view.select_session(binding.session_id, cx);
+                        });
+                    }
+                }
+                workspaces::WorkspaceHubEvent::CatalogChanged => {
+                    this.refresh_agent_projects(cx);
                 }
             },
         );
@@ -1386,6 +1430,7 @@ impl Workspace {
             active_tunnels: HashMap::new(),
             active_scripts: HashMap::new(),
             active_agent_runs: HashMap::new(),
+            agent_session_bindings: HashMap::new(),
             _sidebar_sub: sidebar_sub,
             _workspace_hub_sub: workspace_hub_sub,
             _terminal_sub: terminal_sub,
