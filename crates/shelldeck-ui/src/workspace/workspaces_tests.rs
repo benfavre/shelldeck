@@ -3,11 +3,16 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::{
-        mutate_and_persist, terminal_surface, workspace_card_presentation, AuthorizedLaunchHost,
-        GitWorktreeAdapter, LauncherIntakeKind, NativeLaunchOutcome, NativeWorkspaceExecutor,
-        ProviderCardObservation, WorkspaceCardAggregator, WorkspaceExecutionRequest,
-        WorkspaceHubView, WorkspaceLaunchExecutor, WorkspaceLaunchMode, WorkspaceLauncherDraft,
-        WorkspaceTerminalConfig,
+        mutate_and_persist, reconcile_terminal_surface, terminal_surface,
+        workspace_card_presentation,
+        workspaces_panes::{
+            adjust_split_ratio, remove_agent_session_tabs, resolve_local_tab_path,
+            split_leaf_with_active_tab, validated_browser_location,
+        },
+        AuthorizedLaunchHost, GitWorktreeAdapter, LauncherIntakeKind, NativeLaunchOutcome,
+        NativeWorkspaceExecutor, ProviderCardObservation, WorkspaceCardAggregator,
+        WorkspaceExecutionRequest, WorkspaceHubView, WorkspaceLaunchExecutor, WorkspaceLaunchMode,
+        WorkspaceLauncherDraft, WorkspaceTerminalConfig,
     };
     use crate::terminal_view::TerminalView;
     use gpui::{AppContext, TestAppContext};
@@ -19,14 +24,16 @@ mod tests {
         CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, CheckoutHost, ExternalWorkItem,
         ExternalWorkItemKind, PlatformContextRef, PlatformMappingReconciliation, PlatformV2Mapping,
         ProjectCatalog, ProjectCheckout, ProjectRecord, RepositoryIdentity, WorkspaceLaunchIntake,
-        WorkspaceLaunchRequest,
+        WorkspaceLaunchRequest, WorkspaceRelativePath,
     };
     use shelldeck_core::workspace_navigation::{
-        BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState, PaneId, PaneLeaf,
-        ProviderSessionBinding, WorkspaceAgentState, WorkspaceCardState, WorkspaceCreateEvent,
-        WorkspaceCreateFailure, WorkspaceCreateFailureKind, WorkspaceCreatePhase,
-        WorkspaceCreateProgress, WorkspaceFocus, WorkspaceFreshness, WorkspaceNavigationAction,
-        WorkspaceSurfaceState, WorkspaceTab, WorkspaceTabContent, WorkspaceTabId,
+        AgentSessionBinding, BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState,
+        PaneId, PaneLeaf, PaneNode, ProviderSessionBinding, SplitAxis, TerminalAuthority,
+        TerminalBinding, TerminalBindingId, TerminalSurface, TerminalViewport, WorkspaceAgentState,
+        WorkspaceCardState, WorkspaceCreateEvent, WorkspaceCreateFailure,
+        WorkspaceCreateFailureKind, WorkspaceCreatePhase, WorkspaceCreateProgress, WorkspaceFocus,
+        WorkspaceFreshness, WorkspaceNavigationAction, WorkspaceSurfaceState, WorkspaceTab,
+        WorkspaceTabContent, WorkspaceTabId,
     };
     use shelldeck_core::workspace_review::{
         AttentionError, AttentionItem, AttentionItemId, AttentionState, AttentionTarget,
@@ -169,6 +176,323 @@ mod tests {
             );
             assert!(surface.read(cx).native_snapshot.is_some());
         });
+    }
+
+    // SDTEST-1885 — SDUC-490/493
+    #[test]
+    fn terminal_reconciliation_preserves_typed_tabs_splits_and_focus() {
+        let checkout = CatalogCheckoutId::from_uuid(Uuid::from_u128(2));
+        let agent_pane = PaneId::from_uuid(Uuid::from_u128(80));
+        let files_pane = PaneId::from_uuid(Uuid::from_u128(81));
+        let agent_tab = WorkspaceTabId::from_uuid(Uuid::from_u128(82));
+        let files_tab = WorkspaceTabId::from_uuid(Uuid::from_u128(83));
+        let terminal_tab = WorkspaceTabId::from_uuid(Uuid::from_u128(84));
+        let retained = WorkspaceSurfaceState {
+            root: Some(PaneNode::Split {
+                axis: SplitAxis::Horizontal,
+                ratio_basis_points: 6_250,
+                first: Box::new(PaneNode::Leaf(PaneLeaf {
+                    id: agent_pane,
+                    tabs: vec![WorkspaceTab {
+                        id: agent_tab,
+                        title: "Implement cockpit".into(),
+                        content: WorkspaceTabContent::AgentSession(AgentSessionBinding {
+                            checkout_id: checkout,
+                            session_id: Uuid::from_u128(85),
+                        }),
+                    }],
+                    active_tab: Some(agent_tab),
+                })),
+                second: Box::new(PaneNode::Leaf(PaneLeaf {
+                    id: files_pane,
+                    tabs: vec![WorkspaceTab {
+                        id: files_tab,
+                        title: "Files".into(),
+                        content: WorkspaceTabContent::Files {
+                            checkout_id: checkout,
+                            relative_root: WorkspaceRelativePath::new("src").unwrap(),
+                        },
+                    }],
+                    active_tab: Some(files_tab),
+                })),
+            }),
+            focus: Some(WorkspaceFocus {
+                pane_id: agent_pane,
+                tab_id: agent_tab,
+            }),
+        };
+        let native = WorkspaceSurfaceState {
+            root: Some(PaneNode::Leaf(PaneLeaf {
+                id: PaneId::from_uuid(Uuid::from_u128(86)),
+                tabs: vec![WorkspaceTab {
+                    id: terminal_tab,
+                    title: "Terminal".into(),
+                    content: WorkspaceTabContent::Terminal(TerminalSurface {
+                        binding: TerminalBinding {
+                            id: TerminalBindingId::from_uuid(Uuid::from_u128(87)),
+                            authority: TerminalAuthority::Local {
+                                checkout_id: checkout,
+                            },
+                        },
+                        viewport: TerminalViewport::default(),
+                        draft: String::new(),
+                    }),
+                }],
+                active_tab: Some(terminal_tab),
+            })),
+            focus: None,
+        };
+
+        let reconciled = reconcile_terminal_surface(&retained, native);
+        assert_eq!(reconciled.focus, retained.focus);
+        let PaneNode::Split {
+            ratio_basis_points,
+            first,
+            second,
+            ..
+        } = reconciled.root.unwrap()
+        else {
+            panic!("typed split was flattened");
+        };
+        assert_eq!(ratio_basis_points, 6_250);
+        let PaneNode::Leaf(first) = *first else {
+            panic!("first split leaf missing");
+        };
+        assert!(first.tabs.iter().any(|tab| tab.id == agent_tab));
+        assert!(first.tabs.iter().any(|tab| tab.id == terminal_tab));
+        let PaneNode::Leaf(second) = *second else {
+            panic!("second split leaf missing");
+        };
+        assert_eq!(second.tabs[0].id, files_tab);
+    }
+
+    // SDTEST-1886 — SDUC-490
+    #[test]
+    fn closing_agent_session_removes_every_duplicate_and_repairs_focus() {
+        let checkout = CatalogCheckoutId::from_uuid(Uuid::from_u128(2));
+        let session_id = Uuid::from_u128(1886);
+        let first_pane = PaneId::from_uuid(Uuid::from_u128(90));
+        let second_pane = PaneId::from_uuid(Uuid::from_u128(91));
+        let terminal_tab = WorkspaceTabId::from_uuid(Uuid::from_u128(92));
+        let first_agent = WorkspaceTabId::from_uuid(Uuid::from_u128(93));
+        let second_agent = WorkspaceTabId::from_uuid(Uuid::from_u128(94));
+        let agent = |id| WorkspaceTab {
+            id,
+            title: "Duplicate agent".into(),
+            content: WorkspaceTabContent::AgentSession(AgentSessionBinding {
+                checkout_id: checkout,
+                session_id,
+            }),
+        };
+        let mut surface = WorkspaceSurfaceState {
+            root: Some(PaneNode::Split {
+                axis: SplitAxis::Horizontal,
+                ratio_basis_points: 5_000,
+                first: Box::new(PaneNode::Leaf(PaneLeaf {
+                    id: first_pane,
+                    tabs: vec![
+                        WorkspaceTab {
+                            id: terminal_tab,
+                            title: "Terminal".into(),
+                            content: WorkspaceTabContent::Terminal(TerminalSurface {
+                                binding: TerminalBinding {
+                                    id: TerminalBindingId::from_uuid(Uuid::from_u128(95)),
+                                    authority: TerminalAuthority::Local {
+                                        checkout_id: checkout,
+                                    },
+                                },
+                                viewport: TerminalViewport::default(),
+                                draft: String::new(),
+                            }),
+                        },
+                        agent(first_agent),
+                    ],
+                    active_tab: Some(first_agent),
+                })),
+                second: Box::new(PaneNode::Leaf(PaneLeaf {
+                    id: second_pane,
+                    tabs: vec![agent(second_agent)],
+                    active_tab: Some(second_agent),
+                })),
+            }),
+            focus: Some(WorkspaceFocus {
+                pane_id: second_pane,
+                tab_id: second_agent,
+            }),
+        };
+
+        assert!(remove_agent_session_tabs(&mut surface, session_id));
+        assert_eq!(
+            surface.focus,
+            Some(WorkspaceFocus {
+                pane_id: first_pane,
+                tab_id: terminal_tab,
+            })
+        );
+        assert!(!remove_agent_session_tabs(&mut surface, session_id));
+        let PaneNode::Split { first, second, .. } = surface.root.unwrap() else {
+            panic!("split disappeared");
+        };
+        let PaneNode::Leaf(first) = *first else {
+            panic!("first leaf disappeared");
+        };
+        let PaneNode::Leaf(second) = *second else {
+            panic!("second leaf disappeared");
+        };
+        assert_eq!(first.tabs.len(), 1);
+        assert_eq!(first.active_tab, Some(terminal_tab));
+        assert!(second.tabs.is_empty());
+        assert_eq!(second.active_tab, None);
+    }
+
+    // SDTEST-1887 — SDUC-490
+    #[test]
+    fn split_action_moves_the_active_tab_into_a_distinct_native_pane() {
+        let checkout = CatalogCheckoutId::from_uuid(Uuid::from_u128(2));
+        let pane = PaneId::from_uuid(Uuid::from_u128(100));
+        let terminal_tab = WorkspaceTabId::from_uuid(Uuid::from_u128(101));
+        let agent_tab = WorkspaceTabId::from_uuid(Uuid::from_u128(102));
+        let mut node = PaneNode::Leaf(PaneLeaf {
+            id: pane,
+            tabs: vec![
+                WorkspaceTab {
+                    id: terminal_tab,
+                    title: "Terminal".into(),
+                    content: WorkspaceTabContent::Terminal(TerminalSurface {
+                        binding: TerminalBinding {
+                            id: TerminalBindingId::from_uuid(Uuid::from_u128(103)),
+                            authority: TerminalAuthority::Local {
+                                checkout_id: checkout,
+                            },
+                        },
+                        viewport: TerminalViewport::default(),
+                        draft: String::new(),
+                    }),
+                },
+                WorkspaceTab {
+                    id: agent_tab,
+                    title: "Agent".into(),
+                    content: WorkspaceTabContent::AgentSession(AgentSessionBinding {
+                        checkout_id: checkout,
+                        session_id: Uuid::from_u128(104),
+                    }),
+                },
+            ],
+            active_tab: Some(agent_tab),
+        });
+
+        let focus = split_leaf_with_active_tab(&mut node, pane, SplitAxis::Horizontal)
+            .expect("two tabs can be split");
+        let PaneNode::Split {
+            axis,
+            ratio_basis_points,
+            first,
+            second,
+        } = node
+        else {
+            panic!("split action did not create a split");
+        };
+        assert_eq!(axis, SplitAxis::Horizontal);
+        assert_eq!(ratio_basis_points, 5_000);
+        let PaneNode::Leaf(first) = *first else {
+            panic!("first leaf missing");
+        };
+        let PaneNode::Leaf(second) = *second else {
+            panic!("second leaf missing");
+        };
+        assert_eq!(first.tabs[0].id, terminal_tab);
+        assert_eq!(first.active_tab, Some(terminal_tab));
+        assert_eq!(second.tabs[0].id, agent_tab);
+        assert_eq!(second.active_tab, Some(agent_tab));
+        assert_eq!(focus.pane_id, second.id);
+        assert_eq!(focus.tab_id, agent_tab);
+    }
+
+    // SDTEST-1888 — SDUC-490
+    #[test]
+    fn workspace_editor_path_resolution_requires_an_existing_authorized_entry() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/lib.rs"), "fn main() {}").unwrap();
+        let checkout = ProjectCheckout::new(
+            CatalogCheckoutId::from_uuid(Uuid::from_u128(110)),
+            "local",
+            CheckoutHost::Local {
+                device_label: "Local".into(),
+                root: std::fs::canonicalize(root.path()).unwrap(),
+            },
+            RepositoryIdentity {
+                slug: "inklura/shelldeck".into(),
+                canonical_url: None,
+            },
+        );
+        let valid = WorkspaceRelativePath::new("src/lib.rs").unwrap();
+        let missing = WorkspaceRelativePath::new("src/missing.rs").unwrap();
+
+        assert_eq!(
+            resolve_local_tab_path(&checkout, &valid).unwrap().as_path(),
+            std::fs::canonicalize(root.path().join("src/lib.rs"))
+                .unwrap()
+                .as_path()
+        );
+        assert!(resolve_local_tab_path(&checkout, &missing).is_none());
+    }
+
+    // SDTEST-1889 — SDUC-490
+    #[test]
+    fn split_resize_controls_adjust_the_exact_divider_and_stay_bounded() {
+        let first = PaneId::from_uuid(Uuid::from_u128(120));
+        let second = PaneId::from_uuid(Uuid::from_u128(121));
+        let mut node = PaneNode::Split {
+            axis: SplitAxis::Horizontal,
+            ratio_basis_points: 5_000,
+            first: Box::new(PaneNode::Leaf(PaneLeaf {
+                id: first,
+                tabs: Vec::new(),
+                active_tab: None,
+            })),
+            second: Box::new(PaneNode::Leaf(PaneLeaf {
+                id: second,
+                tabs: Vec::new(),
+                active_tab: None,
+            })),
+        };
+
+        assert!(adjust_split_ratio(&mut node, first, second, 500));
+        let PaneNode::Split {
+            ratio_basis_points, ..
+        } = &node
+        else {
+            unreachable!();
+        };
+        assert_eq!(*ratio_basis_points, 5_500);
+        assert!(adjust_split_ratio(&mut node, first, second, 20_000));
+        let PaneNode::Split {
+            ratio_basis_points, ..
+        } = &node
+        else {
+            unreachable!();
+        };
+        assert_eq!(*ratio_basis_points, 9_000);
+        assert!(!adjust_split_ratio(
+            &mut node,
+            PaneId::from_uuid(Uuid::from_u128(122)),
+            second,
+            500,
+        ));
+    }
+
+    // SDTEST-1890 — SDUC-490
+    #[test]
+    fn browser_pane_open_action_admits_only_safe_http_locations() {
+        assert_eq!(
+            validated_browser_location(" https://127.0.0.1:3000/preview "),
+            Some("https://127.0.0.1:3000/preview".into())
+        );
+        assert!(validated_browser_location("javascript:alert(1)").is_none());
+        assert!(validated_browser_location("https://user:secret@example.test").is_none());
+        assert!(validated_browser_location("https://").is_none());
+        assert!(validated_browser_location("https://example.test/\nnext").is_none());
     }
 
     // SDTEST-1811

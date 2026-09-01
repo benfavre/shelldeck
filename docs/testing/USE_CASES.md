@@ -913,6 +913,32 @@ button. The Markdown renderer receives that conversation measure as a definite
 width, so structured output such as tables wraps inside it instead of being
 laid out intrinsically and clipped at the right edge.
 
+### SDUC-499 — Agent work remains independently identifiable and observable
+
+The Dev cockpit retains multiple named provider-neutral agent sessions rather
+than replacing one global transcript. Up to four run concurrently by default,
+with a hard bound of eight, and every session retains its own exact execution
+context, lifecycle timestamps, transcript, structured technical trace, unread
+count and attention state. Selecting a session clears ordinary unread state;
+failures remain attention-worthy until explicitly acknowledged. Commands,
+file reads, diffs, tests and other tool activity are typed independently from
+conversation prose. Provider output and retained histories have byte and item
+bounds, secret-shaped values are redacted from technical trace fields, and
+malformed control payloads are never rendered verbatim. Durable cockpit state
+never serializes a provider resume identifier, and an active status recovered
+after application restart becomes an interrupted failure rather than claiming
+that an absent process is still running. Messages and technical events share a
+stable monotonic session sequence, so equal wall-clock timestamps and later
+delta/status updates cannot reorder an already-presented timeline row. Local
+and SSH byte streams retain at most one admitted provider line; a newline-free
+oversized record emits one bounded omission, discards through its newline, and
+then resumes framing later records. A run mapped to a catalog checkout opens
+its exact retained Workspace cockpit; local checkouts place an
+authority-resolved file pane beside the agent, while typed split controls can
+keep the retained terminal visible concurrently. A session-to-checkout binding
+is immutable until that session closes, and closing it removes every retained
+pane reference.
+
 ---
 
 ## 11. Shared platform client
@@ -3016,6 +3042,17 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-01** — Hardened SDUC-499 with SDTEST-1895..1898: a session-wide
+  monotonic sequence now orders equal-time conversation and trace rows, while
+  the shared local/SSH stream framer bounds newline-free provider output and
+  recovers after one omission. Explicit surface visibility, not selected
+  navigation identity, now consumes session unread state.
+
+- **2026-09-01** — Added SDUC-499 and SDTEST-1879..1881 for named concurrent
+  agent sessions, lifecycle/attention state, typed provider traces, bounded
+  untrusted output, and restart-safe durable state that excludes provider
+  resume identifiers.
 
 - **2026-08-30** — Settled the hunk half of `benfavre/shelldeck#128` as a
   design record rather than a feature. No behaviour changes and no new SDUC or

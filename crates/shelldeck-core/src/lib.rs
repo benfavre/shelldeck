@@ -1,5 +1,6 @@
 pub mod acp;
 pub mod agent_runtime;
+pub mod agent_session;
 pub mod ai;
 pub mod companion;
 pub mod config;
