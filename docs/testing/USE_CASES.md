@@ -871,9 +871,12 @@ at a short cadence; background runtime refreshes never erase an in-flight chat.
 ### SDUC-475 — Coding agents run on an explicit local or SSH target
 
 Dev mode exposes one provider-neutral agent console for Claude Code, Codex,
-DeepSeek through Jcode, and Jcode's configured/default provider. Every run names an absolute working directory, an
-explicit local machine or existing ShellDeck SSH connection, a model override,
-and a closed access level. Read-only is the default. Workspace-write and full
+Automonique ACP, DeepSeek through Jcode, and Jcode's configured/default provider.
+Every run names a target-valid working directory (a native absolute path locally,
+an absolute POSIX path or the exact remote-home sentinel over SSH), an explicit
+local machine or existing ShellDeck SSH connection, an optional model override
+when the provider supports one, and a closed access level. Read-only is the
+default. Workspace-write and full
 access require a separate confirmation that repeats the provider, target,
 working directory, and permission level. Output streams into the console and
 Stop terminates the local process or closes the remote SSH channel. The
@@ -912,6 +915,48 @@ the normal Send action, with an explicit tooltip rather than a competing text
 button. The Markdown renderer receives that conversation measure as a definite
 width, so structured output such as tables wraps inside it instead of being
 laid out intrinsically and clipped at the right edge.
+When a session changes from the local machine to an SSH target without an
+authorized catalog checkout, its canonical working-directory default is `~`;
+the remote shell expands that exact sentinel to its own `$HOME`. ShellDeck
+never sends a quoted literal tilde and never treats an inherited client-only
+absolute path as the remote default. An explicit catalog checkout root remains
+authoritative when one is available.
+
+### SDUC-499 — Agent work remains independently identifiable and observable
+
+The Dev cockpit retains multiple named provider-neutral agent sessions rather
+than replacing one global transcript. Up to four run concurrently by default,
+with a hard bound of eight, and every session retains its own exact execution
+context, lifecycle timestamps, transcript, structured technical trace, unread
+count and attention state. Selecting a session clears ordinary unread state;
+failures remain attention-worthy until explicitly acknowledged. Commands,
+file reads, diffs, tests and other tool activity are typed independently from
+conversation prose. Provider output and retained histories have byte and item
+bounds, secret-shaped values are redacted from technical trace fields, and
+malformed control payloads are never rendered verbatim. Durable cockpit state
+never serializes a provider resume identifier, and an active status recovered
+after application restart becomes an interrupted failure rather than claiming
+that an absent process is still running. Messages and technical events share a
+stable monotonic session sequence, so equal wall-clock timestamps and later
+delta/status updates cannot reorder an already-presented timeline row. Local
+and SSH byte streams retain at most one admitted provider line; a newline-free
+oversized record emits one bounded omission, discards through its newline, and
+then resumes framing later records. A run mapped to a catalog checkout opens
+its exact retained Workspace cockpit; local checkouts place an
+authority-resolved file pane beside the agent, while typed split controls can
+keep the retained terminal visible concurrently. A session-to-checkout binding
+is immutable until that session closes, and closing it removes every retained
+pane reference. On wide desktops the session navigator is the single session
+selector rather than being repeated as a second tab strip. A persistent
+inspector shows the actual local working-directory tree and opens selected
+local files through a typed event only after canonical containment beneath the
+selected session root. SSH trees are requested through the exact
+selected session, connection, and requested path; asynchronous results must
+match all three before their separately resolved canonical directory may
+replace the current listing. The `~` default becomes a remote path only after
+that host returns one bounded, valid absolute home directory. The Changes tab projects changed files, diff
+counts, and bounded previews from structured trace events, and selecting one
+highlights that exact event in the ordered timeline.
 
 ---
 
@@ -1934,8 +1979,13 @@ off, and the main ShellDeck window remains hidden. Every visible tray label,
 including zero/one/many counter forms and the empty pinned-connections row,
 follows the selected French or English UI locale. A live language change
 republishes the tray snapshot so every desktop backend updates the native menu
-immediately. Counters and pinned connections follow the same owner-thread
-snapshot path. The Dock header and rail toolbox use keyboard-focusable controls
+immediately. Counters and pinned connections rebuild the same immutable GPUI
+native-menu snapshot on its foreground executor. Informational counters and
+signed-out session actions are native disabled labels, while command dispatch
+independently rechecks authentication. Linux uses GPUI's
+StatusNotifierItem/`ksni` backend without GTK or AppIndicator; its
+service-thread events are marshalled back to the GPUI foreground executor
+before application dispatch. The Dock header and rail toolbox use keyboard-focusable controls
 with visible localized names or tooltips; Escape remains an explicit hide
 action. On macOS, the tray uses a dedicated
 36 px black-and-alpha Monolith mark as an AppKit template image, so the system
@@ -1948,7 +1998,10 @@ Windows retain the colored app icon.
 when the system tray was created successfully. The default remains a visible
 start for old and fresh configurations. If the tray backend is unavailable,
 ShellDeck ignores the hidden-start preference and opens its main window so the
-process is always recoverable. Tray and deep-link show actions explicitly show
+process is always recoverable. On Windows, an Explorer restart authoritatively
+re-adds the retained icon; a failed re-add makes tray availability false rather
+than claiming a notification-area entry that no longer exists. Tray and
+deep-link show actions explicitly show
 the hidden window before activating it. A hidden start initially owns only a
 lightweight `CompanionRoot`: it does not construct `Workspace`, its views or
 its pollers until a tray, deep-link, palette, Dock or task-target command needs
@@ -2574,7 +2627,15 @@ Permission requests reach an injected user-decision broker and only an option
 the agent actually offered can be returned. With no broker the request is
 cancelled. ShellDeck advertises no filesystem or terminal service, so ACP
 cannot bypass its typed confirmation paths or Automonique's execution
-authority. Automonique is the built-in launch profile (`automonique acp`).
+authority. Automonique is the built-in launch profile (`automonique acp`) and
+is a first-class coding-agent provider: its message chunks and tool lifecycle
+stream into the shared Agent timeline, its durable session ID resumes only in
+the exact execution context, and Stop sends `session/cancel` before the guarded
+ACP process tree is dropped. The local ACP launch never substitutes for an SSH
+selection; remote Automonique work remains reachable only through an exact AI
+Operations Platform workspace/session mapping. Read-only cancels every ACP
+permission request, while a separately confirmed mutating run may select only
+an exact one-shot allow option the agent offered and never persists that grant.
 
 ### SDUC-483 — Successful sign-in progress completes exactly once
 
@@ -2810,13 +2871,62 @@ Forced-process and real-adapter no-replay evidence remains a Red release gate.
 ### SDUC-493 — Agent attention always returns to its authoritative work context
 
 Needs You, Working, Blocked, Done, and Idle are typed observations with unread
-state and a nested-agent path. Each item names one local user workspace and
-pane; provider-session items additionally name the exact session in that pane.
-Older or conflicting same-revision observations are refused. Opening an item in
-the core resolves only through retained state keyed by the authoritative local
-workspace and validates all coordinates against that workspace surface,
-refuses duplicate pane/session coordinates, returns only that exact tab, and
-records local read state separately from the authoritative observation revision.
+state and a nested-agent path. The legacy local board names a retained local
+workspace/pane/session surface and validates all coordinates before returning
+one exact tab. Shared Platform v2 attention instead retains the authoritative
+project, user workspace, source-scoped opaque item identity, item revision, and
+optional authority-qualified provider session exactly as supplied. It never
+invents a pane, tab, terminal, path, or session from chronology or labels.
+Platform sources are derived only from a bounded duplicate-free work-context
+inventory and typed review presence. A complete source snapshot atomically
+replaces its predecessor; exact replay is inert, stale/conflicting successors
+are refused, valid absence removes an item, and refusal or transport failure
+hides but does not discard predecessor custody. A documented source-scoped
+UUIDv5 is presentation-only and collisions fail the entire replacement. A
+fresh authenticated complete read may explicitly establish a baseline above
+revision one; after a missed predecessor the same distinct resync operation may
+bridge the gap while refusing source, observation, or surviving-item rollback.
+Normal reads remain exact-predecessor fenced, and restart or source re-add never
+silently treats a discontinuous snapshot as a successor.
+Local read and notification custody is stored separately under exact
+`(source,item,item_revision)` tuples. It is bounded and atomically persisted;
+capacity, parse, or write failure suppresses new custody instead of evicting an
+older tuple. A private no-follow/reparse-fenced storage boundary and an
+exclusive sidecar lock serialize reload/compare/persist across independent
+processes, so only one process may reserve a notification tuple. Version-two
+overlay tuples also bind the exact Platform target; unqualified version-one
+tuples are discarded during migration rather than inherited after a remap.
+Target/source retirement fences are written to the same document before a
+board disappears, and successful cleanup atomically removes both old overlay
+and fence. A surviving fence blocks replacement custody after restart. The serialized
+document must fit its read bound before replacement. The native Workspace and
+Fleet surfaces now consume the same authoritative board. Every activation
+re-resolves the current exact catalog mapping, full authority-qualified session
+directory, and retained provider pane: missing, duplicate, foreign, or stale
+coordinates refuse without consuming unread state. Review and orchestration
+items open only their exact workspace attention surface; provider items open
+only the fresh session bound to their authoritative WorkContext source, either
+in Fleet or its unique retained pane. Whole-poll failures hide retained
+projections. Loss of all active context retires orphan boards; an exact context
+removal/remap retires only that workspace, so visiting a different retained
+workspace preserves the first board and overlay. A failed retirement-fence
+write leaves the old board unavailable and blocks replacement. Every destination
+queues its exact activation until the real Dev transition finishes, opens the
+required surface, then re-resolves authority and rendered visibility on a later
+UI turn before durable read custody. User, Support, Settings, or an unrelated
+in-flight transition cannot consume unread while the destination is hidden. Same-process
+OS notification handles remain alive through activation/dismissal and route the
+same tuple back through that current-catalog resolver. A failed durable
+notification reservation suppresses the toast, whose body names the destination
+workspace and degrades to the reason alone when the catalog no longer names it.
+Attention is also presented as one chronological activity list ordered on the
+authoritative `observed_at_ms`, never on poll arrival or source order; equal
+observations fall back to the item revision and then to the authoritative
+`(source,item)` key, so the sequence is identical in every process and stable
+across workspaces. A hidden source contributes no chronology. Each row carries
+only the activation token and re-resolves its workspace, session and pane
+through the same resolver when opened. Native cold-launch/OS launch
+protocol remains intentionally outside this milestone.
 Delivery checks, review status, merge readiness, and delivery state carry their
 observed authority and freshness. Once Fresh, they cannot be overwritten by a
 Stale or Unknown projection even if that projection claims a higher revision.
@@ -2843,16 +2953,113 @@ The persisted local workspace-review schema remains independent and unmigrated.
 For an exactly reconciled Platform project/workspace, ShellDeck expands the
 canonical review snapshot into bounded files, hunks, conflicts, safe preview
 metadata, attributed comments, and attention chronology. A user may select an
-exact hunk line and prepare one typed comment or review approval. Comments in
-`not_sent`/`refused` state can be selected into one batch-to-agent action.
-Server-projected Git proposals, terminal CI checks, and a fresh ready pull
-request can prepare their corresponding stage/unstage/commit, rerun, or merge
-action. Every confirmation names the exact workspace and captured snapshot or
-target revision before dispatch.
+exact hunk line and either persist a durable line-anchored note or prepare one
+typed comment or review approval. A note retains the file, hunk, side, line and
+captured snapshot revision it was written against, plus a durable
+batch-delivery selection; a note captured on a superseded snapshot is retained
+but reported non-actionable rather than re-anchored, and it is stored under the
+same bounded, no-follow, cross-process-locked private boundary as review
+custody. A note is a local draft and carries no server comment id, so its
+durable selection marks which drafts to prepare, never what is delivered.
 
-The client dispatches that canonical SDK `ReviewAction` at most once. Accepted,
-unknown, or transport-ambiguous outcomes retain the original idempotency key and
-use receipt lookup only. Async results are admitted only if both the complete
+Batch delivery to the authorized session is exposed for exactly the comments
+the server advertised in `agent_deliverable_comments` for this project,
+workspace and snapshot revision. Each comment's id and expected revision are
+sent verbatim from that capability, at the capability's own snapshot revision,
+in the strictly ordered form the contract requires; the snapshot is consulted
+only to prove the two reads agree and supplies no value that crosses the
+network. A capability list for another coordinate, an entry the snapshot
+contradicts or does not carry, a comment already delivered, a review that is
+not fresh, and an empty advertised list each withhold the control with their
+own stated reason.
+
+This lane carries no confirmation digest and no receipt correlation, and that
+is deliberate. The target session is registry-owned and never on the wire, the
+snapshot revision is fenced twice server-side, and the note set is fenced by
+the server's own batch arm, so exactly-once falls out of the domain state
+machine; a minted correlation would additionally make the client's own receipt
+unfindable, because the host's receipt lookup skips a retained action carrying
+one. What replaces the digest is the advertisement, so ShellDeck re-reads it
+after every settlement rather than reusing it: a batch preview is revalidated
+against the current advertisement before it crosses the dispatch fence, and the
+persisted selection is retained against that advertisement rather than the
+snapshot, so a settled delivery empties it instead of allowing a stale list to
+be posted under a fresh idempotency key.
+
+A terminal CI check exposes rerun only when a separately
+fetched server capability matches the exact project, workspace, snapshot
+revision, check revision, authority, confirmation digest, and
+receipt-correlation digest. Every exposed confirmation names the exact
+workspace and captured snapshot or target revision before dispatch.
+
+File-level staging, unstaging, committing and conflict resolution are exposed
+on the same terms, against `ReviewCapabilities`' `staging` and
+`conflict_resolutions` lists. Each entry names the commit `HEAD` the server's
+preflight resolved to and a digest over the whole index it read, because a
+worktree is shared substrate: another process running as the daemon uid can
+move either between the advertisement and the action, and the snapshot revision
+tracks only what the projection observed. The four actions require a
+server-minted confirmation, so their unconfirmed spelling cannot be encoded on
+either side of the wire, and their receipts are recovered through the
+correlation digest rather than by re-sending an action whose confirmation the
+write itself invalidated. A capability whose observation disagrees with a
+fresher document stops matching, so the control withdraws locally rather than
+being refused by the daemon.
+
+A control exists only where a slot exists for that exact proposal. The three
+staging kinds share one capability type but not one grant — an operator
+installs index writes, committing and conflict resolution independently — so a
+deployment that grants stage and unstage but not commit produces two controls
+and not three, and the withheld one is *absent* rather than disabled. Absence
+of the whole lane is reported with its own stated reason: no capability
+response attributed to this coordinate, an exact response that advertised
+nothing, or no durable custody lane. `conflict_resolutions` lists one entry per
+side git actually recorded, because the side decides which blob lands and is
+inside the confirmation digest, so a file holding both sides renders two
+controls and a delete/modify pair renders one; nothing but a side ever crosses
+that wire, so no caller-supplied content can be written.
+
+Hunk-level staging remains unrepresentable: a proposal names file ids, and
+`ReviewAnchor`'s hunk id serves comments only. The three pull-request slots
+still ship empty because no provider adapter can preflight one, and the merge
+preview is now a confirmed lane too, so it refuses at construction rather than
+minting a request the transport cannot encode.
+
+The read side presents those files as one combined worktree: conflicted first,
+then staged, unstaged, and untracked, with empty lanes omitted. A partially
+staged file appears on both sides and says so; an unresolved conflict is listed
+only as conflicted, because git reports it unmerged and refuses to stage it,
+while a resolved conflict returns to its own lane. Anchor identities bind lane,
+file, and hunk so a twice-listed file cannot route one lane's click to the
+other. The server's own stage, unstage, commit, and conflict-resolution
+proposals are shown as per-file observations with their admissibility; a
+control joins one only where the server advertised a slot for that exact
+proposal, and the surface otherwise states which fence is missing. Hunk-level
+staging is not representable at all — a proposal names files, never hunks.
+
+Previews are decided from declared metadata, never from trust. Text is painted
+only from bounded hunk previews, with control characters and invisible
+reordering scalars replaced and line count and length capped; the protocol's
+own control-free bound still admits a bidirectional override that would repaint
+a diff line. A sanitized image is described beside an aspect-preserving
+placeholder box that can never exceed its edge cap, and no pixels are decoded or
+fetched. Sanitized HTML is described only: never interpreted as markup, never
+re-emitted as source. An unsanitized payload, opaque binary, an absent preview,
+a declared size or raster above the client budget, and a kind disagreeing with
+its media type or content are each withheld with a distinct localized reason
+present in both shipped locales.
+
+Before any exposed review mutation crosses the network — comment, approval,
+confirmed rerun or unconfirmed batch delivery — ShellDeck persists the inert
+preview and then a dispatched
+marker under a bounded, no-follow, cross-process-locked custody store. A
+workspace owns at most one non-terminal effect at a time, and preparation is
+refused outright when that store is unavailable. Accepted, unknown, or
+transport-ambiguous outcomes retain the original idempotency key and use
+correlated receipt lookup
+only; restart never reposts a dispatched action, while an unconfirmed prepared
+preview is reported as never started. Terminal receipts retain the server actor
+for presentation. Async results are admitted only if both the complete
 captured authenticated connection and `PlatformReviewTarget` still match the
 active context. A missing proposal, wrong authority kind, unresolved-conflict
 proposal, stale check, duplicate comment selection, or non-ready pull request
@@ -2862,6 +3069,214 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-01** — Amended SDUC-499 with SDTEST-1902/1903/1909: the wide cockpit
+  removes its duplicate session tab strip, adds a real local tree plus a
+  session/host/path-fenced SSH browsing contract, and projects trace-backed
+  changes into a persistent inspector. Manual Local↔SSH target switches now
+  choose target-valid working-directory defaults instead of submitting a
+  client-only path or rejecting the remote-home sentinel.
+
+- **2026-09-01** — Amended SDUC-475 with SDTEST-1904/1905/1908: manual SSH
+  targets use an exact remote-home sentinel instead of inheriting a local
+  absolute path, while catalog-backed runs translate the matching checkout
+  root and preserve their validated relative suffix. Remote browsing admits
+  only one bounded absolute home returned by the selected SSH host.
+- **2026-09-01** — Hardened SDUC-499 with SDTEST-1895..1898: a session-wide
+  monotonic sequence now orders equal-time conversation and trace rows, while
+  the shared local/SSH stream framer bounds newline-free provider output and
+  recovers after one omission. Explicit surface visibility, not selected
+  navigation identity, now consumes session unread state.
+
+- **2026-09-01** — Added SDUC-499 and SDTEST-1879..1881 for named concurrent
+  agent sessions, lifecycle/attention state, typed provider traces, bounded
+  untrusted output, and restart-safe durable state that excludes provider
+  resume identifiers.
+
+- **2026-08-30** — Settled the hunk half of `benfavre/shelldeck#128` as a
+  design record rather than a feature. No behaviour changes and no new SDUC or
+  SDTEST: the outcome of `benfavre/shelldeck#163` is that hunk-level staging is
+  not representable, and would not become representable by adding a field.
+  SDUC-495 is already correct as written, because it describes the hunk as what
+  it is: the anchor a comment resolves a line against.
+
+  Three findings, each sufficient on its own. **A hunk has no identity to close
+  a write over.** It is not a property of the repository but of a rendering:
+  the same pair of blobs decomposes into three hunks at `-U2` and two at `-U3`,
+  the boundary and the added lines both move when `diff.indentHeuristic` is
+  toggled, `-w` yields a different set from the default, and a `.gitattributes`
+  textconv driver makes the same blob pair produce none at all. Two hunks in
+  one file can carry byte-identical bodies with their full context, so content
+  addressing alone is ambiguous inside a single file. **The hunk on the wire is
+  not an observation of the worktree a write would touch.** At the pinned
+  revision, `DiffHunk` and `ReviewFile` are constructed in exactly one
+  non-test place, the decoder, so nothing in `bext-stack/automonique` builds a
+  hunk from a repository, and the git worktree adapter that PR #225 added
+  contains no occurrence of "hunk" at all. A path is both server-owned and
+  observed; a hunk id can only ever be the first. **And git offers no fenced
+  mechanism.** `git add -p` is `git diff-files -p` followed by `git apply
+  --cached`, which matches context at any line offset: it exits 0 against an
+  index the patch was not minted from, and when the reviewed region has been
+  removed it writes the change into a different, similar region instead, with
+  no error.
+
+  What *is* representable is a partial-file index write closed on the resulting
+  blob object id, with the selection re-derived server-side from a pinned blob
+  pair rather than named by the client. That keeps the file as the unit the
+  server closes over, but it needs an upstream family and it inverts the
+  invariant PR #225 was built on, where every write names a path and lets git
+  supply the content. It is deliberately not built. The dormant `StageHunks` /
+  `UnstageHunks` reducer in `workspace_review.rs` now carries the reason at the
+  site, because its `MutationTargetFence::LocalReview` pins this crate's own
+  review revision and would fence a git write against nothing.
+
+- **2026-08-29** — Amended SDUC-495 with capability-fenced file-level staging,
+  unstaging, committing and conflict resolution, and added SDTEST-1867..1873.
+  This was the last open item of `benfavre/shelldeck#128`, and it was blocked
+  on the same kind of contract gap as the batch delivery before it: a proposal
+  id plus a snapshot revision does not pin a worktree, so a staging
+  confirmation digest would have had to commit to the `HEAD` object id and the
+  index state, and no projection carried either. `bext-stack/automonique`
+  PR #225 earned that field set from a mutation-free preflight of the
+  repository, and ShellDeck now consumes it.
+
+  The controls follow `delivery.rs` rather than a second shape: a read-side
+  projection reporting what the server proved, plus the exact missing fence
+  when it proved nothing. Absence *is* the withholding — the three staging
+  kinds share one capability type but not one grant, so a deployment that
+  installs index writes without committing advertises no `Commit` entry and
+  that proposal keeps its observation badge and grows no button. SDTEST-1867
+  demonstrates that rather than asserting it: the same run drives stage and
+  unstage end to end to a dispatchable confirmed preview, then grants the
+  commit and watches the third control appear from unchanged projection code.
+
+  `conflict_resolutions` lists one entry per side git actually recorded,
+  because the side decides which blob lands and is therefore inside the
+  confirmation digest; a file holding both sides renders two controls
+  (SDTEST-1869). A stale worktree withdraws the control locally: the server
+  mints the digest over the commit `HEAD`, the whole index and every named
+  path, so comparing it against a fresher capability document is the
+  head-and-index comparison, and the observation is exposed so a reader can see
+  the fence rather than trust one exists (SDTEST-1868).
+
+  Two findings worth recording. The confirmation guard in `review_action` was a
+  local `matches!` on the rerun rather than the contract's own
+  `requires_confirmation()`; the confirmed set grew from one member to eight
+  with this protocol revision, and the stale spelling was already letting
+  `merge_pull_request` mint previews the transport could no longer encode. And
+  the custody disk format did not understand any of the four staging families,
+  so preparation would have returned "unsupported action" and the dispatch
+  would have died at the fence — the same defect PR #161 found for the batch
+  delivery after PR #160 asserted the format already knew "these actions".
+  SDTEST-1870/1871 drive the whole store rather than only the enum.
+
+  Hunk-level staging is still not representable and was not invented: proposals
+  list file ids, and `ReviewAnchor`'s hunk id serves comments only. The #128
+  item therefore ticks for the file half and needs the hunk half called out as
+  a protocol follow-up.
+
+- **2026-08-29** — Expanded SDUC-495 with capability-fenced batch delivery of
+  review comments to the authorized session, and added SDTEST-1863..1866. The
+  item was blocked on a contract gap, not a client one: `ReviewCapabilities`
+  advertised only `rerunnable_checks`, so nothing could fence the control.
+  `bext-stack/automonique` PR #221 lands `agent_deliverable_comments`, and the
+  send control now exists only for the comments it names, with every coordinate
+  taken verbatim from it.
+
+  This is the unconfirmed lane, deliberately. A rerun needs a digest because
+  the client names the target and the effect fires in a system the daemon does
+  not own; delivery reaches a registry-owned session that is never on the wire,
+  at a snapshot revision fenced twice server-side, over a note set fenced by
+  the server's batch arm. Minting a receipt correlation would have been worse
+  than redundant — the host's receipt lookup skips a retained action carrying
+  one, so the client would have made its own receipt unfindable.
+
+  The advertisement is what replaces the digest, so it must be re-read after a
+  receipt settles rather than reused; a reused list is stale by construction,
+  because settling moves the comment out of `not_sent`/`refused` and bumps both
+  the snapshot revision and the comment's own. SDTEST-1863 demonstrates that
+  rather than asserting it: it replays the server's own eligibility rule, shows
+  the advertisement retracting exactly the delivered comment, and shows the
+  reused list refused even under a fresh idempotency key.
+
+  The custody fence was not weakened to fit the lane. Batch delivery needs no
+  confirmation digest but is still an exposed mutation, and the custody disk
+  format knew only `AddComment`, `ApproveReview` and `RerunCheck` — so it could
+  not be recorded at all and would have refused at the fence.
+
+- **2026-08-29** — Expanded SDUC-495 with durable line-anchored review notes
+  and extended the custody fence to every exposed mutation; added
+  SDTEST-1853..1855, SDTEST-1858 and SDTEST-1859. Comments and approvals
+  previously dispatched with no durable record at all: only the confirmed
+  rerun crossed the fence, so a restart mid-dispatch left a posted comment
+  indistinguishable from an unstarted one and its receipt actor was never
+  retained. Notes are drafts bound to the snapshot revision they were written
+  on, so a newer snapshot makes one explicitly stale instead of quietly moving
+  it to a different line. Batch delivery of a selected note set to the
+  authorized session stays unexposed:
+  `automonique_protocol::platform_v2_transport::ReviewCapabilities` carries
+  only `rerunnable_checks`, so the server can advertise no authority for that
+  action and no receipt-correlation digest exists to make an ambiguous outcome
+  recoverable.
+
+- **2026-08-29** — Expanded SDUC-493 with a chronological attention activity
+  surface and added SDTEST-1856/1857. The board carried the authoritative
+  `observed_at_ms` but never used it: rows reached both surfaces in
+  source-key order, so what looked like a feed was arbitrary, and a
+  cross-workspace list kept every row of the first board ahead of the second.
+  The desktop toast also named no destination, which made an actionable
+  notification say only why it fired and never where it went.
+
+- **2026-08-29** — Expanded SDUC-495 and added SDTEST-1843..1852: the review
+  snapshot now projects into one combined conflicted/staged/unstaged/untracked
+  worktree with per-file conflict state, and every preview is decided from
+  declared metadata rather than trusted. Staging stays read-only and says why:
+  Platform v2 `ReviewCapabilities` advertises rerunnable checks only, so no
+  staging capability, confirmation digest, or receipt-correlation digest exists
+  to fence a Git mutation, and a proposal's `git` authority inside the read
+  snapshot is an observation rather than a capability. Hunk-level staging is
+  not representable in the contract at all. The preview projection replaces
+  invisible reordering scalars the protocol's control-free bound still admits,
+  caps text shape, clamps declared rasters into a bounded placeholder box
+  without decoding pixels, and describes sanitized HTML without ever
+  interpreting it as markup or re-emitting it as source.
+
+- **2026-08-29** — Added SDTEST-1842: the shared cross-client attention
+  succession corpus (`platform-v2-attention-conformance-v1.json`, copied
+  byte-for-byte from Automonique) replays against the authoritative board.
+  `automonique.platform/attention/v1` is `atomic_replace`, so no single
+  snapshot says what a client must conclude after a sequence of reads; the
+  corpus fixes that sequence and ShellDeck now proves it reaches the same
+  outcome the contract records, including the cases where the honest answer
+  is that the source is hidden rather than empty.
+
+- **2026-08-28** — Narrowed SDUC-495 to the controls that have explicit server
+  authority and added SDTEST-1822..1828 for confirmed-rerun capability fencing,
+  durable pre-dispatch custody, restart lookup-only recovery, correlated-only
+  receipt routing, actor retention, storage refusal, and absent unsupported UI.
+
+- **2026-08-28** — Expanded SDUC-493 and added SDTEST-1816..1821 for the
+  canonical Platform v2 attention source inventory, source-atomic revision
+  reducer, source-scoped deterministic UI identities, and bounded durable local
+  read/notification custody. Follow-up hardening added authenticated complete
+  baseline/gap resync, cross-process notification reservation, size admission,
+  and no-follow/reparse-fenced storage. SDTEST-1829..1841 then activate the
+  authenticated board in Workspace/Fleet: provider coordinates stay bound to
+  their fresh WorkContext session, polling/remapping hides or retires stale
+  boards, visible native surface transitions precede read custody, and
+  same-process notifications retain exact revision-bound activation. Native
+  cold-launch/OS-launch routing remains a separate integration milestone.
+
+- **2026-08-28** — Hardened SDUC-435 and added SDTEST-1813..1815: Windows now
+  handles Explorer's `TaskbarCreated` broadcast through an invisible top-level
+  tray owner, re-adds the retained HICON with fail-closed availability, and
+  exercises GPUI's ICO selector plus `CreateIconFromResourceEx` on native CI.
+
+- **2026-08-28** — Amended SDUC-434/435 after moving every desktop tray to
+  GPUI's native backend: Linux no longer initializes GTK/AppIndicator, native
+  availability remains authoritative for hidden start, and counters/signed-out
+  actions use portable disabled labels with foreground-thread event delivery.
+  Added SDTEST-1812 for Windows ICO decoding and visible-icon registration.
 
 - **2026-08-28** — Amended SDUC-443 and added SDTEST-1808: status counters
   now use semantic icons, numbers, 20 px hover targets, and localized tooltips;
@@ -2919,6 +3334,9 @@ an unavailable adapter refuses before any effect.
   the fixed workspace subsystem: exact prepare/release plus prepare/resume into
   the descriptor-retained clean repository, using the production client and
   no path-bearing SSH exec request.
+- **2026-08-28** — Expanded SDUC-493 and added SDTEST-1810/1811 for
+  revision-bound retained attention rows and exact native workspace/pane/tab
+  activation without inferring coordinates from review events.
 - **2026-08-28** — Added SDTEST-1792 so line and comment selections cannot
   cross a project/workspace switch or review-snapshot revision boundary.
 - **2026-08-28** — Expanded SDUC-495 and added SDTEST-1791 for exact

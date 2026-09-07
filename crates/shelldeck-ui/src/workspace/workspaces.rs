@@ -4,31 +4,42 @@
 //! catalogue local autorisé, conserve les entités GPUI par workspace et remet
 //! les demandes de création à une frontière d'exécuteur injectée.
 
+use super::platform_attention::{
+    attention_reason_label, platform_attention_state_label, PlatformAttentionPresentation,
+};
 use super::*;
 use adabraka_ui::components::input::InputVariant;
 use adabraka_ui::display::card::Card;
 use adabraka_ui::prelude::{Alert, AlertVariant};
+use shelldeck_core::config::platform::ResourceCoordinate;
+use shelldeck_core::config::platform_attention::PlatformAttentionTarget;
 use shelldeck_core::config::platform_review::PlatformReviewTarget;
 use shelldeck_core::config::workspace_catalog::{
     CatalogCheckoutId, CatalogProjectId, CatalogWorkspaceId, CheckoutHost, ExternalWorkItem,
     ExternalWorkItemKind, ProjectCatalog, ProjectCheckout, ProjectRecord, RemotePosixPath,
     RepositoryIdentity, UserWorkspaceLifecycle, UserWorkspaceRecord, WorkspaceLaunchIntake,
-    WorkspaceLaunchRequest,
+    WorkspaceLaunchRequest, WorkspaceRelativePath,
 };
 use shelldeck_core::models::connection::Connection;
 use shelldeck_core::workspace_navigation::{
-    BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState, PaneId, PaneLeaf,
-    TerminalAuthority, TerminalBinding, TerminalBindingId, TerminalSurface, TerminalViewport,
-    WorkspaceAgentState, WorkspaceCardState, WorkspaceCreateConflict, WorkspaceCreateEvent,
-    WorkspaceCreateFailure, WorkspaceCreateFailureKind, WorkspaceCreatePhase,
-    WorkspaceCreationReducer, WorkspaceFreshness, WorkspaceNavigationAction,
+    AgentSessionBinding, BackgroundWorkspaceCreateState, CreationOperationId, GitDirtyState,
+    PaneId, PaneLeaf, TerminalAuthority, TerminalBinding, TerminalBindingId, TerminalSurface,
+    TerminalViewport, WorkspaceAgentState, WorkspaceCardState, WorkspaceCreateConflict,
+    WorkspaceCreateEvent, WorkspaceCreateFailure, WorkspaceCreateFailureKind, WorkspaceCreatePhase,
+    WorkspaceCreationReducer, WorkspaceFocus, WorkspaceFreshness, WorkspaceNavigationAction,
     WorkspaceNavigationState, WorkspaceSurfaceState, WorkspaceTab, WorkspaceTabContent,
     WorkspaceTabId,
+};
+use shelldeck_core::workspace_review::{
+    AttentionBoard, AttentionError, AttentionItem, AttentionItemId, AttentionState,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+
+#[path = "workspaces_panes.rs"]
+mod workspaces_panes;
 
 #[path = "native_lifecycle.rs"]
 mod native_lifecycle;
@@ -217,6 +228,17 @@ struct WorkspaceCardPresentation {
     provider_bound: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AttentionItemPresentation {
+    workspace: CatalogWorkspaceId,
+    id: AttentionItemId,
+    revision: u64,
+    state: AttentionState,
+    title: String,
+    unread: bool,
+    agent_path: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 struct GitCardSource {
     branch: Option<String>,
@@ -387,6 +409,11 @@ fn workspace_card_presentation(
 struct RetainedWorkspaceSurface {
     workspace: CatalogWorkspaceId,
     terminal: Entity<TerminalView>,
+    editor: Entity<FileEditorView>,
+    agent_host: Option<Entity<AgentConsoleView>>,
+    checkout: ProjectCheckout,
+    resolved_local_tab: Option<WorkspaceTabId>,
+    surface: WorkspaceSurfaceState,
     native_snapshot: Option<crate::terminal_view::TerminalWorkspaceSnapshot>,
 }
 
@@ -422,10 +449,22 @@ pub(super) fn apply_terminal_config(
 }
 
 impl RetainedWorkspaceSurface {
-    fn new(workspace: CatalogWorkspaceId, terminal: Entity<TerminalView>) -> Self {
+    fn new(
+        workspace: CatalogWorkspaceId,
+        terminal: Entity<TerminalView>,
+        editor: Entity<FileEditorView>,
+        agent_host: Option<Entity<AgentConsoleView>>,
+        checkout: ProjectCheckout,
+        surface: WorkspaceSurfaceState,
+    ) -> Self {
         Self {
             workspace,
             terminal,
+            editor,
+            agent_host,
+            checkout,
+            resolved_local_tab: None,
+            surface,
             native_snapshot: None,
         }
     }
@@ -440,24 +479,6 @@ impl RetainedWorkspaceSurface {
                 terminal.apply_workspace_snapshot(snapshot)
             });
         }
-    }
-}
-
-impl Render for RetainedWorkspaceSurface {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id((
-                "retained-workspace",
-                self.workspace.as_uuid().as_u128() as u64,
-            ))
-            .flex()
-            .flex_col()
-            .size_full()
-            .child(
-                Alert::info()
-                    .description(t!("workspaces.surface.native_terminal_only").to_string()),
-            )
-            .child(self.terminal.clone())
     }
 }
 
@@ -526,12 +547,152 @@ fn terminal_surface(
     }
 }
 
+/// Refresh native terminal bindings without flattening the typed pane tree.
+/// Provider, editor, file, and browser tabs keep their exact pane/focus
+/// identities across workspace switches.
+fn reconcile_terminal_surface(
+    retained: &WorkspaceSurfaceState,
+    native: WorkspaceSurfaceState,
+) -> WorkspaceSurfaceState {
+    use shelldeck_core::workspace_navigation::PaneNode;
+
+    let Some(mut root) = retained.root.clone() else {
+        return native;
+    };
+    fn collect_nonterminal_tab_ids(
+        node: &shelldeck_core::workspace_navigation::PaneNode,
+        ids: &mut std::collections::BTreeSet<WorkspaceTabId>,
+    ) {
+        match node {
+            shelldeck_core::workspace_navigation::PaneNode::Leaf(leaf) => {
+                ids.extend(leaf.tabs.iter().filter_map(|tab| {
+                    (!matches!(tab.content, WorkspaceTabContent::Terminal(_))).then_some(tab.id)
+                }));
+            }
+            shelldeck_core::workspace_navigation::PaneNode::Split { first, second, .. } => {
+                collect_nonterminal_tab_ids(first, ids);
+                collect_nonterminal_tab_ids(second, ids);
+            }
+        }
+    }
+    let mut typed_tab_ids = std::collections::BTreeSet::new();
+    collect_nonterminal_tab_ids(&root, &mut typed_tab_ids);
+    let mut native_tabs = native
+        .root
+        .as_ref()
+        .into_iter()
+        .flat_map(|root| match root {
+            PaneNode::Leaf(leaf) => leaf.tabs.clone(),
+            PaneNode::Split { .. } => Vec::new(),
+        })
+        .filter(|tab| {
+            matches!(tab.content, WorkspaceTabContent::Terminal(_))
+                && !typed_tab_ids.contains(&tab.id)
+        })
+        .map(|tab| (tab.id, tab))
+        .collect::<BTreeMap<_, _>>();
+
+    fn refresh_node(node: &mut PaneNode, native_tabs: &mut BTreeMap<WorkspaceTabId, WorkspaceTab>) {
+        match node {
+            PaneNode::Leaf(leaf) => {
+                leaf.tabs.retain_mut(|tab| {
+                    if !matches!(tab.content, WorkspaceTabContent::Terminal(_)) {
+                        return true;
+                    }
+                    let Some(native) = native_tabs.remove(&tab.id) else {
+                        return false;
+                    };
+                    *tab = native;
+                    true
+                });
+                if leaf
+                    .active_tab
+                    .is_some_and(|active| !leaf.tabs.iter().any(|tab| tab.id == active))
+                {
+                    leaf.active_tab = leaf.tabs.first().map(|tab| tab.id);
+                }
+            }
+            PaneNode::Split { first, second, .. } => {
+                refresh_node(first, native_tabs);
+                refresh_node(second, native_tabs);
+            }
+        }
+    }
+
+    fn first_leaf_mut(node: &mut PaneNode) -> Option<&mut PaneLeaf> {
+        match node {
+            PaneNode::Leaf(leaf) => Some(leaf),
+            PaneNode::Split { first, second, .. } => {
+                first_leaf_mut(first).or_else(|| first_leaf_mut(second))
+            }
+        }
+    }
+
+    refresh_node(&mut root, &mut native_tabs);
+    if !native_tabs.is_empty() {
+        if let Some(target) = first_leaf_mut(&mut root) {
+            target.tabs.extend(native_tabs.into_values());
+            if target.active_tab.is_none() {
+                target.active_tab = target.tabs.first().map(|tab| tab.id);
+            }
+        }
+    }
+    let focus = retained.focus.filter(|focus| {
+        fn contains(node: &PaneNode, focus: WorkspaceFocus) -> bool {
+            match node {
+                PaneNode::Leaf(leaf) => {
+                    leaf.id == focus.pane_id && leaf.tabs.iter().any(|tab| tab.id == focus.tab_id)
+                }
+                PaneNode::Split { first, second, .. } => {
+                    contains(first, focus) || contains(second, focus)
+                }
+            }
+        }
+        contains(&root, *focus)
+    });
+    WorkspaceSurfaceState {
+        root: Some(root),
+        focus,
+    }
+}
+
+fn provider_focus_matches(
+    node: &shelldeck_core::workspace_navigation::PaneNode,
+    focus: shelldeck_core::workspace_navigation::WorkspaceFocus,
+    platform_user_workspace_id: &str,
+    session_id: &str,
+) -> bool {
+    match node {
+        shelldeck_core::workspace_navigation::PaneNode::Leaf(leaf) => {
+            leaf.id == focus.pane_id
+                && leaf.tabs.iter().any(|tab| {
+                    tab.id == focus.tab_id
+                        && matches!(
+                            &tab.content,
+                            WorkspaceTabContent::ProviderSession(binding)
+                                if binding.platform_user_workspace_id
+                                    == platform_user_workspace_id
+                                    && binding.session_id == session_id
+                        )
+                })
+        }
+        shelldeck_core::workspace_navigation::PaneNode::Split { first, second, .. } => {
+            provider_focus_matches(first, focus, platform_user_workspace_id, session_id)
+                || provider_focus_matches(second, focus, platform_user_workspace_id, session_id)
+        }
+    }
+}
+
 pub(super) struct WorkspaceHubView {
     catalog: ProjectCatalog,
     navigation: WorkspaceNavigationState,
+    attention: BTreeMap<CatalogWorkspaceId, AttentionBoard>,
+    platform_attention: BTreeMap<CatalogWorkspaceId, Vec<PlatformAttentionPresentation>>,
     cards: WorkspaceCardAggregator,
     creation: WorkspaceCreationReducer,
     retained: BTreeMap<CatalogWorkspaceId, Entity<RetainedWorkspaceSurface>>,
+    retained_subscriptions: Vec<Subscription>,
+    agent_host: Option<Entity<AgentConsoleView>>,
     unclaimed_terminal: Option<Entity<TerminalView>>,
     terminal_config: Option<WorkspaceTerminalConfig>,
     connections: HashMap<Uuid, String>,
@@ -562,9 +723,111 @@ pub(super) struct WorkspaceHubView {
 
 pub(super) enum WorkspaceHubEvent {
     ActiveTerminal(Entity<TerminalView>),
+    OpenPlatformAttention(shelldeck_core::config::platform_attention::PlatformAttentionActivation),
+    /// Requests that the application attach/focus the runtime represented by
+    /// a typed workspace tab. Terminal and local editor tabs are hosted by the
+    /// retained surface itself; provider and browser runtimes cross this
+    /// explicit orchestration boundary.
+    OpenWorkspacePane(WorkspacePaneActivation),
+    /// The project/checkout/workspace tree changed and consumers should pull
+    /// a fresh snapshot through `catalog()`.
+    CatalogChanged,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct WorkspacePaneActivation {
+    pub workspace: CatalogWorkspaceId,
+    pub focus: WorkspaceFocus,
+    pub title: String,
+    pub content: WorkspaceTabContent,
 }
 
 impl EventEmitter<WorkspaceHubEvent> for WorkspaceHubView {}
+
+fn retained_surface_entity(
+    catalog: &ProjectCatalog,
+    workspace: CatalogWorkspaceId,
+    terminal: Entity<TerminalView>,
+    agent_host: Option<Entity<AgentConsoleView>>,
+    surface: WorkspaceSurfaceState,
+    cx: &mut Context<WorkspaceHubView>,
+) -> (Entity<RetainedWorkspaceSurface>, Subscription) {
+    let checkout = catalog
+        .workspace(workspace)
+        .ok()
+        .and_then(|record| {
+            catalog
+                .checkout_in_project(record.project_id(), record.checkout_id())
+                .ok()
+        })
+        .cloned()
+        .expect("a retained workspace must reference its catalog checkout");
+    let editor = cx.new(FileEditorView::new);
+    let empty_root = shelldeck_core::config::workspace_catalog::WorkspaceRelativePath::new("")
+        .expect("empty workspace root is valid");
+    if let Ok(root) = checkout.resolve_existing_local_path(&empty_root) {
+        editor.update(cx, |editor, _| {
+            editor.file_browser.set_root(root.as_path().to_path_buf())
+        });
+    }
+    let retained = cx.new({
+        move |_| {
+            RetainedWorkspaceSurface::new(
+                workspace, terminal, editor, agent_host, checkout, surface,
+            )
+        }
+    });
+    let subscription = cx.subscribe(
+        &retained,
+        |hub, retained, event: &workspaces_panes::RetainedWorkspaceEvent, cx| {
+            match event {
+                workspaces_panes::RetainedWorkspaceEvent::Activate(activation) => {
+                    let surface = retained.read(cx).surface.clone();
+                    if hub.navigation.active() != Some(activation.workspace)
+                        || hub
+                            .navigation
+                            .reduce(
+                                &hub.catalog,
+                                WorkspaceNavigationAction::UpdateSurface {
+                                    id: activation.workspace,
+                                    surface,
+                                },
+                            )
+                            .is_err()
+                    {
+                        return;
+                    }
+                    match &activation.content {
+                        WorkspaceTabContent::Terminal(_) => {
+                            cx.emit(WorkspaceHubEvent::ActiveTerminal(
+                                retained.read(cx).terminal.clone(),
+                            ));
+                        }
+                        _ => cx.emit(WorkspaceHubEvent::OpenWorkspacePane(activation.clone())),
+                    }
+                }
+                workspaces_panes::RetainedWorkspaceEvent::LayoutChanged { workspace, surface } => {
+                    if hub.navigation.active() != Some(*workspace)
+                        || surface.validate_for(&hub.catalog, *workspace).is_err()
+                    {
+                        return;
+                    }
+                    if let Err(error) = hub.navigation.reduce(
+                        &hub.catalog,
+                        WorkspaceNavigationAction::UpdateSurface {
+                            id: *workspace,
+                            surface: surface.clone(),
+                        },
+                    ) {
+                        hub.error = Some(error.to_string());
+                    }
+                }
+            }
+            cx.notify();
+        },
+    );
+    (retained, subscription)
+}
 
 impl WorkspaceHubView {
     /// Resolve the active workspace through the catalog's exact reconciliation.
@@ -573,6 +836,612 @@ impl WorkspaceHubView {
         let active = self.navigation.active()?;
         let mapping = self.catalog.workspace(active).ok()?.platform_mapping()?;
         PlatformReviewTarget::from_exact_mapping(mapping).ok()
+    }
+
+    pub(super) fn active_platform_attention_target(
+        &self,
+    ) -> Option<(CatalogWorkspaceId, PlatformAttentionTarget)> {
+        let (active, target) = self.active_platform_attention_context()?;
+        target.map(|target| (active, target))
+    }
+
+    /// The current local workspace remains meaningful even when its Platform
+    /// mapping was removed or became non-exact. Callers use that distinction
+    /// to retire a formerly authoritative board instead of silently retaining
+    /// it as if the old mapping were still current.
+    pub(super) fn active_platform_attention_context(
+        &self,
+    ) -> Option<(CatalogWorkspaceId, Option<PlatformAttentionTarget>)> {
+        let active = self.navigation.active()?;
+        let target = self
+            .catalog
+            .workspace(active)
+            .ok()
+            .and_then(|workspace| workspace.platform_mapping())
+            .and_then(|mapping| PlatformAttentionTarget::from_exact_mapping(mapping).ok());
+        Some((active, target))
+    }
+
+    pub(super) const fn catalog(&self) -> &ProjectCatalog {
+        &self.catalog
+    }
+
+    pub(super) const fn navigation(&self) -> &WorkspaceNavigationState {
+        &self.navigation
+    }
+
+    /// Exact local-agent session currently occupying the focused workspace
+    /// tab. Selection alone is not visibility: unread accounting consumes
+    /// this only while the Workspaces surface itself is on screen.
+    pub(super) fn active_agent_session_id(&self) -> Option<Uuid> {
+        fn active_session(node: &shelldeck_core::workspace_navigation::PaneNode) -> Option<Uuid> {
+            match node {
+                shelldeck_core::workspace_navigation::PaneNode::Leaf(leaf) => {
+                    let active = leaf.active_tab?;
+                    leaf.tabs.iter().find_map(|tab| match &tab.content {
+                        WorkspaceTabContent::AgentSession(binding) if tab.id == active => {
+                            Some(binding.session_id)
+                        }
+                        _ => None,
+                    })
+                }
+                shelldeck_core::workspace_navigation::PaneNode::Split { first, second, .. } => {
+                    active_session(first).or_else(|| active_session(second))
+                }
+            }
+        }
+
+        fn focused_session(
+            node: &shelldeck_core::workspace_navigation::PaneNode,
+            focus: WorkspaceFocus,
+        ) -> Option<Uuid> {
+            match node {
+                shelldeck_core::workspace_navigation::PaneNode::Leaf(leaf)
+                    if leaf.id == focus.pane_id =>
+                {
+                    leaf.tabs.iter().find_map(|tab| {
+                        (tab.id == focus.tab_id)
+                            .then_some(&tab.content)
+                            .and_then(|content| match content {
+                                WorkspaceTabContent::AgentSession(binding) => {
+                                    Some(binding.session_id)
+                                }
+                                _ => None,
+                            })
+                    })
+                }
+                shelldeck_core::workspace_navigation::PaneNode::Leaf(_) => None,
+                shelldeck_core::workspace_navigation::PaneNode::Split { first, second, .. } => {
+                    focused_session(first, focus).or_else(|| focused_session(second, focus))
+                }
+            }
+        }
+
+        let workspace = self.navigation.active()?;
+        let surface = &self.navigation.workspace(workspace)?.surface;
+        let root = surface.root.as_ref()?;
+        surface
+            .focus
+            .and_then(|focus| focused_session(root, focus))
+            .or_else(|| active_session(root))
+    }
+
+    /// Installs the application-owned multi-session agent surface into every
+    /// retained workspace. The selected typed agent tab remains responsible
+    /// for telling that host which session to display via `OpenWorkspacePane`.
+    pub(super) fn attach_agent_host(
+        &mut self,
+        host: Entity<AgentConsoleView>,
+        cx: &mut Context<Self>,
+    ) {
+        self.agent_host = Some(host.clone());
+        for retained in self.retained.values() {
+            retained.update(cx, |retained, cx| {
+                retained.agent_host = Some(host.clone());
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    /// Remove all retained navigation references to a closed local agent
+    /// session, including duplicate/corrupt references in separate panes.
+    pub(super) fn remove_agent_session_tabs(
+        &mut self,
+        session_id: Uuid,
+        cx: &mut Context<Self>,
+    ) -> Result<usize, String> {
+        let workspace_ids = self
+            .catalog
+            .workspaces()
+            .map(UserWorkspaceRecord::id)
+            .collect::<Vec<_>>();
+        let mut changed = 0;
+        for workspace in workspace_ids {
+            let Some(mut surface) = self
+                .navigation
+                .workspace(workspace)
+                .map(|retained| retained.surface.clone())
+            else {
+                continue;
+            };
+            if !workspaces_panes::remove_agent_session_tabs(&mut surface, session_id) {
+                continue;
+            }
+            surface
+                .validate_for(&self.catalog, workspace)
+                .map_err(|error| error.to_string())?;
+            self.navigation
+                .reduce(
+                    &self.catalog,
+                    WorkspaceNavigationAction::UpdateSurface {
+                        id: workspace,
+                        surface: surface.clone(),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            if let Some(retained) = self.retained.get(&workspace) {
+                retained.update(cx, |retained, cx| {
+                    retained.set_surface(surface);
+                    cx.notify();
+                });
+            }
+            changed += 1;
+        }
+        cx.notify();
+        Ok(changed)
+    }
+
+    /// Adds a typed tab to the active pane (or focuses its stable id when it
+    /// is already retained) without flattening the pane tree.
+    pub(super) fn open_or_focus_tab(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        tab: WorkspaceTab,
+        cx: &mut Context<Self>,
+    ) -> Result<WorkspaceFocus, String> {
+        use shelldeck_core::workspace_navigation::PaneNode;
+
+        fn find_tab(node: &PaneNode, tab: WorkspaceTabId) -> Option<WorkspaceFocus> {
+            match node {
+                PaneNode::Leaf(leaf) => leaf
+                    .tabs
+                    .iter()
+                    .any(|candidate| candidate.id == tab)
+                    .then_some(WorkspaceFocus {
+                        pane_id: leaf.id,
+                        tab_id: tab,
+                    }),
+                PaneNode::Split { first, second, .. } => {
+                    find_tab(first, tab).or_else(|| find_tab(second, tab))
+                }
+            }
+        }
+
+        fn append_tab(
+            node: &mut PaneNode,
+            preferred: Option<PaneId>,
+            tab: WorkspaceTab,
+        ) -> WorkspaceFocus {
+            match node {
+                PaneNode::Leaf(leaf) if preferred.is_none_or(|pane| pane == leaf.id) => {
+                    let focus = WorkspaceFocus {
+                        pane_id: leaf.id,
+                        tab_id: tab.id,
+                    };
+                    leaf.tabs.push(tab);
+                    leaf.active_tab = Some(focus.tab_id);
+                    focus
+                }
+                PaneNode::Leaf(_) => unreachable!("preferred pane was validated by retained focus"),
+                PaneNode::Split { first, second, .. } => {
+                    if preferred.is_some_and(|pane| pane_in_node(first, pane)) {
+                        append_tab(first, preferred, tab)
+                    } else {
+                        append_tab(second, preferred, tab)
+                    }
+                }
+            }
+        }
+
+        fn pane_in_node(node: &PaneNode, pane: PaneId) -> bool {
+            match node {
+                PaneNode::Leaf(leaf) => leaf.id == pane,
+                PaneNode::Split { first, second, .. } => {
+                    pane_in_node(first, pane) || pane_in_node(second, pane)
+                }
+            }
+        }
+
+        fn pane_holding_agent(node: &PaneNode) -> Option<PaneId> {
+            match node {
+                PaneNode::Leaf(leaf)
+                    if leaf
+                        .tabs
+                        .iter()
+                        .any(|tab| matches!(tab.content, WorkspaceTabContent::AgentSession(_))) =>
+                {
+                    Some(leaf.id)
+                }
+                PaneNode::Leaf(_) => None,
+                PaneNode::Split { first, second, .. } => {
+                    pane_holding_agent(first).or_else(|| pane_holding_agent(second))
+                }
+            }
+        }
+
+        let retained = self
+            .navigation
+            .workspace(workspace)
+            .ok_or_else(|| format!("workspace {workspace} is not retained"))?;
+        let mut surface = retained.surface.clone();
+        let focus = if let Some(root) = surface.root.as_ref() {
+            find_tab(root, tab.id)
+        } else {
+            None
+        };
+        let focus = if let Some(focus) = focus {
+            if let Some(PaneNode::Leaf(leaf)) = surface.root.as_mut() {
+                if leaf.id == focus.pane_id {
+                    leaf.active_tab = Some(focus.tab_id);
+                }
+            } else if let Some(root) = surface.root.as_mut() {
+                workspaces_panes::set_active_tab(root, focus);
+            }
+            focus
+        } else if let Some(root) = surface.root.as_mut() {
+            let preferred = if matches!(tab.content, WorkspaceTabContent::AgentSession(_)) {
+                pane_holding_agent(root).or_else(|| surface.focus.map(|focus| focus.pane_id))
+            } else {
+                surface.focus.map(|focus| focus.pane_id)
+            };
+            append_tab(root, preferred, tab)
+        } else {
+            let pane_id = PaneId::from_uuid(Uuid::new_v4());
+            let focus = WorkspaceFocus {
+                pane_id,
+                tab_id: tab.id,
+            };
+            surface.root = Some(PaneNode::Leaf(PaneLeaf {
+                id: pane_id,
+                tabs: vec![tab],
+                active_tab: Some(focus.tab_id),
+            }));
+            focus
+        };
+        surface.focus = Some(focus);
+        surface
+            .validate_for(&self.catalog, workspace)
+            .map_err(|error| error.to_string())?;
+        if !self.switch_to_checked(workspace, cx) {
+            return Err(self
+                .error
+                .clone()
+                .unwrap_or_else(|| "workspace activation refused".into()));
+        }
+        self.navigation
+            .reduce(
+                &self.catalog,
+                WorkspaceNavigationAction::UpdateSurface {
+                    id: workspace,
+                    surface: surface.clone(),
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        let retained = self
+            .retained
+            .get(&workspace)
+            .cloned()
+            .ok_or_else(|| format!("workspace {workspace} has no native surface"))?;
+        retained.update(cx, |retained, cx| {
+            retained.set_surface(surface);
+            retained.activate_tab(focus, cx);
+        });
+        Ok(focus)
+    }
+
+    pub(super) fn open_or_focus_agent_session(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        title: impl Into<String>,
+        binding: AgentSessionBinding,
+        cx: &mut Context<Self>,
+    ) -> Result<WorkspaceFocus, String> {
+        fn matching_tab(
+            node: &shelldeck_core::workspace_navigation::PaneNode,
+            session_id: Uuid,
+        ) -> Option<WorkspaceTabId> {
+            match node {
+                shelldeck_core::workspace_navigation::PaneNode::Leaf(leaf) => {
+                    leaf.tabs.iter().find_map(|tab| {
+                        matches!(&tab.content, WorkspaceTabContent::AgentSession(candidate)
+                        if candidate.session_id == session_id)
+                        .then_some(tab.id)
+                    })
+                }
+                shelldeck_core::workspace_navigation::PaneNode::Split { first, second, .. } => {
+                    matching_tab(first, session_id).or_else(|| matching_tab(second, session_id))
+                }
+            }
+        }
+        let id = self
+            .navigation
+            .workspace(workspace)
+            .and_then(|retained| retained.surface.root.as_ref())
+            .and_then(|root| matching_tab(root, binding.session_id))
+            .unwrap_or_else(|| WorkspaceTabId::from_uuid(Uuid::new_v4()));
+        let checkout_id = binding.checkout_id;
+        let focus = self.open_or_focus_tab(
+            workspace,
+            WorkspaceTab {
+                id,
+                title: title.into(),
+                content: WorkspaceTabContent::AgentSession(binding),
+            },
+            cx,
+        )?;
+        self.ensure_local_files_pane(workspace, checkout_id, focus, cx)?;
+        Ok(focus)
+    }
+
+    fn ensure_local_files_pane(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        checkout_id: CatalogCheckoutId,
+        agent_focus: WorkspaceFocus,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        use shelldeck_core::workspace_navigation::{PaneNode, SplitAxis};
+
+        let record = self
+            .catalog
+            .workspace(workspace)
+            .map_err(|error| error.to_string())?;
+        let checkout = self
+            .catalog
+            .checkout_in_project(record.project_id(), checkout_id)
+            .map_err(|error| error.to_string())?;
+        if !matches!(checkout.host(), CheckoutHost::Local { .. }) {
+            return Ok(());
+        }
+        let relative_root = WorkspaceRelativePath::new("").map_err(|error| error.to_string())?;
+        let mut surface = self
+            .navigation
+            .workspace(workspace)
+            .ok_or_else(|| format!("workspace {workspace} is not retained"))?
+            .surface
+            .clone();
+
+        fn existing_files(node: &PaneNode) -> Option<WorkspaceTabId> {
+            match node {
+                PaneNode::Leaf(leaf) => leaf.tabs.iter().find_map(|tab| {
+                    matches!(tab.content, WorkspaceTabContent::Files { .. }).then_some(tab.id)
+                }),
+                PaneNode::Split { first, second, .. } => {
+                    existing_files(first).or_else(|| existing_files(second))
+                }
+            }
+        }
+
+        let existing = surface.root.as_ref().and_then(existing_files);
+        let files_tab = if let Some(tab_id) = existing {
+            tab_id
+        } else {
+            let tab_id = WorkspaceTabId::from_uuid(Uuid::new_v4());
+            let files = WorkspaceTab {
+                id: tab_id,
+                title: t!("file_editor.browser.files").to_string(),
+                content: WorkspaceTabContent::Files {
+                    checkout_id,
+                    relative_root: relative_root.clone(),
+                },
+            };
+            fn split_agent_leaf(
+                node: &mut PaneNode,
+                focus: WorkspaceFocus,
+                files: WorkspaceTab,
+            ) -> bool {
+                match node {
+                    PaneNode::Leaf(leaf) if leaf.id == focus.pane_id => {
+                        let files_pane = PaneId::from_uuid(Uuid::new_v4());
+                        let first = leaf.clone();
+                        *node = PaneNode::Split {
+                            axis: SplitAxis::Horizontal,
+                            ratio_basis_points: 7_500,
+                            first: Box::new(PaneNode::Leaf(first)),
+                            second: Box::new(PaneNode::Leaf(PaneLeaf {
+                                id: files_pane,
+                                active_tab: Some(files.id),
+                                tabs: vec![files],
+                            })),
+                        };
+                        true
+                    }
+                    PaneNode::Leaf(_) => false,
+                    PaneNode::Split { first, second, .. } => {
+                        split_agent_leaf(first, focus, files.clone())
+                            || split_agent_leaf(second, focus, files)
+                    }
+                }
+            }
+            let root = surface
+                .root
+                .as_mut()
+                .ok_or_else(|| "agent workspace has no pane surface".to_string())?;
+            if !split_agent_leaf(root, agent_focus, files) {
+                return Err("agent workspace pane disappeared before files layout".to_string());
+            }
+            tab_id
+        };
+        surface.focus = Some(agent_focus);
+        surface
+            .validate_for(&self.catalog, workspace)
+            .map_err(|error| error.to_string())?;
+        self.navigation
+            .reduce(
+                &self.catalog,
+                WorkspaceNavigationAction::UpdateSurface {
+                    id: workspace,
+                    surface: surface.clone(),
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        if let Some(retained) = self.retained.get(&workspace) {
+            retained.update(cx, |retained, cx| {
+                retained.set_surface(surface);
+                retained.prepare_files_tab(files_tab, &relative_root, cx);
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn set_platform_attention(
+        &mut self,
+        rows: BTreeMap<CatalogWorkspaceId, Vec<PlatformAttentionPresentation>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.platform_attention = rows;
+        cx.notify();
+    }
+
+    pub(super) fn open_platform_attention_surface(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.switch_to_checked(workspace, cx)
+    }
+
+    pub(super) fn platform_attention_surface_is_visible(
+        &self,
+        workspace: CatalogWorkspaceId,
+    ) -> bool {
+        self.navigation.active() == Some(workspace)
+    }
+
+    pub(super) fn open_retained_provider_pane(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        session: &ResourceCoordinate,
+        focus: shelldeck_core::workspace_navigation::WorkspaceFocus,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(platform_user_workspace_id) = self
+            .catalog
+            .workspace(workspace)
+            .ok()
+            .and_then(|workspace| workspace.platform_mapping())
+            .filter(|mapping| mapping.is_exact())
+            .map(|mapping| mapping.user_workspace.id.as_str())
+        else {
+            return false;
+        };
+        let Some(retained) = self.navigation.workspace(workspace) else {
+            return false;
+        };
+        let mut surface = retained.surface.clone();
+        let exact = surface.root.as_ref().is_some_and(|root| {
+            provider_focus_matches(root, focus, platform_user_workspace_id, session.id.as_str())
+        });
+        let Some(retained_entity) = self.retained.get(&workspace).cloned() else {
+            return false;
+        };
+        if !exact || !self.switch_to_checked(workspace, cx) {
+            return false;
+        }
+        let Some(root) = surface.root.as_mut() else {
+            return false;
+        };
+        let Some(tab) = workspaces_panes::set_active_tab(root, focus) else {
+            return false;
+        };
+        surface.focus = Some(focus);
+        if self
+            .navigation
+            .reduce(
+                &self.catalog,
+                WorkspaceNavigationAction::UpdateSurface {
+                    id: workspace,
+                    surface: surface.clone(),
+                },
+            )
+            .is_err()
+        {
+            return false;
+        }
+        retained_entity.update(cx, |retained, entity_cx| {
+            if retained
+                .terminal
+                .read(entity_cx)
+                .tabs
+                .iter()
+                .any(|native| native.id == focus.tab_id.as_uuid())
+            {
+                retained.terminal.update(entity_cx, |terminal, _| {
+                    terminal.select_tab(focus.tab_id.as_uuid())
+                });
+            }
+            retained.set_surface(surface);
+        });
+        cx.emit(WorkspaceHubEvent::OpenWorkspacePane(
+            WorkspacePaneActivation {
+                workspace,
+                focus,
+                title: tab.title,
+                content: tab.content,
+            },
+        ));
+        cx.notify();
+        true
+    }
+
+    pub(super) fn retained_provider_pane_is_visible(
+        &self,
+        workspace: CatalogWorkspaceId,
+        session: &ResourceCoordinate,
+        focus: shelldeck_core::workspace_navigation::WorkspaceFocus,
+        cx: &App,
+    ) -> bool {
+        if self.navigation.active() != Some(workspace) {
+            return false;
+        }
+        let Some(platform_user_workspace_id) = self
+            .catalog
+            .workspace(workspace)
+            .ok()
+            .and_then(|workspace| workspace.platform_mapping())
+            .filter(|mapping| mapping.is_exact())
+            .map(|mapping| mapping.user_workspace.id.as_str())
+        else {
+            return false;
+        };
+        let surface_matches = self
+            .navigation
+            .workspace(workspace)
+            .is_some_and(|retained| {
+                retained.surface.focus == Some(focus)
+                    && retained.surface.root.as_ref().is_some_and(|root| {
+                        provider_focus_matches(
+                            root,
+                            focus,
+                            platform_user_workspace_id,
+                            session.id.as_str(),
+                        )
+                    })
+            });
+        let native_matches = self.retained.get(&workspace).is_some_and(|retained| {
+            let retained = retained.read(cx);
+            retained.surface.focus == Some(focus)
+                && retained.surface.root.as_ref().is_some_and(|root| {
+                    provider_focus_matches(
+                        root,
+                        focus,
+                        platform_user_workspace_id,
+                        session.id.as_str(),
+                    )
+                })
+        });
+        surface_matches && native_matches
     }
 
     pub(super) fn configure_terminals(
@@ -651,6 +1520,8 @@ impl WorkspaceHubView {
         });
         let mut navigation = WorkspaceNavigationState::default();
         let mut retained = BTreeMap::new();
+        let mut retained_subscriptions = Vec::new();
+        let mut attention = BTreeMap::new();
         let mut initial_terminal = Some(initial_terminal);
         for workspace in catalog.workspaces() {
             let surface = WorkspaceSurfaceState::default();
@@ -680,10 +1551,17 @@ impl WorkspaceHubView {
                     }
                 }
             }
-            retained.insert(
+            let (surface, subscription) = retained_surface_entity(
+                &catalog,
                 workspace.id(),
-                cx.new(move |_| RetainedWorkspaceSurface::new(workspace.id(), terminal)),
+                terminal,
+                None,
+                WorkspaceSurfaceState::default(),
+                cx,
             );
+            retained.insert(workspace.id(), surface);
+            retained_subscriptions.push(subscription);
+            attention.insert(workspace.id(), AttentionBoard::new(workspace.id()));
         }
         let onboarding_open = catalog.projects().len() == 0;
         let onboarding_connection = connections.keys().next().copied();
@@ -716,9 +1594,13 @@ impl WorkspaceHubView {
         Self {
             catalog,
             navigation,
+            attention,
+            platform_attention: BTreeMap::new(),
             cards: WorkspaceCardAggregator::default(),
             creation: WorkspaceCreationReducer::default(),
             retained,
+            retained_subscriptions,
+            agent_host: None,
             unclaimed_terminal: initial_terminal,
             terminal_config: None,
             connections,
@@ -752,18 +1634,28 @@ impl WorkspaceHubView {
     }
 
     fn switch_to(&mut self, id: CatalogWorkspaceId, cx: &mut Context<Self>) {
+        self.switch_to_checked(id, cx);
+    }
+
+    fn switch_to_checked(&mut self, id: CatalogWorkspaceId, cx: &mut Context<Self>) -> bool {
         if self.recovery_pending {
             self.error = Some(t!("workspaces.launcher.folder_unavailable").to_string());
             cx.notify();
-            return;
+            return false;
         }
         if let Some(outgoing) = self.navigation.active() {
             if let Some(surface) = self.retained.get(&outgoing) {
                 let state = {
                     let retained = surface.read(cx);
-                    terminal_surface(&self.catalog, outgoing, retained.terminal.read(cx))
+                    reconcile_terminal_surface(
+                        &retained.surface,
+                        terminal_surface(&self.catalog, outgoing, retained.terminal.read(cx)),
+                    )
                 };
-                surface.update(cx, |surface, cx| surface.capture(cx));
+                surface.update(cx, |surface, cx| {
+                    surface.set_surface(state.clone());
+                    surface.capture(cx);
+                });
                 if let Err(error) = self.navigation.reduce(
                     &self.catalog,
                     WorkspaceNavigationAction::UpdateSurface {
@@ -773,7 +1665,7 @@ impl WorkspaceHubView {
                 ) {
                     self.error = Some(error.to_string());
                     cx.notify();
-                    return;
+                    return false;
                 }
             }
         }
@@ -784,16 +1676,148 @@ impl WorkspaceHubView {
             Ok(()) => {
                 self.error = None;
                 if let Some(surface) = self.retained.get(&id) {
-                    surface.update(cx, |surface, cx| surface.apply(cx));
+                    let retained_state = self
+                        .navigation
+                        .workspace(id)
+                        .map(|workspace| workspace.surface.clone())
+                        .unwrap_or_default();
+                    let state = {
+                        let retained = surface.read(cx);
+                        reconcile_terminal_surface(
+                            &retained_state,
+                            terminal_surface(&self.catalog, id, retained.terminal.read(cx)),
+                        )
+                    };
+                    surface.update(cx, |surface, cx| {
+                        surface.set_surface(state.clone());
+                        surface.apply(cx);
+                    });
+                    if let Err(error) = self.navigation.reduce(
+                        &self.catalog,
+                        WorkspaceNavigationAction::UpdateSurface { id, surface: state },
+                    ) {
+                        self.error = Some(error.to_string());
+                        cx.notify();
+                        return false;
+                    }
                     cx.emit(WorkspaceHubEvent::ActiveTerminal(
                         surface.read(cx).terminal.clone(),
                     ));
                 }
                 self.observe_local_card(id, cx);
+                cx.notify();
+                true
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+                false
+            }
         }
+    }
+
+    /// Admit one already-authoritative local attention item. Canonical review
+    /// events are deliberately not converted here because they do not carry
+    /// the exact retained pane/session coordinates this board requires.
+    #[allow(dead_code)]
+    pub(super) fn apply_attention_item(
+        &mut self,
+        item: AttentionItem,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, AttentionError> {
+        let workspace = item.target.workspace;
+        let board = self
+            .attention
+            .get_mut(&workspace)
+            .ok_or(AttentionError::WrongWorkspace)?;
+        let notify = board.apply(item)?;
         cx.notify();
+        Ok(notify)
+    }
+
+    fn attention_items(&self, workspace: CatalogWorkspaceId) -> Vec<AttentionItemPresentation> {
+        let Some(board) = self.attention.get(&workspace) else {
+            return Vec::new();
+        };
+        board
+            .ordered()
+            .into_iter()
+            .rev()
+            .map(|item| AttentionItemPresentation {
+                workspace,
+                id: item.id,
+                revision: item.revision,
+                state: item.state,
+                title: item.title.clone(),
+                unread: board.is_unread(item.id),
+                agent_path: item.agent_path.clone(),
+            })
+            .collect()
+    }
+
+    fn open_attention_item(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        id: AttentionItemId,
+        expected_revision: u64,
+        cx: &mut Context<Self>,
+    ) -> Result<shelldeck_core::workspace_navigation::WorkspaceFocus, AttentionError> {
+        let focus = self
+            .attention
+            .get(&workspace)
+            .ok_or(AttentionError::WrongWorkspace)?
+            .resolve_target(
+                id,
+                expected_revision,
+                workspace,
+                &self.catalog,
+                &self.navigation,
+            )?;
+
+        let native_target_exists = self.retained.get(&workspace).is_some_and(|surface| {
+            let terminal = surface.read(cx).terminal.clone();
+            terminal
+                .read(cx)
+                .tabs
+                .iter()
+                .any(|tab| tab.id == focus.tab_id.as_uuid())
+        });
+        if !native_target_exists {
+            return Err(AttentionError::InvalidSurface);
+        }
+        if !self.switch_to_checked(workspace, cx) {
+            return Err(AttentionError::InvalidSurface);
+        }
+
+        let surface = self
+            .retained
+            .get(&workspace)
+            .cloned()
+            .ok_or(AttentionError::InvalidSurface)?;
+        let terminal = surface.read(cx).terminal.clone();
+        terminal.update(cx, |terminal, _| {
+            terminal.select_tab(focus.tab_id.as_uuid());
+        });
+        let native_surface = terminal_surface(&self.catalog, workspace, terminal.read(cx));
+        if native_surface.focus != Some(focus) {
+            return Err(AttentionError::InvalidSurface);
+        }
+        self.navigation
+            .reduce(
+                &self.catalog,
+                WorkspaceNavigationAction::UpdateSurface {
+                    id: workspace,
+                    surface: native_surface,
+                },
+            )
+            .map_err(|_| AttentionError::InvalidSurface)?;
+        self.attention
+            .get_mut(&workspace)
+            .ok_or(AttentionError::WrongWorkspace)?
+            .mark_read(id, expected_revision)?;
+        self.error = None;
+        cx.notify();
+        Ok(focus)
     }
 
     fn observe_local_card(&mut self, workspace: CatalogWorkspaceId, cx: &mut Context<Self>) {
@@ -996,6 +2020,7 @@ impl WorkspaceHubView {
                 self.refresh_checkout_select(Some(checkout_id), cx);
                 self.onboarding_open = false;
                 self.error = None;
+                cx.emit(WorkspaceHubEvent::CatalogChanged);
             }
             Err(error) => self.error = Some(error),
         }
@@ -1395,10 +2420,19 @@ impl WorkspaceHubView {
                 ) {
                     self.error = Some(error.to_string());
                 }
-                self.retained.insert(
+                let (retained, subscription) = retained_surface_entity(
+                    &self.catalog,
                     workspace,
-                    cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
+                    terminal,
+                    self.agent_host.clone(),
+                    WorkspaceSurfaceState::default(),
+                    cx,
                 );
+                self.retained.insert(workspace, retained);
+                self.retained_subscriptions.push(subscription);
+                self.attention
+                    .insert(workspace, AttentionBoard::new(workspace));
+                cx.emit(WorkspaceHubEvent::CatalogChanged);
                 let executor = self.executor.clone();
                 let acknowledge = cx
                     .background_executor()
@@ -1578,10 +2612,19 @@ impl WorkspaceHubView {
         ) {
             self.error = Some(error.to_string());
         }
-        self.retained.insert(
+        let (retained, subscription) = retained_surface_entity(
+            &self.catalog,
             workspace,
-            cx.new(move |_| RetainedWorkspaceSurface::new(workspace, terminal)),
+            terminal,
+            self.agent_host.clone(),
+            WorkspaceSurfaceState::default(),
+            cx,
         );
+        self.retained.insert(workspace, retained);
+        self.retained_subscriptions.push(subscription);
+        self.attention
+            .insert(workspace, AttentionBoard::new(workspace));
+        cx.emit(WorkspaceHubEvent::CatalogChanged);
         if let Err(error) = self.creation.reduce(
             request.catalog_revision,
             WorkspaceCreateEvent::Completed {
@@ -1830,9 +2873,15 @@ impl WorkspaceHubView {
             if let Some(surface) = self.retained.get(&workspace) {
                 let state = {
                     let retained = surface.read(cx);
-                    terminal_surface(&self.catalog, workspace, retained.terminal.read(cx))
+                    reconcile_terminal_surface(
+                        &retained.surface,
+                        terminal_surface(&self.catalog, workspace, retained.terminal.read(cx)),
+                    )
                 };
-                surface.update(cx, |surface, cx| surface.capture(cx));
+                surface.update(cx, |surface, cx| {
+                    surface.set_surface(state.clone());
+                    surface.capture(cx);
+                });
                 if let Err(error) = self.navigation.reduce(
                     &self.catalog,
                     WorkspaceNavigationAction::UpdateSurface {
@@ -1858,6 +2907,7 @@ impl WorkspaceHubView {
             self.error = Some(error.to_string());
         } else {
             self.navigation.reconcile_catalog(&self.catalog);
+            cx.emit(WorkspaceHubEvent::CatalogChanged);
             if archived {
                 self.switch_to(workspace, cx);
             } else if was_active {
@@ -2018,6 +3068,31 @@ fn agent_label(agent: WorkspaceAgentState) -> String {
         WorkspaceAgentState::Completed => t!("workspaces.agent.completed"),
     }
     .to_string()
+}
+
+fn attention_state_label(state: AttentionState) -> String {
+    match state {
+        AttentionState::NeedsYou => t!("workspaces.attention.needs_you"),
+        AttentionState::Working => t!("workspaces.attention.working"),
+        AttentionState::Blocked => t!("workspaces.attention.blocked"),
+        AttentionState::Done => t!("workspaces.attention.done"),
+        AttentionState::Idle => t!("workspaces.attention.idle"),
+    }
+    .to_string()
+}
+
+fn attention_state_variant(state: AttentionState) -> BadgeVariant {
+    match state {
+        AttentionState::NeedsYou => BadgeVariant::Warning,
+        AttentionState::Blocked => BadgeVariant::Destructive,
+        AttentionState::Done => BadgeVariant::Default,
+        AttentionState::Working => BadgeVariant::Secondary,
+        AttentionState::Idle => BadgeVariant::Outline,
+    }
+}
+
+fn attention_error_label(_error: AttentionError) -> String {
+    t!("workspaces.attention.open_refused").to_string()
 }
 
 fn freshness_label(freshness: WorkspaceFreshness) -> String {

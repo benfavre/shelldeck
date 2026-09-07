@@ -11,18 +11,119 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use uuid::Uuid;
 
+use agent_client_protocol::schema::v1::{
+    ContentBlock, PermissionOptionId, PermissionOptionKind, RequestPermissionRequest,
+    SessionNotification, SessionUpdate, ToolCallStatus,
+};
+
+use crate::agent_session::{AgentTraceKind, AgentTraceStatus, AgentTraceUpdate};
 use crate::{Result, ShellDeckError};
 
 pub const MAX_AGENT_PROMPT_BYTES: usize = 48 * 1024;
 pub const MAX_AGENT_MODEL_BYTES: usize = 256;
 pub const MAX_AGENT_WORKDIR_BYTES: usize = 4096;
 pub const MAX_AGENT_SESSION_BYTES: usize = 256;
+pub const MAX_AGENT_STREAM_LINE_BYTES: usize = 256 * 1024;
+pub const MAX_AGENT_STREAM_TEXT_BYTES: usize = 128 * 1024;
+pub const MAX_AGENT_TRACE_FIELD_BYTES: usize = 8 * 1024;
+pub const MAX_AGENT_ACTIVITY_BYTES: usize = 512;
+pub const AGENT_STREAM_OVERSIZED_LABEL: &str = "Provider event omitted (too large)";
+/// Canonical workdir used when an SSH agent should start in the remote
+/// account's home directory. It is expanded by [`AgentCommandSpec`] on the
+/// remote shell; it is never passed through as a literal filesystem path.
+pub const AGENT_REMOTE_HOME_WORKDIR: &str = "~";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentStreamFrame {
+    Line(String),
+    Oversized,
+}
+
+/// Incrementally frames an arbitrary provider byte stream without ever
+/// retaining more than one admitted line. Once a line exceeds the parser's
+/// byte bound, its remainder is discarded through the next newline and one
+/// omission frame is emitted.
+#[derive(Debug, Default)]
+pub struct AgentStreamFramer {
+    pending: Vec<u8>,
+    discarding_oversized: bool,
+}
+
+impl AgentStreamFramer {
+    pub fn push(&mut self, mut bytes: &[u8]) -> Vec<AgentStreamFrame> {
+        let mut frames = Vec::new();
+        while !bytes.is_empty() {
+            if self.discarding_oversized {
+                let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') else {
+                    break;
+                };
+                self.discarding_oversized = false;
+                bytes = &bytes[newline + 1..];
+                continue;
+            }
+
+            if let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
+                let segment = &bytes[..newline];
+                if self.pending.len().saturating_add(segment.len()) > MAX_AGENT_STREAM_LINE_BYTES {
+                    self.pending.clear();
+                    frames.push(AgentStreamFrame::Oversized);
+                } else {
+                    self.pending.extend_from_slice(segment);
+                    if self.pending.last() == Some(&b'\r') {
+                        self.pending.pop();
+                    }
+                    frames.push(AgentStreamFrame::Line(
+                        String::from_utf8_lossy(&self.pending).into_owned(),
+                    ));
+                    self.pending.clear();
+                }
+                bytes = &bytes[newline + 1..];
+                continue;
+            }
+
+            let remaining = MAX_AGENT_STREAM_LINE_BYTES.saturating_sub(self.pending.len());
+            if bytes.len() > remaining {
+                self.pending.clear();
+                self.discarding_oversized = true;
+                frames.push(AgentStreamFrame::Oversized);
+            } else {
+                self.pending.extend_from_slice(bytes);
+            }
+            break;
+        }
+        frames
+    }
+
+    pub fn finish(&mut self) -> Vec<AgentStreamFrame> {
+        if self.discarding_oversized {
+            self.discarding_oversized = false;
+            self.pending.clear();
+            return Vec::new();
+        }
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let mut pending = std::mem::take(&mut self.pending);
+        if pending.last() == Some(&b'\r') {
+            pending.pop();
+        }
+        vec![AgentStreamFrame::Line(
+            String::from_utf8_lossy(&pending).into_owned(),
+        )]
+    }
+
+    pub fn buffered_bytes(&self) -> usize {
+        self.pending.len()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentProvider {
     Claude,
     Codex,
+    /// Automonique's stable ACP v1 agent surface.
+    Automonique,
     /// Jcode with the provider selected by its configuration on the target.
     Jcode,
     /// DeepSeek models are launched through the managed Jcode runner. Jcode
@@ -35,6 +136,7 @@ impl AgentProvider {
         match self {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
+            Self::Automonique => "Automonique (ACP)",
             Self::Jcode => "Jcode (auto)",
             Self::DeepSeek => "DeepSeek (Jcode)",
         }
@@ -44,6 +146,7 @@ impl AgentProvider {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Automonique => "automonique",
             Self::Jcode | Self::DeepSeek => "jcode",
         }
     }
@@ -137,7 +240,9 @@ impl AgentRunRequest {
         let absolute = match self.target {
             AgentTarget::Local => Path::new(workdir).is_absolute(),
             // Remote agent transport is POSIX shell based on every host OS.
-            AgentTarget::Ssh { .. } => workdir.starts_with('/'),
+            AgentTarget::Ssh { .. } => {
+                workdir == AGENT_REMOTE_HOME_WORKDIR || workdir.starts_with('/')
+            }
         };
         if workdir.is_empty() || !absolute {
             return Err(ShellDeckError::Config(
@@ -191,6 +296,11 @@ impl AgentCommandSpec {
             .filter(|value| !value.is_empty());
 
         let (args, stdin, remove_env) = match request.provider {
+            AgentProvider::Automonique => {
+                return Err(ShellDeckError::Config(
+                    "Automonique uses the ACP transport, not a command stream".to_string(),
+                ));
+            }
             AgentProvider::Claude => {
                 let permission_mode = match request.access {
                     AgentAccessMode::ReadOnly => "plan",
@@ -251,6 +361,16 @@ impl AgentCommandSpec {
                 (args, Some(request.prompt.as_bytes().to_vec()), Vec::new())
             }
             AgentProvider::Jcode | AgentProvider::DeepSeek => {
+                // The SSH home sentinel is expanded by the outer `cd`. Keep
+                // Jcode rooted in that resulting directory rather than
+                // passing a quoted literal `~`, which no shell would expand.
+                let provider_workdir = if matches!(request.target, AgentTarget::Ssh { .. })
+                    && request.workdir.trim() == AGENT_REMOTE_HOME_WORKDIR
+                {
+                    "."
+                } else {
+                    request.workdir.trim()
+                };
                 let mut args = vec![
                     "run".to_string(),
                     "--ndjson".to_string(),
@@ -258,7 +378,7 @@ impl AgentCommandSpec {
                     "--no-update".to_string(),
                     "--no-selfdev".to_string(),
                     "-C".to_string(),
-                    request.workdir.trim().to_string(),
+                    provider_workdir.to_string(),
                 ];
                 if request.provider == AgentProvider::DeepSeek {
                     args.push("--provider".to_string());
@@ -330,9 +450,16 @@ impl AgentCommandSpec {
             }
             None => command,
         };
+        let workdir = self.cwd.to_string_lossy();
+        let workdir = if workdir == AGENT_REMOTE_HOME_WORKDIR {
+            // This exact constant is the only unquoted workdir expression.
+            // Every user-controlled absolute path still crosses shell_quote.
+            "\"$HOME\"".to_string()
+        } else {
+            shell_quote(&workdir)
+        };
         format!(
-            "export PATH=\"$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; cd -- {} && {command}",
-            shell_quote(&self.cwd.to_string_lossy())
+            "export PATH=\"$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; cd -- {workdir} && {command}"
         )
     }
 }
@@ -584,6 +711,16 @@ pub enum AgentStreamEvent {
     /// Provider initialization completed. The UI localizes this state rather
     /// than baking a language into the provider-neutral parser.
     Ready,
+    /// Structured technical activity rendered independently from conversation
+    /// prose. All provider-derived strings are bounded and redacted.
+    Trace(AgentTraceUpdate),
+    /// Completion/status for a previously correlated technical activity.
+    TraceStatus {
+        correlation_id: String,
+        status: AgentTraceStatus,
+        summary: Option<String>,
+    },
+    /// Safe fallback for provider activity not recognized structurally.
     Activity(String),
     Error(String),
 }
@@ -596,13 +733,127 @@ pub fn parse_stream_line(provider: AgentProvider, line: &str) -> Vec<AgentStream
     if trimmed.is_empty() {
         return Vec::new();
     }
+    if trimmed.len() > MAX_AGENT_STREAM_LINE_BYTES {
+        return vec![AgentStreamEvent::Activity(
+            AGENT_STREAM_OVERSIZED_LABEL.to_string(),
+        )];
+    }
     let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
-        return vec![AgentStreamEvent::Activity(trimmed.to_string())];
+        let label = if trimmed.starts_with(['{', '[']) {
+            "Malformed provider event".to_string()
+        } else {
+            safe_provider_text(trimmed, MAX_AGENT_ACTIVITY_BYTES)
+        };
+        return vec![AgentStreamEvent::Activity(label)];
     };
     match provider {
+        AgentProvider::Automonique => vec![AgentStreamEvent::Activity(
+            "Unexpected raw Automonique ACP record".to_string(),
+        )],
         AgentProvider::Claude => parse_claude_event(&value),
         AgentProvider::Codex => parse_codex_event(&value),
         AgentProvider::Jcode | AgentProvider::DeepSeek => parse_jcode_event(&value),
+    }
+}
+
+/// Map one typed ACP update into the same bounded timeline vocabulary used by
+/// CLI providers. Raw ACP metadata, tool input and tool output never cross
+/// into the transcript.
+pub fn acp_notification_events(notification: &SessionNotification) -> Vec<AgentStreamEvent> {
+    let mut events = vec![AgentStreamEvent::Session(
+        notification.session_id.0.to_string(),
+    )];
+    match &notification.update {
+        SessionUpdate::AgentMessageChunk(chunk) => {
+            if let ContentBlock::Text(text) = &chunk.content {
+                events.push(AgentStreamEvent::TextDelta(safe_visible_text(&text.text)));
+            }
+        }
+        SessionUpdate::AgentThoughtChunk(chunk) => {
+            if let ContentBlock::Text(text) = &chunk.content {
+                events.push(AgentStreamEvent::Trace(AgentTraceUpdate {
+                    correlation_id: None,
+                    detail: AgentTraceKind::Activity {
+                        label: safe_provider_text(&text.text, MAX_AGENT_ACTIVITY_BYTES),
+                    },
+                }));
+            }
+        }
+        SessionUpdate::ToolCall(call) => {
+            events.push(AgentStreamEvent::Trace(AgentTraceUpdate {
+                correlation_id: Some(call.tool_call_id.0.to_string()),
+                detail: AgentTraceKind::Tool {
+                    name: safe_provider_text(&call.title, MAX_AGENT_TRACE_FIELD_BYTES),
+                    status: acp_trace_status(call.status),
+                    summary: None,
+                },
+            }));
+        }
+        SessionUpdate::ToolCallUpdate(update) => {
+            if let Some(status) = update.fields.status {
+                events.push(AgentStreamEvent::TraceStatus {
+                    correlation_id: update.tool_call_id.0.to_string(),
+                    status: acp_trace_status(status),
+                    summary: update
+                        .fields
+                        .title
+                        .as_deref()
+                        .map(|title| safe_provider_text(title, MAX_AGENT_TRACE_FIELD_BYTES)),
+                });
+            }
+        }
+        SessionUpdate::Plan(plan) => {
+            events.push(AgentStreamEvent::Trace(AgentTraceUpdate {
+                correlation_id: None,
+                detail: AgentTraceKind::Activity {
+                    label: format!("Plan updated ({} steps)", plan.entries.len()),
+                },
+            }));
+        }
+        SessionUpdate::AvailableCommandsUpdate(_)
+        | SessionUpdate::CurrentModeUpdate(_)
+        | SessionUpdate::ConfigOptionUpdate(_)
+        | SessionUpdate::SessionInfoUpdate(_)
+        | SessionUpdate::UsageUpdate(_) => {}
+        SessionUpdate::UserMessageChunk(_) => {}
+        _ => {}
+    }
+    events
+}
+
+fn acp_trace_status(status: ToolCallStatus) -> AgentTraceStatus {
+    match status {
+        ToolCallStatus::Pending | ToolCallStatus::InProgress => AgentTraceStatus::Running,
+        ToolCallStatus::Completed => AgentTraceStatus::Succeeded,
+        ToolCallStatus::Failed => AgentTraceStatus::Failed,
+        _ => AgentTraceStatus::Running,
+    }
+}
+
+/// ACP permission policy derived from the run-level access confirmation.
+/// Read-only never grants a tool request; mutating modes grant only the exact
+/// one-shot option offered by Automonique and never persist an allow decision.
+pub struct AcpAgentPermissionBroker {
+    access: AgentAccessMode,
+}
+
+impl AcpAgentPermissionBroker {
+    #[must_use]
+    pub const fn new(access: AgentAccessMode) -> Self {
+        Self { access }
+    }
+}
+
+impl crate::acp::AcpPermissionBroker for AcpAgentPermissionBroker {
+    fn select(&self, request: &RequestPermissionRequest) -> Option<PermissionOptionId> {
+        if self.access == AgentAccessMode::ReadOnly {
+            return None;
+        }
+        request
+            .options
+            .iter()
+            .find(|option| option.kind == PermissionOptionKind::AllowOnce)
+            .map(|option| option.option_id.clone())
     }
 }
 
@@ -616,21 +867,25 @@ fn parse_claude_event(value: &Value) -> Vec<AgentStreamEvent> {
                 value
                     .pointer("/message/content")
                     .and_then(text_from_value)
-                    .map(AgentStreamEvent::Error),
+                    .map(|text| AgentStreamEvent::Error(safe_visible_text(&text))),
             )
         }
-        Some("assistant") => events.extend(
-            value
-                .pointer("/message/content")
-                .and_then(text_from_value)
-                .map(AgentStreamEvent::Text),
-        ),
+        Some("assistant") => {
+            events.extend(
+                value
+                    .pointer("/message/content")
+                    .and_then(text_from_value)
+                    .map(|text| AgentStreamEvent::Text(safe_visible_text(&text))),
+            );
+            events.extend(claude_trace_events(value));
+        }
+        Some("user") => events.extend(claude_tool_result_events(value)),
         Some("result") if value.get("is_error").and_then(Value::as_bool) == Some(true) => events
             .extend(
                 value
                     .get("result")
                     .and_then(text_from_value)
-                    .map(AgentStreamEvent::Error),
+                    .map(|text| AgentStreamEvent::Error(safe_visible_text(&text))),
             ),
         Some("system") if value.get("subtype").and_then(Value::as_str) == Some("init") => {
             events.push(AgentStreamEvent::Ready)
@@ -649,11 +904,16 @@ fn parse_codex_event(value: &Value) -> Vec<AgentStreamEvent> {
                     Some("agent_message") => events.extend(
                         item.get("text")
                             .and_then(text_from_value)
-                            .map(AgentStreamEvent::Text),
+                            .map(|text| AgentStreamEvent::Text(safe_visible_text(&text))),
                     ),
-                    Some(kind) => events.push(AgentStreamEvent::Activity(humanize_kind(kind))),
+                    Some(_) => events.extend(codex_trace_events(item, AgentTraceStatus::Succeeded)),
                     None => {}
                 }
+            }
+        }
+        Some("item.started") => {
+            if let Some(item) = value.get("item") {
+                events.extend(codex_trace_events(item, AgentTraceStatus::Running));
             }
         }
         Some("turn.failed") | Some("error") => events.extend(
@@ -661,7 +921,7 @@ fn parse_codex_event(value: &Value) -> Vec<AgentStreamEvent> {
                 .get("error")
                 .or_else(|| value.get("message"))
                 .and_then(text_from_value)
-                .map(AgentStreamEvent::Error),
+                .map(|text| AgentStreamEvent::Error(safe_visible_text(&text))),
         ),
         Some("thread.started") => events.push(AgentStreamEvent::Ready),
         _ => {}
@@ -676,13 +936,13 @@ fn parse_jcode_event(value: &Value) -> Vec<AgentStreamEvent> {
         .and_then(Value::as_str)
         .unwrap_or_default();
     if let Some(delta) = value.get("delta").and_then(text_from_value) {
-        events.push(AgentStreamEvent::TextDelta(delta));
+        events.push(AgentStreamEvent::TextDelta(safe_visible_text(&delta)));
         return events;
     }
     if matches!(kind, "result" | "assistant" | "message") {
         for key in ["result", "text", "content", "message", "response"] {
             if let Some(text) = value.get(key).and_then(text_from_value) {
-                events.push(AgentStreamEvent::Text(text));
+                events.push(AgentStreamEvent::Text(safe_visible_text(&text)));
                 return events;
             }
         }
@@ -693,14 +953,341 @@ fn parse_jcode_event(value: &Value) -> Vec<AgentStreamEvent> {
                 .get("error")
                 .or_else(|| value.get("message"))
                 .and_then(text_from_value)
-                .map(AgentStreamEvent::Error),
+                .map(|text| AgentStreamEvent::Error(safe_visible_text(&text))),
         );
         return events;
     }
     if !kind.is_empty() {
-        events.push(AgentStreamEvent::Activity(humanize_kind(kind)));
+        events.push(AgentStreamEvent::Activity(safe_provider_text(
+            &humanize_kind(kind),
+            MAX_AGENT_ACTIVITY_BYTES,
+        )));
     }
     events
+}
+
+fn claude_trace_events(value: &Value) -> Vec<AgentStreamEvent> {
+    value
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .map(|block| {
+            let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let input = block.get("input").unwrap_or(&Value::Null);
+            trace_update(
+                trace_for_tool(name, input, AgentTraceStatus::Running),
+                block.get("id").and_then(Value::as_str),
+            )
+        })
+        .collect()
+}
+
+fn claude_tool_result_events(value: &Value) -> Vec<AgentStreamEvent> {
+    value
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .filter_map(|block| {
+            let correlation_id = block.get("tool_use_id").and_then(Value::as_str)?;
+            let status = if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+                AgentTraceStatus::Failed
+            } else {
+                AgentTraceStatus::Succeeded
+            };
+            let summary = block
+                .get("content")
+                .and_then(text_from_value)
+                .map(|text| safe_provider_text(&text, MAX_AGENT_TRACE_FIELD_BYTES));
+            Some(AgentStreamEvent::TraceStatus {
+                correlation_id: safe_provider_text(correlation_id, MAX_AGENT_SESSION_BYTES),
+                status,
+                summary,
+            })
+        })
+        .collect()
+}
+
+fn codex_trace_events(item: &Value, default_status: AgentTraceStatus) -> Vec<AgentStreamEvent> {
+    let kind = item
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("activity");
+    let status = trace_status(item).unwrap_or(default_status);
+    let correlation_id = item.get("id").and_then(Value::as_str);
+    match kind {
+        "command_execution" | "command" => {
+            let command = item
+                .get("command")
+                .or_else(|| item.get("cmd"))
+                .and_then(text_from_value)
+                .unwrap_or_else(|| "command".to_string());
+            let summary = item
+                .get("aggregated_output")
+                .or_else(|| item.get("output"))
+                .and_then(text_from_value)
+                .map(|text| safe_provider_text(&text, MAX_AGENT_TRACE_FIELD_BYTES));
+            let exit_code = item
+                .get("exit_code")
+                .or_else(|| item.get("exitCode"))
+                .and_then(Value::as_i64)
+                .and_then(|code| i32::try_from(code).ok());
+            let command = safe_provider_text(&command, MAX_AGENT_TRACE_FIELD_BYTES);
+            if looks_like_test(&command) {
+                vec![trace_update(
+                    AgentTraceKind::Test {
+                        name: command,
+                        status,
+                        summary,
+                    },
+                    correlation_id,
+                )]
+            } else {
+                vec![trace_update(
+                    AgentTraceKind::Command {
+                        command,
+                        status,
+                        exit_code,
+                        summary,
+                    },
+                    correlation_id,
+                )]
+            }
+        }
+        "file_change" | "file_changes" => {
+            let changes = item
+                .get("changes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if changes.is_empty() {
+                return vec![trace_update(
+                    AgentTraceKind::Tool {
+                        name: humanize_kind(kind),
+                        status,
+                        summary: None,
+                    },
+                    correlation_id,
+                )];
+            }
+            changes
+                .iter()
+                .enumerate()
+                .map(|(index, change)| {
+                    let path = value_string(change, &["path", "file_path", "filePath"])
+                        .unwrap_or_else(|| "file".to_string());
+                    let correlation = correlation_id.map(|id| format!("{id}:{index}"));
+                    trace_update(
+                        AgentTraceKind::Diff {
+                            path: safe_provider_text(&path, MAX_AGENT_TRACE_FIELD_BYTES),
+                            status,
+                            additions: value_u32(change, &["additions", "added"]),
+                            deletions: value_u32(change, &["deletions", "removed"]),
+                            preview: value_string(change, &["diff", "patch"])
+                                .map(|text| safe_provider_text(&text, MAX_AGENT_TRACE_FIELD_BYTES)),
+                        },
+                        correlation.as_deref(),
+                    )
+                })
+                .collect()
+        }
+        "file_read" => {
+            let path = value_string(item, &["path", "file_path", "filePath"])
+                .unwrap_or_else(|| "file".to_string());
+            vec![trace_update(
+                AgentTraceKind::FileRead {
+                    path: safe_provider_text(&path, MAX_AGENT_TRACE_FIELD_BYTES),
+                    status,
+                    line_start: value_optional_u32(item, &["line_start", "lineStart"]),
+                    line_end: value_optional_u32(item, &["line_end", "lineEnd"]),
+                },
+                correlation_id,
+            )]
+        }
+        _ => vec![trace_update(
+            AgentTraceKind::Tool {
+                name: safe_provider_text(&humanize_kind(kind), MAX_AGENT_ACTIVITY_BYTES),
+                status,
+                summary: None,
+            },
+            correlation_id,
+        )],
+    }
+}
+
+fn trace_for_tool(name: &str, input: &Value, status: AgentTraceStatus) -> AgentTraceKind {
+    match name.to_ascii_lowercase().as_str() {
+        "read" | "read_file" => {
+            let path =
+                value_string(input, &["file_path", "path"]).unwrap_or_else(|| "file".to_string());
+            let start = value_optional_u32(input, &["offset", "line_start"]);
+            let count = value_optional_u32(input, &["limit"]);
+            AgentTraceKind::FileRead {
+                path: safe_provider_text(&path, MAX_AGENT_TRACE_FIELD_BYTES),
+                status,
+                line_start: start,
+                line_end: start
+                    .zip(count)
+                    .map(|(start, count)| start.saturating_add(count)),
+            }
+        }
+        "bash" | "shell" | "exec_command" => {
+            let command =
+                value_string(input, &["command", "cmd"]).unwrap_or_else(|| "command".to_string());
+            let command = safe_provider_text(&command, MAX_AGENT_TRACE_FIELD_BYTES);
+            if looks_like_test(&command) {
+                AgentTraceKind::Test {
+                    name: command,
+                    status,
+                    summary: None,
+                }
+            } else {
+                AgentTraceKind::Command {
+                    command,
+                    status,
+                    exit_code: None,
+                    summary: None,
+                }
+            }
+        }
+        "edit" | "write" | "apply_patch" => {
+            let path =
+                value_string(input, &["file_path", "path"]).unwrap_or_else(|| "file".to_string());
+            AgentTraceKind::Diff {
+                path: safe_provider_text(&path, MAX_AGENT_TRACE_FIELD_BYTES),
+                status,
+                additions: 0,
+                deletions: 0,
+                preview: value_string(input, &["patch", "diff"])
+                    .map(|text| safe_provider_text(&text, MAX_AGENT_TRACE_FIELD_BYTES)),
+            }
+        }
+        _ => AgentTraceKind::Tool {
+            name: safe_provider_text(name, MAX_AGENT_ACTIVITY_BYTES),
+            status,
+            summary: None,
+        },
+    }
+}
+
+fn trace_update(detail: AgentTraceKind, correlation_id: Option<&str>) -> AgentStreamEvent {
+    AgentStreamEvent::Trace(AgentTraceUpdate {
+        correlation_id: correlation_id.map(|id| safe_provider_text(id, MAX_AGENT_SESSION_BYTES)),
+        detail,
+    })
+}
+
+fn trace_status(value: &Value) -> Option<AgentTraceStatus> {
+    match value.get("status").and_then(Value::as_str)? {
+        "pending" => Some(AgentTraceStatus::Pending),
+        "in_progress" | "running" | "started" => Some(AgentTraceStatus::Running),
+        "completed" | "success" | "succeeded" => Some(AgentTraceStatus::Succeeded),
+        "failed" | "error" => Some(AgentTraceStatus::Failed),
+        "cancelled" | "canceled" => Some(AgentTraceStatus::Cancelled),
+        _ => Some(AgentTraceStatus::Unknown),
+    }
+}
+
+fn value_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(text_from_value))
+}
+
+fn value_optional_u32(value: &Value, keys: &[&str]) -> Option<u32> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_u64)
+            .and_then(|number| u32::try_from(number).ok())
+    })
+}
+
+fn value_u32(value: &Value, keys: &[&str]) -> u32 {
+    value_optional_u32(value, keys).unwrap_or(0)
+}
+
+fn looks_like_test(command: &str) -> bool {
+    let command = command.trim_start();
+    [
+        "cargo test",
+        "cargo nextest",
+        "npm test",
+        "npm run test",
+        "pnpm test",
+        "yarn test",
+        "pytest",
+        "go test",
+    ]
+    .iter()
+    .any(|prefix| command.starts_with(prefix))
+}
+
+fn safe_visible_text(text: &str) -> String {
+    safe_provider_text(text, MAX_AGENT_STREAM_TEXT_BYTES)
+}
+
+fn safe_provider_text(text: &str, max_bytes: usize) -> String {
+    let redacted = redact_credentials(text);
+    truncate_utf8(&redacted, max_bytes)
+}
+
+fn redact_credentials(text: &str) -> String {
+    let mut redact_next = false;
+    text.split_inclusive(char::is_whitespace)
+        .map(|part| {
+            let trimmed = part.trim_end_matches(char::is_whitespace);
+            let suffix = &part[trimmed.len()..];
+            if redact_next && !trimmed.is_empty() {
+                redact_next = false;
+                return format!("[redacted]{suffix}");
+            }
+            if trimmed.eq_ignore_ascii_case("bearer") {
+                redact_next = true;
+                return part.to_string();
+            }
+            if ["sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-"]
+                .iter()
+                .any(|prefix| trimmed.starts_with(prefix) && trimmed.len() > prefix.len() + 4)
+            {
+                return format!("[redacted]{suffix}");
+            }
+            if let Some((key, _)) = trimmed.split_once('=') {
+                let key_upper = key.to_ascii_uppercase();
+                if [
+                    "TOKEN",
+                    "SECRET",
+                    "PASSWORD",
+                    "PASSWD",
+                    "API_KEY",
+                    "PRIVATE_KEY",
+                ]
+                .iter()
+                .any(|sensitive| key_upper.contains(sensitive))
+                {
+                    return format!("{key}=[redacted]{suffix}");
+                }
+            }
+            part.to_string()
+        })
+        .collect()
+}
+
+fn truncate_utf8(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let suffix = "…";
+    if max_bytes < suffix.len() {
+        return String::new();
+    }
+    let mut end = max_bytes.saturating_sub(suffix.len()).min(text.len());
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    format!("{}{suffix}", &text[..end])
 }
 
 fn session_events(value: &Value) -> Vec<AgentStreamEvent> {
@@ -746,6 +1333,83 @@ fn humanize_kind(kind: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::AcpPermissionBroker as _;
+    use agent_client_protocol::schema::v1::{
+        ContentBlock, ContentChunk, PermissionOption, PermissionOptionKind, SessionNotification,
+        SessionUpdate, TextContent, ToolCall, ToolCallStatus,
+    };
+
+    // SDTEST-1906 — SDUC-475, SDUC-480
+    #[test]
+    fn sdtest_1906_automonique_acp_updates_and_permissions_keep_typed_boundaries() {
+        let message = SessionNotification::new(
+            "acp-session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                TextContent::new("working"),
+            ))),
+        );
+        assert_eq!(
+            acp_notification_events(&message),
+            vec![
+                AgentStreamEvent::Session("acp-session-1".to_string()),
+                AgentStreamEvent::TextDelta("working".to_string()),
+            ]
+        );
+
+        let tool = SessionNotification::new(
+            "acp-session-1",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "Read workspace")
+                    .status(ToolCallStatus::InProgress)
+                    .raw_input(serde_json::json!({"token":"must-not-render"})),
+            ),
+        );
+        let events = acp_notification_events(&tool);
+        assert!(matches!(
+            &events[1],
+            AgentStreamEvent::Trace(AgentTraceUpdate {
+                correlation_id: Some(id),
+                detail: AgentTraceKind::Tool { name, status: AgentTraceStatus::Running, .. },
+            }) if id == "tool-1" && name == "Read workspace"
+        ));
+        assert!(!format!("{events:?}").contains("must-not-render"));
+
+        let permission = RequestPermissionRequest::new(
+            "acp-session-1",
+            agent_client_protocol::schema::v1::ToolCallUpdate::new(
+                "tool-1",
+                agent_client_protocol::schema::v1::ToolCallUpdateFields::new(),
+            ),
+            vec![
+                PermissionOption::new("reject", "Reject", PermissionOptionKind::RejectOnce),
+                PermissionOption::new("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
+                PermissionOption::new("allow-always", "Always", PermissionOptionKind::AllowAlways),
+            ],
+        );
+        assert!(AcpAgentPermissionBroker::new(AgentAccessMode::ReadOnly)
+            .select(&permission)
+            .is_none());
+        assert_eq!(
+            AcpAgentPermissionBroker::new(AgentAccessMode::WorkspaceWrite)
+                .select(&permission)
+                .map(|id| id.0.to_string()),
+            Some("allow-once".to_string())
+        );
+
+        let serialized = serde_json::to_string(&AgentProvider::Automonique).unwrap();
+        assert_eq!(serialized, "\"automonique\"");
+        assert!(AgentCommandSpec::for_request(&AgentRunRequest::new(
+            AgentProvider::Automonique,
+            AgentTarget::Local,
+            AgentAccessMode::ReadOnly,
+            std::env::temp_dir().display().to_string(),
+            None,
+            "hello",
+        ))
+        .unwrap_err()
+        .to_string()
+        .contains("ACP transport"));
+    }
 
     #[cfg(not(windows))]
     const LOCAL_TEST_WORKDIR: &str = "/srv/project";
@@ -941,6 +1605,99 @@ mod tests {
         );
     }
 
+    // SDTEST-1880 — SDUC-499
+    #[test]
+    fn sdtest_1880_provider_tools_become_bounded_redacted_structured_trace() {
+        assert_eq!(
+            parse_stream_line(
+                AgentProvider::Claude,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/lib.rs","offset":10,"limit":20}},{"type":"tool_use","name":"Bash","input":{"command":"cargo test API_TOKEN=secret"}}]}}"#,
+            ),
+            vec![
+                trace_update(
+                    AgentTraceKind::FileRead {
+                        path: "src/lib.rs".to_string(),
+                        status: AgentTraceStatus::Running,
+                        line_start: Some(10),
+                        line_end: Some(30),
+                    },
+                    None,
+                ),
+                trace_update(
+                    AgentTraceKind::Test {
+                        name: "cargo test API_TOKEN=[redacted]".to_string(),
+                        status: AgentTraceStatus::Running,
+                        summary: None,
+                    },
+                    None,
+                ),
+            ]
+        );
+        assert_eq!(
+            parse_stream_line(
+                AgentProvider::Codex,
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","status":"failed","exit_code":101,"aggregated_output":"sk-secret-token"}}"#,
+            ),
+            vec![trace_update(
+                AgentTraceKind::Test {
+                    name: "cargo test".to_string(),
+                    status: AgentTraceStatus::Failed,
+                    summary: Some("[redacted]".to_string()),
+                },
+                None,
+            )]
+        );
+        assert_eq!(
+            parse_stream_line(AgentProvider::Codex, r#"{"broken": "TOKEN=secret""#),
+            vec![AgentStreamEvent::Activity(
+                "Malformed provider event".to_string()
+            )]
+        );
+        let oversized = "x".repeat(MAX_AGENT_STREAM_LINE_BYTES + 1);
+        assert_eq!(
+            parse_stream_line(AgentProvider::Jcode, &oversized),
+            vec![AgentStreamEvent::Activity(
+                "Provider event omitted (too large)".to_string()
+            )]
+        );
+    }
+
+    // SDTEST-1896 — SDUC-499
+    #[test]
+    fn sdtest_1896_stream_framer_discards_one_oversized_line_and_recovers() {
+        let mut framer = AgentStreamFramer::default();
+        let chunk = vec![b'x'; 64 * 1024];
+        let mut frames = Vec::new();
+        for _ in 0..6 {
+            frames.extend(framer.push(&chunk));
+            assert!(framer.buffered_bytes() <= MAX_AGENT_STREAM_LINE_BYTES);
+        }
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| **frame == AgentStreamFrame::Oversized)
+                .count(),
+            1
+        );
+        assert_eq!(framer.buffered_bytes(), 0);
+
+        assert_eq!(
+            framer.push(b"discarded remainder\n{\"type\":\"content.delta\",\"delta\":\"ok\"}\n"),
+            vec![AgentStreamFrame::Line(
+                "{\"type\":\"content.delta\",\"delta\":\"ok\"}".to_string()
+            )]
+        );
+        assert!(framer.finish().is_empty());
+
+        let exact = vec![b'y'; MAX_AGENT_STREAM_LINE_BYTES];
+        assert!(framer.push(&exact).is_empty());
+        assert_eq!(framer.buffered_bytes(), MAX_AGENT_STREAM_LINE_BYTES);
+        let admitted = framer.push(b"\n");
+        assert!(
+            matches!(admitted.as_slice(), [AgentStreamFrame::Line(line)] if line.len() == MAX_AGENT_STREAM_LINE_BYTES)
+        );
+    }
+
     // SDTEST-1680 — SDUC-475
     #[cfg(unix)]
     #[test]
@@ -982,6 +1739,80 @@ mod tests {
         assert!(status.success());
         assert_eq!(fs::read_to_string(&capture).unwrap(), prompt);
         assert!(!marker.exists(), "prompt text became remote shell syntax");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // SDTEST-1904 — SDUC-475
+    #[cfg(unix)]
+    #[test]
+    fn sdtest_1904_ssh_home_workdir_expands_once_and_never_becomes_literal_tilde() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = std::env::temp_dir().join(format!("shelldeck-agent-home-{}", Uuid::new_v4()));
+        let home = root.join("remote home");
+        fs::create_dir_all(&home).unwrap();
+        let capture = root.join("cwd.txt");
+        let fake = root.join("fake-agent");
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\npwd > {}\n",
+                shell_quote(&capture.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&fake, permissions).unwrap();
+
+        let target = AgentTarget::Ssh {
+            connection_id: Uuid::nil(),
+            connection_label: "remote".to_string(),
+        };
+        let request = AgentRunRequest::new(
+            AgentProvider::Jcode,
+            target.clone(),
+            AgentAccessMode::ReadOnly,
+            AGENT_REMOTE_HOME_WORKDIR,
+            None,
+            "inspect",
+        );
+        request.validate().unwrap();
+        let jcode = AgentCommandSpec::for_request(&request).unwrap();
+        assert!(jcode.args.windows(2).any(|pair| pair == ["-C", "."]));
+
+        let invalid = AgentRunRequest::new(
+            AgentProvider::Claude,
+            target,
+            AgentAccessMode::ReadOnly,
+            "~/project",
+            None,
+            "inspect",
+        );
+        assert!(invalid.validate().is_err());
+
+        let spec = AgentCommandSpec {
+            program: fake.display().to_string(),
+            args: Vec::new(),
+            cwd: PathBuf::from(AGENT_REMOTE_HOME_WORKDIR),
+            stdin: None,
+            remove_env: Vec::new(),
+        };
+        let command = spec.remote_shell_command();
+        assert!(command.contains("cd -- \"$HOME\""));
+        assert!(!command.contains("cd -- '~'"));
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .env("HOME", &home)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            fs::canonicalize(fs::read_to_string(&capture).unwrap().trim()).unwrap(),
+            fs::canonicalize(&home).unwrap()
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 

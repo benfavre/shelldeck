@@ -45,7 +45,7 @@ use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
 use shelldeck_ssh::tunnel::TunnelHandle;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ops::{DerefMut, Range};
 use std::rc::Rc;
 use uuid::Uuid;
@@ -119,6 +119,8 @@ mod cloud_sync;
 mod discovery;
 mod events;
 mod fleet;
+pub(crate) mod platform_attention;
+pub use platform_attention::PlatformAttentionNotification;
 mod forwards;
 mod mentions;
 mod menu;
@@ -497,6 +499,15 @@ pub struct Workspace {
     active_scripts: HashMap<Uuid, ActiveScript>,
     /// Explicit local/SSH coding-agent runs, keyed by run ID.
     active_agent_runs: HashMap<Uuid, agents::ActiveAgentRun>,
+    /// Exact catalog authority owned by each retained local-agent session.
+    /// Once established this binding is immutable for the session lifetime.
+    agent_session_bindings: HashMap<
+        Uuid,
+        (
+            shelldeck_core::config::workspace_catalog::CatalogWorkspaceId,
+            shelldeck_core::config::workspace_catalog::CatalogCheckoutId,
+        ),
+    >,
     // Keep subscriptions alive
     _sidebar_sub: Subscription,
     _workspace_hub_sub: Subscription,
@@ -600,6 +611,36 @@ pub struct Workspace {
     fleet_retry_not_before: Option<std::time::Instant>,
     /// Fences platform responses across sign-out and subsequent sign-in.
     fleet_request_epoch: u64,
+    /// Authoritative Platform v2 attention, keyed only after exact catalog
+    /// reconciliation. Navigation always re-resolves these boards against the
+    /// current workspace/session/pane catalogues.
+    platform_attention_boards: BTreeMap<
+        shelldeck_core::config::workspace_catalog::CatalogWorkspaceId,
+        shelldeck_core::config::platform_attention::PlatformAttentionBoard,
+    >,
+    platform_attention_local:
+        Option<shelldeck_core::config::platform_attention::AttentionLocalStateStore>,
+    platform_attention_resync: BTreeSet<(
+        shelldeck_core::config::workspace_catalog::CatalogWorkspaceId,
+        shelldeck_core::config::platform_attention::AttentionSource,
+    )>,
+    /// Retirement events which could not yet be written to the durable local
+    /// document. Once written, the store itself owns retry custody across
+    /// restart until overlay removal commits atomically.
+    platform_attention_retirements_pending:
+        BTreeSet<shelldeck_core::config::platform_attention::AttentionRetirement>,
+    /// Exact activations wait here while a real Dev-mode transition completes;
+    /// destinations are always resolved again from current authority state.
+    platform_attention_pending_activations:
+        VecDeque<shelldeck_core::config::platform_attention::PlatformAttentionActivation>,
+    /// A destination opened on the previous UI turn is confirmed against the
+    /// rendered current surface before its exact local tuple becomes read.
+    platform_attention_visible_confirmations: VecDeque<(
+        shelldeck_core::config::platform_attention::PlatformAttentionActivation,
+        shelldeck_core::config::platform_attention::PlatformAttentionDestination,
+        u8,
+    )>,
+    platform_attention_notifier: Option<Box<dyn Fn(PlatformAttentionNotification) + Send + Sync>>,
     /// Mentionable people from Inklura Manage, for the assistant's `@` picker.
     /// Empty until the directory endpoint ships (`manage_directory`); people
     /// are the one mention kind that needs server-side role information.
@@ -945,6 +986,14 @@ impl Workspace {
             );
             view
         });
+        workspace_hub.update(cx, |hub, cx| {
+            hub.attach_agent_host(agent_console.clone(), cx);
+        });
+        let agent_projects =
+            agents::agent_project_groups(workspace_hub.read(cx).catalog(), &connections);
+        agent_console.update(cx, |view, cx| {
+            view.set_project_groups(agent_projects, cx);
+        });
         let scripts = cx.new(ScriptEditorView::new);
         let port_forwards = cx.new(|_| PortForwardView::new());
         let server_sync = cx.new(|cx| {
@@ -1144,15 +1193,46 @@ impl Workspace {
         });
         let workspace_hub_sub = cx.subscribe(
             &workspace_hub,
-            |this, _hub, event: &workspaces::WorkspaceHubEvent, cx| {
-                let workspaces::WorkspaceHubEvent::ActiveTerminal(terminal) = event;
-                this.terminal = terminal.clone();
-                this._terminal_sub =
-                    cx.subscribe(terminal, |this, _terminal, event: &TerminalEvent, cx| {
-                        this.handle_terminal_event(event, cx);
+            |this, _hub, event: &workspaces::WorkspaceHubEvent, cx| match event {
+                workspaces::WorkspaceHubEvent::ActiveTerminal(terminal) => {
+                    let visible_session = this.workspace_hub.read(cx).active_agent_session_id();
+                    this.agent_console.update(cx, |view, cx| {
+                        if let Some(session_id) = visible_session {
+                            view.select_session(session_id, cx);
+                        }
+                        view.set_surface_visible(visible_session.is_some(), cx);
                     });
-                this.hydrate_active_terminal_runtime(cx);
-                cx.notify();
+                    this.terminal = terminal.clone();
+                    this._terminal_sub =
+                        cx.subscribe(terminal, |this, _terminal, event: &TerminalEvent, cx| {
+                            this.handle_terminal_event(event, cx);
+                        });
+                    this.hydrate_active_terminal_runtime(cx);
+                    cx.notify();
+                }
+                workspaces::WorkspaceHubEvent::OpenPlatformAttention(activation) => {
+                    this.activate_platform_attention(*activation, cx);
+                }
+                workspaces::WorkspaceHubEvent::OpenWorkspacePane(activation) => {
+                    let visible_session = this.workspace_hub.read(cx).active_agent_session_id();
+                    this.agent_console.update(cx, |view, cx| {
+                        if let Some(session_id) = visible_session {
+                            view.select_session(session_id, cx);
+                        }
+                        view.set_surface_visible(visible_session.is_some(), cx);
+                    });
+                    if let shelldeck_core::workspace_navigation::WorkspaceTabContent::AgentSession(
+                        binding,
+                    ) = &activation.content
+                    {
+                        this.agent_console.update(cx, |view, cx| {
+                            view.select_session(binding.session_id, cx);
+                        });
+                    }
+                }
+                workspaces::WorkspaceHubEvent::CatalogChanged => {
+                    this.refresh_agent_projects(cx);
+                }
             },
         );
         let agent_console_sub = cx.subscribe(
@@ -1350,6 +1430,7 @@ impl Workspace {
             active_tunnels: HashMap::new(),
             active_scripts: HashMap::new(),
             active_agent_runs: HashMap::new(),
+            agent_session_bindings: HashMap::new(),
             _sidebar_sub: sidebar_sub,
             _workspace_hub_sub: workspace_hub_sub,
             _terminal_sub: terminal_sub,
@@ -1411,6 +1492,18 @@ impl Workspace {
             fleet_refresh_failures: 0,
             fleet_retry_not_before: None,
             fleet_request_epoch: 0,
+            platform_attention_boards: BTreeMap::new(),
+            platform_attention_local: shelldeck_core::config::platform_attention::AttentionLocalStateStore::open_default()
+                .map_err(|error| {
+                    tracing::warn!(%error, "Platform attention local custody unavailable; notifications and local reads disabled");
+                    error
+                })
+                .ok(),
+            platform_attention_resync: BTreeSet::new(),
+            platform_attention_retirements_pending: BTreeSet::new(),
+            platform_attention_pending_activations: VecDeque::new(),
+            platform_attention_visible_confirmations: VecDeque::new(),
+            platform_attention_notifier: None,
             mention_people: Vec::new(),
             issues_list: Vec::new(),
             issues_counts: IssueCounts::default(),

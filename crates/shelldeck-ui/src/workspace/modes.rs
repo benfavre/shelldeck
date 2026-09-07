@@ -141,6 +141,7 @@ impl Workspace {
                 };
                 if workspace.mode_transition != Some(expected) || !workspace.can_access_mode(mode) {
                     workspace.mode_transition = None;
+                    workspace.drive_platform_attention_activations(cx);
                     cx.notify();
                     return false;
                 }
@@ -197,6 +198,7 @@ impl Workspace {
                 };
                 if workspace.mode_transition == Some(expected) {
                     workspace.mode_transition = None;
+                    workspace.drive_platform_attention_activations(cx);
                     cx.notify();
                 }
             });

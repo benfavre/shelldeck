@@ -8,11 +8,91 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total marker occurrences in code: **139**
-(`rg "ShellDeck patch:" src/`; SDPATCH-103 is Cargo.toml-only and outside
-the src-scoped marker convention.)
+Total marker occurrences in code: **166**
+(`rg "ShellDeck patch:" src/`; SDPATCH-103, SDPATCH-119, and SDPATCH-121 are
+Cargo.toml-only and outside the src-scoped marker convention.)
 
 ## Patches
+
+### SDPATCH-121 — Move stack-safety macros off an unmaintained diagnostic dependency
+
+- **Files / symbols**:
+  - `Cargo.toml` and `Cargo.toml.orig` — `stacksafe` dependency
+- **Markers**: none — the manifests are outside the
+  `patches/<crate>/src/` marker scope. The entry exists so the sync knows to
+  re-apply the dependency constraint after each overlay.
+- **Why**: `stacksafe` 0.1's procedural macro retained the unmaintained
+  `proc-macro-error2` crate. Version 1 keeps the `StackSafe` wrapper and
+  `#[stacksafe]` attribute used by GPUI while moving the macro to maintained
+  Syn diagnostics, removing that transitive RustSec warning without changing
+  GPUI's recursive layout contract.
+- **Upstream status**: not filed yet; suitable as a dependency update in the
+  vendored GPUI upstream.
+
+### SDPATCH-120 — Portable native tray availability, labels, and Linux callbacks
+
+- **Files / symbols**:
+  - `src/app.rs` — `App::is_tray_available`
+  - `src/platform.rs` — `Platform::is_tray_available`, `TrayMenuItem::Label`
+  - `src/platform/linux/platform.rs` — Linux tray availability and callback bridge
+  - `src/platform/linux/tray.rs` — `LinuxTray::is_available`, label conversion
+  - `src/platform/linux/{wayland,x11}/client.rs` — native tray delegation
+  - `src/platform/mac/{platform,tray}.rs` — availability and label rendering
+  - `src/platform/windows/{platform,tray}.rs` — availability, Explorer restart recovery, ICO decoding, and label rendering
+- **Markers** (27):
+  - `src/app.rs` — `/// ShellDeck patch: SDPATCH-120 — expose native tray creation success so`
+  - `src/platform.rs` — `/// ShellDeck patch: SDPATCH-120 — make tray availability part of the`
+  - `src/platform.rs` — `/// ShellDeck patch: SDPATCH-120 — native tray counters need a portable,`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: SDPATCH-120 — Linux clients report tray startup and`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: SDPATCH-120 — accept thread-safe service callbacks in`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: SDPATCH-120 — tray callbacks live in foreground`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: SDPATCH-120 — preserve the backend's actual startup`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: SDPATCH-120 — marshal ksni callbacks back onto GPUI's`
+  - `src/platform/linux/tray.rs` — `// ShellDeck patch: SDPATCH-120 — render informational rows disabled.`
+  - `src/platform/linux/tray.rs` — `// ShellDeck patch: SDPATCH-120 — a successful ksni handle is the native`
+  - `src/platform/linux/wayland/client.rs` — `// ShellDeck patch: SDPATCH-120 — thread tray availability through Wayland.`
+  - `src/platform/linux/wayland/client.rs` — `// ShellDeck patch: SDPATCH-120 — install thread-safe ksni event bridges.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: SDPATCH-120 — thread tray availability through X11.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: SDPATCH-120 — install thread-safe ksni event bridges.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: SDPATCH-120 — report the retained NSStatusItem.`
+  - `src/platform/mac/tray.rs` — `// ShellDeck patch: SDPATCH-120 — retain the actual NSStatusItem result for`
+  - `src/platform/mac/tray.rs` — `// ShellDeck patch: SDPATCH-120 — render informational rows disabled.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — the tray owner must be an invisible`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — report the retained Win32 tray owner only`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — restore the exact retained tray icon`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — use Windows' registered broadcast ID as the`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: SDPATCH-120 — the native Windows test runner must prove`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — create the shell entry only after a real`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — Explorer discards notification-area`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — render informational rows disabled.`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — decode a complete .ico file as an ICONDIR,`
+  - `src/platform/windows/tray.rs` — `// ShellDeck patch: SDPATCH-120 — pin Explorer-restart custody, ICO selection,`
+- **Why**: ShellDeck now uses GPUI's native tray on every desktop instead of
+  carrying a second `tray-icon`/GTK stack. The application must know whether
+  tray creation actually succeeded before honoring start-hidden, needs
+  disabled native rows for counters and signed-out actions, and must marshal
+  Linux `ksni` service-thread callbacks onto GPUI's foreground executor before
+  invoking application code. Windows uses an invisible top-level owner so it
+  receives Explorer's registered `TaskbarCreated` broadcast, then re-adds the
+  retained HICON and derives availability from that exact result.
+- **Upstream status**: not filed yet; the generic availability and label APIs
+  are suitable for upstream, while the callback bridge fixes an existing
+  Linux backend integration gap.
+
+### SDPATCH-119 — Keep GPUI test support free of unused Git fixtures
+
+- **Files / symbols**:
+  - `Cargo.toml` — `test-support` feature (uses `util/rand` instead of
+    `util/test-support`)
+- **Markers**: none — `Cargo.toml` is outside the `patches/<crate>/src/`
+  marker scope. The entry exists so the sync knows to re-apply it after each
+  overlay.
+- **Why**: GPUI's test dispatcher needs `rand`, but no GPUI source or test uses
+  `adabraka_util::test`. Enabling the broader feature pulled `git2` and its
+  native library into all downstream test-support builds solely for an unused
+  temporary Git-tree helper. Selecting the exact required feature preserves
+  GPUI's test API while removing that unnecessary dependency path.
+- **Upstream status**: not filed yet — suitable as a small feature-hygiene PR.
 
 ### SDPATCH-101 — `PathPromptOptions::starting_directory`
 
@@ -571,6 +651,26 @@ the src-scoped marker convention.)
 - **Upstream status**: not filed yet.
 
 ## Sync log
+
+- **2026-08-28** — Added SDPATCH-121: upgraded `stacksafe` from 0.1 to 1,
+  removing the `proc-macro-error2` dependency path. No source marker was added
+  because this is a Cargo.toml-only patch.
+
+- **2026-08-28** — Hardened SDPATCH-120 after independent review: the Windows
+  tray owner now receives `TaskbarCreated`, restores its retained HICON with
+  fail-closed availability, and carries native parser/HICON custody tests.
+  Added 6 markers, bringing the source total from 160 to 166.
+
+- **2026-08-28** — Added SDPATCH-120: made GPUI's native tray API sufficient
+  for ShellDeck's cross-platform menu, fail-safe hidden-start decision, and
+  Linux event routing. The Windows path decodes ShellDeck's ICO resource and
+  admits hidden start only after `NIM_ADD` accepts a real `HICON`. 21 new
+  markers, bringing the source total from 139 to 160.
+
+- **2026-08-28** — Added SDPATCH-119: narrowed GPUI's downstream
+  `test-support` feature to the `adabraka_util` capability it actually uses,
+  removing the unused `git2`/`libgit2-sys` test-fixture dependency path. No
+  source marker was added because this is a Cargo.toml-only patch.
 
 - **2026-08-28** — Added SDPATCH-118: upgraded Linux text/SVG rendering to
   `cosmic-text` 0.19 and `resvg`/`usvg` 0.48, removing both `rustybuzz`

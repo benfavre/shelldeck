@@ -1116,6 +1116,7 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
         target: AttentionTarget {
             workspace: workspace(1),
             pane,
+            tab_id: None,
             session_id: Some("session-1".into()),
         },
         state: AttentionState::NeedsYou,
@@ -1137,11 +1138,11 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
         )
         .unwrap();
     assert_eq!(
-        board.open_target(id, workspace(2), &catalog, &navigation),
+        board.open_target(id, 1, workspace(2), &catalog, &navigation),
         Err(AttentionError::WrongWorkspace)
     );
     board
-        .open_target(id, workspace(1), &catalog, &navigation)
+        .open_target(id, 1, workspace(1), &catalog, &navigation)
         .unwrap();
     assert!(!board.is_unread(id));
     assert!(!board.apply(item).unwrap());
@@ -1164,7 +1165,7 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
         )
         .unwrap();
     assert_eq!(
-        board.open_target(id, workspace(1), &catalog, &navigation),
+        board.open_target(id, 1, workspace(1), &catalog, &navigation),
         Err(AttentionError::DuplicateSessionCoordinate)
     );
 
@@ -1206,6 +1207,7 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
             target: AttentionTarget {
                 workspace: workspace(1),
                 pane: browser_pane,
+                tab_id: Some(local_browser_tab),
                 session_id: None,
             },
             state: AttentionState::NeedsYou,
@@ -1215,7 +1217,7 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
         })
         .unwrap();
     assert_eq!(
-        board.open_target(browser_id, workspace(1), &catalog, &keyed_navigation),
+        board.open_target(browser_id, 1, workspace(1), &catalog, &keyed_navigation,),
         Err(AttentionError::InvalidSurface)
     );
     assert!(board.is_unread(browser_id));
@@ -1231,7 +1233,7 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
         .unwrap();
     assert_eq!(
         board
-            .open_target(browser_id, workspace(1), &catalog, &keyed_navigation)
+            .open_target(browser_id, 1, workspace(1), &catalog, &keyed_navigation,)
             .unwrap(),
         WorkspaceFocus {
             pane_id: browser_pane,
@@ -1239,6 +1241,150 @@ fn sdtest_1755_attention_read_state_replays_and_duplicate_coordinates_fail_close
         }
     );
     assert!(!board.is_unread(browser_id));
+}
+
+// SDTEST-1810
+#[test]
+fn sdtest_1810_attention_activation_requires_exact_revision_and_coordinates() {
+    let catalog = catalog_for(workspace(1), "platform-workspace");
+    let pane = PaneId::from_uuid(uuid(30));
+    let provider_tab = |id, session: &str| WorkspaceTab {
+        id: WorkspaceTabId::from_uuid(uuid(id)),
+        title: "Agent".into(),
+        content: WorkspaceTabContent::ProviderSession(ProviderSessionBinding {
+            platform_user_workspace_id: "platform-workspace".into(),
+            session_id: session.into(),
+            run_id: None,
+        }),
+    };
+    let surface = |tabs: Vec<WorkspaceTab>| WorkspaceSurfaceState {
+        root: Some(PaneNode::Leaf(PaneLeaf {
+            id: pane,
+            active_tab: tabs.first().map(|tab| tab.id),
+            tabs,
+        })),
+        focus: None,
+    };
+    let mut navigation = WorkspaceNavigationState::default();
+    navigation
+        .reduce(
+            &catalog,
+            WorkspaceNavigationAction::Retain {
+                id: workspace(1),
+                surface: surface(vec![provider_tab(31, "session-1")]),
+                card: WorkspaceCardAggregate::default(),
+            },
+        )
+        .unwrap();
+
+    let id = AttentionItemId::from_uuid(uuid(32));
+    let item = |id, revision, pane, session: Option<&str>| AttentionItem {
+        id,
+        revision,
+        observed_at_millis: 100 + revision,
+        target: AttentionTarget {
+            workspace: workspace(1),
+            pane,
+            tab_id: None,
+            session_id: session.map(str::to_owned),
+        },
+        state: AttentionState::NeedsYou,
+        title: "Exact attention".into(),
+        unread: true,
+        agent_path: vec!["root".into(), "reviewer".into()],
+    };
+    let mut board = AttentionBoard::new(workspace(1));
+    board.apply(item(id, 2, pane, Some("session-1"))).unwrap();
+
+    assert_eq!(
+        board.resolve_target(id, 1, workspace(1), &catalog, &navigation),
+        Err(AttentionError::StaleObservation)
+    );
+    assert_eq!(
+        board.mark_read(id, 1),
+        Err(AttentionError::StaleObservation)
+    );
+    assert!(board.is_unread(id));
+
+    let missing_pane = AttentionItemId::from_uuid(uuid(33));
+    board
+        .apply(item(missing_pane, 1, PaneId::from_uuid(uuid(34)), None))
+        .unwrap();
+    assert_eq!(
+        board.resolve_target(missing_pane, 1, workspace(1), &catalog, &navigation),
+        Err(AttentionError::UnknownPane)
+    );
+
+    let missing_session = AttentionItemId::from_uuid(uuid(35));
+    board
+        .apply(item(missing_session, 1, pane, Some("missing-session")))
+        .unwrap();
+    assert_eq!(
+        board.resolve_target(missing_session, 1, workspace(1), &catalog, &navigation,),
+        Err(AttentionError::SessionOutsidePane)
+    );
+
+    let mismatched_family = AttentionItemId::from_uuid(uuid(39));
+    board
+        .apply(AttentionItem {
+            target: AttentionTarget {
+                workspace: workspace(1),
+                pane,
+                tab_id: Some(WorkspaceTabId::from_uuid(uuid(31))),
+                session_id: Some("different-provider-session".into()),
+            },
+            ..item(mismatched_family, 1, pane, None)
+        })
+        .unwrap();
+    assert_eq!(
+        board.resolve_target(mismatched_family, 1, workspace(1), &catalog, &navigation),
+        Err(AttentionError::SessionOutsidePane)
+    );
+
+    let unbound_target = AttentionItemId::from_uuid(uuid(40));
+    board.apply(item(unbound_target, 1, pane, None)).unwrap();
+    assert_eq!(
+        board.resolve_target(unbound_target, 1, workspace(1), &catalog, &navigation),
+        Err(AttentionError::SessionOutsidePane)
+    );
+
+    navigation
+        .reduce(
+            &catalog,
+            WorkspaceNavigationAction::UpdateSurface {
+                id: workspace(1),
+                surface: surface(vec![
+                    provider_tab(36, "session-1"),
+                    provider_tab(37, "session-1"),
+                ]),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        board.resolve_target(id, 2, workspace(1), &catalog, &navigation),
+        Err(AttentionError::DuplicateSessionCoordinate)
+    );
+
+    let foreign = AttentionItem {
+        target: AttentionTarget {
+            workspace: workspace(2),
+            pane,
+            tab_id: None,
+            session_id: None,
+        },
+        ..item(AttentionItemId::from_uuid(uuid(38)), 1, pane, None)
+    };
+    assert_eq!(board.apply(foreign), Err(AttentionError::WrongWorkspace));
+    assert_eq!(
+        board.resolve_target(
+            AttentionItemId::from_uuid(uuid(41)),
+            1,
+            workspace(1),
+            &catalog,
+            &navigation,
+        ),
+        Err(AttentionError::InvalidItem)
+    );
 }
 
 // SDTEST-1756

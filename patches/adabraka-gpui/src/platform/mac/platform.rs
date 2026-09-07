@@ -1475,6 +1475,15 @@ impl Platform for MacPlatform {
         super::active_window::get_focused_window_info()
     }
 
+    // ShellDeck patch: SDPATCH-120 — report the retained NSStatusItem.
+    fn is_tray_available(&self) -> bool {
+        self.0
+            .lock()
+            .tray
+            .as_ref()
+            .is_some_and(MacTray::is_available)
+    }
+
     // ShellDeck patch: expose visible external top-level macOS window snapshots.
     fn visible_external_windows(&self) -> Vec<crate::ExternalWindow> {
         super::external_windows::visible_external_windows()

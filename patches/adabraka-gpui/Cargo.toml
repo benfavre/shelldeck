@@ -59,7 +59,9 @@ test-support = [
     "leak-detection",
     "collections/test-support",
     "rand",
-    "util/test-support",
+    # ShellDeck patch: SDPATCH-119 — GPUI's test harness does not use
+    # util::test; the full feature needlessly links git2 into every consumer.
+    "util/rand",
     "http_client/test-support",
     "wayland",
     "x11",
@@ -396,7 +398,7 @@ features = [
 version = "2.0"
 
 [dependencies.stacksafe]
-version = "0.1"
+version = "1"
 
 [dependencies.strum]
 version = "0.27.0"

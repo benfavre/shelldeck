@@ -100,8 +100,17 @@ pub trait LinuxClient {
     }
 
     fn set_tray_icon(&self, _icon: Option<&[u8]>) {}
+    // ShellDeck patch: SDPATCH-120 — Linux clients report tray startup and
+    // accept callbacks that are safe to invoke from the ksni service thread.
+    fn is_tray_available(&self) -> bool {
+        false
+    }
     fn set_tray_menu(&self, _menu: Vec<TrayMenuItem>) {}
     fn set_tray_tooltip(&self, _tooltip: &str) {}
+    // ShellDeck patch: SDPATCH-120 — accept thread-safe service callbacks in
+    // addition to GPUI's foreground-only application callbacks.
+    fn set_tray_icon_event_handler(&self, _callback: Box<dyn Fn(TrayIconEvent) + Send>) {}
+    fn set_tray_menu_action_handler(&self, _callback: Box<dyn Fn(SharedString) + Send>) {}
     fn register_global_hotkey(&self, _id: u32, _keystroke: &Keystroke) -> Result<()> {
         Err(anyhow::anyhow!(
             "Global hotkeys not supported on this platform"
@@ -134,8 +143,8 @@ pub(crate) struct PlatformHandlers {
     pub(crate) will_open_app_menu: Option<Box<dyn FnMut()>>,
     pub(crate) validate_app_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     pub(crate) keyboard_layout_change: Option<Box<dyn FnMut()>>,
-    pub(crate) tray_icon_event: Option<Box<dyn FnMut(TrayIconEvent)>>,
-    pub(crate) tray_menu_action: Option<Box<dyn FnMut(SharedString)>>,
+    // ShellDeck patch: SDPATCH-120 — tray callbacks live in foreground
+    // receiver tasks instead of this cross-platform callback bag.
     pub(crate) global_hotkey: Option<Box<dyn FnMut(u32)>>,
     // ShellDeck patch: retain the Wayland portal registration-result callback.
     pub(crate) global_hotkey_registration:
@@ -737,6 +746,12 @@ impl<P: LinuxClient + 'static> Platform for P {
         LinuxClient::set_tray_icon(self, icon);
     }
 
+    // ShellDeck patch: SDPATCH-120 — preserve the backend's actual startup
+    // result through the platform facade.
+    fn is_tray_available(&self) -> bool {
+        LinuxClient::is_tray_available(self)
+    }
+
     fn set_tray_menu(&self, menu: Vec<TrayMenuItem>) {
         LinuxClient::set_tray_menu(self, menu);
     }
@@ -745,12 +760,44 @@ impl<P: LinuxClient + 'static> Platform for P {
         LinuxClient::set_tray_tooltip(self, tooltip);
     }
 
+    // ShellDeck patch: SDPATCH-120 — marshal ksni callbacks back onto GPUI's
+    // foreground executor before invoking non-Send application callbacks.
     fn on_tray_icon_event(&self, callback: Box<dyn FnMut(TrayIconEvent)>) {
-        self.with_common(|common| common.callbacks.tray_icon_event = Some(callback));
+        let (tx, rx) = flume::unbounded();
+        LinuxClient::set_tray_icon_event_handler(
+            self,
+            Box::new(move |event| {
+                let _ = tx.send(event);
+            }),
+        );
+        let executor = self.with_common(|common| common.foreground_executor.clone());
+        executor
+            .spawn(async move {
+                let mut callback = callback;
+                while let Ok(event) = rx.recv_async().await {
+                    callback(event);
+                }
+            })
+            .detach();
     }
 
     fn on_tray_menu_action(&self, callback: Box<dyn FnMut(SharedString)>) {
-        self.with_common(|common| common.callbacks.tray_menu_action = Some(callback));
+        let (tx, rx) = flume::unbounded();
+        LinuxClient::set_tray_menu_action_handler(
+            self,
+            Box::new(move |id| {
+                let _ = tx.send(id);
+            }),
+        );
+        let executor = self.with_common(|common| common.foreground_executor.clone());
+        executor
+            .spawn(async move {
+                let mut callback = callback;
+                while let Ok(id) = rx.recv_async().await {
+                    callback(id);
+                }
+            })
+            .detach();
     }
 
     fn register_global_hotkey(&self, id: u32, keystroke: &Keystroke) -> Result<()> {

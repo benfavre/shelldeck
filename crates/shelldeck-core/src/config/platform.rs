@@ -8,31 +8,41 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use automonique_platform_client::platform_v2_client::AttentionReadResult;
 use automonique_platform_client::platform_v2_client::{
-    NegotiationResult, PlatformV2Client, PlatformV2ClientError, ReviewReadResult,
-    ReviewReceiptResult,
+    NegotiationResult, PlatformV2Client, PlatformV2ClientError, ReviewCapabilitiesResult,
+    ReviewReadResult, ReviewReceiptResult, WorkContextQueryResult,
 };
-pub use automonique_platform_client::{ActionResult, ControlClaimResult};
+pub use automonique_platform_client::{ActionResult, ControlClaimResult, PlatformView};
 use automonique_platform_client::{
-    BearerToken, HttpsTransport, PlatformClient, PlatformView, SessionCommandStateResult,
-    SessionHistoryResult, SessionListResult, SubscriptionApply, SubscriptionResult,
+    BearerToken, HttpsTransport, PlatformClient, SessionCommandStateResult, SessionHistoryResult,
+    SessionListResult, SubscriptionApply, SubscriptionResult,
 };
 pub use automonique_protocol::platform::{
     ActionReceipt, Attachment, Capabilities, ClientId, ControlLease, ControlLeaseId,
     ExecuteRequest, FreshnessState, GetReceiptRequest, IdempotencyKey, PlatformAction,
     PlatformCursor, PlatformMethod, PlatformParameter, PlatformText, PlatformTransport, ReceiptId,
-    ReceiptOutcome, ReleaseControlRequest, ResourceAuthority, ResourceCoordinate, ResourceKind,
-    ResourceRecord, SessionCommandState, SessionFollowUpRequest, SessionHistoryEvent,
+    ReceiptOutcome, ReleaseControlRequest, ResourceAuthority, ResourceCoordinate, ResourceId,
+    ResourceKind, ResourceRecord, SessionCommandState, SessionFollowUpRequest, SessionHistoryEvent,
     SessionHistoryEvidence, SessionHistoryPage, SessionHistoryRole, SessionHistoryRunState,
     SessionHistoryToolState, SessionHistoryUnknownSource, SessionRecord,
 };
-use automonique_protocol::platform_v2::PlatformVersionOffer;
+use automonique_protocol::platform_v2::{
+    PlatformVersionOffer, WorkContextKind, WorkContextQuery, WorkContextRecord,
+    MAX_WORK_CONTEXT_PAGE_ITEMS,
+};
+use automonique_protocol::platform_v2_attention::AttentionSource;
 pub use automonique_protocol::primitives::Revision;
 use url::Url;
 
+use super::platform_attention::{
+    AttentionSourceInventory, PlatformAttentionTarget, ReviewAttentionPresence,
+    MAX_ATTENTION_INVENTORY_RECORDS,
+};
 use super::platform_review::{
-    PlatformReviewActionPreview, PlatformReviewLoad, PlatformReviewSemantic, PlatformReviewTarget,
-    PlatformReviewUnavailable, ReviewActionReceipt, ReviewReceiptOutcome, ReviewReconciliation,
+    PlatformReviewActionPreview, PlatformReviewCapabilitiesLoad, PlatformReviewLoad,
+    PlatformReviewSemantic, PlatformReviewTarget, PlatformReviewUnavailable, ReviewActionReceipt,
+    ReviewReceiptOutcome, ReviewReconciliation,
 };
 use crate::error::{Result, ShellDeckError};
 
@@ -52,6 +62,12 @@ pub struct PlatformRefresh {
     pub attachments: Vec<AttachmentRefresh>,
     pub events: usize,
     pub resynchronized: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformAttentionLoad {
+    pub inventory: AttentionSourceInventory,
+    pub reads: Vec<(AttentionSource, AttentionReadResult)>,
 }
 
 const RETAINED_HISTORY_PAGE_LIMIT: u16 = 128;
@@ -628,6 +644,43 @@ impl PlatformConnection {
     pub fn review(&self, target: &PlatformReviewTarget) -> Result<PlatformReviewLoad> {
         let mut client = self.review_client()?;
         load_review(&mut client, target)
+    }
+
+    /// Load the server's current, separately authorized review capabilities.
+    /// A review snapshot or provider session never substitutes for this lane.
+    pub fn review_capabilities(
+        &self,
+        target: &PlatformReviewTarget,
+    ) -> Result<PlatformReviewCapabilitiesLoad> {
+        let mut client = self.review_client()?;
+        load_review_capabilities(&mut client, target)
+    }
+
+    /// Load one complete, bounded attention inventory and every source in it
+    /// through the negotiated read-only v2 lane.
+    pub fn attention(
+        &self,
+        target: PlatformAttentionTarget,
+        review: ReviewAttentionPresence,
+    ) -> Result<PlatformAttentionLoad> {
+        let mut client = self.review_client()?;
+        negotiate_review(&mut client)?;
+        let records = load_attention_inventory(&mut client, &target)?;
+        let inventory =
+            AttentionSourceInventory::from_authoritative_records(target.clone(), &records, review)
+                .map_err(|error| ShellDeckError::Connection(error.to_string()))?;
+        let mut reads = Vec::with_capacity(inventory.sources().len());
+        for source in inventory.sources() {
+            let read = client
+                .get_attention_source_snapshot(
+                    source.clone(),
+                    target.project.clone(),
+                    target.user_workspace.clone(),
+                )
+                .map_err(platform_v2_error)?;
+            reads.push((source.clone(), read));
+        }
+        Ok(PlatformAttentionLoad { inventory, reads })
     }
 
     /// Dispatch one already-confirmed review action exactly once.
@@ -1335,6 +1388,27 @@ fn load_review<T>(
     }
 }
 
+fn load_review_capabilities<T>(
+    client: &mut PlatformV2Client<T>,
+    target: &PlatformReviewTarget,
+) -> Result<PlatformReviewCapabilitiesLoad> {
+    negotiate_review(client)?;
+    match client
+        .get_review_capabilities(target.project.clone(), target.workspace.clone())
+        .map_err(platform_v2_error)?
+    {
+        ReviewCapabilitiesResult::Capabilities(capabilities) => {
+            Ok(PlatformReviewCapabilitiesLoad::Available(capabilities))
+        }
+        ReviewCapabilitiesResult::Refused(refusal) => Ok(
+            PlatformReviewCapabilitiesLoad::Unavailable(PlatformReviewUnavailable {
+                category: refusal.category().as_str().to_owned(),
+                explanation: refusal.explanation().as_str().to_owned(),
+            }),
+        ),
+    }
+}
+
 fn negotiate_review<T>(client: &mut PlatformV2Client<T>) -> Result<()> {
     let offer = PlatformVersionOffer::new(vec![2]).map_err(|_| {
         ShellDeckError::Connection("platform v2 negotiation offer is invalid".to_owned())
@@ -1351,19 +1425,84 @@ fn negotiate_review<T>(client: &mut PlatformV2Client<T>) -> Result<()> {
     }
 }
 
+fn load_attention_inventory<T>(
+    client: &mut PlatformV2Client<T>,
+    target: &PlatformAttentionTarget,
+) -> Result<Vec<WorkContextRecord>> {
+    let kinds = vec![
+        WorkContextKind::Project,
+        WorkContextKind::UserWorkspace,
+        WorkContextKind::AttemptWorkspace,
+        WorkContextKind::Session,
+    ];
+    let mut records = Vec::new();
+    let mut after = None;
+    loop {
+        let query = WorkContextQuery::new(
+            kinds.clone(),
+            Vec::new(),
+            Some(target.project.clone()),
+            None,
+            after.clone(),
+            MAX_WORK_CONTEXT_PAGE_ITEMS as u16,
+        )
+        .map_err(|_| ShellDeckError::Connection("attention inventory query is invalid".into()))?;
+        let page = match client
+            .query_work_contexts(query)
+            .map_err(platform_v2_error)?
+        {
+            WorkContextQueryResult::Page(page) => page,
+            WorkContextQueryResult::Resync(_) => {
+                return Err(ShellDeckError::Connection(
+                    "attention inventory cursor expired".into(),
+                ));
+            }
+            WorkContextQueryResult::Refused(refusal) => {
+                return Err(ShellDeckError::Connection(format!(
+                    "attention inventory refused: {}",
+                    refusal.category().as_str()
+                )));
+            }
+        };
+        if records.len().saturating_add(page.items().len()) > MAX_ATTENTION_INVENTORY_RECORDS {
+            return Err(ShellDeckError::Connection(
+                "attention inventory exceeds its client bound".into(),
+            ));
+        }
+        let has_more = page.has_more();
+        after = page.next_cursor().cloned();
+        records.extend(page.into_items());
+        if !has_more {
+            return Ok(records);
+        }
+    }
+}
+
 fn dispatch_review_action<T>(
     client: &mut PlatformV2Client<T>,
     preview: &PlatformReviewActionPreview,
 ) -> Result<ReviewReceiptResult> {
     negotiate_review(client)?;
-    client
-        .execute_review_action(
-            preview.target().workspace.clone(),
-            preview.expected_revision(),
-            preview.action().clone(),
-            preview.idempotency_key().clone(),
-        )
-        .map_err(platform_v2_error)
+    if let Some(confirmation) = preview.confirmation() {
+        client
+            .execute_confirmed_review_action(
+                preview.target().workspace.clone(),
+                preview.expected_revision(),
+                preview.action().clone(),
+                preview.idempotency_key().clone(),
+                confirmation.clone(),
+            )
+            .map_err(platform_v2_error)
+    } else {
+        client
+            .execute_review_action(
+                preview.target().workspace.clone(),
+                preview.expected_revision(),
+                preview.action().clone(),
+                preview.idempotency_key().clone(),
+            )
+            .map_err(platform_v2_error)
+    }
 }
 
 fn lookup_review_action<T>(
@@ -1371,13 +1510,24 @@ fn lookup_review_action<T>(
     preview: &PlatformReviewActionPreview,
 ) -> Result<ReviewReceiptResult> {
     negotiate_review(client)?;
-    client
-        .get_review_receipt(
-            preview.target().project.clone(),
-            preview.target().workspace.clone(),
-            preview.idempotency_key().clone(),
-        )
-        .map_err(platform_v2_error)
+    if let Some(confirmation) = preview.confirmation() {
+        client
+            .get_correlated_review_receipt(
+                preview.target().project.clone(),
+                preview.target().workspace.clone(),
+                preview.idempotency_key().clone(),
+                confirmation.receipt_correlation_digest().clone(),
+            )
+            .map_err(platform_v2_error)
+    } else {
+        client
+            .get_review_receipt(
+                preview.target().project.clone(),
+                preview.target().workspace.clone(),
+                preview.idempotency_key().clone(),
+            )
+            .map_err(platform_v2_error)
+    }
 }
 
 #[cfg(test)]
@@ -1515,6 +1665,134 @@ mod tests {
                 if lookup.idempotency_key() == preview.idempotency_key()
                     && lookup.project() == &preview.target().project
                     && lookup.workspace() == &preview.target().workspace
+        ));
+    }
+
+    // SDTEST-1827 — capability loading is its own authenticated request, and
+    // a confirmed rerun carries every exact fence on dispatch and uses only
+    // the correlated receipt lookup during recovery.
+    #[test]
+    fn confirmed_rerun_uses_authoritative_capability_and_correlated_lookup_only() {
+        use automonique_platform_client::platform_v2_client::testing::{
+            DeterministicPlatformV2Step, DeterministicPlatformV2Transport,
+        };
+        use automonique_protocol::platform_v2::{
+            NegotiatedPlatform, PlatformVersion, WorkContextAvailability,
+        };
+        use automonique_protocol::platform_v2_review::{ReviewAuthority, ReviewAuthorityId};
+        use automonique_protocol::platform_v2_review_api::decode_review_snapshot;
+        use automonique_protocol::platform_v2_transport::{
+            PlatformNegotiationResponse, PlatformV2Refusal, PlatformV2Request, PlatformV2Response,
+            ReviewCapabilities, ReviewCheckRerunCapability, ReviewConfirmationDigest,
+            ReviewGitStagingCapabilities, ReviewPullRequestCapabilities,
+            ReviewReceiptCorrelationDigest,
+        };
+
+        let snapshot = decode_review_snapshot(include_bytes!(
+            "../../tests/fixtures/platform-v2-review-v2.json"
+        ))
+        .unwrap();
+        let semantic = PlatformReviewSemantic::from(&snapshot);
+        let target = PlatformReviewTarget {
+            project: automonique_protocol::platform_v2::ProjectId::new("project-1").unwrap(),
+            workspace: snapshot.workspace().clone(),
+        };
+        let check = &semantic.checks[0];
+        let confirmation = ReviewConfirmationDigest::new("a".repeat(64)).unwrap();
+        let correlation = ReviewReceiptCorrelationDigest::new("b".repeat(64)).unwrap();
+        let workspace_revision = Revision::new(92).unwrap();
+        let capabilities = ReviewCapabilities::new(
+            target.project.clone(),
+            target.workspace.clone(),
+            semantic.revision,
+            workspace_revision,
+            vec![ReviewCheckRerunCapability::new(
+                crate::config::platform_review::ReviewCheckId::new(check.id.clone()).unwrap(),
+                check.freshness.observed_revision,
+                ReviewAuthority::new(
+                    check.authority.kind,
+                    ReviewAuthorityId::new(check.authority.id.clone()).unwrap(),
+                ),
+                confirmation.clone(),
+                correlation.clone(),
+            )
+            .unwrap()],
+            Vec::new(),
+            ReviewPullRequestCapabilities::default(),
+            ReviewGitStagingCapabilities::default(),
+        )
+        .unwrap();
+        let negotiated = || {
+            NegotiatedPlatform::new(
+                PlatformVersion::V2,
+                PlatformVersion::V2.schema(),
+                WorkContextAvailability::V2Structured,
+            )
+            .unwrap()
+        };
+
+        let capability_transport = DeterministicPlatformV2Transport::new([
+            DeterministicPlatformV2Step::Negotiation(PlatformNegotiationResponse::Negotiated(
+                negotiated(),
+            )),
+            DeterministicPlatformV2Step::V2(Box::new(PlatformV2Response::ReviewCapabilities(
+                capabilities.clone(),
+            ))),
+        ]);
+        let mut capability_client = PlatformV2Client::new_testing(capability_transport);
+        assert_eq!(
+            load_review_capabilities(&mut capability_client, &target).unwrap(),
+            PlatformReviewCapabilitiesLoad::Available(Box::new(capabilities.clone()))
+        );
+        assert!(matches!(
+            capability_client.transport().requests()[0].request(),
+            PlatformV2Request::GetReviewCapabilities(request)
+                if request.project() == &target.project && request.workspace() == &target.workspace
+        ));
+
+        let preview = PlatformReviewActionPreview::rerun_check(
+            target.clone(),
+            &semantic,
+            &capabilities,
+            &check.id,
+        )
+        .unwrap();
+        let refusal = || PlatformV2Refusal::new("fixture_refusal", "fixture refusal").unwrap();
+        let dispatch_transport = DeterministicPlatformV2Transport::new([
+            DeterministicPlatformV2Step::Negotiation(PlatformNegotiationResponse::Negotiated(
+                negotiated(),
+            )),
+            DeterministicPlatformV2Step::V2(Box::new(PlatformV2Response::Refused(refusal()))),
+        ]);
+        let mut dispatch_client = PlatformV2Client::new_testing(dispatch_transport);
+        assert!(matches!(
+            dispatch_review_action(&mut dispatch_client, &preview).unwrap(),
+            ReviewReceiptResult::Refused(_)
+        ));
+        assert!(matches!(
+            dispatch_client.transport().requests()[0].request(),
+            PlatformV2Request::ExecuteReviewAction(request)
+                if request.confirmation_digest() == Some(&confirmation)
+                    && request.expected_workspace_revision() == Some(workspace_revision)
+                    && request.receipt_correlation_digest() == Some(&correlation)
+        ));
+
+        let lookup_transport = DeterministicPlatformV2Transport::new([
+            DeterministicPlatformV2Step::Negotiation(PlatformNegotiationResponse::Negotiated(
+                negotiated(),
+            )),
+            DeterministicPlatformV2Step::V2(Box::new(PlatformV2Response::Refused(refusal()))),
+        ]);
+        let mut lookup_client = PlatformV2Client::new_testing(lookup_transport);
+        assert!(matches!(
+            lookup_review_action(&mut lookup_client, &preview).unwrap(),
+            ReviewReceiptResult::Refused(_)
+        ));
+        assert!(matches!(
+            lookup_client.transport().requests()[0].request(),
+            PlatformV2Request::GetReviewReceipt(lookup)
+                if lookup.receipt_correlation_digest() == Some(&correlation)
+                    && lookup.idempotency_key() == preview.idempotency_key()
         ));
     }
 

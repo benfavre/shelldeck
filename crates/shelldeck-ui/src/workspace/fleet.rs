@@ -1,12 +1,16 @@
 use super::*;
 
 use shelldeck_core::config::platform::{
-    stable_client_id, ActionResult, Attachment, ControlClaimResult, PlatformConnection,
-    PlatformFollowUpResult, PlatformRefresh, PlatformReviewActionResult, PlatformSnapshot,
-    ResourceCoordinate, RetainedSessionUpdate,
+    stable_client_id, ActionResult, Attachment, ControlClaimResult, PlatformAttentionLoad,
+    PlatformConnection, PlatformFollowUpResult, PlatformRefresh, PlatformReviewActionResult,
+    PlatformSnapshot, ResourceCoordinate, RetainedSessionUpdate,
+};
+use shelldeck_core::config::platform_attention::{
+    PlatformAttentionTarget, ReviewAttentionPresence,
 };
 use shelldeck_core::config::platform_review::{
-    PlatformReviewLoad, PlatformReviewTarget, PlatformReviewUnavailable,
+    PlatformReviewCapabilitiesLoad, PlatformReviewLoad, PlatformReviewTarget,
+    PlatformReviewUnavailable,
 };
 
 enum PlatformActionResult {
@@ -15,7 +19,7 @@ enum PlatformActionResult {
     ControlClaimed(ControlClaimResult),
     ControlReleased(ResourceCoordinate),
     Executed(ActionResult),
-    Review(AttributedPlatformReviewActionResult),
+    Review(Box<AttributedPlatformReviewActionResult>),
     FollowedUp(PlatformFollowUpResult),
 }
 
@@ -23,6 +27,7 @@ enum PlatformLoadResult {
     Snapshot {
         snapshot: PlatformSnapshot,
         review: Option<AttributedPlatformReview>,
+        attention: Option<AttributedPlatformAttention>,
     },
     Refresh {
         refresh: PlatformRefresh,
@@ -30,17 +35,62 @@ enum PlatformLoadResult {
         reconciled: Vec<PlatformFollowUpResult>,
         review: Option<AttributedPlatformReview>,
         review_action: Option<Box<AttributedPlatformReviewActionResult>>,
+        attention: Option<AttributedPlatformAttention>,
     },
 }
 
 struct AttributedPlatformReview {
     target: PlatformReviewTarget,
     load: PlatformReviewLoad,
+    capabilities: PlatformReviewCapabilitiesLoad,
 }
 
 struct AttributedPlatformReviewActionResult {
     target: PlatformReviewTarget,
     result: PlatformReviewActionResult,
+}
+
+struct AttributedPlatformAttention {
+    workspace: shelldeck_core::config::workspace_catalog::CatalogWorkspaceId,
+    target: PlatformAttentionTarget,
+    load: Result<PlatformAttentionLoad, String>,
+}
+
+fn load_attention(
+    connection: &PlatformConnection,
+    target: Option<(
+        shelldeck_core::config::workspace_catalog::CatalogWorkspaceId,
+        PlatformAttentionTarget,
+    )>,
+    review: Option<&AttributedPlatformReview>,
+) -> Option<AttributedPlatformAttention> {
+    let (workspace, target) = target?;
+    let load = review_attention_presence(review.map(|review| &review.load))
+        .ok_or_else(|| "attention inventory incomplete".to_owned())
+        .and_then(|presence| {
+            connection
+                .attention(target.clone(), presence)
+                .map_err(|error| error.to_string())
+        });
+    Some(AttributedPlatformAttention {
+        workspace,
+        target,
+        load,
+    })
+}
+
+fn review_attention_presence(
+    review: Option<&PlatformReviewLoad>,
+) -> Option<ReviewAttentionPresence> {
+    Some(match review {
+        Some(PlatformReviewLoad::Available(_)) => ReviewAttentionPresence::Present,
+        Some(PlatformReviewLoad::Unavailable(unavailable))
+            if unavailable.category == "platform_v2_not_found" =>
+        {
+            ReviewAttentionPresence::Absent
+        }
+        _ => return None,
+    })
 }
 
 fn load_review(
@@ -51,19 +101,36 @@ fn load_review(
         let load = connection
             .review(&target)
             .unwrap_or_else(|error| unavailable_review(&error));
-        AttributedPlatformReview { target, load }
+        let capabilities = connection
+            .review_capabilities(&target)
+            .unwrap_or_else(|error| unavailable_review_capabilities(&error));
+        AttributedPlatformReview {
+            target,
+            load,
+            capabilities,
+        }
     })
 }
 
 /// Admit a remote observation only when it is still attributed to the exact
 /// active catalog mapping that requested it. A switched or now-unmapped
 /// workspace clears the strip instead of inheriting foreign review state.
+#[cfg(test)]
 fn review_for_active_target(
     active: Option<&PlatformReviewTarget>,
     attributed: Option<AttributedPlatformReview>,
 ) -> Option<PlatformReviewLoad> {
     attributed
         .and_then(|attributed| (Some(&attributed.target) == active).then_some(attributed.load))
+}
+
+fn review_and_capabilities_for_active_target(
+    active: Option<&PlatformReviewTarget>,
+    attributed: Option<AttributedPlatformReview>,
+) -> Option<(PlatformReviewLoad, PlatformReviewCapabilitiesLoad)> {
+    attributed.and_then(|attributed| {
+        (Some(&attributed.target) == active).then_some((attributed.load, attributed.capabilities))
+    })
 }
 
 fn platform_connection_is_current(
@@ -78,9 +145,9 @@ fn review_for_active_context(
     captured_connection: &PlatformConnection,
     active_target: Option<&PlatformReviewTarget>,
     attributed: Option<AttributedPlatformReview>,
-) -> Option<PlatformReviewLoad> {
+) -> Option<(PlatformReviewLoad, PlatformReviewCapabilitiesLoad)> {
     platform_connection_is_current(current_connection, captured_connection)
-        .then(|| review_for_active_target(active_target, attributed))
+        .then(|| review_and_capabilities_for_active_target(active_target, attributed))
         .flatten()
 }
 
@@ -98,6 +165,15 @@ fn review_action_for_active_context(
 
 fn unavailable_review(error: &shelldeck_core::error::ShellDeckError) -> PlatformReviewLoad {
     PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+        category: "transport_error".to_owned(),
+        explanation: error.to_string(),
+    })
+}
+
+fn unavailable_review_capabilities(
+    error: &shelldeck_core::error::ShellDeckError,
+) -> PlatformReviewCapabilitiesLoad {
+    PlatformReviewCapabilitiesLoad::Unavailable(PlatformReviewUnavailable {
         category: "transport_error".to_owned(),
         explanation: error.to_string(),
     })
@@ -143,11 +219,11 @@ impl Workspace {
         PlatformConnection::new_at_endpoint(&endpoint, &self.app_config.cloud_sync.token).ok()
     }
 
-    pub(super) fn fleet_visible(&self) -> bool {
+    pub(super) fn platform_surface_visible(&self) -> bool {
         !self.settings_open
             && self.platform_connection().is_some()
             && self.effective_mode() == AppMode::Dev
-            && self.active_view == ActiveView::Fleet
+            && matches!(self.active_view, ActiveView::Fleet | ActiveView::Workspaces)
     }
 
     pub(super) fn update_fleet_availability(&mut self, cx: &mut Context<Self>) {
@@ -159,6 +235,11 @@ impl Workspace {
     }
 
     pub(super) fn refresh_fleet_view(&mut self, cx: &mut Context<Self>) {
+        let attention_context = self
+            .workspace_hub
+            .read(cx)
+            .active_platform_attention_context();
+        self.reconcile_platform_attention_context(attention_context.clone(), cx);
         if self.fleet_refresh_in_flight {
             return;
         }
@@ -187,6 +268,8 @@ impl Workspace {
             .fleet_view
             .update(cx, |view, _cx| view.pending_review_reconciliation());
         let review_target = self.workspace_hub.read(cx).active_platform_review_target();
+        let attention_target = attention_context
+            .and_then(|(workspace, target)| target.map(|target| (workspace, target)));
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -206,17 +289,26 @@ impl Workspace {
                             })
                         });
                         let review = load_review(&connection, review_target);
+                        let attention =
+                            load_attention(&connection, attention_target, review.as_ref());
                         Ok(PlatformLoadResult::Refresh {
                             refresh,
                             retained,
                             reconciled,
                             review,
                             review_action,
+                            attention,
                         })
                     } else {
                         let snapshot = connection.snapshot()?;
                         let review = load_review(&connection, review_target);
-                        Ok(PlatformLoadResult::Snapshot { snapshot, review })
+                        let attention =
+                            load_attention(&connection, attention_target, review.as_ref());
+                        Ok(PlatformLoadResult::Snapshot {
+                            snapshot,
+                            review,
+                            attention,
+                        })
                     }
                 })
                 .await;
@@ -233,6 +325,7 @@ impl Workspace {
                     // review strip. Never relabel one Platform origin as
                     // another when project/workspace IDs happen to match.
                     workspace.fleet_snapshot = None;
+                    workspace.clear_platform_attention(cx);
                     workspace.fleet_view.update(cx, |view, cx| {
                         view.reset();
                         cx.notify();
@@ -243,8 +336,17 @@ impl Workspace {
                     .workspace_hub
                     .read(cx)
                     .active_platform_review_target();
+                let current_attention_context = workspace
+                    .workspace_hub
+                    .read(cx)
+                    .active_platform_attention_context();
+                workspace.reconcile_platform_attention_context(current_attention_context, cx);
                 match result {
-                    Ok(PlatformLoadResult::Snapshot { snapshot, review }) => {
+                    Ok(PlatformLoadResult::Snapshot {
+                        snapshot,
+                        review,
+                        attention,
+                    }) => {
                         let review = review_for_active_context(
                             current_connection.as_ref(),
                             &request_connection,
@@ -260,9 +362,34 @@ impl Workspace {
                         workspace.fleet_snapshot = Some(snapshot.clone());
                         workspace.fleet_view.update(cx, |view, cx| {
                             view.set_snapshot(snapshot);
-                            view.set_review(active_review_target.clone(), review);
+                            let (review, capabilities) = review
+                                .map(|(review, capabilities)| (Some(review), Some(capabilities)))
+                                .unwrap_or((None, None));
+                            view.set_review(active_review_target.clone(), review, capabilities);
                             cx.notify();
                         });
+                        if let Some(attention) = attention {
+                            let current = workspace
+                                .workspace_hub
+                                .read(cx)
+                                .active_platform_attention_target();
+                            if current.as_ref().is_some_and(|(id, target)| {
+                                *id == attention.workspace && target == &attention.target
+                            }) {
+                                match attention.load {
+                                    Ok(load) => workspace.apply_platform_attention_load(
+                                        attention.workspace,
+                                        load,
+                                        cx,
+                                    ),
+                                    Err(_) => workspace.mark_platform_attention_unavailable(
+                                        attention.workspace,
+                                        &attention.target,
+                                        cx,
+                                    ),
+                                }
+                            }
+                        }
                         workspace.focus_pending_fleet_session(cx);
                     }
                     Ok(PlatformLoadResult::Refresh {
@@ -271,6 +398,7 @@ impl Workspace {
                         reconciled,
                         review,
                         review_action,
+                        attention,
                     }) => {
                         let review = review_for_active_context(
                             current_connection.as_ref(),
@@ -299,15 +427,41 @@ impl Workspace {
                                 view.set_follow_up_result(result, cx);
                             }
                             view.apply_retained_updates(retained);
-                            view.set_review(active_review_target.clone(), review);
+                            let (review, capabilities) = review
+                                .map(|(review, capabilities)| (Some(review), Some(capabilities)))
+                                .unwrap_or((None, None));
+                            view.set_review(active_review_target.clone(), review, capabilities);
                             if let Some(result) = review_action {
                                 view.set_review_action_result(result, cx);
                             }
                             cx.notify();
                         });
+                        if let Some(attention) = attention {
+                            let current = workspace
+                                .workspace_hub
+                                .read(cx)
+                                .active_platform_attention_target();
+                            if current.as_ref().is_some_and(|(id, target)| {
+                                *id == attention.workspace && target == &attention.target
+                            }) {
+                                match attention.load {
+                                    Ok(load) => workspace.apply_platform_attention_load(
+                                        attention.workspace,
+                                        load,
+                                        cx,
+                                    ),
+                                    Err(_) => workspace.mark_platform_attention_unavailable(
+                                        attention.workspace,
+                                        &attention.target,
+                                        cx,
+                                    ),
+                                }
+                            }
+                        }
                         workspace.focus_pending_fleet_session(cx);
                     }
                     Err(error) => {
+                        workspace.mark_all_platform_attention_unavailable(cx);
                         let log_failure =
                             fleet_should_log_failure(workspace.fleet_refresh_failures);
                         workspace.fleet_refresh_failures =
@@ -341,14 +495,14 @@ impl Workspace {
     }
 
     pub(super) fn sync_fleet_view_poll(&mut self, cx: &mut Context<Self>) {
-        if self.fleet_visible() {
+        if self.platform_surface_visible() {
             self.refresh_fleet_view(cx);
             if self._fleet_view_poll.is_none() {
                 self._fleet_view_poll = Some(cx.spawn(async move |this, cx: &mut AsyncApp| loop {
                     cx.background_executor().timer(FLEET_POLL_INTERVAL).await;
                     let keep = this
                         .update(cx, |workspace, cx| {
-                            if workspace.fleet_visible() {
+                            if workspace.platform_surface_visible() {
                                 let retry_ready =
                                     workspace.fleet_retry_not_before.is_none_or(|not_before| {
                                         std::time::Instant::now() >= not_before
@@ -378,6 +532,10 @@ impl Workspace {
         }
         if matches!(event, FleetViewEvent::Refresh) {
             self.refresh_fleet_view(cx);
+            return;
+        }
+        if let FleetViewEvent::OpenAttention(activation) = &event {
+            self.activate_platform_attention(*activation, cx);
             return;
         }
         let Some(connection) = self.platform_connection() else {
@@ -412,6 +570,7 @@ impl Workspace {
                 .spawn(async move {
                     match event {
                         FleetViewEvent::Refresh => unreachable!(),
+                        FleetViewEvent::OpenAttention(_) => unreachable!(),
                         FleetViewEvent::Attach(session) => connection
                             .attach(session, client)
                             .map(PlatformActionResult::Attached),
@@ -429,12 +588,12 @@ impl Workspace {
                             .map(PlatformActionResult::Executed),
                         FleetViewEvent::ExecuteReview(preview) => {
                             let target = preview.target().clone();
-                            Ok(PlatformActionResult::Review(
+                            Ok(PlatformActionResult::Review(Box::new(
                                 AttributedPlatformReviewActionResult {
                                     target,
                                     result: connection.execute_review_action(preview),
                                 },
-                            ))
+                            )))
                         }
                         FleetViewEvent::FollowUp(follow_up) => {
                             Ok(PlatformActionResult::FollowedUp(
@@ -507,7 +666,7 @@ impl Workspace {
                             current_connection.as_ref(),
                             &request_connection,
                             active_target.as_ref(),
-                            attributed,
+                            *attributed,
                         ) {
                             workspace.fleet_view.update(cx, |view, cx| {
                                 view.set_review_action_result(result, cx);
@@ -543,9 +702,9 @@ impl Workspace {
         .detach();
     }
 
-    pub fn open_fleet(&mut self, cx: &mut Context<Self>) {
+    pub fn open_fleet(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.enter_dev_mode(cx) {
-            return;
+            return false;
         }
         if self.platform_connection().is_none() {
             self.show_toast(
@@ -553,11 +712,12 @@ impl Workspace {
                 ToastLevel::Warning,
                 cx,
             );
-            return;
+            return false;
         }
         self.active_view = ActiveView::Fleet;
         self.on_active_view_changed(cx);
         cx.notify();
+        !self.settings_open && self.active_view == ActiveView::Fleet
     }
 }
 
@@ -565,15 +725,18 @@ impl Workspace {
 mod tests {
     use super::{
         fleet_retry_delay, fleet_should_log_failure, platform_connection_is_current,
-        review_action_for_active_context, review_for_active_context, review_for_active_target,
-        AttributedPlatformReview, AttributedPlatformReviewActionResult, FLEET_POLL_INTERVAL,
+        review_action_for_active_context, review_attention_presence, review_for_active_context,
+        review_for_active_target, AttributedPlatformReview, AttributedPlatformReviewActionResult,
+        FLEET_POLL_INTERVAL,
     };
     use shelldeck_core::config::platform::{PlatformConnection, PlatformReviewActionResult};
+    use shelldeck_core::config::platform_attention::ReviewAttentionPresence;
     use shelldeck_core::config::platform_review::{
         AttentionState, ConflictState, DeliverySemantic, DeliveryState, DiffChangeKind, DiffSide,
-        MergeReadiness, PlatformReviewActionPreview, PlatformReviewLoad, PlatformReviewSemantic,
-        PlatformReviewTarget, PlatformReviewUnavailable, PreviewKind, PullRequestSemantic,
-        PullRequestState, ReviewAnchorSemantic, ReviewAttentionSemantic, ReviewAuthorityKind,
+        MergeReadiness, PlatformReviewActionPreview, PlatformReviewCapabilitiesLoad,
+        PlatformReviewLoad, PlatformReviewSemantic, PlatformReviewTarget,
+        PlatformReviewUnavailable, PreviewKind, PullRequestSemantic, PullRequestState,
+        ReviewAnchorSemantic, ReviewAttentionSemantic, ReviewAuthorityKind,
         ReviewAuthoritySemantic, ReviewDecision, ReviewFileSemantic, ReviewFreshnessSemantic,
         ReviewFreshnessState, ReviewHunkSemantic, ReviewPreviewSemantic, ReviewSchemaVersion,
         ReviewStatusSemantic, WorktreeFileState,
@@ -605,12 +768,35 @@ mod tests {
         .unwrap()
     }
 
+    // SDTEST-1830
+    #[test]
+    fn orchestration_attention_remains_discoverable_without_a_review_snapshot() {
+        let missing = PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+            category: "platform_v2_not_found".into(),
+            explanation: "not found".into(),
+        });
+        assert_eq!(
+            review_attention_presence(Some(&missing)),
+            Some(ReviewAttentionPresence::Absent)
+        );
+        let transport = PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
+            category: "transport_error".into(),
+            explanation: "offline".into(),
+        });
+        assert_eq!(review_attention_presence(Some(&transport)), None);
+        assert_eq!(review_attention_presence(None), None);
+    }
+
     fn refused(target: PlatformReviewTarget) -> AttributedPlatformReview {
         AttributedPlatformReview {
             target,
             load: PlatformReviewLoad::Unavailable(PlatformReviewUnavailable {
                 category: "not_available".to_owned(),
                 explanation: "review projection is not available".to_owned(),
+            }),
+            capabilities: PlatformReviewCapabilitiesLoad::Unavailable(PlatformReviewUnavailable {
+                category: "not_available".to_owned(),
+                explanation: "review capabilities are not available".to_owned(),
             }),
         }
     }

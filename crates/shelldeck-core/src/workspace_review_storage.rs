@@ -17,6 +17,13 @@ pub(super) fn workspace_state_path(
 }
 
 pub(super) fn ensure_private_directory(path: &Path) -> Result<(), ReviewDraftError> {
+    ensure_private_directory_io(path)?;
+    Ok(())
+}
+
+/// Create and validate the two-level private storage boundary shared by
+/// review and attention custody.
+pub(crate) fn ensure_private_directory_io(path: &Path) -> std::io::Result<()> {
     let root = path.parent().ok_or_else(invalid_private_path)?;
     if let Some(parent) = root.parent() {
         std::fs::create_dir_all(parent)?;
@@ -26,11 +33,11 @@ pub(super) fn ensure_private_directory(path: &Path) -> Result<(), ReviewDraftErr
     Ok(())
 }
 
-fn create_owned_directory(path: &Path) -> Result<(), ReviewDraftError> {
+fn create_owned_directory(path: &Path) -> std::io::Result<()> {
     match std::fs::create_dir(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     }
     validate_directory_shape(path)?;
     #[cfg(unix)]
@@ -139,7 +146,7 @@ fn open_no_follow(path: &Path, configure: impl FnOnce(&mut OpenOptions)) -> std:
     Ok(file)
 }
 
-fn bounded_descriptor_read_after_open(
+pub(crate) fn bounded_descriptor_read_after_open(
     path: &Path,
     maximum: u64,
     after_open: impl FnOnce(),
@@ -161,11 +168,14 @@ fn bounded_descriptor_read_after_open(
     Ok(Some(bytes))
 }
 
-fn bounded_descriptor_read(path: &Path, maximum: u64) -> std::io::Result<Option<Vec<u8>>> {
+pub(crate) fn bounded_descriptor_read(
+    path: &Path,
+    maximum: u64,
+) -> std::io::Result<Option<Vec<u8>>> {
     bounded_descriptor_read_after_open(path, maximum, || {})
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn bounded_read_after_open_for_test(
     path: &Path,
     maximum: u64,
@@ -199,13 +209,13 @@ pub(super) fn workflow_bounded_read(path: &Path) -> Result<Option<Vec<u8>>, Revi
     Ok(bytes)
 }
 
-pub(super) fn open_lock_file(path: &Path) -> std::io::Result<File> {
+pub(crate) fn open_lock_file(path: &Path) -> std::io::Result<File> {
     open_no_follow(path, |options| {
         options.create(true).truncate(false).read(true).write(true);
     })
 }
 
-pub(super) fn secure_atomic_write(path: &Path, payload: &[u8]) -> std::io::Result<()> {
+pub(crate) fn secure_atomic_write(path: &Path, payload: &[u8]) -> std::io::Result<()> {
     validate_owned_parent(path)?;
     if let Ok(metadata) = std::fs::symlink_metadata(path) {
         if metadata.file_type().is_symlink() || is_windows_reparse(&metadata) {
@@ -215,7 +225,7 @@ pub(super) fn secure_atomic_write(path: &Path, payload: &[u8]) -> std::io::Resul
     crate::util::atomic_write(path, payload)
 }
 
-pub(super) fn lock_path(path: &Path) -> PathBuf {
+pub(crate) fn lock_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(".lock");
     PathBuf::from(name)

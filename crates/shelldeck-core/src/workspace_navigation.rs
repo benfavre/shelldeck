@@ -80,6 +80,15 @@ pub struct ProviderSessionBinding {
     pub run_id: Option<String>,
 }
 
+/// Binding for a local CLI-agent runtime retained by a workspace. Runtime
+/// existence/liveness belongs to the UI session collection; this DTO only
+/// carries stable navigation identity and checkout authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentSessionBinding {
+    pub checkout_id: CatalogCheckoutId,
+    pub session_id: Uuid,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TerminalViewport {
     pub scrollback_offset_lines: usize,
@@ -113,6 +122,7 @@ pub enum WorkspaceTabContent {
     Browser {
         location: String,
     },
+    AgentSession(AgentSessionBinding),
     ProviderSession(ProviderSessionBinding),
 }
 
@@ -325,6 +335,13 @@ impl WorkspaceSurfaceState {
                     if mapping.user_workspace.id != binding.platform_user_workspace_id {
                         return Err(SurfaceValidationError::PlatformWorkspaceMismatch);
                     }
+                }
+                WorkspaceTabContent::AgentSession(binding)
+                    if binding.checkout_id != workspace.checkout_id() =>
+                {
+                    return Err(SurfaceValidationError::CheckoutAuthorityMismatch(
+                        binding.checkout_id,
+                    ));
                 }
                 _ => {}
             }
@@ -1593,5 +1610,42 @@ mod tests {
         surface("platform-workspace")
             .validate_for(&catalog, id)
             .expect("exact provider mapping");
+    }
+
+    // SDTEST-1884
+    #[test]
+    fn local_agent_session_is_bound_to_the_workspace_checkout() {
+        let catalog = catalog();
+        let id = workspace(10);
+        let pane = PaneId::from_uuid(uuid(70));
+        let tab = WorkspaceTabId::from_uuid(uuid(71));
+        let surface = |checkout_id| WorkspaceSurfaceState {
+            root: Some(PaneNode::Leaf(PaneLeaf {
+                id: pane,
+                tabs: vec![WorkspaceTab {
+                    id: tab,
+                    title: "Implement cockpit".into(),
+                    content: WorkspaceTabContent::AgentSession(AgentSessionBinding {
+                        checkout_id,
+                        session_id: uuid(72),
+                    }),
+                }],
+                active_tab: Some(tab),
+            })),
+            focus: Some(WorkspaceFocus {
+                pane_id: pane,
+                tab_id: tab,
+            }),
+        };
+
+        surface(checkout(2))
+            .validate_for(&catalog, id)
+            .expect("workspace checkout owns the local agent session");
+        assert_eq!(
+            surface(checkout(3)).validate_for(&catalog, id),
+            Err(SurfaceValidationError::CheckoutAuthorityMismatch(checkout(
+                3
+            )))
+        );
     }
 }

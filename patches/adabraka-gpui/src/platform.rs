@@ -342,6 +342,12 @@ pub(crate) trait Platform: 'static {
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>);
 
     fn set_tray_icon(&self, _icon: Option<&[u8]>) {}
+    /// ShellDeck patch: SDPATCH-120 — make tray availability part of the
+    /// portable platform contract.
+    /// Whether the native tray backend successfully created a live status item.
+    fn is_tray_available(&self) -> bool {
+        false
+    }
     fn set_tray_menu(&self, _menu: Vec<TrayMenuItem>) {}
     fn set_tray_tooltip(&self, _tooltip: &str) {}
     fn set_tray_panel_mode(&self, _enabled: bool) {}
@@ -1611,6 +1617,13 @@ pub enum TrayMenuItem {
         label: SharedString,
         /// A unique identifier for this action.
         id: SharedString,
+    },
+    /// ShellDeck patch: SDPATCH-120 — native tray counters need a portable,
+    /// non-interactive menu row instead of a fake action.
+    /// A non-interactive informational row.
+    Label {
+        /// The display label.
+        label: SharedString,
     },
     /// A visual separator between menu items.
     Separator,

@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.4"
+version = "0.9.6"
 edition = "2021"
 license = "MIT"
 authors = ["ShellDeck Contributors"]
@@ -28,7 +28,7 @@ russh = { version = "0.60.3" }
 ssh2-config = "0.2"
 
 # Terminal
-portable-pty = "0.8"
+portable-pty = "0.9"
 vte = "0.13"
 
 # Async runtime
@@ -49,14 +49,14 @@ serde_json = "1"
 toml = "0.8"
 
 # Utilities
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "2"
 directories = "6"
-notify = "7"
+notify = "8.2"
 # Platform credential stores are all behind feature flags in keyring 3: with
 # none enabled, `keyring::default` resolves to the in-process **mock** store on
 # every OS, so nothing is ever persisted. The deps are target-gated upstream,
@@ -69,14 +69,8 @@ keyring = { version = "3", features = [
     "crypto-rust",
 ] }
 auto-launch = "0.5"
-tray-icon = "0.22"
 notify-rust = "4"
 image = { version = "0.25", default-features = false, features = ["png", "ico"] }
-# GTK — Linux only; the tray-icon crate depends on libappindicator which
-# itself sits on GTK. adabraka-gpui uses Wayland/X11 natively without
-# initialising GTK, so we init + run gtk::main() on a dedicated thread
-# (see crates/shelldeck/src/tray/mod.rs).
-gtk = "0.18"
 parking_lot = "0.12"
 fs2 = "0.4"
 smallvec = "1.13"
@@ -90,8 +84,8 @@ sha2 = "0.10"
 base64 = "0.22"
 ed25519-dalek = "2"
 criterion = "0.5"
-automonique-platform-client = { git = "https://github.com/bext-stack/automonique", rev = "1dd5c13f7a53aac9e28d3cd004bf73789ca66bb7" }
-automonique-protocol = { git = "https://github.com/bext-stack/automonique", rev = "1dd5c13f7a53aac9e28d3cd004bf73789ca66bb7" }
+automonique-platform-client = { git = "https://github.com/bext-stack/automonique", rev = "524073c3a55ec73d57e4b05abf5ba3eb0abd4cb7" }
+automonique-protocol = { git = "https://github.com/bext-stack/automonique", rev = "524073c3a55ec73d57e4b05abf5ba3eb0abd4cb7" }
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
     "Win32_Security",

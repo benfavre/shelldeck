@@ -244,6 +244,9 @@ impl WindowsPlatform {
             directx_devices: Some(directx_devices),
         };
         let result = unsafe {
+            // ShellDeck patch: SDPATCH-120 — the tray owner must be an invisible
+            // top-level window because message-only windows do not receive the
+            // broadcast TaskbarCreated message after Explorer restarts.
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 PLATFORM_WINDOW_CLASS_NAME,
@@ -253,7 +256,7 @@ impl WindowsPlatform {
                 0,
                 0,
                 0,
-                Some(HWND_MESSAGE),
+                None,
                 None,
                 None,
                 Some(&context as *const _ as *const _),
@@ -889,6 +892,19 @@ impl Platform for WindowsPlatform {
         super::active_window::get_focused_window_info()
     }
 
+    // ShellDeck patch: SDPATCH-120 — report the retained Win32 tray owner only
+    // when Explorer-restart recovery was registered successfully.
+    fn is_tray_available(&self) -> bool {
+        taskbar_created_message() != 0
+            && self
+                .inner
+                .state
+                .borrow()
+                .tray
+                .as_ref()
+                .is_some_and(WindowsTray::is_available)
+    }
+
     // ShellDeck patch: expose visible external top-level Win32 window snapshots.
     fn visible_external_windows(&self) -> Vec<ExternalWindow> {
         let mut own_windows = self
@@ -1133,7 +1149,17 @@ impl WindowsPlatformInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        let handled = match msg {
+        // ShellDeck patch: SDPATCH-120 — restore the exact retained tray icon
+        // when Explorer announces that its notification area was recreated.
+        let handled = if msg == taskbar_created_message() && msg != 0 {
+            if let Some(tray) = self.state.borrow_mut().tray.as_mut() {
+                if !tray.handle_taskbar_created() {
+                    log::error!("failed to restore tray icon after Explorer restart");
+                }
+            }
+            Some(0)
+        } else {
+            match msg {
             WM_GPUI_CLOSE_ONE_WINDOW
             | WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD
             | WM_GPUI_DOCK_MENU_ACTION
@@ -1147,7 +1173,8 @@ impl WindowsPlatformInner {
             WM_GPUI_NETWORK_CHANGE => self.handle_network_change(),
             WM_GPUI_MEDIA_KEY => self.handle_media_key(wparam, lparam),
             WM_GPUI_CONTEXT_MENU_ACTION => self.handle_context_menu_action(wparam, lparam),
-            _ => None,
+                _ => None,
+            }
         };
         if let Some(result) = handled {
             LRESULT(result)
@@ -1702,6 +1729,13 @@ fn handle_gpu_device_lost(
 
 const PLATFORM_WINDOW_CLASS_NAME: PCWSTR = w!("Zed::PlatformWindow");
 
+// ShellDeck patch: SDPATCH-120 — use Windows' registered broadcast ID as the
+// single Explorer-restart authority and retain registration failure as zero.
+fn taskbar_created_message() -> u32 {
+    static MESSAGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) })
+}
+
 fn register_platform_window_class() {
     let wc = WNDCLASSW {
         lpfnWndProc: Some(window_procedure),
@@ -1758,6 +1792,14 @@ unsafe extern "system" fn window_procedure(
 #[cfg(test)]
 mod tests {
     use crate::{ClipboardItem, read_from_clipboard, write_to_clipboard};
+
+    // ShellDeck patch: SDPATCH-120 — the native Windows test runner must prove
+    // Explorer's registered recovery broadcast is available before hidden start.
+    // SDTEST-1813
+    #[test]
+    fn sdtest_1813_taskbar_created_message_registration_is_live() {
+        assert_ne!(super::taskbar_created_message(), 0);
+    }
 
     #[test]
     fn test_clipboard() {

@@ -68,6 +68,12 @@ impl MacTray {
         }
     }
 
+    // ShellDeck patch: SDPATCH-120 — retain the actual NSStatusItem result for
+    // hidden-start availability decisions.
+    pub fn is_available(&self) -> bool {
+        *self.status_item != nil
+    }
+
     #[allow(dead_code)]
     pub fn set_title(&self, title: &str) {
         unsafe {
@@ -220,6 +226,16 @@ pub(crate) unsafe fn build_menu_with_selector(
                     let menu_item: id =
                         msg_send![menu_item, initWithTitle:title action:nil keyEquivalent:empty];
                     configure_actionable_item_with_selector(menu_item, id.as_ref(), selector);
+                    let _: () = msg_send![menu, addItem: menu_item];
+                }
+                // ShellDeck patch: SDPATCH-120 — render informational rows disabled.
+                TrayMenuItem::Label { label } => {
+                    let title = NSString::alloc(nil).init_str(label.as_ref());
+                    let menu_item: id = msg_send![class!(NSMenuItem), alloc];
+                    let empty = NSString::alloc(nil).init_str("");
+                    let menu_item: id =
+                        msg_send![menu_item, initWithTitle:title action:nil keyEquivalent:empty];
+                    let _: () = msg_send![menu_item, setEnabled: NO];
                     let _: () = msg_send![menu, addItem: menu_item];
                 }
                 TrayMenuItem::Separator => {

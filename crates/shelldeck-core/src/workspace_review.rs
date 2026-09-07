@@ -17,7 +17,7 @@ use crate::config::workspace_catalog::{
 };
 use crate::workspace_navigation::{
     PaneId, PaneNode, WorkspaceFocus, WorkspaceNavigationState, WorkspaceSurfaceState,
-    WorkspaceTabContent,
+    WorkspaceTabContent, WorkspaceTabId,
 };
 
 #[path = "workspace_review_preview.rs"]
@@ -30,7 +30,7 @@ use validation::{
     validate_pending_record, validate_preview_bounds, validate_provider_evidence,
 };
 #[path = "workspace_review_storage.rs"]
-mod storage;
+pub(crate) mod storage;
 use storage::{
     bounded_read, ensure_private_directory, lock_path, open_lock_file, read_disk_identity,
     secure_atomic_write, workflow_bounded_read, workflow_disk_revision, workspace_review_root,
@@ -696,12 +696,38 @@ pub enum ApprovalDecision {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ReviewMutationKind {
-    StageHunks {
-        hunks: Vec<ReviewHunkId>,
-    },
-    UnstageHunks {
-        hunks: Vec<ReviewHunkId>,
-    },
+    /// Modelled, and deliberately without an adapter. Do not give it one as
+    /// written; `benfavre/shelldeck#163` records the investigation, and the
+    /// short version is that nothing here can close a git write.
+    ///
+    /// * A hunk has no identity to close over. It is not a property of the
+    ///   repository but of a rendering: the same pair of blobs decomposes into
+    ///   a different number of hunks at a different context width, moves when
+    ///   `diff.indentHeuristic` is toggled, yields a different set under `-w`,
+    ///   and produces no hunks at all under a `.gitattributes` textconv driver.
+    ///   Two hunks in one file can also have byte-identical bodies, context
+    ///   included, so content addressing alone is ambiguous within one file.
+    /// * `ReviewHunkId` is a v4 UUID and nothing outside tests produces a
+    ///   [`ReviewHunk`], so it labels a projection rather than naming anything
+    ///   a worktree holds. The platform contract agrees: its own hunk id exists
+    ///   for comment anchors, and its `DiffHunk` carries positions plus a
+    ///   bounded preview, never the hunk's content.
+    /// * [`MutationTargetFence::LocalReview`] pins the checkout and this
+    ///   crate's `review_revision`. Neither moves when another process running
+    ///   as the same uid moves `HEAD`, the index or the file, so it would fence
+    ///   a staging write against nothing. `bext-stack/automonique#225` is the
+    ///   standard a local git write has to meet, and `config::platform_review`
+    ///   is where the file-level controls that meet it live: a confirmation
+    ///   minted over the observed `HEAD` object id, a digest of the whole
+    ///   index, and each named path's objects.
+    /// * Git offers no fenced mechanism anyway. `git add -p` is `git diff-files
+    ///   -p` followed by `git apply --cached`, and `git apply` matches context
+    ///   at any line offset: it exits 0 against an index the patch was not
+    ///   minted from, and it will write into a different region of the file
+    ///   when the reviewed one is gone.
+    StageHunks { hunks: Vec<ReviewHunkId> },
+    /// Unwired for the same reasons as [`ReviewMutationKind::StageHunks`].
+    UnstageHunks { hunks: Vec<ReviewHunkId> },
     SendComments {
         session_id: String,
         comments: Vec<ReviewCommentDraft>,
@@ -1758,6 +1784,11 @@ pub enum AttentionState {
 pub struct AttentionTarget {
     pub workspace: CatalogWorkspaceId,
     pub pane: PaneId,
+    /// Exact retained native tab coordinate. Provider-only projections may
+    /// instead use `session_id`, which is resolved without consulting the
+    /// pane's mutable active-tab state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<WorkspaceTabId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 }
@@ -1860,14 +1891,18 @@ impl AttentionBoard {
         Ok(notify)
     }
 
-    pub fn open_target(
-        &mut self,
+    pub fn resolve_target(
+        &self,
         id: AttentionItemId,
+        expected_revision: u64,
         workspace: CatalogWorkspaceId,
         catalog: &ProjectCatalog,
         navigation: &WorkspaceNavigationState,
     ) -> Result<WorkspaceFocus, AttentionError> {
-        let item = self.items.get_mut(&id).ok_or(AttentionError::InvalidItem)?;
+        let item = self.items.get(&id).ok_or(AttentionError::InvalidItem)?;
+        if item.revision != expected_revision {
+            return Err(AttentionError::StaleObservation);
+        }
         if self.workspace != workspace || item.target.workspace != workspace {
             return Err(AttentionError::WrongWorkspace);
         }
@@ -1880,8 +1915,24 @@ impl AttentionBoard {
             .map_err(|_| AttentionError::InvalidSurface)?;
         let leaf = find_pane(surface.root.as_ref(), item.target.pane)
             .ok_or(AttentionError::UnknownPane)?;
-        let tab = match item.target.session_id.as_ref() {
-            Some(session_id) => {
+        let exact_tab = item
+            .target
+            .tab_id
+            .and_then(|tab_id| leaf.tabs.iter().find(|tab| tab.id == tab_id));
+        if item.target.tab_id.is_some() && exact_tab.is_none() {
+            return Err(AttentionError::SessionOutsidePane);
+        }
+        let tab = match (exact_tab, item.target.session_id.as_ref()) {
+            (Some(tab), Some(session_id)) => match &tab.content {
+                WorkspaceTabContent::ProviderSession(binding)
+                    if binding.session_id == *session_id =>
+                {
+                    Some(tab)
+                }
+                _ => None,
+            },
+            (Some(tab), None) => Some(tab),
+            (None, Some(session_id)) => {
                 let mut matches = leaf.tabs.iter().filter(|tab| {
                     matches!(
                         &tab.content,
@@ -1895,16 +1946,41 @@ impl AttentionBoard {
                 }
                 tab
             }
-            None => leaf
-                .active_tab
-                .and_then(|active| leaf.tabs.iter().find(|tab| tab.id == active)),
+            (None, None) => None,
         }
         .ok_or(AttentionError::SessionOutsidePane)?;
-        self.locally_read.insert((id, item.revision));
         Ok(WorkspaceFocus {
             pane_id: leaf.id,
             tab_id: tab.id,
         })
+    }
+
+    /// Mark only the exact observation revision that was successfully opened.
+    /// A newer replay must remain unread rather than inheriting an older click.
+    pub fn mark_read(
+        &mut self,
+        id: AttentionItemId,
+        expected_revision: u64,
+    ) -> Result<(), AttentionError> {
+        let item = self.items.get(&id).ok_or(AttentionError::InvalidItem)?;
+        if item.revision != expected_revision {
+            return Err(AttentionError::StaleObservation);
+        }
+        self.locally_read.insert((id, expected_revision));
+        Ok(())
+    }
+
+    pub fn open_target(
+        &mut self,
+        id: AttentionItemId,
+        expected_revision: u64,
+        workspace: CatalogWorkspaceId,
+        catalog: &ProjectCatalog,
+        navigation: &WorkspaceNavigationState,
+    ) -> Result<WorkspaceFocus, AttentionError> {
+        let focus = self.resolve_target(id, expected_revision, workspace, catalog, navigation)?;
+        self.mark_read(id, expected_revision)?;
+        Ok(focus)
     }
 
     #[must_use]

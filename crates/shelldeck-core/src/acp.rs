@@ -12,20 +12,28 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, AuthMethodId, AuthenticateRequest, ClientCapabilities, ContentBlock,
-    Implementation, InitializeRequest, LoadSessionRequest, McpServer, NewSessionRequest,
-    PermissionOptionId, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    AgentCapabilities, AuthMethodId, AuthenticateRequest, CancelNotification, ClientCapabilities,
+    ContentBlock, Implementation, InitializeRequest, LoadSessionRequest, McpServer,
+    NewSessionRequest, PermissionOptionId, PromptRequest, PromptResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
     SessionNotification,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{Result, ShellDeckError};
 
 /// Stable SDK release used by both ShellDeck and Automonique.
 pub const ACP_SDK_VERSION: &str = "2.0.0";
+
+pub type AcpCancelSender = futures::channel::oneshot::Sender<()>;
+pub type AcpCancelReceiver = futures::channel::oneshot::Receiver<()>;
+
+pub fn cancel_channel() -> (AcpCancelSender, AcpCancelReceiver) {
+    futures::channel::oneshot::channel()
+}
 
 /// Explicit child-process launch configuration. No shell is involved.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,6 +85,16 @@ impl AcpTurnRequest {
     }
 
     #[must_use]
+    pub fn text(cwd: impl Into<PathBuf>, prompt: impl Into<String>) -> Self {
+        Self::new(
+            cwd,
+            vec![ContentBlock::Text(
+                agent_client_protocol::schema::v1::TextContent::new(prompt),
+            )],
+        )
+    }
+
+    #[must_use]
     pub fn resume(mut self, session_id: impl Into<SessionId>) -> Self {
         self.session_id = Some(session_id.into());
         self
@@ -119,6 +137,7 @@ impl AcpPermissionBroker for CancelPermissions {
 pub struct AcpClient {
     launch: AcpLaunch,
     permissions: Arc<dyn AcpPermissionBroker>,
+    updates: Arc<dyn Fn(&SessionNotification) + Send + Sync>,
 }
 
 impl AcpClient {
@@ -127,6 +146,7 @@ impl AcpClient {
         Self {
             launch,
             permissions: Arc::new(CancelPermissions),
+            updates: Arc::new(|_| {}),
         }
     }
 
@@ -136,16 +156,68 @@ impl AcpClient {
         self
     }
 
+    /// Observe each ordered ACP update as it arrives. The callback must remain
+    /// lightweight; provider I/O continues on the ACP connection task.
+    #[must_use]
+    pub fn with_updates(
+        mut self,
+        updates: Arc<dyn Fn(&SessionNotification) + Send + Sync>,
+    ) -> Self {
+        self.updates = updates;
+        self
+    }
+
+    /// Route ACP updates directly into the provider-neutral coding-agent
+    /// timeline while preserving protocol order.
+    #[must_use]
+    pub fn with_agent_events(
+        self,
+        events: std::sync::mpsc::Sender<crate::agent_runtime::AgentStreamEvent>,
+    ) -> Self {
+        let ready = Arc::new(AtomicBool::new(false));
+        self.with_updates(Arc::new(move |notification| {
+            if !ready.swap(true, Ordering::AcqRel) {
+                let _ = events.send(crate::agent_runtime::AgentStreamEvent::Ready);
+            }
+            for event in crate::agent_runtime::acp_notification_events(notification) {
+                let _ = events.send(event);
+            }
+        }))
+    }
+
     /// Run one complete turn. The process group is torn down by the SDK when
     /// the connection ends, including wrapper subprocesses on Unix.
     pub fn prompt(&self, request: AcpTurnRequest) -> Result<AcpTurnResult> {
+        self.prompt_inner(request, None)?
+            .ok_or_else(|| ShellDeckError::Connection("ACP turn was unexpectedly cancelled".into()))
+    }
+
+    /// Run one turn with protocol-level cancellation. Dropping the connection
+    /// after `session/cancel` also activates the SDK's child process-group
+    /// guard, so Stop cannot leave an Automonique wrapper or tool orphaned.
+    pub fn prompt_cancellable(
+        &self,
+        request: AcpTurnRequest,
+        cancel: AcpCancelReceiver,
+    ) -> Result<Option<AcpTurnResult>> {
+        self.prompt_inner(request, Some(cancel))
+    }
+
+    fn prompt_inner(
+        &self,
+        request: AcpTurnRequest,
+        mut cancel: Option<AcpCancelReceiver>,
+    ) -> Result<Option<AcpTurnResult>> {
         validate_request(&request)?;
 
         let updates = Arc::new(Mutex::new(Vec::new()));
         let result = Arc::new(Mutex::new(None));
         let updates_handler = Arc::clone(&updates);
+        let live_updates = Arc::clone(&self.updates);
         let result_handler = Arc::clone(&result);
         let permissions = Arc::clone(&self.permissions);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_handler = Arc::clone(&cancelled);
         let agent = AcpAgent::new(
             AcpAgentConfig::new(&self.launch.program).args(self.launch.arguments.clone()),
         );
@@ -156,6 +228,7 @@ impl AcpClient {
                 .name("shelldeck")
                 .on_receive_notification(
                     async move |notification: SessionNotification, _connection| {
+                        live_updates(&notification);
                         updates_handler.lock().push(notification);
                         Ok(())
                     },
@@ -233,28 +306,48 @@ impl AcpClient {
                             .await?
                             .session_id
                     };
-                    let response = connection
+                    let prompt = connection
                         .send_request(PromptRequest::new(session_id.clone(), request.prompt))
-                        .block_task()
-                        .await?;
+                        .block_task();
+                    let response = if let Some(cancel) = cancel.as_mut() {
+                        use futures::future::{select, Either};
+                        use futures::FutureExt as _;
+
+                        let prompt = prompt.fuse();
+                        let stop = cancel.fuse();
+                        futures::pin_mut!(prompt, stop);
+                        match select(prompt, stop).await {
+                            Either::Left((response, _)) => response?,
+                            Either::Right((_, _)) => {
+                                cancelled_handler.store(true, Ordering::Release);
+                                connection
+                                    .send_notification(CancelNotification::new(session_id))?;
+                                return Ok(());
+                            }
+                        }
+                    } else {
+                        prompt.await?
+                    };
                     *result_handler.lock() = Some((initialized, session_id, response));
                     Ok(())
                 }),
         )
         .map_err(acp_error)?;
 
-        let (initialized, session_id, response) = result
-            .lock()
-            .take()
+        let completed = result.lock().take();
+        if completed.is_none() && cancelled.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let (initialized, session_id, response) = completed
             .ok_or_else(|| ShellDeckError::Connection("ACP turn ended without a result".into()))?;
         let updates = std::mem::take(&mut *updates.lock());
-        Ok(AcpTurnResult {
+        Ok(Some(AcpTurnResult {
             agent_info: initialized.agent_info,
             agent_capabilities: initialized.agent_capabilities,
             session_id,
             updates,
             response,
-        })
+        }))
     }
 }
 
