@@ -30,9 +30,9 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#fffdf9">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <title>ShellDeck — Le poste de contrôle de vos agents IA</title>
+  <title>ShellDeck | Le poste de contrôle de vos agents IA</title>
   <meta name="description" content="Lancez Monique et vos agents, suivez chaque session, approuvez les actions sensibles et intervenez sans quitter ShellDeck.">
-  <meta property="og:title" content="ShellDeck — Le poste de contrôle de vos agents IA">
+  <meta property="og:title" content="ShellDeck | Le poste de contrôle de vos agents IA">
   <meta property="og:description" content="Un cockpit natif pour déléguer, superviser et reprendre la main, du ticket jusqu’au terminal.">
   <meta property="og:image" content="https://shelldeck.1clic.pro/campaign/roles-v1/user-support-promo-desktop-poster.webp">
   <meta property="og:type" content="website">
