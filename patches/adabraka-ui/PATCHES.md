@@ -618,6 +618,7 @@ carries no marker of its own — see its entry).
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — thread prose needs 8 px block rhythm and no`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact conversation headings scale from the`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact headings use the thread`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact conversation prose follows the`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — list rows in chat use the`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact tables participate in the same`
 - **Why**: The generic Markdown renderer uses document margins: every
@@ -627,7 +628,8 @@ carries no marker of its own — see its entry).
   spacing and also left an unexplained tail before note metadata and the reply
   composer. The opt-in compact mode follows the conversation prototype's 8 px
   prose cadence, a body-relative heading ramp with 10/4 px rhythm, 2 px list-row
-  cadence, and removes the last block's bottom margin. A compact H1 is 1.44×
+  cadence, a 1.62 conversation line-height, and removes the last block's bottom
+  margin. A compact H1 is 1.44×
   the caller's body size instead of the document renderer's fixed 32 px, with
   the hierarchy descending to H6 at 1×. The existing fixed document typography
   remains the default for every other consumer.

@@ -505,7 +505,8 @@ fn render_block(
     match block {
         RichBlock::Paragraph(inlines) => {
             let id = ElementId::Name(format!("{}-p-{}", id_prefix, idx).into());
-            let el = render_inline_element(inlines, base_size, on_link_click, Some(id));
+            let el =
+                render_inline_element(inlines, base_size, on_link_click, Some(id), compact);
             div()
                 .mb(if compact {
                     px(if last { 0.0 } else { 8.0 })
@@ -543,7 +544,7 @@ fn render_block(
                 }
             };
 
-            let el = render_inline_element(content, size, on_link_click, Some(id));
+            let el = render_inline_element(content, size, on_link_click, Some(id), compact);
             div()
                 .mt(top_margin)
                 .mb(if compact {
@@ -684,11 +685,18 @@ fn render_block(
     }
 }
 
+// ShellDeck patch: SDPATCH-030 — compact conversation prose follows the
+// prototype's 1.62 line-height while document Markdown keeps its 1.5 rhythm.
+fn prose_line_height(compact: bool) -> f32 {
+    if compact { 1.62 } else { 1.5 }
+}
+
 fn render_inline_element(
     inlines: &[RichInline],
     base_size: Pixels,
     on_link_click: &Option<LinkClickHandler>,
     element_id: Option<ElementId>,
+    compact: bool,
 ) -> AnyElement {
     let theme = use_theme();
     let font_family = theme.tokens.font_family.clone();
@@ -715,7 +723,7 @@ fn render_inline_element(
         if let Some(handler) = on_link_click.clone() {
             return div()
                 .text_size(base_size)
-                .line_height(relative(1.5))
+                .line_height(relative(prose_line_height(compact)))
                 .child(InteractiveText::new(id, styled).on_click(
                     click_ranges,
                     move |idx, window, cx| {
@@ -733,7 +741,7 @@ fn render_inline_element(
 
     div()
         .text_size(base_size)
-        .line_height(relative(1.5))
+        .line_height(relative(prose_line_height(compact)))
         .child(styled)
         .into_any_element()
 }
@@ -778,7 +786,13 @@ fn render_list_items(
         };
 
         let id = ElementId::Name(format!("{}-li-{}", id_prefix, idx).into());
-        let content_el = render_inline_element(&item.content, base_size, on_link_click, Some(id));
+        let content_el = render_inline_element(
+            &item.content,
+            base_size,
+            on_link_click,
+            Some(id),
+            compact,
+        );
 
         let row = div()
             .flex()
@@ -869,7 +883,8 @@ fn render_table(
         for (ci, header) in headers.iter().enumerate() {
             *block_idx += 1;
             let id = ElementId::Name(format!("{}-th-{}", id_prefix, *block_idx).into());
-            let el = render_inline_element(header, base_size, on_link_click, Some(id));
+            let el =
+                render_inline_element(header, base_size, on_link_click, Some(id), compact);
             let mut cell = div()
                 .flex_1()
                 // ShellDeck patch: SDPATCH-027 — table headers need a
@@ -917,7 +932,8 @@ fn render_table(
         for (ci, cell_data) in row_data.iter().enumerate() {
             *block_idx += 1;
             let id = ElementId::Name(format!("{}-td-{}", id_prefix, *block_idx).into());
-            let el = render_inline_element(cell_data, base_size, on_link_click, Some(id));
+            let el =
+                render_inline_element(cell_data, base_size, on_link_click, Some(id), compact);
             let mut cell = div()
                 .flex_1()
                 // ShellDeck patch: SDPATCH-027 — body cells follow the same
@@ -953,7 +969,7 @@ fn render_table(
 
 #[cfg(test)]
 mod tests {
-    use super::heading_size;
+    use super::{heading_size, prose_line_height};
     use gpui::px;
 
     // SDTEST-1621
@@ -976,6 +992,13 @@ mod tests {
         assert_eq!(heading_size(1, base, false), px(32.0));
         assert_eq!(heading_size(4, base, false), px(20.0));
         assert_eq!(heading_size(6, base, false), px(16.0));
+    }
+
+    // SDTEST-1653
+    #[test]
+    fn compact_prose_uses_conversation_line_height_only() {
+        assert_eq!(prose_line_height(true), 1.62);
+        assert_eq!(prose_line_height(false), 1.5);
     }
 }
 

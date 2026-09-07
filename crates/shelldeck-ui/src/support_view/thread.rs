@@ -12,7 +12,7 @@ use crate::t;
 use crate::theme::ShellDeckColors;
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::prelude::Markdown;
+use adabraka_ui::prelude::{Badge, BadgeVariant, Markdown};
 use gpui::prelude::*;
 use gpui::*;
 use pulldown_cmark::{Event, Options, Parser};
@@ -753,18 +753,16 @@ pub(crate) fn human_message(
 
     if let Some(channel) = channel {
         head = head.child(
-            div()
-                .flex()
-                .items_center()
+            Badge::new(channel)
+                .variant(BadgeVariant::Secondary)
                 .flex_shrink_0()
                 .h(px(18.0))
                 .px(px(6.0))
-                .rounded_full()
-                .bg(ShellDeckColors::bg_primary())
+                .py(px(1.0))
                 .text_size(px(10.0))
                 .line_height(relative(1.0))
                 .text_color(ShellDeckColors::text_muted())
-                .child(channel),
+                .font_weight(FontWeight::NORMAL),
         );
     }
 
