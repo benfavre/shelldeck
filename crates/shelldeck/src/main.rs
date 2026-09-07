@@ -92,6 +92,7 @@ lucide_assets!(
     "keyboard",
     "life-buoy",
     "list-checks",
+    "layout-dashboard",
     "lock",
     "mail",
     "maximize-2",

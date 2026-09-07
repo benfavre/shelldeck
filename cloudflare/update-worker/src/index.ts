@@ -122,7 +122,7 @@ async function renderLandingPage(env: Env): Promise<Response> {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ShellDeck — GPU-Accelerated SSH &amp; Terminal Companion</title>
+<title>ShellDeck | GPU-Accelerated SSH &amp; Terminal Companion</title>
 <meta name="description" content="A GPU-accelerated native desktop SSH and terminal companion app. Manage connections, forward ports, run scripts — all from one polished UI.">
 <style>
   :root {
