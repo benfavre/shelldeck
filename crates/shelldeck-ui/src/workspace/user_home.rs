@@ -60,11 +60,13 @@ fn user_sites_empty_state(
 
 /// Keyboard-semantic wrapper for rich rows that cannot be represented by the
 /// label-and-icon-only shared Button without losing their information layout.
+type KeyboardActionHandler = dyn Fn(&mut Window, &mut App);
+
 #[derive(IntoElement)]
 pub(super) struct KeyboardAction {
     id: ElementId,
     base: Stateful<Div>,
-    on_activate: Rc<dyn Fn(&mut Window, &mut App)>,
+    on_activate: Rc<KeyboardActionHandler>,
 }
 
 struct KeyboardActionFocusState {

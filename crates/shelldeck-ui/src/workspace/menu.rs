@@ -12,8 +12,8 @@ impl Workspace {
         use crate::menu_bar::{menu_bar_spec, MenuBarContext, MenuCommand, MenuEntry};
 
         let mode = self.effective_mode();
-        let active_go = (mode == AppMode::Dev)
-            .then(|| match self.active_view {
+        let active_go = if mode == AppMode::Dev {
+            match self.active_view {
                 ActiveView::Dashboard => Some(MenuCommand::GoDashboard),
                 ActiveView::Terminal => Some(MenuCommand::GoTerminal),
                 ActiveView::Scripts => Some(MenuCommand::GoScripts),
@@ -26,8 +26,10 @@ impl Workspace {
                 ActiveView::Fleet => Some(MenuCommand::GoFleet),
                 ActiveView::BextCloud => Some(MenuCommand::GoBextCloud),
                 _ => None,
-            })
-            .flatten();
+            }
+        } else {
+            None
+        };
 
         let ctx = MenuBarContext {
             signed_in: self.signed_in(),
