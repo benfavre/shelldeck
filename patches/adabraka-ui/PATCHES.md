@@ -891,6 +891,67 @@ carries no marker of its own — see its entry).
   so its opaque background cannot square off the opposite compact corners.
 - **Upstream status**: not filed yet.
 
+### SDPATCH-043 — Buttons expose visible keyboard focus
+
+- **Files / symbols**:
+  - `src/components/button.rs` — `Button::render`
+  - `src/components/icon_button.rs` — `IconButton::render`
+- **Markers** (5):
+  - `src/components/button.rs` — `// ShellDeck patch: SDPATCH-043 — transient elements need retained focus`
+  - `src/components/button.rs` — `// ShellDeck patch: SDPATCH-043 — buttons already participate in Tab`
+  - `src/components/button.rs` — `// ShellDeck patch: SDPATCH-043 — paint a non-geometric focus`
+  - `src/components/icon_button.rs` — `// ShellDeck patch: SDPATCH-043 — icon-only buttons need the same`
+  - `src/components/icon_button.rs` — `// ShellDeck patch: SDPATCH-043 — paint a non-geometric focus`
+- **Why**: both components already register a stable `FocusHandle`, enter the
+  Tab order, and inherit GPUI's Enter/Space click synthesis, but neither
+  painted any focused state. Retained focus listeners refresh transient
+  `RenderOnce` components when focus changes; an absolute inset border then
+  makes keyboard location visible without changing geometry or being clipped
+  by the ripple container.
+- **Upstream status**: not filed yet.
+
+### SDPATCH-044 — Confirm-dialog backdrops preserve native window corners
+
+- **Files / symbols**:
+  - `src/components/confirm_dialog.rs` — `Dialog::{backdrop_radius,render}`
+- **Markers** (1):
+  - `src/components/confirm_dialog.rs` — `// ShellDeck patch: SDPATCH-044 — the actual full-window backdrop owns the host radius.`
+- **Why**: ShellDeck uses a transparent client-decorated window. A confirm
+  dialog's absolute opaque backdrop is therefore the real owner of all four
+  outer corners; relying on the rounded Workspace ancestor leaves square dark
+  wedges. The opt-in radius is applied directly to both the dialog root and
+  its backdrop, while maximized callers pass zero so the screen edge remains
+  square.
+- **Upstream status**: not filed yet — useful to any transparent host window.
+
+### SDPATCH-045 — Menus stay reachable inside compact windows
+
+- **Files / symbols**:
+  - `src/navigation/menu.rs` — `menu_max_height`, `Menu::{new,track_scroll,render}`,
+    `MenuBar::{new,render}`, `ContextMenu::render`
+- **Markers** (13):
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — dropdowns must fit the live viewport rather`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — an externally-owned handle survives the`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — standalone menus still scroll;`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — let a retained MenuBar own scroll state`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — a max-height without scroll merely`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — retained so scroll-to-current can finish`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — one dropdown is open at a time,`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — a newly opened`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — switching an`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — the 400px default is taller`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — pass the retained`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — context menus share the same bounded,`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-045 — pin the geometry that keeps menu content`
+- **Why**: the upstream 400px cap ignored the space already consumed by a
+  titlebar and menu bar, then clipped overflowing rows because the menu was not
+  scrollable. ShellDeck's 400px minimum window height consequently hid the
+  final Dev destinations. Dropdowns now use the live space below their anchor,
+  scroll vertically, and reveal a checked current destination on open; context
+  menus reuse the same bounded surface instead of duplicating the bug.
+- **Upstream status**: not filed yet — generic compact-window menu behaviour
+  suitable for upstreaming.
+
 ## Sync log
 
 - **2026-07-07** — initial inventory. Marker count 13 = 1+1+1+3+1+4+2
@@ -1017,6 +1078,15 @@ carries no marker of its own — see its entry).
   content outside the viewport; full-host Assistant panels own all four curves.
   2 new markers; the preceding ledger total was one behind the live tree
   (153, not 152), so the current marker count is 155.
+- **2026-09-08** — added SDPATCH-043: labelled and icon-only buttons retain
+  focus repaint listeners and paint an inset theme ring after their content.
+  The live tree started at 156 markers; 5 new markers bring it to 161.
+- **2026-09-09** — added SDPATCH-044: confirm dialogs can opt their opaque
+  backdrop into the transparent host window's radius. 1 new marker; current
+  code marker count is 162.
+- **2026-09-09** — added SDPATCH-045: dropdown and context menus use the live
+  viewport, scroll when constrained, and reveal their checked row. 13 new
+  markers; current code marker count is 175.
 
 ## Retired patches
 

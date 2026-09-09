@@ -291,7 +291,7 @@ impl Workspace {
                 if self.can_switch_mode() {
                     self.set_mode(AppMode::Support, cx);
                     self.support.update(cx, |v, cx| {
-                        v.set_section(crate::support_view::SupportSection::Requests);
+                        v.set_section(crate::support_view::SupportSection::Requests, cx);
                         cx.notify();
                     });
                 }
@@ -309,7 +309,7 @@ impl Workspace {
                 }
                 self.set_mode(AppMode::Support, cx);
                 self.support.update(cx, |v, cx| {
-                    v.set_section(crate::support_view::SupportSection::Tickets);
+                    v.set_section(crate::support_view::SupportSection::Tickets, cx);
                     cx.notify();
                 });
                 self.select_support_ticket(id, cx);

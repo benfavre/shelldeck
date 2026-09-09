@@ -673,7 +673,7 @@ impl Render for Workspace {
         if !self.settings_open && matches!(self.effective_mode(), AppMode::User) {
             let sheet = if self.user_new_request_sheet_open {
                 Some(
-                    self.render_user_new_request_sheet(is_maximized, _cx)
+                    self.render_user_new_request_sheet(is_maximized, _window, _cx)
                         .into_any_element(),
                 )
             } else if let Some(iss) = self.issue_detail.clone() {
@@ -774,6 +774,10 @@ impl Render for Workspace {
         }
         if let Some(sheet) = &self.ai_workflow_sheet {
             root = root.child(sheet.clone());
+        }
+
+        if self.confirm_new_request_discard {
+            root = root.child(self.render_new_request_discard_modal(is_maximized, _cx));
         }
 
         // User-mode delete-issue confirm modal (surfaces outside modal_backdrop

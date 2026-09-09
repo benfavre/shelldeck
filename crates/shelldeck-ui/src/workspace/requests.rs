@@ -22,6 +22,19 @@ fn user_issue_is_visible(server_owner_scoped: bool, local_identity_match: bool) 
     server_owner_scoped || local_identity_match
 }
 
+fn new_request_draft_is_dirty(
+    title: &str,
+    body: &str,
+    ai_prompt: &str,
+    attachment_url: &str,
+    attachment_count: usize,
+) -> bool {
+    [title, body, ai_prompt, attachment_url]
+        .iter()
+        .any(|value| !value.trim().is_empty())
+        || attachment_count > 0
+}
+
 impl Workspace {
     // --- Hosted issue management (requests) ---
 
@@ -382,10 +395,80 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Close the "Nouvelle demande" sheet. Plays the exit animation first
-    /// (sheet is kept mounted with `dismissing = true`), then clears the state
-    /// once the animation duration has elapsed.
-    pub(super) fn close_new_request_sheet(&mut self, cx: &mut Context<Self>) {
+    fn new_request_draft_is_dirty(&self, cx: &Context<Self>) -> bool {
+        new_request_draft_is_dirty(
+            self.issue_title_state.read(cx).content(),
+            self.issue_body_state.read(cx).content(),
+            self.issue_ai_prompt_state.read(cx).content(),
+            self.issue_attachment_url_state.read(cx).content(),
+            self.issue_new_attachments.len(),
+        )
+    }
+
+    /// One guard for every user-initiated close path: header ×, backdrop, and
+    /// Escape. A second Escape while the confirmation is open means "continue
+    /// editing", which is the safe/default outcome.
+    pub(super) fn request_close_new_request_sheet(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.confirm_new_request_discard {
+            self.continue_new_request_draft(window, cx);
+            return;
+        }
+        if self.user_new_request_sheet_dismissing || !self.user_new_request_sheet_open {
+            return;
+        }
+        if self.new_request_draft_is_dirty(cx) {
+            self.new_request_discard_return_focus = window.focused(cx);
+            self.confirm_new_request_discard = true;
+            self.new_request_discard_focus.focus(window);
+            cx.notify();
+            return;
+        }
+        self.dismiss_new_request_sheet(cx);
+    }
+
+    pub(super) fn continue_new_request_draft(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_new_request_discard = false;
+        if let Some(focus) = self.new_request_discard_return_focus.take() {
+            focus.focus(window);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn discard_new_request_draft(&mut self, cx: &mut Context<Self>) {
+        self.confirm_new_request_discard = false;
+        self.new_request_discard_return_focus = None;
+        self.dismiss_new_request_sheet(cx);
+    }
+
+    fn reset_new_request_draft(&mut self, cx: &mut Context<Self>) {
+        Self::reset_input(&self.issue_title_state.clone(), cx);
+        Self::reset_input(&self.issue_body_state.clone(), cx);
+        Self::reset_input(&self.issue_ai_prompt_state.clone(), cx);
+        Self::reset_input(&self.issue_attachment_url_state.clone(), cx);
+        self.issue_attachment_url_open = false;
+        self.issue_new_attachments.clear();
+        self.issue_new_priority = "normal".to_string();
+        self.issue_new_source = "user";
+        self.issue_new_site_id = None;
+        self.issue_attachments_open = false;
+        self.issue_site_menu = false;
+        self.issue_priority_menu = false;
+        self.issue_ai_backend_menu = false;
+        self.rebuild_issue_site_select(cx);
+    }
+
+    /// Close the "Nouvelle demande" sheet after a clean close or an explicit
+    /// discard. Plays the exit animation first, then clears the buffers only
+    /// once the panel has left the viewport.
+    fn dismiss_new_request_sheet(&mut self, cx: &mut Context<Self>) {
         if self.user_new_request_sheet_dismissing || !self.user_new_request_sheet_open {
             return;
         }
@@ -404,15 +487,7 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| {
                 ws.user_new_request_sheet_open = false;
                 ws.user_new_request_sheet_dismissing = false;
-                Self::reset_input(&ws.issue_title_state.clone(), cx);
-                Self::reset_input(&ws.issue_body_state.clone(), cx);
-                Self::reset_input(&ws.issue_ai_prompt_state.clone(), cx);
-                Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
-                ws.issue_attachment_url_open = false;
-                ws.issue_new_attachments.clear();
-                ws.issue_new_source = "user";
-                ws.issue_new_site_id = None;
-                ws.rebuild_issue_site_select(cx);
+                ws.reset_new_request_draft(cx);
                 cx.notify();
             });
         })
@@ -465,7 +540,7 @@ impl Workspace {
         }
         self.set_mode(AppMode::Support, cx);
         self.support.update(cx, |v, cx| {
-            v.set_section(crate::support_view::SupportSection::Requests);
+            v.set_section(crate::support_view::SupportSection::Requests, cx);
             cx.notify();
         });
         self.refresh_issues(cx);
@@ -959,23 +1034,17 @@ impl Workspace {
                         // Success: close the composer sheet, clear its buffers,
                         // and pop the detail sheet on the newly-created request.
                         ws.user_new_request_sheet_open = false;
-                        Self::reset_input(&ws.issue_title_state.clone(), cx);
-                        Self::reset_input(&ws.issue_body_state.clone(), cx);
-                        Self::reset_input(&ws.issue_ai_prompt_state.clone(), cx);
-                        Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                        ws.confirm_new_request_discard = false;
+                        ws.new_request_discard_return_focus = None;
                         if preserve_attachments {
                             ws.issue_comment_attachments =
                                 std::mem::take(&mut ws.issue_new_attachments);
-                        } else {
-                            ws.issue_new_attachments.clear();
                         }
+                        ws.reset_new_request_draft(cx);
                         ws.issue_ai_request_id = ws.issue_ai_request_id.wrapping_add(1);
                         ws.issue_ai_expanded = false;
                         ws.issue_ai_loading = false;
                         ws.issue_ai_error = None;
-                        ws.issue_new_source = "user";
-                        ws.issue_new_site_id = None;
-                        ws.rebuild_issue_site_select(cx);
                         ws.upsert_issue_in_list(iss.clone());
                         ws.issue_detail = Some(iss.clone());
                         ws.issue_selected = Some(iss.id.clone());
@@ -1032,6 +1101,7 @@ impl Workspace {
         };
         self.issue_attachment_busy = true;
         self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
+        let sent_issue_id = id.clone();
         cx.notify();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
@@ -1075,7 +1145,7 @@ impl Workspace {
                         }
                         ws.push_issues_to_support(cx);
                         ws.support.update(cx, |view, cx| {
-                            view.clear_composer_after_send(cx);
+                            view.clear_issue_draft_after_send(&sent_issue_id, cx);
                         });
                         Self::reset_input(&ws.issue_comment_state.clone(), cx);
                         Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
@@ -1480,7 +1550,7 @@ impl Workspace {
         attachment_id: String,
         cx: &mut Context<Self>,
     ) {
-        self.support_action(cx, move |base, token| {
+        self.support_action(cx, None, move |base, token| {
             manage_support::support_delete_attachment(&base, &token, &id, &attachment_id)
         });
     }
@@ -1727,7 +1797,10 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{issue_list_filter_for_mode, issues, user_issue_is_visible, AppMode};
+    use super::{
+        issue_list_filter_for_mode, issues, new_request_draft_is_dirty, user_issue_is_visible,
+        AppMode,
+    };
 
     // SDTEST-1433
     #[test]
@@ -1771,5 +1844,24 @@ mod tests {
         // refresh succeeds, so another requester's row cannot flash onscreen.
         assert!(user_issue_is_visible(false, true));
         assert!(!user_issue_is_visible(false, false));
+    }
+
+    // SDTEST-1917 — every meaningful in-memory buffer participates in the
+    // discard guard; whitespace-only placeholders keep a clean sheet easy to
+    // close without an unnecessary confirmation.
+    #[test]
+    fn new_request_discard_guard_covers_text_ai_url_and_attachments() {
+        assert!(!new_request_draft_is_dirty("  ", "\n", "", "  ", 0));
+        assert!(new_request_draft_is_dirty("Title", "", "", "", 0));
+        assert!(new_request_draft_is_dirty("", "Details", "", "", 0));
+        assert!(new_request_draft_is_dirty("", "", "AI prompt", "", 0));
+        assert!(new_request_draft_is_dirty(
+            "",
+            "",
+            "",
+            "https://example.test/capture.png",
+            0
+        ));
+        assert!(new_request_draft_is_dirty("", "", "", "", 1));
     }
 }

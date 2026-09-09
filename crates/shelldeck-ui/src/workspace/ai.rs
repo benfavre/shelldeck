@@ -2307,7 +2307,7 @@ impl Workspace {
                 };
                 if self.effective_mode() == AppMode::Support {
                     self.support.update(cx, |view, cx| {
-                        view.set_section(crate::support_view::SupportSection::Requests);
+                        view.set_section(crate::support_view::SupportSection::Requests, cx);
                         cx.notify();
                     });
                 } else {
@@ -2339,7 +2339,7 @@ impl Workspace {
                 }
                 self.set_mode(AppMode::Support, cx);
                 self.support.update(cx, |view, cx| {
-                    view.set_section(crate::support_view::SupportSection::Tickets);
+                    view.set_section(crate::support_view::SupportSection::Tickets, cx);
                     cx.notify();
                 });
                 self.select_support_ticket(task.target_id, cx);

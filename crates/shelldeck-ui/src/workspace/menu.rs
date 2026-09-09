@@ -9,11 +9,31 @@ impl Workspace {
     /// (mode, sign-in, sidebar, Monique/Fleet availability, AI config) — is a
     /// standing source of stale-menu bugs.
     pub(super) fn rebuild_menu_bar(&mut self, cx: &mut Context<Self>) {
-        use crate::menu_bar::{menu_bar_spec, MenuBarContext, MenuEntry};
+        use crate::menu_bar::{menu_bar_spec, MenuBarContext, MenuCommand, MenuEntry};
+
+        let mode = self.effective_mode();
+        let active_go = if mode == AppMode::Dev {
+            match self.active_view {
+                ActiveView::Dashboard => Some(MenuCommand::GoDashboard),
+                ActiveView::Terminal => Some(MenuCommand::GoTerminal),
+                ActiveView::Scripts => Some(MenuCommand::GoScripts),
+                ActiveView::PortForwards => Some(MenuCommand::GoPortForwards),
+                ActiveView::ServerSync => Some(MenuCommand::GoServerSync),
+                ActiveView::Sites => Some(MenuCommand::GoSites),
+                ActiveView::Recent => Some(MenuCommand::GoRecent),
+                ActiveView::FileEditor => Some(MenuCommand::GoFileEditor),
+                ActiveView::MoniqueConsole => Some(MenuCommand::GoMonique),
+                ActiveView::Fleet => Some(MenuCommand::GoFleet),
+                ActiveView::BextCloud => Some(MenuCommand::GoBextCloud),
+                _ => None,
+            }
+        } else {
+            None
+        };
 
         let ctx = MenuBarContext {
             signed_in: self.signed_in(),
-            mode: self.effective_mode(),
+            mode,
             dev_capable: self
                 .app_config
                 .account
@@ -24,6 +44,7 @@ impl Workspace {
             has_monique: self.has_monique(),
             has_fleet: self.platform_connection().is_some() || self.fleet_snapshot.is_some(),
             ai_configured: self.ai_available_for_current_surface(cx),
+            active_go,
         };
 
         let items = menu_bar_spec(ctx)

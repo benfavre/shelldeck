@@ -38,6 +38,7 @@ use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
 use gpui::*;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -63,6 +64,51 @@ pub enum SupportSection {
 /// Staff-only in-memory Ticket fixture. Shared by Workspace injection and the
 /// view so demo interactions never fall through to a nonexistent Manage row.
 pub(crate) const SUPPORT_TICKET_SHOWCASE_ID: &str = "fake-ticket-thread-showcase";
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum SupportDraftTarget {
+    Ticket(String),
+    Issue(String),
+}
+
+#[derive(Clone, Debug, Default)]
+struct SupportComposerDraft {
+    text: String,
+    attachments: Vec<AttachmentDraft>,
+    attachment_panel_open: bool,
+    compose_note: bool,
+}
+
+impl SupportComposerDraft {
+    fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.attachments.is_empty()
+    }
+}
+
+#[derive(Default)]
+struct SupportDraftStore(HashMap<SupportDraftTarget, SupportComposerDraft>);
+
+impl SupportDraftStore {
+    fn save(&mut self, target: SupportDraftTarget, draft: SupportComposerDraft) {
+        if draft.is_empty() {
+            self.0.remove(&target);
+        } else {
+            self.0.insert(target, draft);
+        }
+    }
+
+    fn get(&self, target: &SupportDraftTarget) -> Option<&SupportComposerDraft> {
+        self.0.get(target)
+    }
+
+    fn remove(&mut self, target: &SupportDraftTarget) {
+        self.0.remove(target);
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportFilter {
@@ -499,6 +545,10 @@ fn support_compact_layout(viewport_width: Pixels, rem_size: Pixels) -> bool {
     viewport_width < px(760.0).to_pixels(rem_size)
 }
 
+fn support_short_layout(viewport_height: Pixels, rem_size: Pixels) -> bool {
+    viewport_height < px(520.0).to_pixels(rem_size)
+}
+
 fn support_empty_detail(
     icon: impl IntoElement,
     title: impl Into<SharedString>,
@@ -564,7 +614,7 @@ fn support_compact_back(id: &'static str, cx: &mut Context<SupportView>) -> Div 
                 .px(px(8.0))
                 .icon(IconSource::from("chevron-left"))
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.clear_selection();
+                    this.clear_selection(cx);
                     cx.notify();
                 })),
         )
@@ -598,6 +648,10 @@ pub struct SupportView {
     assignee_draft_select: Entity<Select<String>>,
     /// Full editor state backing ticket replies and request comments.
     composer_state: Entity<InputState>,
+    /// Session-scoped user drafts, keyed by surface and record id. The editor
+    /// itself is shared, so navigation stashes it here before another target
+    /// is restored.
+    composer_drafts: SupportDraftStore,
     /// Pending AI reply (issue only, for now). Kept OUT of `composer_state` so
     /// it does not shove aside what the user was writing — the mockup shows it
     /// as a distinct card above the composer, with Publier / Modifier /
@@ -724,6 +778,7 @@ impl SupportView {
             issue_ai_draft: None,
             issue_ai_pending: false,
             composer_state,
+            composer_drafts: SupportDraftStore::default(),
             attachment_url_state: cx.new(InputState::new),
             attachment_url_open: false,
             attachment_drafts: Vec::new(),
@@ -785,14 +840,12 @@ impl SupportView {
     }
 
     /// Switch the console section (palette / action shortcut to Demandes).
-    pub fn set_section(&mut self, section: SupportSection) {
+    pub fn set_section(&mut self, section: SupportSection, cx: &mut Context<Self>) {
         if self.section != section {
-            self.attachment_generation = self.attachment_generation.wrapping_add(1);
-            self.attachment_busy = false;
-            self.attachment_drafts.clear();
-            self.attachment_panel_open = false;
+            self.stash_active_composer(cx);
+            self.section = section;
+            self.restore_active_composer(cx);
         }
-        self.section = section;
         self.thread_link_action = None;
     }
 
@@ -825,13 +878,8 @@ impl SupportView {
     /// Reset every "which row is open" bit so the Support surface returns to
     /// its list view. Called by the Workspace on mode switch so a ticket or a
     /// request opened in Support doesn't visually leak into User mode.
-    pub fn clear_selection(&mut self) {
-        self.attachment_generation = self.attachment_generation.wrapping_add(1);
-        self.attachment_busy = false;
-        self.attachment_drafts.clear();
-        self.attachment_panel_open = false;
-        self.attachment_url_open = false;
-        self.capture_annotator = None;
+    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        self.stash_active_composer(cx);
         self.selected_id = None;
         self.detail = None;
         self.issue_selected = None;
@@ -847,11 +895,22 @@ impl SupportView {
         self.issue_popover_menu = None;
         self.confirm_issue_delete = None;
         self.thread_link_action = None;
+        self.reset_composer(cx);
+        self.clear_attachment_drafts(cx);
+        self.compose_note = false;
+    }
+
+    /// Account teardown is the boundary of a Support drafting session. Drafts
+    /// survive navigation and mode changes, but never cross a logout.
+    pub fn clear_session(&mut self, cx: &mut Context<Self>) {
+        self.clear_selection(cx);
+        self.composer_drafts.clear();
     }
 
     pub fn set_issue_detail(&mut self, detail: Option<Issue>, cx: &mut Context<Self>) {
         let next_id = detail.as_ref().map(|issue| issue.id.as_str());
         let same_issue = next_id == self.issue_selected.as_deref();
+        let changing_issue = next_id.is_some() && !same_issue;
         let detail_changed = self.issue_detail.as_ref() != detail.as_ref();
         let seeded_ai_draft = detail
             .as_ref()
@@ -861,20 +920,19 @@ impl SupportView {
                 body: draft.body.clone(),
                 model: draft.model.clone(),
             });
-        if next_id != self.issue_selected.as_deref() {
-            self.attachment_generation = self.attachment_generation.wrapping_add(1);
-            self.attachment_busy = false;
-            self.attachment_drafts.clear();
-            self.attachment_panel_open = false;
-            self.attachment_url_open = false;
-            self.capture_annotator = None;
+        if changing_issue && self.section == SupportSection::Requests {
+            self.stash_active_composer(cx);
+        }
+        if changing_issue {
             self.issue_ai_draft = seeded_ai_draft;
-            self.reset_composer(cx);
         }
         if let Some(d) = &detail {
             self.issue_selected = Some(d.id.clone());
         }
         self.issue_detail = detail;
+        if changing_issue && self.section == SupportSection::Requests {
+            self.restore_active_composer(cx);
+        }
         if detail_changed {
             self.rebuild_issue_thread_cache(same_issue);
         }
@@ -1021,14 +1079,85 @@ impl SupportView {
                 ..ticket.clone()
             };
         }
+        let changing_ticket = self.selected_id.as_deref() != Some(ticket.id.as_str());
+        if changing_ticket && self.section == SupportSection::Tickets {
+            self.stash_active_composer(cx);
+        }
         self.selected_id = Some(ticket.id.clone());
         self.detail = Some(ticket);
+        if changing_ticket && self.section == SupportSection::Tickets {
+            self.restore_active_composer(cx);
+        }
         self.rebuild_ticket_thread_cache();
         self.popover_menu = None;
-        self.reset_composer(cx);
-        self.clear_attachment_drafts(cx);
         self.loading = false;
         self.error = None;
+    }
+
+    fn active_draft_target(&self) -> Option<SupportDraftTarget> {
+        match self.section {
+            SupportSection::Home => None,
+            SupportSection::Tickets => self
+                .selected_id
+                .as_ref()
+                .map(|id| SupportDraftTarget::Ticket(id.clone())),
+            SupportSection::Requests => self
+                .issue_selected
+                .as_ref()
+                .map(|id| SupportDraftTarget::Issue(id.clone())),
+        }
+    }
+
+    fn stash_active_composer(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.active_draft_target() else {
+            return;
+        };
+        let draft = SupportComposerDraft {
+            text: self.composer_state.read(cx).content().to_string(),
+            attachments: self.attachment_drafts.clone(),
+            attachment_panel_open: self.attachment_panel_open,
+            compose_note: self.compose_note,
+        };
+        self.composer_drafts.save(target, draft);
+    }
+
+    fn restore_active_composer(&mut self, cx: &mut Context<Self>) {
+        let draft = self
+            .active_draft_target()
+            .as_ref()
+            .and_then(|target| self.composer_drafts.get(target))
+            .cloned();
+        self.reset_composer(cx);
+        self.clear_attachment_drafts(cx);
+        self.compose_note = false;
+        if let Some(draft) = draft {
+            self.composer_state.update(cx, |state, cx| {
+                state.replace_content(draft.text, cx);
+            });
+            self.attachment_drafts = draft.attachments;
+            self.attachment_panel_open =
+                draft.attachment_panel_open && !self.attachment_drafts.is_empty();
+            self.compose_note = draft.compose_note;
+        }
+    }
+
+    fn clear_draft_after_send(&mut self, target: SupportDraftTarget, cx: &mut Context<Self>) {
+        self.composer_drafts.remove(&target);
+        if self.active_draft_target().as_ref() == Some(&target) {
+            self.reset_composer(cx);
+            self.clear_attachment_drafts(cx);
+            self.compose_note = false;
+        }
+        self.loading = false;
+        cx.notify();
+    }
+
+    pub fn clear_ticket_draft_after_send(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.clear_draft_after_send(SupportDraftTarget::Ticket(id.to_string()), cx);
+    }
+
+    pub fn clear_issue_draft_after_send(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.clear_draft_after_send(SupportDraftTarget::Issue(id.to_string()), cx);
     }
 
     fn reset_composer(&self, cx: &mut Context<Self>) {
@@ -1251,13 +1380,6 @@ impl SupportView {
             }
             Err(error) => self.error = Some(error),
         }
-        cx.notify();
-    }
-
-    pub fn clear_composer_after_send(&mut self, cx: &mut Context<Self>) {
-        self.reset_composer(cx);
-        self.clear_attachment_drafts(cx);
-        self.loading = false;
         cx.notify();
     }
 
@@ -1498,10 +1620,7 @@ impl SupportView {
                 .icon(IconSource::from(icon))
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |this, cx| {
-                        if this.section != section {
-                            this.clear_attachment_drafts(cx);
-                        }
-                        this.section = section;
+                        this.set_section(section, cx);
                         if section == SupportSection::Requests {
                             cx.emit(SupportViewEvent::IssuesRefresh);
                         }
@@ -1630,6 +1749,7 @@ impl Render for SupportView {
         };
 
         let compact = support_compact_layout(window.viewport_size().width, window.rem_size());
+        let short = support_short_layout(window.viewport_size().height, window.rem_size());
         let mut left = support_list_column(compact).child(header);
         left = left.child(self.render_filters(cx)).child(list);
 
@@ -1641,7 +1761,7 @@ impl Render for SupportView {
                 .flex_col()
                 .min_h(px(0.0))
                 .child(support_compact_back("support-tickets-compact-back", cx))
-                .child(self.render_conversation(cx))
+                .child(self.render_conversation(short, cx))
                 .into_any_element(),
             SupportSection::Tickets if compact => left.flex_1().into_any_element(),
             SupportSection::Tickets => div()
@@ -1649,9 +1769,9 @@ impl Render for SupportView {
                 .flex()
                 .min_h(px(0.0))
                 .child(left)
-                .child(self.render_conversation(cx))
+                .child(self.render_conversation(short, cx))
                 .into_any_element(),
-            SupportSection::Requests => self.render_requests(compact, cx).into_any_element(),
+            SupportSection::Requests => self.render_requests(compact, short, cx).into_any_element(),
         };
 
         // Le mode Support n'a pas de barre d'état sous lui (UX-004) : cette
@@ -2022,7 +2142,10 @@ pub(crate) fn render_attachment_delete_dialog(
 
 #[cfg(test)]
 mod tests {
-    use super::{reconciled_issue_total, reconciled_ticket_total, support_compact_layout};
+    use super::{
+        reconciled_issue_total, reconciled_ticket_total, support_compact_layout,
+        support_short_layout, SupportComposerDraft, SupportDraftStore, SupportDraftTarget,
+    };
 
     // SDTEST-1618
     #[test]
@@ -2031,6 +2154,59 @@ mod tests {
         assert!(!support_compact_layout(gpui::px(760.0), gpui::px(16.0)));
         assert!(support_compact_layout(gpui::px(1_519.0), gpui::px(32.0)));
         assert!(!support_compact_layout(gpui::px(1_520.0), gpui::px(32.0)));
+    }
+
+    // SDTEST-1910 — SDUC-229
+    #[test]
+    fn support_detail_compacts_at_a_scale_aware_short_height() {
+        assert!(support_short_layout(gpui::px(519.0), gpui::px(16.0)));
+        assert!(!support_short_layout(gpui::px(520.0), gpui::px(16.0)));
+        assert!(support_short_layout(gpui::px(1_039.0), gpui::px(32.0)));
+        assert!(!support_short_layout(gpui::px(1_040.0), gpui::px(32.0)));
+    }
+
+    // SDTEST-1912 — SDUC-229
+    #[test]
+    fn support_drafts_are_scoped_by_surface_and_record() {
+        let ticket = SupportDraftTarget::Ticket("shared-id".to_string());
+        let issue = SupportDraftTarget::Issue("shared-id".to_string());
+        let other_ticket = SupportDraftTarget::Ticket("other".to_string());
+        let mut drafts = SupportDraftStore::default();
+
+        drafts.save(
+            ticket.clone(),
+            SupportComposerDraft {
+                text: "Réponse au ticket".to_string(),
+                compose_note: true,
+                ..Default::default()
+            },
+        );
+        drafts.save(
+            issue.clone(),
+            SupportComposerDraft {
+                text: "Réponse à la demande".to_string(),
+                ..Default::default()
+            },
+        );
+        drafts.save(
+            other_ticket.clone(),
+            SupportComposerDraft {
+                text: "Autre diagnostic".to_string(),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(drafts.get(&ticket).unwrap().text, "Réponse au ticket");
+        assert!(drafts.get(&ticket).unwrap().compose_note);
+        assert_eq!(drafts.get(&issue).unwrap().text, "Réponse à la demande");
+        assert_eq!(drafts.get(&other_ticket).unwrap().text, "Autre diagnostic");
+
+        // Emptying one composer is an explicit local discard and must not
+        // disturb either a sibling record or the other Support surface.
+        drafts.save(ticket.clone(), SupportComposerDraft::default());
+        assert!(drafts.get(&ticket).is_none());
+        assert!(drafts.get(&issue).is_some());
+        assert!(drafts.get(&other_ticket).is_some());
     }
 
     // SDTEST-1719 — a missing `counts.all` deserializes to zero, but the

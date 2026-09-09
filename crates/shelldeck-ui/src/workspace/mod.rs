@@ -1,5 +1,6 @@
 use crate::i18n::rel_time;
 use crate::icons::{ai_provider_badge, ai_provider_icon, lucide_icon, lucide_path};
+use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
@@ -738,6 +739,14 @@ pub struct Workspace {
     /// While `true` the composer sheet plays its slide-out/fade-out animation.
     /// Cleared (along with `..open`) by a delayed task the close handler spawns.
     user_new_request_sheet_dismissing: bool,
+    /// Dirty new-request drafts never disappear on a stray ×, backdrop click,
+    /// or Escape. This flag surfaces the shared discard confirmation while the
+    /// sheet and all of its buffers stay mounted underneath it.
+    confirm_new_request_discard: bool,
+    /// The confirmation claims keyboard focus while it is visible, then hands
+    /// it back to the exact field/control that initiated the close attempt.
+    new_request_discard_focus: FocusHandle,
+    new_request_discard_return_focus: Option<FocusHandle>,
     /// Same for the selected-request detail sheet.
     user_issue_detail_dismissing: bool,
     /// The Dev-mode "bext Cloud" view.
@@ -1522,6 +1531,9 @@ impl Workspace {
             _issues_poll: None,
             user_new_request_sheet_open: false,
             user_new_request_sheet_dismissing: false,
+            confirm_new_request_discard: false,
+            new_request_discard_focus: cx.focus_handle(),
+            new_request_discard_return_focus: None,
             user_issue_detail_dismissing: false,
             issue_title_state: cx.new(InputState::new),
             issue_body_state: cx.new(|cx| InputState::new(cx).multi_line(true)),

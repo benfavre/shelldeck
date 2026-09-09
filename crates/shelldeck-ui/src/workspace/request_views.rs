@@ -5,6 +5,20 @@ use adabraka_ui::overlays::popover::PopoverContent;
 use adabraka_ui::prelude::{Composer, ComposerCommit, Popover};
 use shelldeck_core::ai::AiBackend;
 
+const USER_REQUEST_SHEET_WIDE_WIDTH: f32 = 480.0;
+
+fn user_request_sheet_layout(viewport_width: f32, ui_font_size: f32) -> (f32, bool) {
+    let compact = super::user_home::user_home_uses_compact_flow(viewport_width, ui_font_size);
+    (
+        if compact {
+            viewport_width
+        } else {
+            USER_REQUEST_SHEET_WIDE_WIDTH
+        },
+        compact,
+    )
+}
+
 impl Workspace {
     /// Return a label that always carries a visible Unicode ellipsis when it
     /// exceeds the badge's known character budget. GPUI currently clips text
@@ -183,11 +197,9 @@ impl Workspace {
         }
         metadata = metadata.child(delete);
 
+        let row_action_id = ElementId::from(SharedString::from(format!("uiss-{}", iss.id)));
         let mut row = div()
-            .id(ElementId::from(SharedString::from(format!(
-                "uiss-{}",
-                iss.id
-            ))))
+            .id(row_action_id.clone())
             .group(group_name.clone())
             .w_full()
             // The virtualized wrapper reserves the final 4 px as the gap to
@@ -205,12 +217,8 @@ impl Workspace {
                 ShellDeckColors::border()
             })
             .cursor_pointer()
-            .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-            .on_click({
-                let id = id.clone();
-                cx.listener(move |this, _: &ClickEvent, _, cx| this.select_issue(id.clone(), cx))
-            });
-        if compact {
+            .hover(|s| s.bg(ShellDeckColors::hover_bg()));
+        let row = if compact {
             row = row.flex_col().justify_center().gap(px(5.0));
             row.child(title).child(metadata)
         } else {
@@ -218,7 +226,11 @@ impl Workspace {
             row.child(issue_status_badge(&iss.status))
                 .child(title)
                 .child(metadata)
-        }
+        };
+        let entity = cx.entity();
+        super::user_home::KeyboardAction::new(row_action_id, row, move |_, cx| {
+            entity.update(cx, |this, cx| this.select_issue(id.clone(), cx));
+        })
     }
 
     /// User-mode "Mes demandes": a list of the tenant's requests. Selecting a
@@ -379,13 +391,15 @@ impl Workspace {
         fixed_context: Option<AnyElement>,
         footer: Option<AnyElement>,
         body_scroll: Option<&ScrollHandle>,
-        on_close: impl Fn(&mut Self, &mut Context<Self>) + Clone + 'static,
+        on_close: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use std::time::Duration;
         const ANIM_MS: u64 = SHEET_ANIM_MS;
 
         let close_bg = on_close.clone();
+        let close_escape_action = on_close.clone();
+        let close_escape_key = on_close.clone();
         let mut body = div()
             .id("user-sheet-body")
             .flex()
@@ -409,10 +423,25 @@ impl Workspace {
             // radii after constructing it.
             .top(px(WORKSPACE_TITLEBAR_HEIGHT))
             .rounded_t(px(0.0))
+            // Inputs bind Escape to an action, while buttons and bare sheet
+            // chrome deliver it as a key event. Cover both routes so Escape,
+            // backdrop, and × all enter the same close guard.
+            .capture_action(cx.listener(
+                move |this, _: &crate::overlay::InputEscape, window, cx| {
+                    close_escape_action(this, window, cx);
+                    cx.stop_propagation();
+                },
+            ))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                    close_escape_key(this, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _e, _window, cx| {
-                    close_bg(this, cx);
+                cx.listener(move |this, _e, window, cx| {
+                    close_bg(this, window, cx);
                 }),
             )
             .child({
@@ -495,8 +524,8 @@ impl Workspace {
                                             .text_color(ShellDeckColors::text_muted()),
                                     )
                                     .on_click(cx.listener(
-                                        move |this, _: &ClickEvent, _window, cx| {
-                                            close(this, cx);
+                                        move |this, _: &ClickEvent, window, cx| {
+                                            close(this, window, cx);
                                         },
                                     ))
                             }),
@@ -940,8 +969,11 @@ impl Workspace {
     pub(super) fn render_user_new_request_sheet(
         &self,
         is_maximized: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let viewport_width = window.viewport_size().width.to_f64() as f32;
+        let (panel_width, compact) = user_request_sheet_layout(viewport_width, self.ui_font_size);
         // One chip, not four. Four badges plus a 186px site select overflowed
         // the context row onto a second line, and the unselected ones carried
         // `opacity(0.55)` — which made "Basse" unreadable on a light theme.
@@ -1308,15 +1340,21 @@ impl Workspace {
             });
 
         let ai_enabled = self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Issue);
-        let mut inner = div().flex().flex_col().gap(px(10.0)).on_action(cx.listener(
-            |this, _: &Paste, _, cx| {
+        // The sheet body owns vertical scrolling. Keep this form at its natural
+        // height so a short viewport overflows the body instead of shrinking
+        // the Composer and clipping its footer action inside its own frame.
+        let mut inner = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(10.0))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
                 if this.paste_issue_attachment(IssueAttachmentTarget::NewRequest, cx) {
                     cx.stop_propagation();
                 } else {
                     cx.propagate();
                 }
-            },
-        ));
+            }));
         if ai_enabled {
             let model = if self.app_config.ai.model.trim().is_empty() {
                 self.app_config.ai.backend.default_model().to_string()
@@ -1571,15 +1609,126 @@ impl Workspace {
             Some("plus"),
             self.user_new_request_sheet_dismissing,
             is_maximized,
-            480.0,
-            false,
+            panel_width,
+            compact,
             inner,
             None,
             None,
             None,
-            |this, cx| this.close_new_request_sheet(cx),
+            |this, window, cx| this.request_close_new_request_sheet(window, cx),
             cx,
         )
+    }
+
+    /// Safe confirmation shown over an intact new-request draft. The modal
+    /// owns focus while open; backdrop and Escape both mean "continue", and
+    /// only the explicit destructive action clears the buffers.
+    pub(super) fn render_new_request_discard_modal(
+        &self,
+        is_maximized: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let entity = cx.entity();
+        let backdrop_entity = entity.clone();
+        let continue_entity = entity.clone();
+        let discard_entity = entity.clone();
+        let escape_entity = entity;
+
+        div()
+            .id("new-request-discard-focus-root")
+            .absolute()
+            .inset_0()
+            .track_focus(&self.new_request_discard_focus)
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                    escape_entity.update(cx, |this, cx| {
+                        this.continue_new_request_draft(window, cx);
+                    });
+                    cx.stop_propagation();
+                }
+            })
+            .child(
+                UiDialog::new()
+                    .width(gpui::px(420.0))
+                    .backdrop_radius(if is_maximized {
+                        gpui::px(0.0)
+                    } else {
+                        use_theme().tokens.radius_xl
+                    })
+                    .on_backdrop_click(move |window, cx| {
+                        backdrop_entity.update(cx, |this, cx| {
+                            this.continue_new_request_draft(window, cx);
+                        });
+                    })
+                    .header(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(16.0))
+                            .py(px(14.0))
+                            .border_b_1()
+                            .border_color(ShellDeckColors::border())
+                            .child(lucide_icon(
+                                "triangle-alert",
+                                16.0,
+                                ShellDeckColors::warning(),
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(15.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(t!("user.requests.discard.title").to_string()),
+                            ),
+                    )
+                    .content(
+                        div()
+                            .px(px(16.0))
+                            .py(px(16.0))
+                            .text_size(px(13.0))
+                            .line_height(relative(1.45))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("user.requests.discard.body").to_string()),
+                    )
+                    .footer(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.0))
+                            .px(px(16.0))
+                            .py(px(12.0))
+                            .border_t_1()
+                            .border_color(ShellDeckColors::border())
+                            .child(
+                                Button::new(
+                                    "new-request-discard-continue",
+                                    t!("user.requests.discard.continue").to_string(),
+                                )
+                                .variant(ButtonVariant::Default)
+                                .icon(IconSource::from("pen-line"))
+                                .on_click(move |_, window, cx| {
+                                    continue_entity.update(cx, |this, cx| {
+                                        this.continue_new_request_draft(window, cx);
+                                    });
+                                }),
+                            )
+                            .child(
+                                Button::new(
+                                    "new-request-discard-confirm",
+                                    t!("user.requests.discard.confirm").to_string(),
+                                )
+                                .variant(ButtonVariant::Destructive)
+                                .icon(IconSource::from("trash-2"))
+                                .on_click(move |_, _, cx| {
+                                    discard_entity.update(cx, |this, cx| {
+                                        this.discard_new_request_draft(cx);
+                                    });
+                                }),
+                            ),
+                    ),
+            )
     }
 
     /// The selected-request detail rendered as a right-side sheet.
@@ -1591,10 +1740,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let viewport_width = window.viewport_size().width.to_f64() as f32;
-        let compact =
-            super::user_home::user_home_uses_compact_flow(viewport_width, self.ui_font_size);
-        let fixed_context = compact.then(|| self.render_user_issue_heading(&iss, false, cx));
-        let inner = self.render_user_issue_detail(&iss, !compact, window, cx);
+        let (panel_width, compact) = user_request_sheet_layout(viewport_width, self.ui_font_size);
+        // Identity is part of the sheet chrome, not of the conversation. Keep
+        // it fixed at every width so opening a long thread on its latest
+        // message never scrolls the request title, state, site, or age away.
+        let fixed_context = Some(self.render_user_issue_heading(&iss, cx));
+        let inner = self.render_user_issue_detail(&iss, window, cx);
         let footer = self
             .render_user_issue_detail_footer(is_maximized, cx)
             .into_any_element();
@@ -1604,13 +1755,13 @@ impl Workspace {
             Some("tag"),
             self.user_issue_detail_dismissing,
             is_maximized,
-            if compact { viewport_width } else { 480.0 },
+            panel_width,
             compact,
             inner,
             fixed_context,
             Some(footer),
             Some(&self.user_issue_thread_scroll),
-            |this, cx| this.close_user_issue_detail(cx),
+            |this, _window, cx| this.close_user_issue_detail(cx),
             cx,
         )
     }
@@ -1618,7 +1769,6 @@ impl Workspace {
     pub(super) fn render_user_issue_detail(
         &self,
         iss: &Issue,
-        include_heading: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1734,29 +1884,21 @@ impl Workspace {
             }
         }
 
-        let heading = include_heading.then(|| self.render_user_issue_heading(iss, true, cx));
-
-        // Match the validated prototype: title and metadata form one heading,
-        // followed by its single full-width separator and then the thread.
-        // In compact flow the same heading is mounted in the fixed sheet
-        // context instead, without changing its visual hierarchy.
+        // The fixed heading is mounted by the sheet. This body contains only
+        // the conversation and starts at the top when it fits. Long threads
+        // are positioned on their latest message by the tracked ScrollHandle;
+        // vertically justifying every thread to the end created a large false
+        // gap above short conversations (U-21).
         div()
             .flex()
             .flex_col()
             .flex_grow()
             .flex_shrink_0()
-            .justify_end()
             .gap(px(8.0))
-            .children(heading)
             .child(thread)
     }
 
-    fn render_user_issue_heading(
-        &self,
-        iss: &Issue,
-        in_scrolling_body: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_user_issue_heading(&self, iss: &Issue, cx: &mut Context<Self>) -> AnyElement {
         // Identification, state and destructive actions are three different
         // levels. Keeping all of them on one flex row made the title absorb
         // every bit of compression in the 550 px sheet (U-17).
@@ -1950,26 +2092,19 @@ impl Workspace {
                 )
             });
 
-        let mut heading = div()
+        div()
             .flex()
             .flex_col()
             .min_w(px(0.0))
+            .pt(px(16.0))
+            .px(px(16.0))
             .pb(px(12.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .gap(px(9.0))
             .child(title_row)
-            .child(metadata);
-        heading = if in_scrolling_body {
-            // The body already owns 16 px of padding. Pull only the separator
-            // to its edges while retaining that same content inset.
-            heading.mx(px(-16.0)).px(px(16.0))
-        } else {
-            // Fixed compact context starts outside the padded scroll body, so
-            // reproduce the prototype's 16 px content inset explicitly.
-            heading.pt(px(16.0)).px(px(16.0))
-        };
-        heading.into_any_element()
+            .child(metadata)
+            .into_any_element()
     }
 
     /// Reply controls stay anchored below the independently scrollable thread.
@@ -2060,5 +2195,20 @@ impl Workspace {
             );
         }
         footer.child(composer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::user_request_sheet_layout;
+
+    // SDTEST-1914 — SDUC-228. Creation and detail both consume this single
+    // layout decision, so sibling sheets cannot diverge at compact widths.
+    #[test]
+    fn user_request_sheets_share_a_scale_aware_full_width_compact_layout() {
+        assert_eq!(user_request_sheet_layout(600.0, 14.0), (600.0, true));
+        assert_eq!(user_request_sheet_layout(601.0, 14.0), (480.0, false));
+        assert_eq!(user_request_sheet_layout(1_200.0, 28.0), (1_200.0, true));
+        assert_eq!(user_request_sheet_layout(1_202.0, 28.0), (480.0, false));
     }
 }

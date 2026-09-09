@@ -1,5 +1,6 @@
 use super::*;
 use crate::overlay::round_window_bottom;
+use std::rc::Rc;
 
 const WELCOME_CENTERED_MIN_LOGICAL_HEIGHT: f32 = 560.0;
 const USER_HOME_COMPACT_MAX_LOGICAL_WIDTH: f32 = 600.0;
@@ -33,6 +34,114 @@ fn managed_site_public_url(host: &str) -> Option<String> {
         return None;
     }
     Some(parsed.to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserSitesEmptyState {
+    AccountEmpty,
+    Filtered,
+}
+
+fn user_sites_empty_state(
+    total_sites: usize,
+    visible_sites: usize,
+    query: &str,
+) -> Option<UserSitesEmptyState> {
+    if visible_sites > 0 {
+        None
+    } else if total_sites == 0 {
+        Some(UserSitesEmptyState::AccountEmpty)
+    } else if !query.trim().is_empty() {
+        Some(UserSitesEmptyState::Filtered)
+    } else {
+        None
+    }
+}
+
+/// Keyboard-semantic wrapper for rich rows that cannot be represented by the
+/// label-and-icon-only shared Button without losing their information layout.
+type KeyboardActionHandler = dyn Fn(&mut Window, &mut App);
+
+#[derive(IntoElement)]
+pub(super) struct KeyboardAction {
+    id: ElementId,
+    base: Stateful<Div>,
+    on_activate: Rc<KeyboardActionHandler>,
+}
+
+struct KeyboardActionFocusState {
+    handle: FocusHandle,
+    _focus_in: Subscription,
+    _focus_out: Subscription,
+}
+
+impl KeyboardActionFocusState {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let handle = cx.focus_handle();
+        let state_for_focus = cx.weak_entity();
+        let focus_in = window.on_focus_in(&handle, cx, move |_, cx| {
+            let _ = state_for_focus.update(cx, |_, cx| cx.notify());
+        });
+        let state_for_blur = cx.weak_entity();
+        let focus_out = window.on_focus_out(&handle, cx, move |_, _, cx| {
+            let _ = state_for_blur.update(cx, |_, cx| cx.notify());
+        });
+        Self {
+            handle,
+            _focus_in: focus_in,
+            _focus_out: focus_out,
+        }
+    }
+}
+
+impl KeyboardAction {
+    pub(super) fn new(
+        id: impl Into<ElementId>,
+        base: Stateful<Div>,
+        on_activate: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            base,
+            on_activate: Rc::new(on_activate),
+        }
+    }
+}
+
+impl RenderOnce for KeyboardAction {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus_handle = window
+            .use_keyed_state(self.id, cx, KeyboardActionFocusState::new)
+            .read(cx)
+            .handle
+            .clone();
+        let is_focused = focus_handle.is_focused(window);
+        let theme = use_theme();
+        let activate = self.on_activate;
+
+        self.base
+            .track_focus(&focus_handle.tab_index(0).tab_stop(true))
+            .relative()
+            .when(is_focused, |action| {
+                action.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(theme.tokens.radius_md)
+                        .border_2()
+                        .border_color(theme.tokens.ring),
+                )
+            })
+            // Match shared Button: mouse activation does not leave a focus
+            // ring behind, while Tab focus remains visible.
+            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                window.prevent_default();
+            })
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                activate(window, cx);
+            })
+    }
 }
 
 fn user_role_tokens(account: &cloud_account::AccountInfo) -> Vec<String> {
@@ -321,30 +430,12 @@ impl Workspace {
         if let Some(wp_url) = site.wp_admin_url.as_ref().filter(|u| !u.is_empty()) {
             let wp_url_owned = wp_url.clone();
             areas_row = areas_row.child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "uh-wp-{}",
-                        sid
-                    ))))
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
+                Button::new(SharedString::from(format!("uh-wp-{sid}")), "wp-admin")
+                    .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("external-link"))
+                    .h(px(28.0))
                     .px(px(8.0))
-                    .py(px(4.0))
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(ShellDeckColors::primary().opacity(0.35))
-                    .bg(ShellDeckColors::primary().opacity(0.08))
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::primary())
-                    .cursor_pointer()
-                    .hover(|s| s.bg(ShellDeckColors::primary().opacity(0.14)))
-                    .child(lucide_icon(
-                        "external-link",
-                        11.0,
-                        ShellDeckColors::primary(),
-                    ))
-                    .child("wp-admin")
                     .on_click(cx.listener(move |_this, _: &ClickEvent, _, _cx| {
                         let _ =
                             shelldeck_core::config::cloud_account::open_in_browser(&wp_url_owned);
@@ -354,40 +445,21 @@ impl Workspace {
         for area in area_buttons {
             let site_clone = site.clone();
             let path = area.path.clone();
-            let mut chip = div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "uh-area-{}-{}",
-                    sid, area.key
-                ))))
-                .flex()
-                .items_center()
-                .gap(px(5.0))
-                .px(px(8.0))
-                .py(px(4.0))
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .bg(ShellDeckColors::bg_primary())
-                .text_size(px(11.0))
-                .text_color(ShellDeckColors::text_muted())
-                .cursor_pointer()
-                .hover(|s| {
-                    s.bg(ShellDeckColors::hover_bg())
-                        .text_color(ShellDeckColors::text_primary())
-                });
+            let mut chip = Button::new(
+                SharedString::from(format!("uh-area-{}-{}", sid, area.key)),
+                area.label.clone(),
+            )
+            .variant(ButtonVariant::Outline)
+            .size(ButtonSize::Sm)
+            .h(px(28.0))
+            .px(px(8.0))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.open_area_for_site(site_clone.clone(), path.clone(), cx);
+            }));
             if let Some(slug) = manage_area_icon(&area.key) {
-                chip = chip.child(
-                    svg()
-                        .path(lucide_path(slug))
-                        .size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted()),
-                );
+                chip = chip.icon(IconSource::from(slug));
             }
-            areas_row = areas_row.child(chip.child(area.label.clone()).on_click(cx.listener(
-                move |this, _: &ClickEvent, _, cx| {
-                    this.open_area_for_site(site_clone.clone(), path.clone(), cx);
-                },
-            )));
+            areas_row = areas_row.child(chip);
         }
         card.child(areas_row)
     }
@@ -722,8 +794,10 @@ impl Workspace {
                     let issue_id = issue.id.clone();
                     let entity = cx.entity();
                     let updated = rel_time(issue.updated_at);
-                    div()
-                        .id(("home-recent-request", index))
+                    let action_id =
+                        ElementId::from(SharedString::from(format!("home-recent-request-{index}")));
+                    let row = div()
+                        .id(action_id.clone())
                         .flex()
                         .items_center()
                         .gap(px(10.0))
@@ -735,13 +809,6 @@ impl Workspace {
                         .border_color(ShellDeckColors::border().opacity(0.65))
                         .cursor_pointer()
                         .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                        .on_click(move |_, _, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.user_home_tab = UserHomeTab::Requests;
-                                this.select_issue(issue_id.clone(), cx);
-                                cx.notify();
-                            });
-                        })
                         .child(
                             div()
                                 .size(px(30.0))
@@ -777,7 +844,14 @@ impl Workspace {
                                         .child(updated),
                                 ),
                         )
-                        .child(issue_status_badge(&issue.status))
+                        .child(issue_status_badge(&issue.status));
+                    KeyboardAction::new(action_id, row, move |_, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.user_home_tab = UserHomeTab::Requests;
+                            this.select_issue(issue_id.clone(), cx);
+                            cx.notify();
+                        });
+                    })
                 })
                 .collect::<Vec<_>>();
             div().flex().flex_col().children(rows).into_any_element()
@@ -1584,6 +1658,7 @@ impl Workspace {
         // Header card.
         let mut header = div()
             .flex()
+            .flex_shrink_0()
             .gap(px(12.0))
             .p(px(16.0))
             .m(px(16.0))
@@ -1666,52 +1741,18 @@ impl Workspace {
                 }
                 actions
                     .child(
-                        div()
-                            .id("uh-open-manage")
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .px(px(12.0))
-                            .py(px(8.0))
-                            .rounded(px(8.0))
-                            .bg(ShellDeckColors::primary())
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(white())
-                            .cursor_pointer()
-                            .child(
-                                svg()
-                                    .path(lucide_path("external-link"))
-                                    .size(px(12.0))
-                                    .text_color(white()),
-                            )
-                            .child(t!("user.open_manage").to_string())
+                        Button::new("uh-open-manage", t!("user.open_manage").to_string())
+                            .size(ButtonSize::Sm)
+                            .icon(IconSource::from("external-link"))
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.open_manage_area("/manage".to_string(), cx);
                             })),
                     )
                     .child(
-                        div()
-                            .id("uh-sync")
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .px(px(12.0))
-                            .py(px(8.0))
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(ShellDeckColors::border())
-                            .bg(ShellDeckColors::bg_primary())
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .cursor_pointer()
-                            .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                            .child(lucide_icon(
-                                "refresh-cw",
-                                12.0,
-                                ShellDeckColors::text_muted(),
-                            ))
-                            .child(t!("user.sync").to_string())
+                        Button::new("uh-sync", t!("user.sync").to_string())
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
+                            .icon(IconSource::from("refresh-cw"))
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.cloud_sync_now(cx);
                             })),
@@ -1724,19 +1765,60 @@ impl Workspace {
         // (< 1ms) and keeps the model authoritative.
         let (active_site, others_sites) = self.partition_user_sites(cx);
         let others_count = others_sites.len();
+        let site_search_query = self
+            .user_sites_search_state
+            .read(cx)
+            .content()
+            .trim()
+            .to_string();
+        let empty_state = user_sites_empty_state(
+            payload.sites.len(),
+            usize::from(active_site.is_some()) + others_count,
+            &site_search_query,
+        );
 
         let mut list = div()
             .id("user-home-sites")
             .flex()
             .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
             .gap(px(8.0))
             .px(px(16.0));
 
-        if active_site.is_none() && others_count == 0 {
-            // Centered CTA card instead of a passive mumble line — makes it
-            // clear the next action is to open Manage (or Synchroniser if the
-            // sites were just created).
-            let empty_card = div()
+        if let Some(empty_state) = empty_state {
+            let filtered = empty_state == UserSitesEmptyState::Filtered;
+            let title = if filtered {
+                t!(
+                    "user.sites.empty.filtered.title",
+                    query = site_search_query.as_str()
+                )
+                .to_string()
+            } else {
+                t!("user.sites.empty.title").to_string()
+            };
+            let hint = if filtered {
+                t!("user.sites.empty.filtered.hint").to_string()
+            } else {
+                t!("user.sites.empty.hint").to_string()
+            };
+            let empty_icon = div()
+                .size(px(44.0))
+                .rounded_full()
+                .bg(ShellDeckColors::primary().opacity(0.15))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(20.0))
+                .text_color(ShellDeckColors::primary())
+                .map(|icon| {
+                    if filtered {
+                        icon.child(lucide_icon("search", 20.0, ShellDeckColors::primary()))
+                    } else {
+                        icon.child(">_")
+                    }
+                });
+            let mut empty_card = div()
                 .flex()
                 .flex_col()
                 .items_center()
@@ -1746,89 +1828,68 @@ impl Workspace {
                 .border_1()
                 .border_color(ShellDeckColors::border())
                 .bg(ShellDeckColors::bg_sidebar())
+                .child(empty_icon)
                 .child(
                     div()
-                        .size(px(44.0))
-                        .rounded_full()
-                        .bg(ShellDeckColors::primary().opacity(0.15))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(px(20.0))
-                        .text_color(ShellDeckColors::primary())
-                        .child(">_"),
-                )
-                .child(
-                    div()
+                        .max_w(px(440.0))
+                        .text_center()
                         .text_size(px(14.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(ShellDeckColors::text_primary())
-                        .child(t!("user.sites.empty.title").to_string()),
+                        .child(title),
                 )
                 .child(
                     div()
+                        .max_w(px(440.0))
+                        .text_center()
                         .text_size(px(12.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child(t!("user.sites.empty.hint").to_string()),
-                )
-                .child(
+                        .child(hint),
+                );
+            if filtered {
+                let search_state = self.user_sites_search_state.clone();
+                empty_card = empty_card.child(
+                    Button::new(
+                        "uh-empty-clear-search",
+                        t!("user.sites.empty.filtered.clear").to_string(),
+                    )
+                    .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("x"))
+                    .mt(px(4.0))
+                    .on_click(move |_, _, cx| {
+                        search_state.update(cx, |state, cx| state.reset(cx));
+                    }),
+                );
+            } else {
+                // A genuinely empty account keeps the two actions that can
+                // populate it; filtered emptiness never suggests unrelated
+                // Manage or sync work.
+                empty_card = empty_card.child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(8.0))
                         .mt(px(4.0))
                         .child(
-                            div()
-                                .id("uh-empty-open-manage")
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .px(px(14.0))
-                                .py(px(8.0))
-                                .rounded(px(8.0))
-                                .bg(ShellDeckColors::primary())
-                                .text_size(px(13.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(white())
-                                .cursor_pointer()
-                                .child(
-                                    svg()
-                                        .path(lucide_path("external-link"))
-                                        .size(px(12.0))
-                                        .text_color(white()),
-                                )
-                                .child(t!("user.open_manage").to_string())
+                            Button::new("uh-empty-open-manage", t!("user.open_manage").to_string())
+                                .size(ButtonSize::Sm)
+                                .icon(IconSource::from("external-link"))
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.open_manage_area("/manage".to_string(), cx);
                                 })),
                         )
                         .child(
-                            div()
-                                .id("uh-empty-sync")
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .px(px(14.0))
-                                .py(px(8.0))
-                                .rounded(px(8.0))
-                                .border_1()
-                                .border_color(ShellDeckColors::border())
-                                .bg(ShellDeckColors::bg_primary())
-                                .text_size(px(13.0))
-                                .text_color(ShellDeckColors::text_primary())
-                                .cursor_pointer()
-                                .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                                .child(lucide_icon(
-                                    "refresh-cw",
-                                    12.0,
-                                    ShellDeckColors::text_muted(),
-                                ))
-                                .child(t!("user.sync").to_string())
+                            Button::new("uh-empty-sync", t!("user.sync").to_string())
+                                .variant(ButtonVariant::Outline)
+                                .size(ButtonSize::Sm)
+                                .icon(IconSource::from("refresh-cw"))
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.cloud_sync_now(cx);
                                 })),
                         ),
                 );
+            }
             list = list.child(empty_card);
         }
 
@@ -1846,128 +1907,123 @@ impl Workspace {
         // each one — that's the whole point of this refactor: paint budget
         // becomes O(visible) instead of O(sites).
         if others_count > 0 {
-            const MAX_LIST_H: f32 = 600.0;
             const MIN_LIST_H: f32 = 120.0;
             let site_row_h = if compact_user_home {
                 SITE_ROW_H_COMPACT
             } else {
                 SITE_ROW_H
             };
-            let visible_h = (others_count as f32 * site_row_h).clamp(MIN_LIST_H, MAX_LIST_H);
             list = list.child(
-                div().w_full().h(px(visible_h)).child(
-                    uniform_list(
-                        "user-home-sites-virt",
-                        others_count,
-                        cx.processor(move |this, range: Range<usize>, _window, cx| {
-                            let (_, others) = this.partition_user_sites(cx);
-                            let mut items: Vec<AnyElement> = Vec::new();
-                            for i in range {
-                                if let Some(site) = others.get(i) {
-                                    items.push(
-                                        this.render_compact_site_row(site, compact_user_home, cx)
-                                            .into_any_element(),
-                                    );
-                                }
+                uniform_list(
+                    "user-home-sites-virt",
+                    others_count,
+                    cx.processor(move |this, range: Range<usize>, _window, cx| {
+                        let (_, others) = this.partition_user_sites(cx);
+                        let mut items: Vec<AnyElement> = Vec::new();
+                        for i in range {
+                            if let Some(site) = others.get(i) {
+                                items.push(
+                                    this.render_compact_site_row(site, compact_user_home, cx)
+                                        .into_any_element(),
+                                );
                             }
-                            items
-                        }),
-                    )
-                    .w_full()
-                    .h_full(),
-                ),
+                        }
+                        items
+                    }),
+                )
+                .w_full()
+                .flex_1()
+                .min_h(px(MIN_LIST_H.min(others_count as f32 * site_row_h))),
             );
         }
 
-        // Page body: account header, "Mes sites" section, optional Monique card,
-        // "Mes demandes" section. Everything stacks at natural height; the
-        // whole page scrolls if the content overflows.
+        // The account card and local navigation are shell chrome. Operational
+        // content owns the remaining height; in Sites, the section heading is
+        // fixed too and only the virtualised directory scrolls.
         let tab = self.user_home_tab;
         let tab_bar = self.render_user_home_tab_bar(cx);
-
-        // Body composition: header (persistent) + tab bar + tab content.
-        // Each tab owns its own inner scroll. Previously the whole page
-        // scrolled as one; splitting kept the header visible while the
-        // active tab scrolls, and let the Sites tab embed a virtualised
-        // list without competing with an outer scroll.
-        let mut body = div()
-            .id("user-home-body")
-            .flex()
-            .flex_col()
-            .pb(px(24.0))
-            .child(header)
-            .child(tab_bar);
-        match tab {
-            UserHomeTab::Home => {
-                body = body.child(self.render_user_overview(compact_user_home, cx));
-            }
+        let tab_content = match tab {
+            UserHomeTab::Home => div()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(scrollable_vertical(
+                    div()
+                        .pb(px(24.0))
+                        .child(self.render_user_overview(compact_user_home, cx)),
+                ))
+                .into_any_element(),
             UserHomeTab::Sites => {
-                body = body
-                    .child({
-                        // Section header: title on the left, live search on
-                        // the right (only when there are enough sites to
-                        // make it worth it — small tenants keep the row
-                        // uncluttered).
-                        let mut row = div()
+                // This heading stays outside the long list so the current
+                // page and its live filter remain available mid-scroll.
+                let mut row = div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .pt(px(8.0))
+                    .pb(px(6.0))
+                    .child(
+                        div()
                             .flex()
                             .items_center()
-                            .justify_between()
                             .gap(px(8.0))
-                            .px(px(16.0))
-                            .pt(px(8.0))
-                            .pb(px(6.0))
+                            .child(lucide_icon("globe", 16.0, ShellDeckColors::text_muted()))
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.0))
-                                    .child(lucide_icon(
-                                        "globe",
-                                        16.0,
-                                        ShellDeckColors::text_muted(),
-                                    ))
-                                    .child(
-                                        div()
-                                            .text_size(px(18.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(ShellDeckColors::text_primary())
-                                            .child(t!("user.sites.title").to_string()),
-                                    ),
-                            );
-                        if payload.sites.len() > 5 {
-                            let entity = cx.entity();
-                            row = row.child(
-                                div().w(px(260.0)).child(
-                                    Input::new(&self.user_sites_search_state)
-                                        .size(InputSize::Sm)
-                                        .placeholder(t!("user.sites.search").to_string())
-                                        .prefix(lucide_icon(
-                                            "search",
-                                            12.0,
-                                            ShellDeckColors::text_muted(),
-                                        ))
-                                        .on_change(move |_, cx| {
-                                            entity.update(cx, |_, cx| cx.notify());
-                                        }),
-                                ),
-                            );
-                        }
-                        row
-                    })
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(t!("user.sites.title").to_string()),
+                            ),
+                    );
+                if payload.sites.len() > 5 {
+                    let entity = cx.entity();
+                    row = row.child(
+                        div().w(px(260.0)).child(
+                            Input::new(&self.user_sites_search_state)
+                                .size(InputSize::Sm)
+                                .placeholder(t!("user.sites.search").to_string())
+                                .prefix(lucide_icon("search", 12.0, ShellDeckColors::text_muted()))
+                                .on_change(move |_, cx| {
+                                    entity.update(cx, |_, cx| cx.notify());
+                                }),
+                        ),
+                    );
+                }
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .pb(px(24.0))
+                    .child(row)
                     .child(list)
                     .children(if self.has_monique() {
                         Some(self.render_monique_ask_card(cx))
                     } else {
                         None
-                    });
+                    })
+                    .into_any_element()
             }
-            UserHomeTab::Requests => {
-                body = body.child(self.render_user_requests(compact_user_home, cx));
-            }
-            UserHomeTab::Infos => {
-                body = body.child(self.render_user_infos_tab(cx));
-            }
-        }
+            UserHomeTab::Requests => div()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(scrollable_vertical(
+                    div()
+                        .pb(px(24.0))
+                        .child(self.render_user_requests(compact_user_home, cx)),
+                ))
+                .into_any_element(),
+            UserHomeTab::Infos => div()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(scrollable_vertical(
+                    div().pb(px(24.0)).child(self.render_user_infos_tab(cx)),
+                ))
+                .into_any_element(),
+        };
 
         round_window_bottom(
             div()
@@ -1978,7 +2034,16 @@ impl Workspace {
                 .overflow_hidden(),
             is_maximized,
         )
-        .child(scrollable_vertical(body))
+        .child(
+            div()
+                .id("user-home-body")
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(tab_bar)
+                .child(tab_content),
+        )
     }
 }
 
@@ -1986,7 +2051,8 @@ impl Workspace {
 mod tests {
     use super::{
         humanize_custom_role, managed_site_public_url, nonempty_text, primary_user_role,
-        user_home_uses_compact_flow, user_role_tokens, welcome_uses_compact_flow,
+        user_home_uses_compact_flow, user_role_tokens, user_sites_empty_state,
+        welcome_uses_compact_flow, UserSitesEmptyState,
     };
     use shelldeck_core::config::cloud_account::AccountInfo;
 
@@ -2008,6 +2074,21 @@ mod tests {
         assert!(!user_home_uses_compact_flow(700.0, 14.0));
         assert!(user_home_uses_compact_flow(1_200.0, 28.0));
         assert!(!user_home_uses_compact_flow(1_201.0, 28.0));
+    }
+
+    // SDTEST-1913 — SDUC-440
+    #[test]
+    fn user_sites_empty_state_distinguishes_account_from_filtered_results() {
+        assert_eq!(
+            user_sites_empty_state(0, 0, ""),
+            Some(UserSitesEmptyState::AccountEmpty)
+        );
+        assert_eq!(
+            user_sites_empty_state(100, 0, "introuvable"),
+            Some(UserSitesEmptyState::Filtered)
+        );
+        assert_eq!(user_sites_empty_state(100, 100, ""), None);
+        assert_eq!(user_sites_empty_state(100, 1, "atelier"), None);
     }
 
     // SDTEST-1716 — remote site metadata is allowed to omit the scheme, but

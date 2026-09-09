@@ -538,7 +538,7 @@ impl Workspace {
             support.set_agents(Vec::new());
             support.set_issues(Vec::new(), Default::default(), false, Vec::new());
             support.set_monique_available(false);
-            support.clear_selection();
+            support.clear_session(cx);
             cx.notify();
         });
         self.sidebar.update(cx, |s, cx| {

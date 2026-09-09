@@ -94,8 +94,8 @@ fn attention_ticket_indices(tickets: &[SupportTicket], limit: usize) -> Vec<usiz
 
 impl SupportView {
     fn open_home_target(&mut self, target: SupportHomeTarget, cx: &mut Context<Self>) {
-        self.set_section(target.section());
-        self.clear_selection();
+        self.set_section(target.section(), cx);
+        self.clear_selection(cx);
 
         if let Some(filter) = target.ticket_filter() {
             self.filter = filter;
