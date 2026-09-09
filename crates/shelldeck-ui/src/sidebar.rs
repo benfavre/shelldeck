@@ -321,6 +321,22 @@ impl SidebarSection {
     }
 }
 
+/// Direct-child index used by the rail's [`ScrollHandle`]. The tool-group
+/// divider participates in layout, so sections after it are shifted by one.
+fn rail_scroll_child_index(section: SidebarSection) -> Option<usize> {
+    let mut child_index = 0;
+    for &candidate in SidebarSection::rail_activities() {
+        if candidate.starts_rail_tool_group() {
+            child_index += 1;
+        }
+        if candidate == section {
+            return Some(child_index);
+        }
+        child_index += 1;
+    }
+    None
+}
+
 /// Events emitted by the sidebar
 #[derive(Debug, Clone)]
 pub enum SidebarEvent {
@@ -378,6 +394,9 @@ pub struct SidebarView {
     /// section so the panel can render whichever activity is selected without
     /// the workspace having to re-push on every switch.
     panel_items: HashMap<SidebarSection, Vec<PanelItem>>,
+    /// Scroll state for the activity group only. The brand and Settings live
+    /// outside this viewport so both remain reachable at minimum height.
+    rail_scroll: ScrollHandle,
     focus_handle: FocusHandle,
 }
 
@@ -398,6 +417,7 @@ impl SidebarView {
             monique_available: false,
             fleet_available: false,
             panel_items: HashMap::new(),
+            rail_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -491,6 +511,9 @@ impl SidebarView {
 
     pub fn set_active_section(&mut self, section: SidebarSection) {
         self.active_section = section;
+        if let Some(index) = rail_scroll_child_index(section) {
+            self.rail_scroll.scroll_to_item(index);
+        }
     }
 
     pub fn toggle_collapsed(&mut self) {
@@ -540,6 +563,9 @@ impl SidebarView {
             })
             .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
                 this.active_section = section;
+                if let Some(index) = rail_scroll_child_index(section) {
+                    this.rail_scroll.scroll_to_item(index);
+                }
                 cx.emit(SidebarEvent::SectionChanged(section));
                 cx.notify();
             }))
@@ -606,10 +632,20 @@ impl SidebarView {
             .filter(|c| matches!(c.status, ConnectionStatus::Connected))
             .count();
 
-        let mut top = div().flex().flex_col().items_center().gap(gpui::px(4.0));
+        let mut activities = div()
+            .id("sidebar-rail-activities")
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .min_h(gpui::px(0.0))
+            .w_full()
+            .items_center()
+            .gap(gpui::px(4.0))
+            .overflow_y_scroll()
+            .track_scroll(&self.rail_scroll);
         for &section in SidebarSection::rail_activities() {
             if section.starts_rail_tool_group() {
-                top = top.child(
+                activities = activities.child(
                     div()
                         .w(gpui::px(20.0))
                         .h(gpui::px(1.0))
@@ -624,7 +660,7 @@ impl SidebarView {
                 SidebarSection::Terminals => Some(self.terminal_tab_count),
                 _ => None,
             };
-            top = top.child(self.render_rail_item(section, count, cx));
+            activities = activities.child(self.render_rail_item(section, count, cx));
         }
 
         div()
@@ -643,12 +679,18 @@ impl SidebarView {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_grow()
                     .items_center()
                     .gap(gpui::px(8.0))
                     .min_h(gpui::px(0.0))
+                    .w_full()
                     .overflow_hidden()
-                    .child(crate::brand::brand_mark_abs(18.0, 18.0))
-                    .child(top),
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .child(crate::brand::brand_mark_abs(18.0, 18.0)),
+                    )
+                    .child(activities),
             )
             .child(self.render_rail_item(SidebarSection::Settings, None, cx))
     }
@@ -1309,7 +1351,10 @@ impl Render for SidebarView {
 
 #[cfg(test)]
 mod tests {
-    use super::{conn_matches_site_filter, fuzzy_match_indices, sidebar_total_width, RAIL_WIDTH};
+    use super::{
+        conn_matches_site_filter, fuzzy_match_indices, rail_scroll_child_index,
+        sidebar_total_width, RAIL_WIDTH,
+    };
     use uuid::Uuid;
 
     // ── sidebar_total_width ────────────────────────────────────────────
@@ -1424,6 +1469,29 @@ mod tests {
             SidebarSection::rail_activities()[tools_index - 1],
             SidebarSection::PortForwards
         );
+    }
+
+    // SDTEST-1919 — ScrollHandle indexes direct children, including the
+    // divider before the tool group. A stale index would leave the last Dev
+    // activities clipped when activated from Aller at minimum window height.
+    #[test]
+    fn rail_scroll_index_accounts_for_tool_group_divider() {
+        use super::SidebarSection;
+
+        assert_eq!(
+            rail_scroll_child_index(SidebarSection::Connections),
+            Some(0)
+        );
+        assert_eq!(
+            rail_scroll_child_index(SidebarSection::PortForwards),
+            Some(5)
+        );
+        assert_eq!(rail_scroll_child_index(SidebarSection::ServerSync), Some(7));
+        assert_eq!(
+            rail_scroll_child_index(SidebarSection::FileEditor),
+            Some(10)
+        );
+        assert_eq!(rail_scroll_child_index(SidebarSection::Settings), None);
     }
 
     // ── fuzzy_match_indices ────────────────────────────────────────────

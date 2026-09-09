@@ -2007,7 +2007,11 @@ impl SupportView {
             .into_any_element()
     }
 
-    pub(super) fn render_conversation(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_conversation(
+        &self,
+        short: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let Some(ticket) = self.detail.clone() else {
             return self.render_empty_conversation();
         };
@@ -2042,8 +2046,9 @@ impl SupportView {
             .gap(px(6.0))
             .child(self.render_ticket_status_picker(&ticket, cx))
             .child(self.render_ticket_priority_picker(&ticket, cx))
-            .child(self.render_ticket_assignee_picker(&ticket, cx))
-            .child(
+            .child(self.render_ticket_assignee_picker(&ticket, cx));
+        if !short {
+            meta_row = meta_row.child(
                 div()
                     .flex_shrink_0()
                     .whitespace_nowrap()
@@ -2051,22 +2056,23 @@ impl SupportView {
                     .text_color(ShellDeckColors::text_muted())
                     .child(context_label),
             );
-        for tag in ticket
-            .tags
-            .iter()
-            .filter(|tag| !tag.trim().is_empty())
-            .take(2)
-        {
-            meta_row = meta_row.child(Badge::new(tag.clone()).variant(BadgeVariant::Outline));
+            for tag in ticket
+                .tags
+                .iter()
+                .filter(|tag| !tag.trim().is_empty())
+                .take(2)
+            {
+                meta_row = meta_row.child(Badge::new(tag.clone()).variant(BadgeVariant::Outline));
+            }
         }
 
         let header = div()
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .gap(px(8.0))
+            .gap(px(if short { 4.0 } else { 8.0 }))
             .px(px(16.0))
-            .py(px(10.0))
+            .py(px(if short { 6.0 } else { 10.0 }))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(
@@ -2169,7 +2175,7 @@ impl SupportView {
             .overflow_hidden()
             .child(header)
             .child(messages)
-            .child(self.render_composer(&tid, cx))
+            .child(self.render_composer(&tid, short, cx))
     }
 
     pub(super) fn render_attachment_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2434,6 +2440,7 @@ impl SupportView {
     pub(super) fn render_composer(
         &self,
         _ticket_id: &str,
+        short: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_note = self.compose_note;
@@ -2452,8 +2459,8 @@ impl SupportView {
             .flex_shrink_0()
             .gap(px(2.0))
             .px(px(16.0))
-            .pt(px(10.0))
-            .pb(px(14.0))
+            .pt(px(if short { 6.0 } else { 10.0 }))
+            .pb(px(if short { 8.0 } else { 14.0 }))
             .on_action(cx.listener(|this, _: &Paste, _, cx| {
                 if this.paste_attachment(cx) {
                     cx.stop_propagation();
@@ -2491,15 +2498,18 @@ impl SupportView {
                     .on_commit(move |cx| {
                         send_entity.update(cx, |this, cx| this.send_composer(cx));
                     })
-                    .footnote(
+                    .option(self.render_ticket_delivery_picker(cx));
+
+                if !short {
+                    frame = frame.footnote(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(9.0))
                             .child(t!("ai.assistant.hint.send").to_string())
                             .child(t!("ai.assistant.hint.newline").to_string()),
-                    )
-                    .option(self.render_ticket_delivery_picker(cx));
+                    );
+                }
 
                 if ai_enabled {
                     frame = frame.action(

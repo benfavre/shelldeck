@@ -7,6 +7,8 @@ use gpui::{prelude::FluentBuilder as _, *};
 pub struct Dialog {
     width: Option<Pixels>,
     max_width: Option<Length>,
+    // ShellDeck patch: SDPATCH-044 — the actual full-window backdrop owns the host radius.
+    backdrop_radius: Option<Pixels>,
     header: Option<AnyElement>,
     content: Option<AnyElement>,
     footer: Option<AnyElement>,
@@ -25,6 +27,7 @@ impl Dialog {
         Self {
             width: None,
             max_width: None,
+            backdrop_radius: None,
             header: None,
             content: None,
             footer: None,
@@ -40,6 +43,11 @@ impl Dialog {
 
     pub fn max_width(mut self, max_width: Length) -> Self {
         self.max_width = Some(max_width);
+        self
+    }
+
+    pub fn backdrop_radius(mut self, radius: Pixels) -> Self {
+        self.backdrop_radius = Some(radius);
         self
     }
 
@@ -77,6 +85,7 @@ impl RenderOnce for Dialog {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let theme = use_theme();
         let backdrop_click_handler = self.on_backdrop_click;
+        let backdrop_radius = self.backdrop_radius;
         let user_style = self.style;
 
         div()
@@ -87,6 +96,9 @@ impl RenderOnce for Dialog {
             .flex()
             .items_center()
             .justify_center()
+            .when_some(backdrop_radius, |this, radius| {
+                this.rounded(radius).overflow_hidden()
+            })
             .child(
                 div()
                     .absolute()
@@ -94,6 +106,7 @@ impl RenderOnce for Dialog {
                     .left_0()
                     .size_full()
                     .bg(gpui::black().opacity(0.5))
+                    .when_some(backdrop_radius, |this, radius| this.rounded(radius))
                     .when_some(backdrop_click_handler, |this, handler| {
                         this.on_mouse_down(MouseButton::Left, move |_event, window, cx| {
                             (handler)(window, cx);

@@ -1106,12 +1106,24 @@ requests `mine=1`. A successful owner-scoped response is authoritative even if
 a broader Support cache is still present during a mode transition, the
 overview and request list retain the local identity check defensively; another
 requester's title must never flash in the User dashboard. In the
+New Request sheet, the form keeps its natural height inside the sheet body's
+single vertical scroller: at the 600 × 400 window minimum, the title, body,
+attachment state and explicit Create action remain reachable instead of the
+Composer shrinking and clipping its own footer. In the compact User flow,
+both New Request and detail sheets occupy the complete viewport width below
+the titlebar; above the scale-aware breakpoint, both keep the 480 px
+right-side sheet composition. Every user-initiated New Request close path —
+header close, backdrop, and Escape — passes through one dirty-draft guard.
+Title, body, AI prompt, pending attachment URL, or attached images keep the
+sheet mounted and open a focused confirmation. Continue, confirmation
+backdrop, and Escape restore the previous focus without changing any buffer;
+only explicit discard or a successful creation may reset the draft. In the
 right-side detail sheet, the chronological thread is the only scrollable
 region; the reply composer is a non-shrinking footer outside that region and
 must remain visible at every reading position. Opening a detail starts on the
-latest message: a short thread grows downward until its last message meets the
-composer, while a longer thread scrolls to its bottom without moving the
-footer.
+latest message when scrolling is actually necessary: a short thread starts
+immediately below the fixed identity and grows downward, while a longer thread
+scrolls to its bottom without moving the footer.
 
 The detail header gives the complete, non-ellipsized request title its own
 primary row and separates it from the thread with a border. The 22 px status
@@ -1119,7 +1131,10 @@ and site chips (status dot, site icon and full customer-facing site name), the
 opening age and optional GitHub context wrap together below it. Deletion is
 absent from the default chrome and lives behind one round overflow button in a
 titled Actions popover. Choosing that menu item still opens the existing
-destructive confirmation before any request is deleted.
+destructive confirmation before any request is deleted. That complete identity
+header stays outside the chronological scroller at compact and wide widths, so
+opening or reading a long thread can never move its title, state, site, age, or
+actions out of view.
 
 ### SDUC-229 — Support "Requests" section
 
@@ -1138,6 +1153,16 @@ AI suggestion action in its footer. Requests keep the real AI backend/model
 picker in the right-hand option slot; they do not invent a destination picker
 because the current Issues API has no internal-note field. Tickets use that
 slot as a real reply/internal-note popover because their API supports both.
+Below 520 logical pixels of viewport height, both selected-detail surfaces use
+the same scale-aware short layout: primary title and triage selectors remain,
+secondary context and keyboard hints yield their space, and the virtualized
+thread retains a non-zero readable viewport above the still-accessible
+composer. The shared composer retains one in-memory draft per surface and
+record id: text, pending attachments, attachment-panel state, and the Ticket
+reply/internal-note destination survive list navigation, section switches, and
+mode switches without leaking into another Ticket or Request. Only a successful
+send clears that record's draft; failures preserve it, and logout clears the
+whole Support draft session.
 
 ### SDUC-459 — A request thread preserves every semantic message state
 
@@ -2094,6 +2119,11 @@ breakpoint. In Mes sites, choosing a site is explicitly labelled as selection
 rather than activation. Every row also offers separate public-site and
 Manage-page destinations; a host without a scheme becomes HTTPS, while
 non-HTTP(S) or credential-bearing URLs stay inert.
+Search emptiness is derived from both the unfiltered directory and the current
+query. A query that matches none of an otherwise populated directory names the
+query, offers only a clear-search action, and restores the full directory when
+cleared. Manage and synchronization actions remain exclusive to a genuinely
+empty account.
 The account card keeps the identity and both Manage actions visible at every
 supported width. At 600 logical pixels or below its action group moves below
 the identity; above that breakpoint the original horizontal composition is
@@ -2107,6 +2137,19 @@ Their virtualized slots preserve a fixed 4 px interval,
 and request badges, counters, and relative dates retain an explicit 8 px
 separation instead of depending on component-internal padding. Above the
 breakpoint, the original single-line rows remain unchanged.
+The account card and four User tabs form fixed shell chrome while each tab
+owns the remaining scrollable height. In Mes sites, the section title and live
+search also stay outside the virtualized directory, so scrolling hundreds of
+rows never removes the current-page identity, filter, or routes to another
+User section.
+Every actionable User control participates in one keyboard sequence. Shared
+labelled and icon-only buttons expose the same theme focus ring without moving
+their geometry; rich request rows preserve their information layout through a
+single keyboard-action wrapper with the identical treatment. Tab and Shift+Tab
+therefore reach account shortcuts, tabs, site destinations and selection,
+wp-admin/Manage areas, recent requests, and the main request list. Enter and
+Space activate the focused action through the native GPUI click path, while a
+mouse click does not leave a misleading keyboard-focus ring behind.
 Support mode opens on its own Accueil tab with open,
 SLA-risk, unassigned, and hosted request counters. Every counter is a route,
 not decoration: it opens the matching Tickets/Requests queue after clearing
@@ -2213,6 +2256,13 @@ navigation surface, and there is no setting to hide it. The panel collapses
 independently via the sidebar toggle, leaving the rail. The terminal grid is
 offset by whatever is actually on screen, for both panel collapse and
 panel-less activities.
+
+At the 600 × 400 minimum window size, only the activity group scrolls: the
+ShellDeck mark remains fixed above it and Settings remains pinned below it.
+Selecting a clipped activity from another navigation surface scrolls that rail
+entry into view. Application and context menus are bounded to the live viewport
+and scroll vertically; the Aller menu marks the current Dev destination and
+automatically reveals that row when opened.
 
 The panel header names the active activity, so the list below it does not
 repeat that name as its own section header.
@@ -3069,6 +3119,44 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-09** — Amended SDUC-443 with SDPATCH-045 and SDTEST-1918 through
+  SDTEST-1920: the compact Dev rail scrolls independently between its fixed
+  brand and Settings anchors, while viewport-bounded menus scroll and reveal
+  their checked current destination.
+
+- **2026-09-09** — Amended SDUC-228 with SDPATCH-044 and SDTEST-1917: all
+  New Request close routes now share a complete dirty-draft guard, the safe
+  confirmation action preserves buffers and restores focus, and only explicit
+  discard or successful creation clears the draft. Confirm-dialog backdrops
+  can own the transparent native window radius directly.
+
+- **2026-09-09** — Amended SDUC-440 with SDPATCH-043 and SDTEST-1916: every
+  User action now participates in Tab traversal, shared Button/IconButton
+  controls paint a retained non-geometric focus ring, and rich recent/main
+  request rows expose the same focus and Enter/Space activation contract.
+
+- **2026-09-08** — Amended SDUC-440 with SDTEST-1913: Mes sites now
+  distinguishes a genuinely empty account from a search with no matches. The
+  latter names the interpolated query, exposes only a clear action, and restores
+  the full 100-site directory without suggesting unrelated Manage or sync work.
+
+- **2026-09-08** — Amended SDUC-440 with SDTEST-1915: User shell navigation
+  and the Mes sites heading/search now stay outside the virtualized directory.
+  The 100-site account can scroll deeply while the current page, filter, and
+  all four User destinations remain available.
+
+- **2026-09-08** — Amended SDUC-228 and SDUC-229 with
+  SDTEST-1613/1910/1911/1912/1914:
+  New Request preserves its natural form height inside the sheet scroller at
+  600 × 400 and shares detail's full-width compact layout while retaining a
+  480 px wide sheet; User request identity remains fixed above long threads at
+  compact and wide widths, short threads align at the top, and long threads
+  still open on their latest exchange; Support Tickets and Requests share a scale-aware short
+  detail that keeps both the conversation and Composer usable at the same
+  official window minimum. Support drafts are scoped by surface and record,
+  survive navigation for the session, clear only after successful send, and
+  are purged on logout.
 
 - **2026-09-01** — Amended SDUC-499 with SDTEST-1902/1903/1909: the wide cockpit
   removes its duplicate session tab strip, adds a real local tree plus a

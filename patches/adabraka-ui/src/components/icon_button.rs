@@ -1,6 +1,6 @@
 //! Icon button component for icon-only actions with multiple variants.
 
-use crate::components::button::ButtonVariant;
+use crate::components::button::{ButtonFocusState, ButtonVariant};
 use crate::components::icon_source::IconSource;
 use crate::components::ripple::Ripple;
 use crate::icon_config::resolve_icon_path;
@@ -183,9 +183,13 @@ impl RenderOnce for IconButton {
         let ripple_color = fg;
 
         let focus_handle = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+            .use_keyed_state(self.id.clone(), cx, ButtonFocusState::new)
             .read(cx)
+            .handle
             .clone();
+        // ShellDeck patch: SDPATCH-043 — icon-only buttons need the same
+        // visible keyboard focus as their labelled sibling.
+        let is_focused = focus_handle.is_focused(window);
 
         self.base
             .when(!self.disabled, |this| {
@@ -253,6 +257,19 @@ impl RenderOnce for IconButton {
                         } else {
                             fg
                         }),
+                )
+            })
+            // ShellDeck patch: SDPATCH-043 — paint a non-geometric focus
+            // overlay after the icon. The ripple container clips external
+            // shadows, whereas this inset border stays visible and stable.
+            .when(is_focused && clickable, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(theme.tokens.radius_md)
+                        .border_2()
+                        .border_color(theme.tokens.ring),
                 )
             })
     }

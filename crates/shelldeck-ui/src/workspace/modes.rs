@@ -253,11 +253,13 @@ impl Workspace {
         self.issue_detail = None;
         self.user_new_request_sheet_open = false;
         self.user_new_request_sheet_dismissing = false;
+        self.confirm_new_request_discard = false;
+        self.new_request_discard_return_focus = None;
         self.user_issue_detail_dismissing = false;
         self.confirm_issue_delete = None;
         self.confirm_attachment_delete = None;
         self.support.update(cx, |v, cx| {
-            v.clear_selection();
+            v.clear_selection(cx);
             cx.notify();
         });
     }

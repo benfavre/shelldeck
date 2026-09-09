@@ -8,6 +8,33 @@ use crate::theme::use_theme;
 use gpui::{prelude::FluentBuilder as _, *};
 use std::rc::Rc;
 
+// ShellDeck patch: SDPATCH-043 — transient elements need retained focus
+// listeners so entering or leaving them schedules the focus-ring repaint.
+pub(crate) struct ButtonFocusState {
+    pub(crate) handle: FocusHandle,
+    _focus_in: Subscription,
+    _focus_out: Subscription,
+}
+
+impl ButtonFocusState {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let handle = cx.focus_handle();
+        let state_for_focus = cx.weak_entity();
+        let focus_in = window.on_focus_in(&handle, cx, move |_, cx| {
+            let _ = state_for_focus.update(cx, |_, cx| cx.notify());
+        });
+        let state_for_blur = cx.weak_entity();
+        let focus_out = window.on_focus_out(&handle, cx, move |_, _, cx| {
+            let _ = state_for_blur.update(cx, |_, cx| cx.notify());
+        });
+        Self {
+            handle,
+            _focus_in: focus_in,
+            _focus_out: focus_out,
+        }
+    }
+}
+
 /// Render an icon from IconSource
 fn render_icon(icon_src: IconSource, size: Pixels, color: Hsla) -> impl IntoElement {
     let svg_path = match icon_src {
@@ -252,9 +279,13 @@ impl RenderOnce for Button {
         let ripple_color = fg;
 
         let focus_handle = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+            .use_keyed_state(self.id.clone(), cx, ButtonFocusState::new)
             .read(cx)
+            .handle
             .clone();
+        // ShellDeck patch: SDPATCH-043 — buttons already participate in Tab
+        // order, but their focus was visually indistinguishable from rest.
+        let is_focused = focus_handle.is_focused(window);
 
         let label_text = Text::new(self.label.clone())
             .variant(TextVariant::Custom)
@@ -370,5 +401,18 @@ impl RenderOnce for Button {
                         this.child(render_loading_spinner(icon_size, fg))
                     }),
             )
+            // ShellDeck patch: SDPATCH-043 — paint a non-geometric focus
+            // overlay after all content. The ripple container clips external
+            // shadows, whereas this inset border stays visible and stable.
+            .when(is_focused && clickable, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(theme.tokens.radius_md)
+                        .border_2()
+                        .border_color(theme.tokens.ring),
+                )
+            })
     }
 }

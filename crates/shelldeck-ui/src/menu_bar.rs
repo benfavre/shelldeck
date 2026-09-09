@@ -156,6 +156,9 @@ pub struct MenuBarContext {
     pub has_monique: bool,
     pub has_fleet: bool,
     pub ai_configured: bool,
+    /// Current destination in the Dev « Aller » menu. Marking it selected
+    /// lets the bounded dropdown reveal it automatically when it opens.
+    pub active_go: Option<MenuCommand>,
 }
 
 /// Render `secondary-k` style binding descriptions the way the host platform
@@ -412,7 +415,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.go.dashboard").to_string(),
                     MenuCommand::GoDashboard,
                 )
-                .icon("grid-2x2"),
+                .icon("grid-2x2")
+                .checked(ctx.active_go == Some(MenuCommand::GoDashboard)),
             );
             go.push(
                 MenuEntry::command(
@@ -420,7 +424,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.go.terminal").to_string(),
                     MenuCommand::GoTerminal,
                 )
-                .icon("terminal"),
+                .icon("terminal")
+                .checked(ctx.active_go == Some(MenuCommand::GoTerminal)),
             );
             go.push(
                 MenuEntry::command(
@@ -428,7 +433,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.go.scripts").to_string(),
                     MenuCommand::GoScripts,
                 )
-                .icon("scroll-text"),
+                .icon("scroll-text")
+                .checked(ctx.active_go == Some(MenuCommand::GoScripts)),
             );
             go.push(
                 MenuEntry::command(
@@ -436,7 +442,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.go.port_forwards").to_string(),
                     MenuCommand::GoPortForwards,
                 )
-                .icon("arrow-left-right"),
+                .icon("arrow-left-right")
+                .checked(ctx.active_go == Some(MenuCommand::GoPortForwards)),
             );
             go.push(
                 MenuEntry::command(
@@ -444,7 +451,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.go.server_sync").to_string(),
                     MenuCommand::GoServerSync,
                 )
-                .icon("refresh-cw"),
+                .icon("refresh-cw")
+                .checked(ctx.active_go == Some(MenuCommand::GoServerSync)),
             );
             go.push(
                 MenuEntry::command(
@@ -452,7 +460,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.go.sites").to_string(),
                     MenuCommand::GoSites,
                 )
-                .icon("globe"),
+                .icon("globe")
+                .checked(ctx.active_go == Some(MenuCommand::GoSites)),
             );
             go.push(
                 MenuEntry::command(
@@ -460,7 +469,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.go.recent").to_string(),
                     MenuCommand::GoRecent,
                 )
-                .icon("clock"),
+                .icon("clock")
+                .checked(ctx.active_go == Some(MenuCommand::GoRecent)),
             );
             go.push(
                 MenuEntry::command(
@@ -469,7 +479,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     MenuCommand::GoFileEditor,
                 )
                 .shortcut("secondary-e")
-                .icon("pencil"),
+                .icon("pencil")
+                .checked(ctx.active_go == Some(MenuCommand::GoFileEditor)),
             );
         }
         go.push(
@@ -478,7 +489,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 t!("menu.go.requests").to_string(),
                 MenuCommand::GoSupportRequests,
             )
-            .icon("inbox"),
+            .icon("inbox")
+            .checked(ctx.active_go == Some(MenuCommand::GoSupportRequests)),
         );
         // Staff-only consoles. Gated on capability, not on the current mode,
         // so a super-admin sitting in User mode still sees them — but a
@@ -491,7 +503,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                         t!("menu.go.monique").to_string(),
                         MenuCommand::GoMonique,
                     )
-                    .icon("bot"),
+                    .icon("bot")
+                    .checked(ctx.active_go == Some(MenuCommand::GoMonique)),
                 );
             }
             if ctx.has_fleet {
@@ -501,7 +514,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                         t!("menu.go.fleet").to_string(),
                         MenuCommand::GoFleet,
                     )
-                    .icon("server"),
+                    .icon("server")
+                    .checked(ctx.active_go == Some(MenuCommand::GoFleet)),
                 );
             }
             go.push(
@@ -510,7 +524,8 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.go.bext_cloud").to_string(),
                     MenuCommand::GoBextCloud,
                 )
-                .icon("cloud"),
+                .icon("cloud")
+                .checked(ctx.active_go == Some(MenuCommand::GoBextCloud)),
             );
         }
         menus.push(MenuSpec {
@@ -639,6 +654,7 @@ mod tests {
             has_monique: false,
             has_fleet: false,
             ai_configured: false,
+            active_go: None,
         }
     }
 
@@ -794,6 +810,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    // SDTEST-1920 — the checked row is the anchor the bounded Menu scrolls
+    // into view on open. Exactly the current Dev destination may be marked;
+    // otherwise a bottom destination such as Bext Cloud remains off-screen.
+    #[test]
+    fn dev_go_marks_only_the_current_destination() {
+        let mut c = ctx(AppMode::Dev, true);
+        c.dev_capable = true;
+        c.has_monique = true;
+        c.has_fleet = true;
+        c.active_go = Some(MenuCommand::GoBextCloud);
+
+        let menus = menu_bar_spec(c);
+        let go = menus.iter().find(|menu| menu.id == "menu-go").unwrap();
+        let checked: Vec<_> = go
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                MenuEntry::Command {
+                    command,
+                    checked: Some(true),
+                    ..
+                } => Some(*command),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(checked, vec![MenuCommand::GoBextCloud]);
     }
 
     // SDTEST-1205 — `accel` renders bindings the way the platform spells

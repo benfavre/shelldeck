@@ -403,11 +403,14 @@ impl Workspace {
             } => {
                 if id == crate::support_view::SUPPORT_TICKET_SHOWCASE_ID {
                     self.support.update(cx, |view, cx| {
-                        view.append_ticket_showcase_message(&id, text, note, attachments, cx);
+                        if view.append_ticket_showcase_message(&id, text, note, attachments, cx) {
+                            view.clear_ticket_draft_after_send(&id, cx);
+                        }
                     });
                     return;
                 }
-                self.support_action(cx, move |base, token| {
+                let sent_ticket_id = id.clone();
+                self.support_action(cx, Some(sent_ticket_id), move |base, token| {
                     if attachments.is_empty() && note {
                         ms::support_note(&base, &token, &id, &text)
                     } else if attachments.is_empty() {
@@ -438,7 +441,9 @@ impl Workspace {
                     });
                     return;
                 }
-                self.support_action(cx, move |b, t| ms::support_status(&b, &t, &id, &status));
+                self.support_action(cx, None, move |b, t| {
+                    ms::support_status(&b, &t, &id, &status)
+                });
             }
             SupportViewEvent::SetPriority { id, priority } => {
                 if id == crate::support_view::SUPPORT_TICKET_SHOWCASE_ID {
@@ -451,7 +456,9 @@ impl Workspace {
                     });
                     return;
                 }
-                self.support_action(cx, move |b, t| ms::support_priority(&b, &t, &id, &priority));
+                self.support_action(cx, None, move |b, t| {
+                    ms::support_priority(&b, &t, &id, &priority)
+                });
             }
             SupportViewEvent::Assign { id, assignee } => {
                 if id == crate::support_view::SUPPORT_TICKET_SHOWCASE_ID {
@@ -469,7 +476,9 @@ impl Workspace {
                     });
                     return;
                 }
-                self.support_action(cx, move |b, t| ms::support_assign(&b, &t, &id, &assignee));
+                self.support_action(cx, None, move |b, t| {
+                    ms::support_assign(&b, &t, &id, &assignee)
+                });
             }
             SupportViewEvent::Resolve { id, resolution } => {
                 if id == crate::support_view::SUPPORT_TICKET_SHOWCASE_ID {
@@ -482,7 +491,7 @@ impl Workspace {
                     });
                     return;
                 }
-                self.support_action(cx, move |b, t| {
+                self.support_action(cx, None, move |b, t| {
                     ms::support_resolve(&b, &t, &id, &resolution)
                 });
             }
@@ -566,8 +575,12 @@ impl Workspace {
 
     /// Run a support write action on the background executor; on success install
     /// the updated ticket + refresh the list, on failure toast the error.
-    pub(super) fn support_action<F>(&mut self, cx: &mut Context<Self>, f: F)
-    where
+    pub(super) fn support_action<F>(
+        &mut self,
+        cx: &mut Context<Self>,
+        sent_ticket_id: Option<String>,
+        f: F,
+    ) where
         F: FnOnce(String, String) -> shelldeck_core::Result<manage_support::SupportTicket>
             + Send
             + 'static,
@@ -590,6 +603,9 @@ impl Workspace {
                 Ok(t) => {
                     ws.support.update(cx, |v, cx| {
                         v.set_detail(t, cx);
+                        if let Some(id) = sent_ticket_id.as_deref() {
+                            v.clear_ticket_draft_after_send(id, cx);
+                        }
                         cx.notify();
                     });
                     ws.refresh_support(cx);

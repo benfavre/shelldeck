@@ -11,6 +11,20 @@ use crate::{
 use gpui::{prelude::FluentBuilder as _, InteractiveElement, *};
 use std::rc::Rc;
 
+// ShellDeck patch: SDPATCH-045 — dropdowns must fit the live viewport rather
+// than relying on the upstream fixed 400px cap. Keep enough room for a useful
+// panel when an anchor sits close to the bottom; `anchored` will reposition it.
+const MENU_VIEWPORT_MARGIN: f32 = 8.0;
+const MENU_DEFAULT_MAX_HEIGHT: f32 = 400.0;
+const MENU_MIN_HEIGHT: f32 = 96.0;
+
+fn menu_max_height(viewport_height: Pixels, anchor_bottom: Pixels) -> Pixels {
+    let available = viewport_height.to_f64() as f32
+        - anchor_bottom.to_f64() as f32
+        - MENU_VIEWPORT_MARGIN;
+    px(available.clamp(MENU_MIN_HEIGHT, MENU_DEFAULT_MAX_HEIGHT))
+}
+
 #[derive(Clone, Debug)]
 pub enum MenuItemKind {
     Action,
@@ -123,6 +137,9 @@ pub struct Menu {
     items: Vec<MenuItem>,
     min_width: Pixels,
     max_height: Option<Pixels>,
+    // ShellDeck patch: SDPATCH-045 — an externally-owned handle survives the
+    // second frame needed to resolve child bounds for active-row scrolling.
+    scroll_handle: ScrollHandle,
     style: StyleRefinement,
 }
 
@@ -132,6 +149,9 @@ impl Menu {
             items,
             min_width: px(200.0),
             max_height: Some(px(400.0)),
+            // ShellDeck patch: SDPATCH-045 — standalone menus still scroll;
+            // retained hosts can replace this handle through `track_scroll`.
+            scroll_handle: ScrollHandle::new(),
             style: StyleRefinement::default(),
         }
     }
@@ -143,6 +163,13 @@ impl Menu {
 
     pub fn max_height(mut self, height: Option<Pixels>) -> Self {
         self.max_height = height;
+        self
+    }
+
+    // ShellDeck patch: SDPATCH-045 — let a retained MenuBar own scroll state
+    // across RenderOnce menu instances.
+    pub fn track_scroll(mut self, scroll_handle: &ScrollHandle) -> Self {
+        self.scroll_handle = scroll_handle.clone();
         self
     }
 }
@@ -157,12 +184,30 @@ impl RenderOnce for Menu {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let theme = use_theme();
         let user_style = self.style;
+        // ShellDeck patch: SDPATCH-045 — a max-height without scroll merely
+        // clips long menus. Track the checked/active row so opening a bounded
+        // navigation menu also reveals the current destination automatically.
+        let active_item = self.items.iter().position(|item| {
+            matches!(
+                &item.kind,
+                MenuItemKind::Checkbox { checked: true }
+                    | MenuItemKind::Radio { checked: true }
+            )
+        });
+        let scroll = self.scroll_handle;
+        if let Some(index) = active_item {
+            scroll.scroll_to_item(index);
+        }
 
         div()
+            .id("menu-scroll-surface")
             .min_w(self.min_width)
             .when_some(self.max_height, |div, h| div.max_h(h))
             .flex()
             .flex_col()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .track_scroll(&scroll)
             .bg(theme.tokens.popover)
             .border_1()
             .border_color(theme.tokens.border)
@@ -302,6 +347,9 @@ pub struct MenuBar {
     trigger_bounds: Vec<Option<Bounds<Pixels>>>,
     row_height: Pixels,
     menu_min_width: Pixels,
+    // ShellDeck patch: SDPATCH-045 — retained so scroll-to-current can finish
+    // after the dropdown's child bounds are measured on its first frame.
+    dropdown_scroll: ScrollHandle,
 }
 
 impl MenuBar {
@@ -312,6 +360,9 @@ impl MenuBar {
             active_menu: None,
             row_height: px(40.0),
             menu_min_width: px(200.0),
+            // ShellDeck patch: SDPATCH-045 — one dropdown is open at a time,
+            // so one retained handle is sufficient and avoids stale lifetimes.
+            dropdown_scroll: ScrollHandle::new(),
         }
     }
 
@@ -366,7 +417,7 @@ impl MenuBar {
 }
 
 impl Render for MenuBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         // ShellDeck patch: SDPATCH-025 — an open menu bar tracks the pointer:
         // hovering a sibling title switches to it without a second click.
@@ -430,6 +481,12 @@ impl Render for MenuBar {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
+                            // ShellDeck patch: SDPATCH-045 — a newly opened
+                            // top-level menu starts at the top unless its
+                            // checked row moves it after layout.
+                            if this.active_menu != Some(idx) {
+                                this.dropdown_scroll.set_offset(point(px(0.0), px(0.0)));
+                            }
                             this.active_menu = if this.active_menu == Some(idx) {
                                 None
                             } else {
@@ -441,6 +498,10 @@ impl Render for MenuBar {
                     .when(menu_open && !is_active, |div| {
                         div.on_mouse_move(cx.listener(move |this, _event, _window, cx| {
                             if this.active_menu.is_some() && this.active_menu != Some(idx) {
+                                // ShellDeck patch: SDPATCH-045 — switching an
+                                // open title must not inherit another menu's
+                                // deep scroll position.
+                                this.dropdown_scroll.set_offset(point(px(0.0), px(0.0)));
                                 this.active_menu = Some(idx);
                                 cx.notify();
                             }
@@ -471,6 +532,10 @@ impl Render for MenuBar {
                 (self.items.get(active), self.trigger_bounds.get(active))
             {
                 let position = point(anchor.origin.x, anchor.origin.y + anchor.size.height);
+                // ShellDeck patch: SDPATCH-045 — the 400px default is taller
+                // than a 400px ShellDeck window once titlebar + menu row are
+                // accounted for. Bound the dropdown below its real anchor.
+                let max_height = menu_max_height(window.viewport_size().height, position.y);
                 let entity = cx.entity();
                 let items = item
                     .menu_items
@@ -500,7 +565,14 @@ impl Render for MenuBar {
                             .child(
                                 div()
                                     .occlude()
-                                    .child(Menu::new(items).min_width(self.menu_min_width)),
+                                    .child(
+                                        Menu::new(items)
+                                            .min_width(self.menu_min_width)
+                                            .max_height(Some(max_height))
+                                            // ShellDeck patch: SDPATCH-045 — pass the retained
+                                            // bar handle to each ephemeral dropdown.
+                                            .track_scroll(&self.dropdown_scroll),
+                                    ),
                             ),
                     )
                     .with_priority(1),
@@ -525,26 +597,31 @@ impl ContextMenu {
 }
 
 impl RenderOnce for ContextMenu {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = use_theme();
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        // ShellDeck patch: SDPATCH-045 — context menus share the same bounded,
+        // scrollable surface instead of keeping a second non-scrolling copy.
+        let max_height = menu_max_height(window.viewport_size().height, px(MENU_VIEWPORT_MARGIN));
 
         anchored()
             .snap_to_window_with_margin(px(8.0))
             .anchor(Corner::TopLeft)
             .position(self.position)
-            .child(
-                div()
-                    .min_w(px(200.0))
-                    .max_h(px(400.0))
-                    .flex()
-                    .flex_col()
-                    .bg(theme.tokens.popover)
-                    .border_1()
-                    .border_color(theme.tokens.border)
-                    .rounded(theme.tokens.radius_md)
-                    .shadow_lg()
-                    .p(px(4.0))
-                    .children(self.items.into_iter().map(render_menu_item)),
-            )
+            .child(Menu::new(self.items).max_height(Some(max_height)))
+    }
+}
+
+// ShellDeck patch: SDPATCH-045 — pin the geometry that keeps menu content
+// inside compact windows; GPUI rendering itself remains manually validated.
+#[cfg(test)]
+mod tests {
+    use super::menu_max_height;
+    use gpui::px;
+
+    // SDTEST-1918
+    #[test]
+    fn menu_height_tracks_available_viewport() {
+        assert_eq!(menu_max_height(px(810.0), px(80.0)), px(400.0));
+        assert_eq!(menu_max_height(px(400.0), px(73.0)), px(319.0));
+        assert_eq!(menu_max_height(px(120.0), px(80.0)), px(96.0));
     }
 }

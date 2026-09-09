@@ -320,6 +320,10 @@ mod tests {
         apply_ui_language(&UiLanguage::Fr);
         assert_eq!(resolve_locale(&UiLanguage::Fr), "fr");
         assert_eq!(crate::t!("login.submit").as_ref(), "Se connecter");
+        assert_eq!(
+            crate::t!("user.sites.empty.filtered.title", query = "zzzzintrouvable").as_ref(),
+            "Aucun site ne correspond à « zzzzintrouvable »"
+        );
         let tray_fr = crate::ai_dock::TrayLabels::localized();
         assert_eq!(tray_fr.show, "Ouvrir ShellDeck");
         assert_eq!(crate::ai_dock::tray_counter_tickets(3), "3 tickets non lus");
@@ -362,6 +366,10 @@ mod tests {
         apply_ui_language(&UiLanguage::En);
         assert_eq!(resolve_locale(&UiLanguage::En), "en");
         assert_eq!(crate::t!("login.submit").as_ref(), "Sign in");
+        assert_eq!(
+            crate::t!("user.sites.empty.filtered.title", query = "zzzzintrouvable").as_ref(),
+            "No site matches “zzzzintrouvable”"
+        );
         let tray_en = crate::ai_dock::TrayLabels::localized();
         assert_eq!(tray_en.show, "Open ShellDeck");
         assert_eq!(crate::ai_dock::tray_counter_tickets(3), "3 unread tickets");

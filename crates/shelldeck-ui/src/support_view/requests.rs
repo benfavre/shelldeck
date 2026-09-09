@@ -165,6 +165,7 @@ impl SupportView {
     pub(super) fn render_requests(
         &self,
         compact: bool,
+        short: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let header = div()
@@ -339,7 +340,7 @@ impl SupportView {
                 .flex_col()
                 .min_h(px(0.0))
                 .child(support_compact_back("support-requests-compact-back", cx))
-                .child(self.render_issue_detail(cx));
+                .child(self.render_issue_detail(short, cx));
         }
         if compact {
             return left.flex_1();
@@ -350,7 +351,7 @@ impl SupportView {
             .flex()
             .min_h(px(0.0))
             .child(left)
-            .child(self.render_issue_detail(cx))
+            .child(self.render_issue_detail(short, cx))
     }
 
     pub(super) fn render_issue_row(&self, iss: &Issue, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2162,7 +2163,11 @@ impl SupportView {
             .into_any_element()
     }
 
-    pub(super) fn render_issue_detail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_issue_detail(
+        &self,
+        short: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let Some(iss) = self.issue_detail.clone() else {
             return self.render_empty_issue_detail().into_any_element();
         };
@@ -2188,7 +2193,7 @@ impl SupportView {
             .child(self.render_issue_status_picker(&iss, cx))
             .child(self.render_issue_priority_picker(&iss, cx))
             .child(self.render_issue_assignee_picker(&iss, cx));
-        if !context.is_empty() {
+        if !short && !context.is_empty() {
             meta_row = meta_row.child(
                 div()
                     .flex_shrink_0()
@@ -2198,22 +2203,24 @@ impl SupportView {
                     .child(context.join(" · ")),
             );
         }
-        if let Some(label) = iss.site_label.as_ref().filter(|l| !l.trim().is_empty()) {
-            meta_row = meta_row.child(Badge::new(label.clone()).variant(BadgeVariant::Outline));
-        }
-        if let Some(g) = &iss.github {
-            meta_row = meta_row.child(
-                Badge::new(format!("GitHub #{}", g.number)).variant(BadgeVariant::Secondary),
-            );
+        if !short {
+            if let Some(label) = iss.site_label.as_ref().filter(|l| !l.trim().is_empty()) {
+                meta_row = meta_row.child(Badge::new(label.clone()).variant(BadgeVariant::Outline));
+            }
+            if let Some(g) = &iss.github {
+                meta_row = meta_row.child(
+                    Badge::new(format!("GitHub #{}", g.number)).variant(BadgeVariant::Secondary),
+                );
+            }
         }
 
         let header = div()
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .gap(px(8.0))
+            .gap(px(if short { 4.0 } else { 8.0 }))
             .px(px(16.0))
-            .py(px(10.0))
+            .py(px(if short { 6.0 } else { 10.0 }))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(
@@ -2303,7 +2310,7 @@ impl SupportView {
             .overflow_hidden()
             .child(header)
             .child(thread)
-            .child(self.render_issue_composer(cx))
+            .child(self.render_issue_composer(short, cx))
             .into_any_element()
     }
 
@@ -2465,7 +2472,11 @@ impl SupportView {
         ai_draft_card(title, body, leading, trailing)
     }
 
-    pub(super) fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_issue_composer(
+        &self,
+        short: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let issue_id = self.issue_selected.clone();
         let placeholder = self
             .issue_detail
@@ -2480,8 +2491,8 @@ impl SupportView {
             .flex_shrink_0()
             .gap(px(2.0))
             .px(px(16.0))
-            .pt(px(10.0))
-            .pb(px(14.0))
+            .pt(px(if short { 6.0 } else { 10.0 }))
+            .pb(px(if short { 8.0 } else { 14.0 }))
             .on_action(cx.listener(|this, _: &Paste, _, cx| {
                 if this.paste_attachment(cx) {
                     cx.stop_propagation();
@@ -2518,8 +2529,9 @@ impl SupportView {
                     )
                     .on_commit(move |cx| {
                         send_entity.update(cx, |this, cx| this.send_composer(cx));
-                    })
-                    .footnote(
+                    });
+                if !short {
+                    frame = frame.footnote(
                         div()
                             .flex()
                             .items_center()
@@ -2527,6 +2539,7 @@ impl SupportView {
                             .child(t!("ai.assistant.hint.send").to_string())
                             .child(t!("ai.assistant.hint.newline").to_string()),
                     );
+                }
                 if self.ai_reply_enabled {
                     frame = frame.action(
                         compact_composer_action(
