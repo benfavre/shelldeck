@@ -992,7 +992,8 @@ with its cached share, output) and, for Claude, its cost, added up per run for
 Claude and taken as the thread's running total for Codex; and the latest
 5-hour and 7-day account windows with their reset delay, from Claude's
 rate-limit records and from Codex's local session journal (read after a local
-Codex run and when the panel opens, at most once a minute, each window
+Codex run and when the panel opens, at most once a minute, from the
+account-wide `codex` limit rather than a model-specific bucket, each window
 identified by its length rather than its slot). A figure never reported reads
 as unavailable, a window past its reset reads as reset, and account windows
 are never persisted. The composer summary line counts running and waiting
@@ -3188,6 +3189,11 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-10**: Amended SDUC-499 (SDTEST-1933): Codex account windows come
+  only from the account-wide `codex` limit. Model-specific buckets such as
+  GPT-5.3-Codex-Spark were read as Codex usage, showing 0% while the account's
+  7-day window was at 98%.
 
 - **2026-09-10**: Amended SDUC-414 with SDTEST-1936: choosing a provider from
   the Assistant Sheet no longer closes it; an AI settings change closes the

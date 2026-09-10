@@ -267,7 +267,18 @@ pub fn codex_journal_quotas(journal: &str) -> Option<Vec<AgentQuota>> {
         if payload.get("type").and_then(Value::as_str) != Some("token_count") {
             return None;
         }
-        let quotas = codex_rate_limit_quotas(payload.get("rate_limits")?);
+        let rate_limits = payload.get("rate_limits")?;
+        // Codex also journals model-specific buckets (`codex_bengalfox` for
+        // GPT-5.3-Codex-Spark, for example); only the account-wide `codex`
+        // limit describes Codex usage. Older records carry no identifier.
+        if rate_limits
+            .get("limit_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id != "codex")
+        {
+            return None;
+        }
+        let quotas = codex_rate_limit_quotas(rate_limits);
         (!quotas.is_empty()).then_some(quotas)
     })
 }
@@ -394,6 +405,8 @@ mod tests {
     const BOTH_WINDOWS: &str = r#"{"limit_id":"codex","primary":{"used_percent":12.4,"window_minutes":300,"resets_at":1789000000},"secondary":{"used_percent":40.6,"window_minutes":10080,"resets_at":1789500000}}"#;
     // A weekly-only plan reports its seven-day window in the primary slot.
     const WEEKLY_ONLY: &str = r#"{"limit_id":"codex","primary":{"used_percent":98.0,"window_minutes":10080,"resets_at":1789505917},"secondary":null}"#;
+    // A model-specific bucket journaled alongside the account-wide limit.
+    const SPARK_BUCKET: &str = r#"{"limit_id":"codex_bengalfox","limit_name":"GPT-5.3-Codex-Spark","primary":{"used_percent":0.0,"window_minutes":300,"resets_at":1789068238},"secondary":{"used_percent":0.0,"window_minutes":10080,"resets_at":1789655038}}"#;
 
     fn both_windows() -> Vec<AgentQuota> {
         vec![
@@ -420,17 +433,20 @@ mod tests {
         let journal = [
             token_count(BOTH_WINDOWS),
             token_count(WEEKLY_ONLY),
+            token_count(SPARK_BUCKET),
             token_count(r#"{"primary":null,"secondary":null}"#),
             token_count(r#"{"primary":{"used_percent":3.0,"window_minutes":60}}"#),
             r#"{"type":"event_msg","payload":{"type":"agent_message","message":"ok"}}"#.to_string(),
         ]
         .join("\n");
-        // Records without a recognised window are skipped, not read as zero.
+        // A model-specific bucket and records without a recognised window are
+        // skipped, not read as the account's usage.
         assert_eq!(codex_journal_quotas(&journal), Some(weekly));
         assert_eq!(
             codex_journal_quotas(&token_count(BOTH_WINDOWS)),
             Some(both_windows())
         );
+        assert_eq!(codex_journal_quotas(&token_count(SPARK_BUCKET)), None);
         assert_eq!(codex_journal_quotas("not json\n{}"), None);
 
         let home = std::env::temp_dir().join(format!("shelldeck-codex-{}", uuid::Uuid::new_v4()));
@@ -447,8 +463,14 @@ mod tests {
                 .set_modified(SystemTime::now() - std::time::Duration::from_secs(age_s))
                 .unwrap();
         };
-        // An older conversation resumed recently holds the freshest windows,
-        // and the newest journal of all has none (an interrupted run).
+        // An older conversation resumed recently holds the freshest
+        // account-wide windows; newer journals hold only a model-specific
+        // bucket or nothing at all (an interrupted run).
+        write(
+            new_day.join("rollout-2026-09-10T13-00-00-spark.jsonl"),
+            token_count(SPARK_BUCKET),
+            5,
+        );
         write(
             old_day.join("rollout-2026-08-27T11-44-46-resumed.jsonl"),
             token_count(BOTH_WINDOWS),
