@@ -278,8 +278,10 @@ impl Workspace {
         Option<manage_sites::ManagedSiteInfo>,
         Vec<manage_sites::ManagedSiteInfo>,
     ) {
-        let payload = self.site_directory.clone().unwrap_or_default();
-        let active_id = self.app_config.cloud_sync.active_site_id.clone();
+        let Some(payload) = self.site_directory.as_ref() else {
+            return (None, Vec::new());
+        };
+        let active_id = self.app_config.cloud_sync.active_site_id.as_deref();
         let conn_site_ids: std::collections::HashSet<String> = self
             .connections
             .iter()
@@ -302,17 +304,16 @@ impl Workspace {
             })
             .cloned()
             .collect();
-        sites.sort_by(|a, b| {
-            let a_conn = conn_site_ids.contains(&a.site_id);
-            let b_conn = conn_site_ids.contains(&b.site_id);
-            b_conn.cmp(&a_conn).then(
-                a.display_label()
-                    .to_lowercase()
-                    .cmp(&b.display_label().to_lowercase()),
+        // Cache the normalized label once per site. `sort_by` used to rebuild
+        // both lowercase strings for every comparison (O(n log n) temporary
+        // allocations) each time the Sites tab rendered.
+        sites.sort_by_cached_key(|site| {
+            (
+                !conn_site_ids.contains(&site.site_id),
+                site.display_label().to_lowercase(),
             )
         });
         let active = active_id
-            .as_deref()
             .and_then(|id| sites.iter().position(|s| s.site_id == id))
             .map(|idx| sites.remove(idx));
         (active, sites)
@@ -714,7 +715,6 @@ impl Workspace {
             .issues_list
             .iter()
             .filter(|issue| self.is_user_visible_issue(issue))
-            .cloned()
             .collect::<Vec<_>>();
         let open_requests = my_requests
             .iter()
@@ -1631,7 +1631,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let account = self.app_config.account.clone().unwrap_or_default();
-        let payload = self.site_directory.clone().unwrap_or_default();
+        let payload = self.site_directory.as_ref();
+        let total_sites = payload.map_or(0, |directory| directory.sites.len());
         let role_tokens = user_role_tokens(&account);
         let primary_role = primary_user_role(&role_tokens)
             .filter(|role| *role != "user")
@@ -1652,7 +1653,15 @@ impl Workspace {
         ];
         let area_buttons: Vec<manage_sites::ManageArea> = preferred
             .iter()
-            .filter_map(|k| payload.areas.iter().find(|a| a.key == *k).cloned())
+            .filter_map(|key| {
+                payload.and_then(|directory| {
+                    directory
+                        .areas
+                        .iter()
+                        .find(|area| area.key == *key)
+                        .cloned()
+                })
+            })
             .collect();
 
         // Header card.
@@ -1759,11 +1768,10 @@ impl Workspace {
                     )
             });
 
-        // Sites: filter by search, sort (conn-bearing first, then alpha),
-        // split into (active-card, others-for-virt-list). Recomputed inside
-        // the `uniform_list` processor as well — cheap enough on 300 sites
-        // (< 1ms) and keeps the model authoritative.
+        // Sites: filter by search, sort (conn-bearing first, then alpha), and
+        // split into (active-card, others-for-virt-list) once per render.
         let (active_site, others_sites) = self.partition_user_sites(cx);
+        let others_sites = Rc::new(others_sites);
         let others_count = others_sites.len();
         let site_search_query = self
             .user_sites_search_state
@@ -1772,7 +1780,7 @@ impl Workspace {
             .trim()
             .to_string();
         let empty_state = user_sites_empty_state(
-            payload.sites.len(),
+            total_sites,
             usize::from(active_site.is_some()) + others_count,
             &site_search_query,
         );
@@ -1913,15 +1921,15 @@ impl Workspace {
             } else {
                 SITE_ROW_H
             };
+            let visible_sites = Rc::clone(&others_sites);
             list = list.child(
                 uniform_list(
                     "user-home-sites-virt",
                     others_count,
                     cx.processor(move |this, range: Range<usize>, _window, cx| {
-                        let (_, others) = this.partition_user_sites(cx);
                         let mut items: Vec<AnyElement> = Vec::new();
                         for i in range {
-                            if let Some(site) = others.get(i) {
+                            if let Some(site) = visible_sites.get(i) {
                                 items.push(
                                     this.render_compact_site_row(site, compact_user_home, cx)
                                         .into_any_element(),
@@ -1978,7 +1986,7 @@ impl Workspace {
                                     .child(t!("user.sites.title").to_string()),
                             ),
                     );
-                if payload.sites.len() > 5 {
+                if total_sites > 5 {
                     let entity = cx.entity();
                     row = row.child(
                         div().w(px(260.0)).child(

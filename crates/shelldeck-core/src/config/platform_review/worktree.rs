@@ -1005,10 +1005,10 @@ mod tests {
         .expect("exact mapping")
     }
 
-    fn lane<'a>(
-        projection: &'a ReviewWorktreeProjection,
+    fn lane(
+        projection: &ReviewWorktreeProjection,
         lane: ReviewWorktreeLane,
-    ) -> &'a [ReviewWorktreeFile] {
+    ) -> &[ReviewWorktreeFile] {
         &projection
             .lanes
             .iter()

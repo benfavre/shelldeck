@@ -102,9 +102,9 @@ Existing: **4 protocol/lifecycle tests.**
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-560 | `shelldeck-core::port_forward::zero_is_rejected` + `all_non_zero_ports_are_accepted` | SDUC-049 | Green | Already covered by SDTEST-030; `u16` makes overflow unrepresentable and 0 is rejected. |
-| SDTEST-561 | `tunnel.rs::port_availability_and_prebound_start_failure_are_reported` | SDUC-049 | Green | Reserves a real loopback port and verifies a released ephemeral port. |
+| SDTEST-561 | `tunnel.rs::port_availability_and_prebound_start_failures_are_reported` | SDUC-049 | Green | Reserves a real loopback port and verifies a released ephemeral port. |
 | SDTEST-562 | `tunnel.rs::local_forward_echoes_tracks_bytes_and_drains_on_stop` | SDUC-049 | Green | Real `russh` direct-tcpip over an in-memory transport; loopback listener forwards bytes both ways. |
-| SDTEST-563 | `tunnel.rs::port_availability_and_prebound_start_failure_are_reported` | SDUC-049 | Green | Pre-bound port returns `SshError::PortInUse` without registering a tunnel. |
+| SDTEST-563 | `tunnel.rs::port_availability_and_prebound_start_failures_are_reported` | SDUC-049 | Green | Local and SOCKS pre-bound ports synchronously return `SshError::PortInUse` without registering a tunnel. |
 | SDTEST-564 | `tunnel.rs::local_forward_echoes_tracks_bytes_and_drains_on_stop` | SDUC-052 | Green | Caught detached copy tasks: stop now aborts and joins accepted connections before publishing `Stopped`. |
 | SDTEST-565 | `tunnel.rs::remote_forward_requests_the_port_and_routes_connections_to_the_local_target` | SDUC-050, SDUC-052 | Green | Real reverse forward end to end: the in-memory server records `tcpip_forward("0.0.0.0", 8443)`, then plays the remote side by opening a forwarded-tcpip channel back. Bytes reach a loopback echo target and return; counters are directional; stopping the tunnel closes the already-routed connection. |
 | SDTEST-566 | `tunnel.rs::socks5_connect_echoes_and_rejects_bind_and_udp_associate` | SDUC-051 | Green | Raw SOCKS5 no-auth + domain CONNECT reaches direct-tcpip and echoes; BIND/UDP-associate return command-not-supported without opening a channel. |
