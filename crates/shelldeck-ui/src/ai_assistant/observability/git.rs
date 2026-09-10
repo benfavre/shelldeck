@@ -66,6 +66,10 @@ pub(in crate::ai_assistant) struct AgentGitPanel {
     diff: Option<(GitSelection, String)>,
     commit_open: bool,
     commit_message: Entity<InputState>,
+    /// The commit message draft in flight, if any. A result for any other
+    /// request, or after the dialog closed, is discarded.
+    commit_draft_request: Option<u64>,
+    commit_draft_seq: u64,
 }
 
 impl AgentGitPanel {
@@ -81,7 +85,9 @@ impl AgentGitPanel {
             selection: None,
             diff: None,
             commit_open: false,
-            commit_message: cx.new(InputState::new),
+            commit_message: commit_message_state(cx),
+            commit_draft_request: None,
+            commit_draft_seq: 0,
         }
     }
 
@@ -95,6 +101,7 @@ impl AgentGitPanel {
         self.selection = None;
         self.diff = None;
         self.commit_open = false;
+        self.commit_draft_request = None;
     }
 
     /// Working tree of `workdir`, when the last read targeted that directory.
@@ -299,7 +306,8 @@ impl AiAssistantView {
                         this.agent_git.notice =
                             Some(t!("ai.observability.git_commit_done", sha = sha).to_string());
                         this.agent_git.commit_open = false;
-                        this.agent_git.commit_message = cx.new(InputState::new);
+                        this.agent_git.commit_draft_request = None;
+                        this.agent_git.commit_message = commit_message_state(cx);
                     }
                     Ok(None) => {}
                     // A failed commit keeps its dialog and message open.
@@ -871,6 +879,101 @@ impl AiAssistantView {
         )
     }
 
+    /// Explicit request for a commit message draft. The staged patch and the
+    /// latest subjects are read off the UI thread, then handed to the host,
+    /// which owns the AI configuration.
+    fn start_commit_message_draft(&mut self, cx: &mut Context<Self>) {
+        const MAX_DRAFT_SUBJECTS: usize = 8;
+        let Some(workdir) = self.agent_git.workdir.clone() else {
+            return;
+        };
+        let staged_files: Vec<String> = self
+            .agent_git
+            .staged_files()
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+        if self.agent_git.busy
+            || self.agent_git.commit_draft_request.is_some()
+            || staged_files.is_empty()
+            || !self.available
+        {
+            return;
+        }
+        let branch = self
+            .agent_git
+            .snapshot
+            .tree
+            .as_ref()
+            .and_then(|tree| tree.branch.clone());
+        self.agent_git.commit_draft_seq = self.agent_git.commit_draft_seq.wrapping_add(1);
+        let request_id = self.agent_git.commit_draft_seq;
+        self.agent_git.commit_draft_request = Some(request_id);
+        self.agent_git.error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let dir = PathBuf::from(&workdir);
+            let prepared = cx
+                .background_executor()
+                .spawn(async move {
+                    let patch = core_git::staged_patch(&dir)?;
+                    let subjects = core_git::recent_commit_subjects(&dir, MAX_DRAFT_SUBJECTS);
+                    Ok::<_, GitCommandError>(shelldeck_core::ai::commit_message_context(
+                        branch.as_deref(),
+                        &staged_files,
+                        &subjects,
+                        &patch,
+                    ))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // Closing the dialog abandons the draft before any AI call.
+                if this.agent_git.commit_draft_request != Some(request_id) {
+                    return;
+                }
+                match prepared {
+                    Ok(context) => cx.emit(super::super::AiAssistantEvent::DraftCommitMessage {
+                        request_id,
+                        context: Box::new(context),
+                    }),
+                    Err(error) => {
+                        this.set_commit_message_draft(request_id, Err(error.to_string()), cx)
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Host answer to `AiAssistantEvent::DraftCommitMessage`. Only the draft
+    /// still awaited fills the message, which stays editable.
+    pub fn set_commit_message_draft(
+        &mut self,
+        request_id: u64,
+        result: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.agent_git.commit_draft_request != Some(request_id) {
+            return;
+        }
+        self.agent_git.commit_draft_request = None;
+        match result {
+            Ok(message) if self.agent_git.commit_open => {
+                self.agent_git.commit_message.update(cx, |state, cx| {
+                    state.replace_content(message, cx);
+                    cx.notify();
+                });
+            }
+            Ok(_) => {}
+            Err(error) => {
+                self.agent_git.error = Some(
+                    t!("ai.observability.git_commit_generate_failed", error = error).to_string(),
+                );
+            }
+        }
+        cx.notify();
+    }
+
     /// Commit confirmation, mounted at the Assistant root like the other
     /// dialogs so it overlays whichever host is showing the panel.
     pub(in crate::ai_assistant) fn render_git_commit_dialog(
@@ -882,6 +985,7 @@ impl AiAssistantView {
         }
         let staged = self.agent_git.staged_files();
         let busy = self.agent_git.busy;
+        let drafting = self.agent_git.commit_draft_request.is_some();
         let mut paths = div()
             .flex()
             .flex_col()
@@ -916,10 +1020,52 @@ impl AiAssistantView {
                         .child(
                             Input::new(&self.agent_git.commit_message)
                                 .size(InputSize::Sm)
+                                .multi_line(true)
+                                .min_rows(3)
+                                .max_rows(8)
                                 .placeholder(
                                     t!("ai.observability.git_commit_placeholder").to_string(),
                                 )
-                                .disabled(busy),
+                                .disabled(busy || drafting),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    Button::new(
+                                        "ai-git-commit-generate",
+                                        if drafting {
+                                            t!("ai.observability.git_commit_generating")
+                                        } else {
+                                            t!("ai.observability.git_commit_generate")
+                                        }
+                                        .to_string(),
+                                    )
+                                    .variant(ButtonVariant::Secondary)
+                                    .size(ButtonSize::Sm)
+                                    .icon(IconSource::from("sparkles"))
+                                    .disabled(
+                                        busy || drafting || staged.is_empty() || !self.available,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.start_commit_message_draft(cx);
+                                        },
+                                    )),
+                                )
+                                .children(drafting.then(|| {
+                                    Spinner::new()
+                                        .size(SpinnerSize::Xs)
+                                        .variant(SpinnerVariant::Primary)
+                                })),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(t!("ai.observability.git_commit_generate_note").to_string()),
                         )
                         .child(
                             div()
@@ -958,6 +1104,7 @@ impl AiAssistantView {
                                 .size(ButtonSize::Sm)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.agent_git.commit_open = false;
+                                    this.agent_git.commit_draft_request = None;
                                     cx.notify();
                                 })),
                         )
@@ -969,7 +1116,7 @@ impl AiAssistantView {
                             .variant(ButtonVariant::Default)
                             .size(ButtonSize::Sm)
                             .icon(IconSource::from("git-commit-horizontal"))
-                            .disabled(busy)
+                            .disabled(busy || drafting)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.confirm_git_commit(cx);
                             })),
@@ -980,6 +1127,7 @@ impl AiAssistantView {
                     move |_, cx| {
                         entity.update(cx, |this, cx| {
                             this.agent_git.commit_open = false;
+                            this.agent_git.commit_draft_request = None;
                             cx.notify();
                         });
                     }
@@ -987,6 +1135,11 @@ impl AiAssistantView {
                 .into_any_element(),
         )
     }
+}
+
+/// The commit message field is multi-line: a body may follow the subject.
+fn commit_message_state(cx: &mut App) -> Entity<InputState> {
+    cx.new(|cx| InputState::new(cx).multi_line(true))
 }
 
 fn section_label(label: String, count: usize) -> AnyElement {

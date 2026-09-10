@@ -72,6 +72,13 @@ pub enum AiAssistantEvent {
     /// ticket status or a freshly added host current at the moment the list is
     /// shown, without any polling.
     RefreshMentions,
+    /// The Git panel asks for a commit message draft. The view owns no AI
+    /// config: the host runs the configured provider and answers through
+    /// `set_commit_message_draft`.
+    DraftCommitMessage {
+        request_id: u64,
+        context: Box<AiContext>,
+    },
 }
 
 impl EventEmitter<AiAssistantEvent> for AiAssistantView {}

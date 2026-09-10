@@ -984,7 +984,11 @@ a local session, Git reads the actual working directory (branch, upstream,
 staged and unstaged files with line counts, per-file diff): the user can stage,
 unstage or stage everything directly, while a commit needs an explicit
 confirmation showing its message and staged files, is refused while the
-observed session is running, and is revalidated right before it runs. Nothing
+observed session is running, and is revalidated right before it runs. From
+that confirmation the user can ask the configured AI provider for a message
+draft: only on that explicit click are the staged patch (bounded, credentials
+redacted) and the latest commit subjects sent, the answer fills the editable
+message, and nothing is committed until the user confirms. Nothing
 is ever pushed from the Assistant, it never runs a command, and SSH sessions
 are never misrepresented as local Git. Suivi also shows consumption exactly as
 the providers report it, never estimated: the observed session's tokens (input
@@ -3189,6 +3193,11 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-10**: Amended SDUC-499 with SDTEST-1937 and SDTEST-1938 (and
+  SDTEST-1927): the commit confirmation can draft its message with the
+  configured AI provider from the staged patch and the latest commit subjects,
+  on an explicit click only, into an editable field.
 
 - **2026-09-10**: Amended SDUC-499 (SDTEST-1933): Codex account windows come
   only from the account-wide `codex` limit. Model-specific buckets such as

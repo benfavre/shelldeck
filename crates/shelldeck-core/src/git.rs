@@ -388,6 +388,39 @@ pub fn untracked_line_count(dir: &Path, path: &str) -> Option<u32> {
 
 /// Unified diff of one path, bounded to `MAX_DIFF_BYTES`. An untracked file is
 /// shown as a whole-file addition read directly, without invoking git.
+/// Staged changes as one bounded patch, preceded by their stat, for a commit
+/// message draft.
+pub fn staged_patch(dir: &Path) -> Result<String, GitCommandError> {
+    run_git(
+        dir,
+        &[
+            "diff",
+            "--cached",
+            "--no-color",
+            "--no-ext-diff",
+            "--stat",
+            "--patch",
+        ],
+    )
+    .map(truncate_diff)
+}
+
+/// Subjects of the latest commits, newest first. Empty before the first
+/// commit or outside a repository.
+pub fn recent_commit_subjects(dir: &Path, limit: usize) -> Vec<String> {
+    let count = format!("--max-count={limit}");
+    run_git(dir, &["log", &count, "--format=%s"])
+        .map(|output| {
+            output
+                .lines()
+                .map(str::trim)
+                .filter(|subject| !subject.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn file_diff(
     dir: &Path,
     path: &str,
@@ -592,7 +625,9 @@ mod tests {
                 .expect("path listed")
         };
 
-        // Before the first commit, unstaging has no HEAD to restore from.
+        // Before the first commit, unstaging has no HEAD to restore from and
+        // there are no subjects to follow.
+        assert!(recent_commit_subjects(&dir, 5).is_empty());
         std::fs::write(dir.join("tracked.txt"), "one\n").unwrap();
         stage_paths(&dir, &["tracked.txt".to_string()]).unwrap();
         assert!(entry("tracked.txt").has_staged_change());
@@ -626,6 +661,12 @@ mod tests {
         assert!(file_diff(&dir, "tracked.txt", true, false)
             .unwrap()
             .contains("+two"));
+        // A commit draft reads the staged patch only, next to the subjects
+        // the repository already uses.
+        let patch = staged_patch(&dir).unwrap();
+        assert!(patch.contains("tracked.txt") && patch.contains("+two"));
+        assert!(!patch.contains("fresh"));
+        assert_eq!(recent_commit_subjects(&dir, 5), vec!["first".to_string()]);
         unstage_paths(&dir, &["tracked.txt".to_string()]).unwrap();
         assert!(diff_line_counts(&dir, true).is_empty());
         assert!(entry("tracked.txt").has_unstaged_change());

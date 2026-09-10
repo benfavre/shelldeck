@@ -176,6 +176,30 @@ impl AiCompanionController {
                         })
                         .detach();
                     }
+                    AiAssistantEvent::DraftCommitMessage {
+                        request_id,
+                        context,
+                    } => {
+                        let config = this.config.borrow().clone();
+                        let source = view.clone();
+                        cx.spawn(async move |_, cx: &mut AsyncApp| {
+                            let result = cx
+                                .background_executor()
+                                .spawn(async move {
+                                    let client = create_client(&config)?;
+                                    shelldeck_core::ai::draft_commit_message(
+                                        client.as_ref(),
+                                        *context,
+                                    )
+                                })
+                                .await
+                                .map_err(|error| error.to_string());
+                            let _ = source.update(cx, |assistant, cx| {
+                                assistant.set_commit_message_draft(request_id, result, cx);
+                            });
+                        })
+                        .detach();
+                    }
                     AiAssistantEvent::ResumeTask(id) => {
                         cx.emit(AiCompanionEvent::ResumeTask(id));
                     }

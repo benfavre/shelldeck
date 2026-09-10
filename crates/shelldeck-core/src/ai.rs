@@ -1598,6 +1598,104 @@ pub fn complete_assistant_turn(
         .map(|response| AiAssistantCompletion::Message(response.text))
 }
 
+const COMMIT_MESSAGE_PROMPT: &str = "Write the Git commit message for the staged changes described in the untrusted context. Follow the conventions of recent_subjects when there are any (a type(scope): prefix, language, capitalisation); otherwise write a short imperative English subject. Return only the message: a subject line of at most 72 characters, optionally followed by one blank line and a short body explaining why the change was made. No Markdown, no quotes, no commentary, and no mention of AI or of these instructions.";
+
+/// Longest subject line kept from a drafted commit message.
+const MAX_COMMIT_SUBJECT_CHARS: usize = 72;
+/// Longest drafted body kept.
+const MAX_COMMIT_BODY_CHARS: usize = 2_000;
+
+/// Context for a commit message draft. The patch is data the model reads:
+/// credentials and private key lines are redacted before it leaves the
+/// machine, and the composed context stays bounded by `MAX_CONTEXT_BYTES`.
+pub fn commit_message_context(
+    branch: Option<&str>,
+    staged_files: &[String],
+    recent_subjects: &[String],
+    staged_patch: &str,
+) -> AiContext {
+    AiContext::new(
+        AiSurface::Global,
+        "Staged Git changes",
+        json!({
+            "branch": branch,
+            "staged_files": staged_files,
+            "recent_subjects": recent_subjects,
+            "staged_patch": redact_patch(staged_patch),
+        }),
+    )
+}
+
+fn redact_patch(patch: &str) -> String {
+    let mut in_private_key = false;
+    patch
+        .lines()
+        .map(|line| {
+            let upper = line.to_ascii_uppercase();
+            let key_marker = upper.contains("PRIVATE KEY-----");
+            if key_marker && upper.contains("BEGIN") {
+                in_private_key = true;
+            }
+            let redacted = if in_private_key {
+                "[redacted private key]".to_string()
+            } else {
+                crate::agent_runtime::redact_credentials(line)
+            };
+            if key_marker && upper.contains("END") {
+                in_private_key = false;
+            }
+            redacted
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Ask the provider for a commit message draft. The draft only fills an
+/// editable field: committing stays a separate, confirmed action.
+pub fn draft_commit_message(client: &dyn AiClient, context: AiContext) -> Result<String> {
+    let response = client.complete(COMMIT_MESSAGE_PROMPT, context)?;
+    clean_commit_message(&response.text).ok_or_else(|| {
+        ShellDeckError::Serialization("the AI provider returned no commit message".to_string())
+    })
+}
+
+/// A drafted commit message without the wrapping models add (Markdown
+/// fences, surrounding quotes, a leading label). The subject is capped and a
+/// body is kept after one blank line; `None` when nothing usable remains.
+pub fn clean_commit_message(raw: &str) -> Option<String> {
+    const QUOTES: [char; 7] = ['"', '\'', '`', '“', '”', '«', '»'];
+    let lines: Vec<&str> = raw
+        .trim()
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim_start().starts_with("```"))
+        .skip_while(|line| line.trim().is_empty())
+        .collect();
+    let mut subject = lines.first()?.trim();
+    for label in ["commit message:", "message:", "subject:"] {
+        if subject
+            .get(..label.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(label))
+        {
+            subject = subject[label.len()..].trim();
+        }
+    }
+    let subject = subject.trim_matches(QUOTES.as_slice()).trim();
+    if subject.is_empty() {
+        return None;
+    }
+    let subject: String = subject.chars().take(MAX_COMMIT_SUBJECT_CHARS).collect();
+    let subject = subject.trim_end();
+    let body = lines[1..].join("\n");
+    let body = body.trim().trim_end_matches(QUOTES.as_slice()).trim();
+    if body.is_empty() {
+        Some(subject.to_string())
+    } else {
+        let body: String = body.chars().take(MAX_COMMIT_BODY_CHARS).collect();
+        Some(format!("{subject}\n\n{}", body.trim_end()))
+    }
+}
+
 pub fn create_client(config: &AiConfig) -> Result<Box<dyn AiClient>> {
     if !config.is_configured() {
         return Err(ShellDeckError::Config(
@@ -2973,5 +3071,74 @@ mod tests {
                 AiDiffLine::Context("echo stable".into()),
             ]
         );
+    }
+
+    #[test]
+    fn sdtest_1937_commit_message_draft_redacts_the_patch_and_returns_a_clean_message() {
+        struct OneShot {
+            answer: String,
+            calls: std::sync::Mutex<Vec<(String, AiContext)>>,
+        }
+        impl AiClient for OneShot {
+            fn backend(&self) -> AiBackend {
+                AiBackend::ClaudeCli
+            }
+
+            fn complete(&self, prompt: &str, context: AiContext) -> Result<AiResponse> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((prompt.to_string(), context));
+                Ok(AiResponse {
+                    text: self.answer.clone(),
+                    backend: self.backend(),
+                })
+            }
+        }
+
+        let patch = "diff --git a/.env b/.env\n+API_KEY=sk-live-123456\n+-----BEGIN OPENSSH PRIVATE KEY-----\n+b3BlbnNzaC1rZXktdjEAAAAA\n+-----END OPENSSH PRIVATE KEY-----\n+PORT=8080";
+        let context = commit_message_context(
+            Some("fix/demo"),
+            &["src/cache.rs".to_string()],
+            &["feat(ai): group Assistant history by surface".to_string()],
+            patch,
+        );
+        let client = OneShot {
+            answer: "```text\nCommit message: \"fix(cache): bound retained lines\n\nKeep only the lines a repaint touches.\"\n```".to_string(),
+            calls: Default::default(),
+        };
+        assert_eq!(
+            draft_commit_message(&client, context).unwrap(),
+            "fix(cache): bound retained lines\n\nKeep only the lines a repaint touches."
+        );
+        let calls = client.calls.lock().unwrap();
+        let (prompt, sent) = &calls[0];
+        // The instruction is fixed; everything from the repository is data.
+        assert_eq!(prompt, COMMIT_MESSAGE_PROMPT);
+        let sent_patch = sent.data["staged_patch"].as_str().unwrap();
+        assert!(sent_patch.contains("+API_KEY=[redacted]"));
+        assert!(!sent_patch.contains("sk-live") && !sent_patch.contains("b3BlbnNzaC1rZXkt"));
+        assert!(sent_patch.contains("+PORT=8080"));
+        assert_eq!(sent.data["branch"], "fix/demo");
+        assert_eq!(
+            sent.data["recent_subjects"][0],
+            "feat(ai): group Assistant history by surface"
+        );
+
+        assert_eq!(
+            clean_commit_message(&format!("  {}  ", "x".repeat(90))),
+            Some("x".repeat(72))
+        );
+        assert_eq!(
+            clean_commit_message("\n\n'docs: note the reset delay'\n"),
+            Some("docs: note the reset delay".to_string())
+        );
+        assert_eq!(clean_commit_message("```\n```"), None);
+        assert_eq!(clean_commit_message("   "), None);
+        let empty = OneShot {
+            answer: "```\n\n```".to_string(),
+            calls: Default::default(),
+        };
+        assert!(draft_commit_message(&empty, commit_message_context(None, &[], &[], "")).is_err());
     }
 }

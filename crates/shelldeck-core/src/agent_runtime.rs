@@ -1254,7 +1254,7 @@ fn safe_provider_text(text: &str, max_bytes: usize) -> String {
     truncate_utf8(&redacted, max_bytes)
 }
 
-fn redact_credentials(text: &str) -> String {
+pub(crate) fn redact_credentials(text: &str) -> String {
     let mut redact_next = false;
     text.split_inclusive(char::is_whitespace)
         .map(|part| {
