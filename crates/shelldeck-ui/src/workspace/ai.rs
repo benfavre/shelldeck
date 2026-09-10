@@ -275,6 +275,17 @@ impl Workspace {
                 .allows(self.current_ai_context(cx).surface)
     }
 
+    /// Whether the open assistant Sheet still has a usable backend and an
+    /// allowed surface for what it shows, after the AI settings changed.
+    pub(super) fn ai_sheet_usable(&self, cx: &App) -> bool {
+        self.signed_in()
+            && self.ai_backend_available()
+            && self
+                .app_config
+                .ai
+                .allows(self.ai_assistant.read(cx).availability_surface())
+    }
+
     pub(super) fn sync_ai_affordances(&mut self, cx: &mut Context<Self>) {
         let backend_ready = self.ai_backend_available();
         self.support.update(cx, |view, cx| {

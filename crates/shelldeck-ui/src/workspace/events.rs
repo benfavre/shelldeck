@@ -454,8 +454,9 @@ impl Workspace {
                 tracing::info!("Config changed, applying settings");
                 let companion_changed = self.app_config.companion != config.companion
                     || self.app_config.clippy != config.clippy;
-                if self.app_config.ai != config.ai {
-                    self.ai_sheet = None;
+                let ai_changed = self.app_config.ai != config.ai;
+                if ai_changed {
+                    // A workflow result belongs to the settings it ran with.
                     self.ai_workflow_sheet = None;
                     self.ai_workflow = None;
                     self._ai_workflow_sub = None;
@@ -507,6 +508,13 @@ impl Workspace {
                         cx,
                     );
                 });
+                // Picking a provider in the Sheet's own composer arrives here
+                // as a settings change. Closing the Sheet for it dismissed the
+                // surface the user was working in, so it now closes only when
+                // the new settings leave what it shows without a usable backend.
+                if ai_changed && self.ai_sheet.is_some() && !self.ai_sheet_usable(cx) {
+                    self.ai_sheet = None;
+                }
                 self.sync_ai_affordances(cx);
                 // Apply terminal settings to running view
                 let terminal_theme = TerminalTheme::by_name(&self.app_config.terminal.theme);

@@ -1772,6 +1772,12 @@ and every real model transition; changing Settings later never relabels old
 answers. Pre-metadata conversations remain readable and are labelled as legacy
 rather than attributed to the current model.
 
+The provider picker in the composer switches the provider used by the next
+request and saves it to Settings without dismissing the Sheet. An AI settings
+change closes the Sheet only when what it shows is left without a usable
+backend (signed out, unconfigured, missing CLI) or an allowed surface, Clippy
+following its own surface setting.
+
 ### SDUC-415 — AI context and API privacy boundaries
 
 Sensitive named fields are recursively redacted and serialized context is
@@ -3182,6 +3188,11 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-10**: Amended SDUC-414 with SDTEST-1936: choosing a provider from
+  the Assistant Sheet no longer closes it; an AI settings change closes the
+  Sheet only when what it shows is left without a usable backend or an
+  allowed surface.
 
 - **2026-09-10**: Amended SDUC-499 with SDTEST-1932 through SDTEST-1935: Suivi
   shows the observed session's tokens and cost and the latest Claude and Codex

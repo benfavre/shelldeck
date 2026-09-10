@@ -680,6 +680,16 @@ impl AiAssistantView {
         cx.notify();
     }
 
+    /// The surface whose setting gates what the view shows: Clippy has its
+    /// own switch, every other activity follows the conversation context.
+    pub fn availability_surface(&self) -> shelldeck_core::ai::AiSurface {
+        if self.active_tab == AiActivity::Clippy {
+            shelldeck_core::ai::AiSurface::Clippy
+        } else {
+            self.context.surface
+        }
+    }
+
     pub fn set_context(&mut self, context: AiContext, cx: &mut Context<Self>) {
         // Re-preparing a host over the *same* context must not kill an
         // in-flight request. The Dock removes its window on focus loss while
