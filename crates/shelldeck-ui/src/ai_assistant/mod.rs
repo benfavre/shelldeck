@@ -245,6 +245,24 @@ fn sheet_message_reading_width(
     conversation_width.min(thread_cap)
 }
 
+/// Definite width of the thread's content column: the reading measure minus
+/// the thread's side padding. GPUI shapes a `w_full` flex child at its
+/// min-content width, so an assistant answer without this width wraps every
+/// glyph of a Markdown table cell onto its own line and inflates the scroll
+/// height far beyond what it paints.
+fn thread_content_width(reading_width: Pixels, side_padding: Pixels) -> Pixels {
+    (reading_width - side_padding * 2.0).max(gpui::px(0.0))
+}
+
+/// Width of a compact user bubble from its measured text. The slack absorbs
+/// what the raw measurement cannot see (emphasis runs, mention chip insets),
+/// so the bubble is never narrower than the text it holds; the reading cap
+/// still wins.
+fn compact_bubble_width(text_width: Pixels, horizontal_padding: Pixels, cap: Pixels) -> Pixels {
+    let text_width = (text_width * 1.04 + gpui::px(4.0)).ceil();
+    (text_width + horizontal_padding).min(cap)
+}
+
 /// What the panel is showing. The rail selects one of these; there is no
 /// second navigation surface. `History` swaps the panel rather than splitting
 /// it — at 424px (the dock minus its rail) a second column would leave the
@@ -1984,8 +2002,11 @@ impl AiAssistantView {
                 px(600.0).to_pixels(window.rem_size()),
             ),
         };
-        let user_bubble_width =
-            (reading_width - px(36.0).to_pixels(window.rem_size())).max(gpui::px(0.0)) * 0.88;
+        let content_width =
+            thread_content_width(reading_width, px(18.0).to_pixels(window.rem_size()));
+        let user_bubble_width = content_width * 0.88;
+        let body_font_size = px(12.5).to_pixels(window.rem_size());
+        let body_font = font(use_theme().tokens.font_family.clone());
         if let Some(conversation) = self.active_conversation() {
             // The assistant echoes the entity it was asked about, so its reply
             // is coloured from the thread's resolved labels. Nothing else is
@@ -2037,24 +2058,41 @@ impl AiAssistantView {
                             || line.starts_with("```")
                             || line.starts_with('|')
                     });
-                    let longest_line = content
-                        .lines()
-                        .map(|line| line.chars().count())
-                        .max()
-                        .unwrap_or(0) as f32;
                     // A definite width is mandatory for correct wrapped height
-                    // in GPUI. Estimate only the compact one-line width; any
-                    // overflow still wraps safely because layout now knows the
+                    // in GPUI. Measure the compact one-line width with the text
+                    // system: a per-character estimate ran narrower than real
+                    // glyphs and wrapped the last one ("Bonjou" then "r"). Any
+                    // overflow still wraps safely because layout knows the
                     // width before shaping. Structured Markdown uses the full
                     // cap so lists/tables/code never collapse to min-content.
-                    let compact_text_width = if longest_line > 0.0 {
-                        (longest_line * 6.5).max(18.0)
-                    } else {
-                        0.0
-                    };
-                    let compact_width = px(compact_text_width + 24.0)
-                        .to_pixels(window.rem_size())
-                        .min(user_bubble_width);
+                    let text_system = window.text_system();
+                    let longest_line = content
+                        .lines()
+                        .map(|line| line.trim_end_matches('\r'))
+                        .filter(|line| !line.is_empty())
+                        .map(|line| {
+                            text_system
+                                .shape_line(
+                                    SharedString::from(line.to_string()),
+                                    body_font_size,
+                                    &[TextRun {
+                                        len: line.len(),
+                                        font: body_font.clone(),
+                                        color: ShellDeckColors::text_primary(),
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    }],
+                                    None,
+                                )
+                                .width
+                        })
+                        .fold(gpui::px(0.0), |widest, width| widest.max(width));
+                    let compact_width = compact_bubble_width(
+                        longest_line,
+                        px(24.0).to_pixels(window.rem_size()),
+                        user_bubble_width,
+                    );
                     let bubble_width = if structured {
                         user_bubble_width
                     } else {
@@ -2168,7 +2206,8 @@ impl AiAssistantView {
                         )
                         .compact()
                         .on_link_click(move |url, window, cx| link_handler(url, window, cx))
-                        .w_full()
+                        // Definite, not `w_full`: see `thread_content_width`.
+                        .w(content_width)
                         .min_w_0()
                         .whitespace_normal();
                     thread = thread.child(
@@ -2176,7 +2215,7 @@ impl AiAssistantView {
                             .id(SharedString::from(format!("ai-message-{message_id}")))
                             .flex()
                             .flex_col()
-                            .w_full()
+                            .w(content_width)
                             .min_w(px(0.0))
                             .text_color(ShellDeckColors::text_primary())
                             .child(markdown)
@@ -4062,6 +4101,33 @@ mod tests {
         assert_eq!(
             sheet_message_reading_width(gpui::px(600.0), false, gpui::px(240.0), gpui::px(600.0)),
             gpui::px(600.0)
+        );
+    }
+
+    // SDTEST-1925
+    #[test]
+    fn sdtest_1925_thread_widths_are_definite_and_bubbles_never_narrower_than_text() {
+        // The Sheet's 600 px reading measure loses its two 18 px side paddings,
+        // and a column narrower than its padding never goes negative.
+        assert_eq!(
+            super::thread_content_width(gpui::px(600.0), gpui::px(18.0)),
+            gpui::px(564.0)
+        );
+        assert_eq!(
+            super::thread_content_width(gpui::px(20.0), gpui::px(18.0)),
+            gpui::px(0.0)
+        );
+
+        // "Bonjour" measures about 49.6 px: the bubble holds the text and its
+        // 24 px padding instead of wrapping the last glyph onto a new line.
+        let short = super::compact_bubble_width(gpui::px(49.6), gpui::px(24.0), gpui::px(496.0));
+        assert!(short >= gpui::px(49.6 + 24.0));
+        assert!(short < gpui::px(96.0));
+
+        // A long single line is capped by the reading width.
+        assert_eq!(
+            super::compact_bubble_width(gpui::px(900.0), gpui::px(24.0), gpui::px(496.0)),
+            gpui::px(496.0)
         );
     }
 
