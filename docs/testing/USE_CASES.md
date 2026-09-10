@@ -986,9 +986,19 @@ unstage or stage everything directly, while a commit needs an explicit
 confirmation showing its message and staged files, is refused while the
 observed session is running, and is revalidated right before it runs. Nothing
 is ever pushed from the Assistant, it never runs a command, and SSH sessions
-are never misrepresented as local Git. The composer summary line counts
-running and waiting sessions and the local diff size. Non-super-admin accounts
-never receive these Dev observability activities.
+are never misrepresented as local Git. Suivi also shows consumption exactly as
+the providers report it, never estimated: the observed session's tokens (input
+with its cached share, output) and, for Claude, its cost, added up per run for
+Claude and taken as the thread's running total for Codex; and the latest
+5-hour and 7-day account windows with their reset delay, from Claude's
+rate-limit records and from Codex's local session journal (read after a local
+Codex run and when the panel opens, at most once a minute, each window
+identified by its length rather than its slot). A figure never reported reads
+as unavailable, a window past its reset reads as reset, and account windows
+are never persisted. The composer summary line counts running and waiting
+sessions, the running session's tokens and the local diff size, and names an
+account window at 90% or more of its limit. Non-super-admin accounts never
+receive these Dev observability activities.
 
 ---
 
@@ -3172,6 +3182,12 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-10**: Amended SDUC-499 with SDTEST-1932 through SDTEST-1935: Suivi
+  shows the observed session's tokens and cost and the latest Claude and Codex
+  5-hour and 7-day account windows exactly as the providers report them, and
+  the composer summary line adds the running session's tokens and a window
+  close to its limit.
 
 - **2026-09-10**: Amended SDUC-414 with SDTEST-1931: the Assistant history
   groups conversations by surface, in order of each group's most recent

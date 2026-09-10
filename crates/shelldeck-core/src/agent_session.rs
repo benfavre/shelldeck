@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::agent_runtime::{
     AgentAccessMode, AgentProvider, AgentRunRequest, AgentStreamEvent, AgentTarget,
 };
+use crate::agent_usage::{AgentQuota, AgentTokenUsage, AgentUsageReport};
 use crate::{Result, ShellDeckError};
 
 pub const DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS: usize = 4;
@@ -197,6 +198,63 @@ pub struct AgentTraceEvent {
     pub detail: AgentTraceKind,
 }
 
+/// Tokens and cost reported for one conversation. A provider that reports its
+/// thread's running total (Codex) replaces the share of `tokens` belonging to
+/// that thread; one that reports each invocation (Claude) adds to it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSessionUsage {
+    #[serde(default)]
+    pub tokens: AgentTokenUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_micro_usd: Option<u64>,
+    /// Usage records received; zero means the provider never reported any.
+    #[serde(default)]
+    pub reports: u32,
+    /// Share of `tokens` settled before the provider thread in `thread` began.
+    #[serde(skip)]
+    thread_baseline: AgentTokenUsage,
+    /// Provider thread of the last running total. Like the resume id, it is
+    /// scoped to this process.
+    #[serde(skip)]
+    thread: Option<String>,
+}
+
+impl AgentSessionUsage {
+    pub fn is_empty(&self) -> bool {
+        self.reports == 0
+    }
+
+    fn record(&mut self, report: &AgentUsageReport, provider_thread: Option<&str>) {
+        if report.tokens.is_none() && report.cost_micro_usd.is_none() {
+            return;
+        }
+        if let Some(tokens) = report.tokens {
+            if report.cumulative {
+                if provider_thread.is_none() || self.thread.as_deref() != provider_thread {
+                    self.thread_baseline = self.tokens;
+                    self.thread = provider_thread.map(str::to_string);
+                }
+                self.tokens = self.thread_baseline.saturating_add(tokens);
+            } else {
+                self.tokens = self.tokens.saturating_add(tokens);
+            }
+        }
+        if let Some(cost) = report.cost_micro_usd {
+            self.cost_micro_usd = Some(self.cost_micro_usd.unwrap_or(0).saturating_add(cost));
+        }
+        self.reports = self.reports.saturating_add(1);
+    }
+}
+
+/// Latest account windows observed for one provider. They describe the
+/// account rather than a session and are never persisted: a share read days
+/// ago would look current after a restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentQuotaSnapshot {
+    pub quotas: Vec<AgentQuota>,
+    pub observed_at_ms: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSession {
     pub id: Uuid,
@@ -217,6 +275,8 @@ pub struct AgentSession {
     pub messages: Vec<AgentMessage>,
     #[serde(default)]
     pub trace: Vec<AgentTraceEvent>,
+    #[serde(default, skip_serializing_if = "AgentSessionUsage::is_empty")]
+    pub usage: AgentSessionUsage,
     #[serde(default = "initial_sequence")]
     next_sequence: u64,
     /// A provider conversation id is scoped to this live application process.
@@ -248,6 +308,7 @@ impl AgentSession {
             attention: AgentSessionAttention::None,
             messages: Vec::new(),
             trace: Vec::new(),
+            usage: AgentSessionUsage::default(),
             next_sequence: initial_sequence(),
             provider_session_id: None,
             provider_session_context: None,
@@ -364,6 +425,11 @@ impl AgentSession {
                     },
                     now_ms,
                 );
+            }
+            AgentStreamEvent::Usage(report) => {
+                self.usage
+                    .record(&report, self.provider_session_id.as_deref());
+                user_visible = false;
             }
             AgentStreamEvent::Error(error) => {
                 self.push_message(
@@ -534,6 +600,8 @@ pub struct AgentSessionCollection {
     max_concurrent: usize,
     #[serde(skip)]
     surface_visible: bool,
+    #[serde(skip)]
+    quotas: Vec<(AgentProvider, AgentQuotaSnapshot)>,
 }
 
 impl Default for AgentSessionCollection {
@@ -555,7 +623,36 @@ impl AgentSessionCollection {
             selected_id: None,
             max_concurrent,
             surface_visible: false,
+            quotas: Vec::new(),
         })
+    }
+
+    /// Record the account windows a provider just reported, replacing its
+    /// previous observation. A report without any window changes nothing.
+    pub fn observe_quotas(
+        &mut self,
+        provider: AgentProvider,
+        quotas: Vec<AgentQuota>,
+        now_ms: i64,
+    ) {
+        if quotas.is_empty() {
+            return;
+        }
+        let snapshot = AgentQuotaSnapshot {
+            quotas,
+            observed_at_ms: now_ms,
+        };
+        match self.quotas.iter_mut().find(|(known, _)| *known == provider) {
+            Some(entry) => entry.1 = snapshot,
+            None => self.quotas.push((provider, snapshot)),
+        }
+    }
+
+    pub fn quotas(&self, provider: AgentProvider) -> Option<&AgentQuotaSnapshot> {
+        self.quotas
+            .iter()
+            .find(|(known, _)| *known == provider)
+            .map(|(_, snapshot)| snapshot)
     }
 
     pub fn sessions(&self) -> &[AgentSession] {
@@ -673,6 +770,11 @@ impl AgentSessionCollection {
         now_ms: i64,
     ) -> Result<()> {
         let visible = self.surface_visible && self.selected_id == Some(id);
+        if let AgentStreamEvent::Usage(report) = &event {
+            if let Some(provider) = self.get(id).map(|session| session.context.provider) {
+                self.observe_quotas(provider, report.quotas.clone(), now_ms);
+            }
+        }
         self.get_mut(id)
             .ok_or_else(|| ShellDeckError::Config("agent session no longer exists".to_string()))?
             .apply_stream_event(event, now_ms, visible);
@@ -1157,5 +1259,148 @@ mod tests {
             .apply_stream_event(id, AgentStreamEvent::Text("hidden again".to_string()), 40)
             .unwrap();
         assert_eq!(sessions.get(id).unwrap().unread_count, 1);
+    }
+
+    #[test]
+    fn sdtest_1934_usage_adds_invocations_follows_thread_totals_and_keeps_account_quotas() {
+        use crate::agent_usage::{AgentQuota, AgentQuotaWindow, AgentTokenUsage, AgentUsageReport};
+
+        let tokens = |input, output| AgentTokenUsage {
+            input,
+            output,
+            ..AgentTokenUsage::default()
+        };
+        let mut sessions = AgentSessionCollection::default();
+
+        // Claude reports each invocation: runs add up, cost included, and the
+        // bookkeeping never counts as unread output.
+        let claude = sessions
+            .create("Claude", context(AgentProvider::Claude), 10)
+            .unwrap();
+        for at in [20, 30] {
+            sessions
+                .apply_stream_event(
+                    claude,
+                    AgentStreamEvent::Usage(AgentUsageReport {
+                        tokens: Some(tokens(1_000, 10)),
+                        cumulative: false,
+                        cost_micro_usd: Some(150_000),
+                        quotas: Vec::new(),
+                    }),
+                    at,
+                )
+                .unwrap();
+        }
+        let session = sessions.get(claude).unwrap();
+        assert_eq!(session.usage.tokens, tokens(2_000, 20));
+        assert_eq!(session.usage.cost_micro_usd, Some(300_000));
+        assert_eq!(session.usage.reports, 2);
+        assert_eq!(session.unread_count, 0);
+
+        // Codex reports its thread's running total: a later total of the same
+        // thread replaces the earlier one, and a new thread builds on what the
+        // previous threads settled.
+        let codex = sessions
+            .create("Codex", context(AgentProvider::Codex), 40)
+            .unwrap();
+        let thread_total = |input, output| {
+            AgentStreamEvent::Usage(AgentUsageReport {
+                tokens: Some(tokens(input, output)),
+                cumulative: true,
+                cost_micro_usd: None,
+                quotas: Vec::new(),
+            })
+        };
+        for (at, event) in [
+            (41, AgentStreamEvent::Session("thread-a".to_string())),
+            (42, thread_total(16_000, 5)),
+            (43, AgentStreamEvent::Session("thread-a".to_string())),
+            (44, thread_total(33_000, 12)),
+        ] {
+            sessions.apply_stream_event(codex, event, at).unwrap();
+        }
+        assert_eq!(
+            sessions.get(codex).unwrap().usage.tokens,
+            tokens(33_000, 12)
+        );
+        sessions
+            .apply_stream_event(codex, AgentStreamEvent::Session("thread-b".to_string()), 45)
+            .unwrap();
+        sessions
+            .apply_stream_event(codex, thread_total(4_000, 3), 46)
+            .unwrap();
+        assert_eq!(
+            sessions.get(codex).unwrap().usage.tokens,
+            tokens(37_000, 15)
+        );
+        assert_eq!(sessions.get(codex).unwrap().usage.cost_micro_usd, None);
+
+        // Account windows: one latest observation per provider. A record
+        // without windows keeps it and does not count as session usage.
+        let windows = |used_percent| {
+            vec![AgentQuota {
+                window: AgentQuotaWindow::SevenDays,
+                used_percent,
+                resets_at_ms: None,
+            }]
+        };
+        sessions
+            .apply_stream_event(
+                codex,
+                AgentStreamEvent::Usage(AgentUsageReport::quotas(windows(98))),
+                50,
+            )
+            .unwrap();
+        sessions
+            .apply_stream_event(
+                claude,
+                AgentStreamEvent::Usage(AgentUsageReport::quotas(windows(19))),
+                51,
+            )
+            .unwrap();
+        sessions.observe_quotas(AgentProvider::Codex, windows(99), 52);
+        sessions
+            .apply_stream_event(
+                codex,
+                AgentStreamEvent::Usage(AgentUsageReport::default()),
+                53,
+            )
+            .unwrap();
+        assert_eq!(
+            sessions.quotas(AgentProvider::Codex),
+            Some(&AgentQuotaSnapshot {
+                quotas: windows(99),
+                observed_at_ms: 52,
+            })
+        );
+        assert_eq!(
+            sessions
+                .quotas(AgentProvider::Claude)
+                .map(|snapshot| snapshot.quotas.clone()),
+            Some(windows(19))
+        );
+        assert_eq!(sessions.quotas(AgentProvider::Jcode), None);
+        assert_eq!(sessions.get(claude).unwrap().usage.reports, 2);
+        assert_eq!(sessions.get(codex).unwrap().usage.reports, 3);
+
+        // Settled usage survives a restart; the provider thread and the
+        // account windows do not, so the next run's total adds to it.
+        let mut restored: AgentSessionCollection =
+            serde_json::from_str(&serde_json::to_string(&sessions).unwrap()).unwrap();
+        assert_eq!(
+            restored.get(codex).unwrap().usage.tokens,
+            tokens(37_000, 15)
+        );
+        assert_eq!(restored.quotas(AgentProvider::Codex), None);
+        restored
+            .apply_stream_event(codex, AgentStreamEvent::Session("thread-c".to_string()), 60)
+            .unwrap();
+        restored
+            .apply_stream_event(codex, thread_total(5_000, 4), 61)
+            .unwrap();
+        assert_eq!(
+            restored.get(codex).unwrap().usage.tokens,
+            tokens(42_000, 19)
+        );
     }
 }

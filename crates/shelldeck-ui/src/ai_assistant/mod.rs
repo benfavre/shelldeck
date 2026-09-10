@@ -433,6 +433,8 @@ pub struct AiAssistantView {
     agent_files_collapsed: std::collections::HashSet<String>,
     /// Sessions whose attention alert the user postponed.
     agent_attention_postponed: std::collections::HashSet<Uuid>,
+    /// Last read of the local Codex journal for account windows.
+    agent_quotas_read_at: Option<std::time::Instant>,
     _agent_console_observer: Option<Subscription>,
     clippy_auto_import_clipboard: bool,
     /// Link action shared by user turns, assistant answers and Markdown task
@@ -532,6 +534,7 @@ impl AiAssistantView {
             agent_git: observability::AgentGitPanel::new(cx),
             agent_files_collapsed: Default::default(),
             agent_attention_postponed: Default::default(),
+            agent_quotas_read_at: None,
             _agent_console_observer: None,
             clippy_auto_import_clipboard: false,
             markdown_link_action: None,

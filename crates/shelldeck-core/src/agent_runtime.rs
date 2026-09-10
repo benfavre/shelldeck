@@ -722,6 +722,9 @@ pub enum AgentStreamEvent {
     },
     /// Safe fallback for provider activity not recognized structurally.
     Activity(String),
+    /// Tokens, cost or account quotas reported by the provider. Usage is
+    /// recorded on the session and never enters the transcript.
+    Usage(crate::agent_usage::AgentUsageReport),
     Error(String),
 }
 
@@ -880,13 +883,27 @@ fn parse_claude_event(value: &Value) -> Vec<AgentStreamEvent> {
             events.extend(claude_trace_events(value));
         }
         Some("user") => events.extend(claude_tool_result_events(value)),
-        Some("result") if value.get("is_error").and_then(Value::as_bool) == Some(true) => events
-            .extend(
-                value
-                    .get("result")
-                    .and_then(text_from_value)
-                    .map(|text| AgentStreamEvent::Error(safe_visible_text(&text))),
-            ),
+        Some("result") => {
+            if value.get("is_error").and_then(Value::as_bool) == Some(true) {
+                events.extend(
+                    value
+                        .get("result")
+                        .and_then(text_from_value)
+                        .map(|text| AgentStreamEvent::Error(safe_visible_text(&text))),
+                );
+            }
+            events.extend(
+                crate::agent_usage::claude_result_usage(value).map(AgentStreamEvent::Usage),
+            );
+        }
+        Some("rate_limit_event") => {
+            let quotas = crate::agent_usage::claude_rate_limit_quotas(value);
+            if !quotas.is_empty() {
+                events.push(AgentStreamEvent::Usage(
+                    crate::agent_usage::AgentUsageReport::quotas(quotas),
+                ));
+            }
+        }
         Some("system") if value.get("subtype").and_then(Value::as_str) == Some("init") => {
             events.push(AgentStreamEvent::Ready)
         }
@@ -924,6 +941,9 @@ fn parse_codex_event(value: &Value) -> Vec<AgentStreamEvent> {
                 .map(|text| AgentStreamEvent::Error(safe_visible_text(&text))),
         ),
         Some("thread.started") => events.push(AgentStreamEvent::Ready),
+        Some("turn.completed") => {
+            events.extend(crate::agent_usage::codex_turn_usage(value).map(AgentStreamEvent::Usage))
+        }
         _ => {}
     }
     events
@@ -1602,6 +1622,90 @@ mod tests {
                 AgentStreamEvent::Session("codex-42".to_string()),
                 AgentStreamEvent::Ready,
             ]
+        );
+    }
+
+    #[test]
+    fn sdtest_1932_provider_streams_report_tokens_cost_and_account_windows() {
+        use crate::agent_usage::{AgentQuota, AgentQuotaWindow, AgentTokenUsage, AgentUsageReport};
+
+        // Records captured from Claude Code 2.1.267 and codex-cli 0.153.4.
+        assert_eq!(
+            parse_stream_line(
+                AgentProvider::Claude,
+                r#"{"type":"result","subtype":"success","is_error":false,"result":"ok","total_cost_usd":0.19991300000000004,"usage":{"input_tokens":2,"cache_creation_input_tokens":19474,"cache_read_input_tokens":10126,"output_tokens":4,"output_tokens_details":{"thinking_tokens":0}}}"#,
+            ),
+            vec![AgentStreamEvent::Usage(AgentUsageReport {
+                tokens: Some(AgentTokenUsage {
+                    input: 29_602,
+                    cached_input: 10_126,
+                    cache_write: 19_474,
+                    output: 4,
+                    reasoning: 0,
+                }),
+                cumulative: false,
+                cost_micro_usd: Some(199_913),
+                quotas: Vec::new(),
+            })]
+        );
+        assert_eq!(
+            parse_stream_line(
+                AgentProvider::Claude,
+                r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1789058400,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.05,"resetsAt":1789058400},"seven_day":{"utilization":0.19,"resetsAt":1789578000}}}}"#,
+            ),
+            vec![AgentStreamEvent::Usage(AgentUsageReport::quotas(vec![
+                AgentQuota {
+                    window: AgentQuotaWindow::FiveHours,
+                    used_percent: 5,
+                    resets_at_ms: Some(1_789_058_400_000),
+                },
+                AgentQuota {
+                    window: AgentQuotaWindow::SevenDays,
+                    used_percent: 19,
+                    resets_at_ms: Some(1_789_578_000_000),
+                },
+            ]))]
+        );
+        // A failed invocation still reports what it consumed.
+        assert_eq!(
+            parse_stream_line(
+                AgentProvider::Claude,
+                r#"{"type":"result","is_error":true,"result":"Credit exhausted","total_cost_usd":0.004}"#,
+            ),
+            vec![
+                AgentStreamEvent::Error("Credit exhausted".to_string()),
+                AgentStreamEvent::Usage(AgentUsageReport {
+                    tokens: None,
+                    cumulative: false,
+                    cost_micro_usd: Some(4_000),
+                    quotas: Vec::new(),
+                }),
+            ]
+        );
+        assert_eq!(
+            parse_stream_line(
+                AgentProvider::Claude,
+                r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}"#,
+            ),
+            Vec::<AgentStreamEvent>::new()
+        );
+        assert_eq!(
+            parse_stream_line(
+                AgentProvider::Codex,
+                r#"{"type":"turn.completed","usage":{"input_tokens":16284,"cached_input_tokens":11904,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}"#,
+            ),
+            vec![AgentStreamEvent::Usage(AgentUsageReport {
+                tokens: Some(AgentTokenUsage {
+                    input: 16_284,
+                    cached_input: 11_904,
+                    cache_write: 0,
+                    output: 5,
+                    reasoning: 0,
+                }),
+                cumulative: true,
+                cost_micro_usd: None,
+                quotas: Vec::new(),
+            })]
         );
     }
 

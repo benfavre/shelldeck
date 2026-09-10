@@ -14,7 +14,7 @@ use shelldeck_core::agent_session::{
 use uuid::Uuid;
 
 use super::super::{AiAssistantEvent, AiAssistantView};
-use super::{select_observed_session, MONO};
+use super::{select_observed_session, usage, MONO};
 use crate::icons::lucide_icon;
 use crate::scale::px;
 use crate::t;
@@ -133,15 +133,23 @@ impl AiAssistantView {
         ))
     }
 
-    /// Left half of the composer footnote: running and waiting sessions plus
-    /// the size of the local diff. Nothing is shown while all of it is zero.
+    /// Left half of the composer footnote: running and waiting sessions, the
+    /// running session's tokens, the size of the local diff and an account
+    /// window close to its limit. Nothing is shown while all of it is absent.
     pub(in crate::ai_assistant) fn render_observation_footnote(
         &self,
         cx: &App,
     ) -> Option<AnyElement> {
         let signals = self.current_signals(cx)?;
         let changed = self.agent_git.changed_count();
-        if signals.running == 0 && signals.waiting == 0 && changed == 0 {
+        let tokens = self.running_session_tokens(cx);
+        let quota_alert = self.current_quota_alert(cx);
+        if signals.running == 0
+            && signals.waiting == 0
+            && changed == 0
+            && tokens.is_none()
+            && quota_alert.is_none()
+        {
             return None;
         }
         let mut row = div()
@@ -177,6 +185,17 @@ impl AiAssistantView {
                     ),
             );
         }
+        if let Some(tokens) = tokens {
+            row = row.child(
+                div().flex_shrink_0().child(
+                    t!(
+                        "ai.observability.usage_tokens",
+                        value = usage::format_token_count(tokens, usage::uses_french())
+                    )
+                    .to_string(),
+                ),
+            );
+        }
         if changed > 0 {
             let (additions, deletions) = self.agent_git.line_totals();
             row =
@@ -207,6 +226,23 @@ impl AiAssistantView {
                                 .child(format!("−{deletions}")),
                         ),
                 );
+        }
+        if let Some((provider, quota)) = quota_alert {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::error())
+                    .child(
+                        t!(
+                            "ai.observability.usage_quota_alert",
+                            provider = provider.display_name(),
+                            window = usage::window_label(quota.window),
+                            percent =
+                                usage::format_percent(quota.used_percent, usage::uses_french())
+                        )
+                        .to_string(),
+                    ),
+            );
         }
         Some(row.into_any_element())
     }

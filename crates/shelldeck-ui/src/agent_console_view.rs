@@ -492,6 +492,27 @@ impl AgentConsoleView {
         self.sessions.sessions()
     }
 
+    /// Latest account windows reported for `provider`, by a run or by the
+    /// provider's local journal.
+    pub fn quota_snapshot(
+        &self,
+        provider: AgentProvider,
+    ) -> Option<&shelldeck_core::agent_session::AgentQuotaSnapshot> {
+        self.sessions.quotas(provider)
+    }
+
+    /// Record account windows read outside a run, such as the local Codex
+    /// journal.
+    pub fn observe_quotas(
+        &mut self,
+        provider: AgentProvider,
+        quotas: Vec<shelldeck_core::agent_usage::AgentQuota>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sessions.observe_quotas(provider, quotas, now_ms());
+        cx.notify();
+    }
+
     pub fn selected_session_id(&self) -> Option<Uuid> {
         self.sessions.selected_id()
     }

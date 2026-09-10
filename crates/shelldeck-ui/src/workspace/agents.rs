@@ -266,6 +266,7 @@ impl Workspace {
             }
             match done_rx.try_recv() {
                 Ok((exit_code, error)) => {
+                    forward_late_events(&console, run_id, &event_rx, cx);
                     let error = error.or_else(|| {
                         (exit_code == Some(127)).then(|| {
                             t!(
@@ -419,6 +420,7 @@ impl Workspace {
             }
             match done_rx.try_recv() {
                 Ok((exit_code, error)) => {
+                    forward_late_events(&console, run_id, &event_rx, cx);
                     let _ = console.update(cx, |view, cx| {
                         view.finish_run(run_id, exit_code, error.clone(), cx)
                     });
@@ -991,6 +993,44 @@ fn resolve_local_agent_program(program: &str) -> Option<String> {
     None
 }
 
+/// Records sent just before a process exits, such as its usage, can still be
+/// queued when the exit is noticed; they must reach the session before it
+/// finishes.
+fn forward_late_events(
+    console: &WeakEntity<crate::agent_console_view::AgentConsoleView>,
+    run_id: Uuid,
+    event_rx: &std::sync::mpsc::Receiver<AgentStreamEvent>,
+    cx: &mut AsyncApp,
+) {
+    let events: Vec<_> = event_rx.try_iter().collect();
+    if events.is_empty() {
+        return;
+    }
+    let _ = console.update(cx, |view, cx| {
+        for event in events {
+            view.push_stream_event_for(run_id, event, cx);
+        }
+    });
+}
+
+/// Codex writes its account windows only to its local session journal, so
+/// they are read once a local run has exited.
+fn send_local_account_quotas(
+    provider: shelldeck_core::agent_runtime::AgentProvider,
+    event_tx: &std::sync::mpsc::Sender<AgentStreamEvent>,
+) {
+    if provider != shelldeck_core::agent_runtime::AgentProvider::Codex {
+        return;
+    }
+    if let Some(quotas) = shelldeck_core::agent_usage::codex_home()
+        .and_then(|home| shelldeck_core::agent_usage::read_codex_quotas(&home))
+    {
+        let _ = event_tx.send(AgentStreamEvent::Usage(
+            shelldeck_core::agent_usage::AgentUsageReport::quotas(quotas),
+        ));
+    }
+}
+
 fn send_stream_frames(
     frames: Vec<AgentStreamFrame>,
     provider: shelldeck_core::agent_runtime::AgentProvider,
@@ -1131,6 +1171,7 @@ fn spawn_local_agent(
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
             let stdout_tx = event_tx.clone();
+            let usage_tx = event_tx.clone();
             let stdout_thread = std::thread::spawn(move || {
                 if let Some(stdout) = stdout {
                     forward_local_stream(stdout, provider, true, &stdout_tx);
@@ -1148,6 +1189,7 @@ fn spawn_local_agent(
                         process_tree.terminate();
                         let _ = stdout_thread.join();
                         let _ = stderr_thread.join();
+                        send_local_account_quotas(provider, &usage_tx);
                         let _ = done_tx.send((status.code(), None));
                         return;
                     }

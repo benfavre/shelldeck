@@ -30,6 +30,7 @@ mod files;
 mod git;
 mod signals;
 mod steps;
+mod usage;
 
 pub(super) use git::AgentGitPanel;
 
@@ -60,6 +61,7 @@ impl AiAssistantView {
         }));
         self.agent_console = Some(console);
         self.refresh_agent_git(cx);
+        self.refresh_agent_quotas(cx);
         cx.notify();
     }
 
@@ -76,6 +78,7 @@ impl AiAssistantView {
         }
         if self.agent_observability_enabled {
             self.refresh_agent_git(cx);
+            self.refresh_agent_quotas(cx);
         }
         cx.notify();
     }
@@ -164,6 +167,8 @@ impl AiAssistantView {
                     this.sync_loading();
                     if tab == AiActivity::AgentGit {
                         this.refresh_agent_git(cx);
+                    } else if tab == AiActivity::AgentActivity {
+                        this.refresh_agent_quotas(cx);
                     }
                     cx.notify();
                 })),
@@ -199,6 +204,13 @@ impl AiAssistantView {
                                 .text_size(px(11.0))
                                 .text_color(ShellDeckColors::text_muted())
                                 .child(t!("ai.observability.empty_description").to_string()),
+                        )
+                        .child(
+                            // Account windows stay useful before any session.
+                            div()
+                                .w(px(320.0))
+                                .text_align(TextAlign::Left)
+                                .child(self.render_usage(None, cx)),
                         )
                         .child(open_agents_button(cx)),
                 )
@@ -372,6 +384,8 @@ impl AiAssistantView {
                 signals::tool_event_count(session),
                 observed_files(session).len(),
             ))
+            .child(panel_label(t!("ai.observability.usage_title").to_string()))
+            .child(self.render_usage(Some(session), cx))
             .child(panel_label(t!("ai.observability.steps_title").to_string()))
             .child(steps::render_steps(
                 &steps::session_steps(session),
