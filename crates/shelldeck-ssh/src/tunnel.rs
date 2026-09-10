@@ -90,9 +90,15 @@ impl TunnelManager {
         remote_host: String,
         remote_port: u16,
     ) -> crate::Result<Uuid> {
-        if !Self::check_port_available(local_port).await {
-            return Err(SshError::PortInUse(local_port));
-        }
+        // Bind before reporting success. The previous availability probe then
+        // spawned a second bind, leaving a TOCTOU window where the method
+        // returned Ok even though no listener was ever created.
+        let listener = TcpListener::bind(("127.0.0.1", local_port))
+            .await
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AddrInUse => SshError::PortInUse(local_port),
+                _ => SshError::Io(error),
+            })?;
 
         let id = Uuid::new_v4();
         let status = Arc::new(ParkingMutex::new(TunnelStatus::Active));
@@ -105,15 +111,6 @@ impl TunnelManager {
         let bytes_received_clone = bytes_received.clone();
 
         tokio::spawn(async move {
-            let listener = match TcpListener::bind(format!("127.0.0.1:{}", local_port)).await {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!("Failed to bind local port {}: {}", local_port, e);
-                    *status_clone.lock() = TunnelStatus::Error;
-                    return;
-                }
-            };
-
             tracing::info!(
                 "Local forward: 127.0.0.1:{} -> {}:{}",
                 local_port,
@@ -304,9 +301,16 @@ impl TunnelManager {
         local_host: String,
         local_port: u16,
     ) -> crate::Result<Uuid> {
-        if !Self::check_port_available(local_port).await {
-            return Err(SshError::PortInUse(local_port));
-        }
+        let bind_addr = format!("{}:{}", local_host, local_port);
+        // As with local forwards, ownership of the bound socket is the
+        // readiness signal. Returning only after this succeeds makes Ok mean
+        // that clients can connect immediately and removes a bind race.
+        let listener = TcpListener::bind(&bind_addr)
+            .await
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AddrInUse => SshError::PortInUse(local_port),
+                _ => SshError::Io(error),
+            })?;
 
         let id = Uuid::new_v4();
         let status = Arc::new(ParkingMutex::new(TunnelStatus::Active));
@@ -319,16 +323,6 @@ impl TunnelManager {
         let bytes_received_clone = bytes_received.clone();
 
         tokio::spawn(async move {
-            let bind_addr = format!("{}:{}", local_host, local_port);
-            let listener = match TcpListener::bind(&bind_addr).await {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!("Failed to bind SOCKS5 listener on {}: {}", bind_addr, e);
-                    *status_clone.lock() = TunnelStatus::Error;
-                    return;
-                }
-            };
-
             tracing::info!("Dynamic forward: SOCKS5 proxy on {}", bind_addr);
 
             let mut connections = tokio::task::JoinSet::new();
@@ -762,7 +756,8 @@ mod tests {
     use russh::keys::{ssh_key::Algorithm, PrivateKey};
     use russh::server::{self, Auth, Msg, Session};
     use russh::Channel;
-    use std::sync::Arc;
+    use std::collections::HashSet;
+    use std::sync::{Arc, LazyLock, Mutex as StdMutex};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -963,24 +958,29 @@ mod tests {
         (Arc::new(Mutex::new(handle)), request_rx, server_task)
     }
 
+    static CLAIMED_TEST_PORTS: LazyLock<StdMutex<HashSet<u16>>> =
+        LazyLock::new(|| StdMutex::new(HashSet::new()));
+
     async fn unused_local_port() -> u16 {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("reserve an ephemeral port");
-        listener.local_addr().expect("read local address").port()
+        loop {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("reserve an ephemeral port");
+            let port = listener.local_addr().expect("read local address").port();
+            if CLAIMED_TEST_PORTS
+                .lock()
+                .expect("claimed test ports lock")
+                .insert(port)
+            {
+                return port;
+            }
+        }
     }
 
-    async fn connect_when_ready(port: u16) -> TcpStream {
-        timeout(Duration::from_secs(2), async move {
-            loop {
-                match TcpStream::connect(("127.0.0.1", port)).await {
-                    Ok(stream) => return stream,
-                    Err(_) => sleep(Duration::from_millis(5)).await,
-                }
-            }
-        })
-        .await
-        .expect("tunnel listener did not become ready")
+    async fn connect_to_tunnel(port: u16) -> TcpStream {
+        TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("tunnel listener must be bound before start returns")
     }
 
     async fn wait_until_stopped(manager: &TunnelManager, id: uuid::Uuid) {
@@ -1023,7 +1023,7 @@ mod tests {
             .await
             .expect("start local forward");
 
-        let mut client = connect_when_ready(local_port).await;
+        let mut client = connect_to_tunnel(local_port).await;
         client.write_all(b"shelldeck").await.expect("write tunnel");
         let mut echoed = [0_u8; 9];
         client
@@ -1165,7 +1165,7 @@ mod tests {
             .await
             .expect("start SOCKS5 forward");
 
-        let mut client = connect_when_ready(local_port).await;
+        let mut client = connect_to_tunnel(local_port).await;
         negotiate_no_auth(&mut client).await;
         let host = b"echo.internal";
         let mut connect = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
@@ -1202,7 +1202,7 @@ mod tests {
         assert_eq!(&echoed, b"proxy");
 
         for command in [0x02_u8, 0x03_u8] {
-            let mut rejected = connect_when_ready(local_port).await;
+            let mut rejected = connect_to_tunnel(local_port).await;
             negotiate_no_auth(&mut rejected).await;
             rejected
                 .write_all(&[0x05, command, 0x00, 0x01, 127, 0, 0, 1, 0, 80])
@@ -1239,7 +1239,7 @@ mod tests {
 
     // SDTEST-561, SDTEST-563
     #[tokio::test]
-    async fn port_availability_and_prebound_start_failure_are_reported() {
+    async fn port_availability_and_prebound_start_failures_are_reported() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind occupied test port");
@@ -1252,9 +1252,20 @@ mod tests {
         let (handle, _requests, server_task) = start_echo_server().await;
         let mut manager = TunnelManager::new();
         let error = manager
-            .start_local_forward(handle, occupied_port, "echo.internal".to_owned(), 4242)
+            .start_local_forward(
+                handle.clone(),
+                occupied_port,
+                "echo.internal".to_owned(),
+                4242,
+            )
             .await
             .expect_err("prebound local port must fail");
+        assert!(matches!(error, crate::SshError::PortInUse(port) if port == occupied_port));
+
+        let error = manager
+            .start_socks_forward(handle, "127.0.0.1".to_owned(), occupied_port)
+            .await
+            .expect_err("prebound SOCKS5 port must fail");
         assert!(matches!(error, crate::SshError::PortInUse(port) if port == occupied_port));
         assert!(manager.tunnels().is_empty());
 
@@ -1281,8 +1292,8 @@ mod tests {
             .start_local_forward(handle, second_port, "second.internal".to_owned(), 1002)
             .await
             .expect("start second tunnel");
-        let mut first = connect_when_ready(first_port).await;
-        let mut second = connect_when_ready(second_port).await;
+        let mut first = connect_to_tunnel(first_port).await;
+        let mut second = connect_to_tunnel(second_port).await;
         first.write_all(b"a").await.expect("write first tunnel");
         second.write_all(b"b").await.expect("write second tunnel");
         let mut byte = [0_u8; 1];
