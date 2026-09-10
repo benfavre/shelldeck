@@ -92,6 +92,9 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `arrow-up` | navigation | scroll / sort up |
 | `at-sign` | chrome | AI composer: target a connection / script / ticket |
 | `git-branch` | support | Issue thread: GitHub-link notes |
+| `git-commit-horizontal` | AI | Assistant Git panel: prepare a commit |
+| `folder` | AI | Assistant Fichiers tree: collapsed directory |
+| `folder-open` | AI | Assistant Fichiers tree: expanded directory |
 | `bot` | AI | Monique dispatch action |
 | `calendar` | time | date pickers, due dates |
 | `check` | action | confirm, done |

@@ -404,6 +404,8 @@ Existing: **0 tests**.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-1387 | `git.rs::porcelain_branch_status_parses_in_one_pass` | SDUC-437 | Green | Pins normal/upstream, unborn, and detached branch headers plus staged/modified/untracked counts from the single `git status --porcelain=v1 --branch` response. |
+| SDTEST-1926 | `git.rs::sdtest_1926_porcelain_and_numstat_parsers_keep_exact_paths_and_sides` | SDUC-499 | Green | Added 2026-09-10. `git status --porcelain=v1 --branch -z` keeps paths with spaces, the source of a staged rename, untracked and conflicted entries, and the branch/upstream/ahead/behind header, including unborn branches and gone upstreams; the staged, unstaged, new and conflict predicates and the row letters follow each side. `git diff --numstat -z` keeps binary files at zero and attributes a rename to its new path. |
+| SDTEST-1927 | `git.rs::sdtest_1927_stage_unstage_diff_and_commit_act_on_the_real_index` | SDUC-499 | Green | Added 2026-09-10. Against a temporary repository with hooks disabled and signing off: staging and unstaging before the first commit (no HEAD), stage-all and commit, an empty message refused, working-tree and staged line counts, a tracked diff, an untracked whole-file diff and line count, then unstaging with a HEAD. Needs the `git` binary, like the workspace lifecycle tests. |
 
 ---
 

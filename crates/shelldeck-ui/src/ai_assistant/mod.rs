@@ -16,7 +16,6 @@ use shelldeck_core::ai::{
     ClippyContext, ClippyContextSource, ClippyOperation as CoreClippyOperation, ClippyProposal,
     MentionCandidate, MentionRef,
 };
-use shelldeck_core::git::GitStatus;
 use std::{collections::HashMap, rc::Rc, time::Instant};
 use uuid::Uuid;
 
@@ -427,8 +426,12 @@ pub struct AiAssistantView {
     /// Assistant surfaces observe it read-only and repaint on its notifications.
     agent_console: Option<Entity<crate::agent_console_view::AgentConsoleView>>,
     agent_observability_enabled: bool,
-    agent_git_status: Option<(String, GitStatus)>,
-    agent_git_last_refresh: Option<(String, Instant)>,
+    /// Local Git panel for the observed session's working directory.
+    agent_git: observability::AgentGitPanel,
+    /// Directories the user collapsed in the Fichiers tree.
+    agent_files_collapsed: std::collections::HashSet<String>,
+    /// Sessions whose attention alert the user postponed.
+    agent_attention_postponed: std::collections::HashSet<Uuid>,
     _agent_console_observer: Option<Subscription>,
     clippy_auto_import_clipboard: bool,
     /// Link action shared by user turns, assistant answers and Markdown task
@@ -525,8 +528,9 @@ impl AiAssistantView {
             clippy_pending_request: None,
             agent_console: None,
             agent_observability_enabled: false,
-            agent_git_status: None,
-            agent_git_last_refresh: None,
+            agent_git: observability::AgentGitPanel::new(cx),
+            agent_files_collapsed: Default::default(),
+            agent_attention_postponed: Default::default(),
             _agent_console_observer: None,
             clippy_auto_import_clipboard: false,
             markdown_link_action: None,
@@ -3137,6 +3141,59 @@ impl Render for AiAssistantView {
                         })),
                 );
             }
+            // The Sheet has no rail badge either: a Git pill appears as soon
+            // as the observed working tree has changes.
+            if self.agent_observability_enabled {
+                let changed_files = self.observed_changed_file_count(cx);
+                let showing_git = self.active_tab == AiActivity::AgentGit;
+                if changed_files > 0 || showing_git {
+                    conversation_header = conversation_header.child(
+                        div()
+                            .id("ai-git-pill")
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap(px(5.0))
+                            .h(px(22.0))
+                            .px(px(8.0))
+                            .rounded_full()
+                            .cursor_pointer()
+                            .bg(if showing_git {
+                                ShellDeckColors::selected_bg()
+                            } else {
+                                ShellDeckColors::bg_surface()
+                            })
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(lucide_icon(
+                                "git-branch",
+                                12.0,
+                                ShellDeckColors::text_muted(),
+                            ))
+                            .child(t!("ai.rail.git").to_string())
+                            .when(changed_files > 0, |pill| {
+                                pill.child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(ShellDeckColors::text_primary())
+                                        .child(changed_files.to_string()),
+                                )
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.active_tab = if this.active_tab == AiActivity::AgentGit {
+                                    AiActivity::Chat
+                                } else {
+                                    AiActivity::AgentGit
+                                };
+                                this.sync_loading();
+                                if this.active_tab == AiActivity::AgentGit {
+                                    this.refresh_agent_git(cx);
+                                }
+                                cx.notify();
+                            })),
+                    );
+                }
+            }
             // Without a rail, the Sheet needs its own way into the task list.
             if active_tasks > 0 || self.active_tab == AiActivity::Tasks {
                 let showing_tasks = self.active_tab == AiActivity::Tasks;
@@ -3509,6 +3566,9 @@ impl Render for AiAssistantView {
                             .child(div().truncate().child(summary)),
                     );
                 }
+                if let Some(summary) = self.render_observation_footnote(cx) {
+                    footnote = footnote.child(summary);
+                }
                 footnote
                     .child(div().flex_1().min_w(px(0.0)))
                     .child(t!("ai.assistant.hint.send").to_string())
@@ -3876,6 +3936,10 @@ impl Render for AiAssistantView {
         }
         if let Some(lightbox) = self.render_attachment_lightbox() {
             root = root.child(lightbox);
+        }
+
+        if let Some(dialog) = self.render_git_commit_dialog(cx) {
+            root = root.child(dialog);
         }
 
         if let Some(delete_id) = self.pending_delete {

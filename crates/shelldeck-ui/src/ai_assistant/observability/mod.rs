@@ -1,12 +1,12 @@
-//! Read-only projection of the Dev Agents cockpit into the Assistant.
+//! Projection of the Dev Agents cockpit into the Assistant.
 //!
-//! The assistant never owns a process, trace, file, or Git mutation. It
-//! observes `AgentConsoleView`, whose `AgentSessionCollection` remains the
-//! authority, and offers one explicit route back to that cockpit.
+//! The Assistant never owns a process or a trace: it observes
+//! `AgentConsoleView`, whose `AgentSessionCollection` stays the authority, and
+//! offers one explicit route back to that cockpit. The only mutations it
+//! starts are the user's own local Git index and commit actions (`git.rs`).
 
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::prelude::{
@@ -14,7 +14,6 @@ use adabraka_ui::prelude::{
 };
 use gpui::prelude::*;
 use gpui::*;
-use shelldeck_core::agent_runtime::AgentTarget;
 use shelldeck_core::agent_session::{
     AgentSession, AgentSessionAttention, AgentSessionStatus, AgentTraceEvent, AgentTraceKind,
     AgentTraceStatus,
@@ -27,12 +26,22 @@ use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
-#[derive(Default)]
+mod files;
+mod git;
+mod signals;
+
+pub(super) use git::AgentGitPanel;
+
+/// Paths, branches and diffs use the same face as the Agents cockpit.
+const MONO: &str = "JetBrains Mono";
+
+#[derive(Debug, Default)]
 struct ObservedFile {
     read: bool,
     additions: u32,
     deletions: u32,
-    status: AgentTraceStatus,
+    /// Time of the latest event touching the path.
+    at_ms: i64,
 }
 
 impl AiAssistantView {
@@ -95,59 +104,26 @@ impl AiAssistantView {
             .unwrap_or(0)
     }
 
+    /// Changed paths of the observed session: the local working tree when it
+    /// has been read, otherwise the diffs recorded in the trace.
     pub(super) fn observed_changed_file_count(&self, cx: &App) -> usize {
         if !self.agent_observability_enabled {
             return 0;
         }
-        self.agent_console
-            .as_ref()
-            .and_then(|console| {
-                let console = console.read(cx);
-                select_observed_session(console).map(|session| {
-                    observed_files(session)
-                        .values()
-                        .filter(|file| file.additions > 0 || file.deletions > 0)
-                        .count()
-                })
-            })
-            .unwrap_or(0)
-    }
-
-    pub(super) fn refresh_agent_git(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = self.observed_session(cx) else {
-            self.agent_git_status = None;
-            return;
+        let Some(console) = self.agent_console.as_ref() else {
+            return 0;
         };
-        if !matches!(session.context.target, AgentTarget::Local) {
-            self.agent_git_status = None;
-            return;
+        let console = console.read(cx);
+        let Some(session) = select_observed_session(console) else {
+            return 0;
+        };
+        if let Some(tree) = self.agent_git.tree_for(&session.context.workdir) {
+            return tree.files.len();
         }
-        let workdir = session.context.workdir;
-        if self
-            .agent_git_last_refresh
-            .as_ref()
-            .is_some_and(|(path, at)| path == &workdir && at.elapsed() < Duration::from_secs(2))
-        {
-            return;
-        }
-        self.agent_git_last_refresh = Some((workdir.clone(), std::time::Instant::now()));
-        cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let lookup_path = workdir.clone();
-            let status = cx
-                .background_executor()
-                .spawn(async move { shelldeck_core::git::get_git_status(Path::new(&lookup_path)) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if this
-                    .observed_session(cx)
-                    .is_some_and(|session| session.context.workdir == workdir)
-                {
-                    this.agent_git_status = status.map(|status| (workdir, status));
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
+        observed_files(session)
+            .values()
+            .filter(|file| file.additions > 0 || file.deletions > 0)
+            .count()
     }
 
     pub(super) fn render_agent_observability(
@@ -327,30 +303,26 @@ impl AiAssistantView {
                     .min_w_0()
                     .text_size(px(9.5))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(lucide_icon(
-                        "file-text",
-                        11.0,
-                        ShellDeckColors::text_muted(),
-                    ))
+                    .child(lucide_icon("folder", 11.0, ShellDeckColors::text_muted()))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
+                            .font_family(MONO)
                             .child(session.context.workdir.clone()),
                     )
-                    .children(elapsed.map(|elapsed| {
-                        div()
-                            .flex_shrink_0()
-                            .font_family("monospace")
-                            .child(elapsed)
-                    })),
+                    .children(
+                        elapsed
+                            .clone()
+                            .map(|elapsed| div().flex_shrink_0().font_family(MONO).child(elapsed)),
+                    ),
             );
 
         let content = match activity {
-            AiActivity::AgentFiles => render_files(&session),
+            AiActivity::AgentFiles => self.render_files(&session, cx),
             AiActivity::AgentGit => self.render_git(&session, cx),
-            _ => render_activity(&session),
+            _ => self.render_activity(&session, elapsed.unwrap_or_else(|| format_duration(0)), cx),
         };
 
         div()
@@ -383,107 +355,41 @@ impl AiAssistantView {
             .into_any_element()
     }
 
-    fn render_git(&self, session: &AgentSession, _cx: &App) -> AnyElement {
-        let files = observed_files(session);
-        let changes = files
-            .iter()
-            .filter(|(_, file)| file.additions > 0 || file.deletions > 0)
-            .collect::<Vec<_>>();
-        let additions: u32 = changes.iter().map(|(_, file)| file.additions).sum();
-        let deletions: u32 = changes.iter().map(|(_, file)| file.deletions).sum();
-        let status = self
-            .agent_git_status
-            .as_ref()
-            .filter(|(path, _)| path == &session.context.workdir)
-            .map(|(_, status)| status);
-        let branch = status
-            .and_then(|status| status.branch.clone())
-            .unwrap_or_else(|| t!("ai.observability.git_unknown").to_string());
-
-        let mut root = div().flex().flex_col().gap(px(8.0)).child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .p(px(10.0))
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .min_w_0()
-                        .font_family("monospace")
-                        .text_size(px(10.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(lucide_icon(
-                            "git-branch",
-                            12.0,
-                            ShellDeckColors::text_muted(),
-                        ))
-                        .child(div().flex_1().min_w_0().truncate().child(branch)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.0))
-                        .text_size(px(9.5))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(format!(
-                            "{} {}",
-                            changes.len(),
-                            t!("ai.observability.files_count")
-                        ))
-                        .child(
-                            div()
-                                .text_color(ShellDeckColors::success())
-                                .child(format!("+{additions}")),
-                        )
-                        .child(
-                            div()
-                                .text_color(ShellDeckColors::error())
-                                .child(format!("−{deletions}")),
-                        )
-                        .children(status.map(|status| {
-                            div().child(format!(
-                                "{} {} · {} {} · {} {}",
-                                status.staged,
-                                t!("ai.observability.staged"),
-                                status.modified,
-                                t!("ai.observability.modified"),
-                                status.untracked,
-                                t!("ai.observability.untracked")
-                            ))
-                        })),
-                ),
-        );
-        for (path, file) in changes {
-            root = root.child(file_row(path, file));
+    fn render_activity(
+        &self,
+        session: &AgentSession,
+        duration: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut root = div().flex().flex_col().gap(px(10.0));
+        if let Some(card) = self.render_attention_card(cx) {
+            root = root.child(card);
         }
-        root.child(
-            div()
-                .flex()
-                .gap(px(7.0))
-                .p(px(9.0))
-                .rounded(px(7.0))
-                .bg(ShellDeckColors::warning().opacity(0.10))
-                .text_size(px(10.0))
-                .text_color(ShellDeckColors::text_muted())
-                .child(lucide_icon(
-                    "shield-check",
-                    12.0,
-                    ShellDeckColors::warning(),
-                ))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(t!("ai.observability.git_explicit").to_string()),
-                ),
-        )
-        .into_any_element()
+        root = root.child(signals::render_metrics(
+            duration,
+            signals::tool_event_count(session),
+            observed_files(session).len(),
+        ));
+
+        let mut timeline = div()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .border_l_1()
+            .border_color(ShellDeckColors::border())
+            .ml(px(5.0))
+            .pl(px(12.0));
+        let traces = session.trace.iter().rev().take(16).collect::<Vec<_>>();
+        if traces.is_empty() {
+            timeline = timeline.child(empty_line(
+                t!("ai.observability.empty_activity").to_string(),
+            ));
+        } else {
+            for trace in traces.into_iter().rev() {
+                timeline = timeline.child(trace_row(trace));
+            }
+        }
+        root.child(timeline).into_any_element()
     }
 }
 
@@ -506,81 +412,19 @@ fn select_observed_session(console: &AgentConsoleView) -> Option<&AgentSession> 
         })
 }
 
-fn render_activity(session: &AgentSession) -> AnyElement {
-    let mut timeline = div()
-        .flex()
-        .flex_col()
-        .gap(px(3.0))
-        .border_l_1()
-        .border_color(ShellDeckColors::border())
-        .ml(px(5.0))
-        .pl(px(12.0));
-    let traces = session.trace.iter().rev().take(16).collect::<Vec<_>>();
-    if traces.is_empty() {
-        timeline = timeline.child(empty_line(
-            t!("ai.observability.empty_activity").to_string(),
-        ));
-    } else {
-        for trace in traces.into_iter().rev() {
-            timeline = timeline.child(trace_row(trace));
-        }
-    }
-    timeline.into_any_element()
-}
-
-fn render_files(session: &AgentSession) -> AnyElement {
-    let files = observed_files(session);
-    let mut root = div()
-        .flex()
-        .flex_col()
-        .gap(px(3.0))
-        .font_family("monospace")
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .px(px(6.0))
-                .py(px(5.0))
-                .text_size(px(10.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(lucide_icon(
-                    "file-text",
-                    12.0,
-                    ShellDeckColors::text_muted(),
-                ))
-                .child(
-                    Path::new(&session.context.workdir)
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or(&session.context.workdir)
-                        .to_string(),
-                ),
-        );
-    if files.is_empty() {
-        root = root.child(empty_line(t!("ai.observability.empty_files").to_string()));
-    } else {
-        for (path, file) in &files {
-            root = root.child(file_row(path, file));
-        }
-    }
-    root.into_any_element()
-}
-
 fn observed_files(session: &AgentSession) -> BTreeMap<String, ObservedFile> {
     let mut files = BTreeMap::new();
     for trace in &session.trace {
         match &trace.detail {
-            AgentTraceKind::FileRead { path, status, .. } => {
+            AgentTraceKind::FileRead { path, .. } => {
                 let file = files
                     .entry(path.clone())
                     .or_insert_with(ObservedFile::default);
                 file.read = true;
-                file.status = *status;
+                file.at_ms = file.at_ms.max(trace.at_ms);
             }
             AgentTraceKind::Diff {
                 path,
-                status,
                 additions,
                 deletions,
                 ..
@@ -590,72 +434,12 @@ fn observed_files(session: &AgentSession) -> BTreeMap<String, ObservedFile> {
                     .or_insert_with(ObservedFile::default);
                 file.additions = *additions;
                 file.deletions = *deletions;
-                file.status = *status;
+                file.at_ms = file.at_ms.max(trace.at_ms);
             }
             _ => {}
         }
     }
     files
-}
-
-fn file_row(path: &str, file: &ObservedFile) -> AnyElement {
-    let changed = file.additions > 0 || file.deletions > 0;
-    let marker = if changed { "M" } else { "L" };
-    let marker_color = if changed {
-        ShellDeckColors::warning()
-    } else {
-        ShellDeckColors::primary()
-    };
-    let depth = Path::new(path)
-        .components()
-        .count()
-        .saturating_sub(1)
-        .min(3) as f32;
-    div()
-        .flex()
-        .items_center()
-        .gap(px(6.0))
-        .min_w_0()
-        .pl(px(6.0 + depth * 10.0))
-        .pr(px(5.0))
-        .py(px(5.0))
-        .rounded(px(5.0))
-        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-        .text_size(px(9.5))
-        .child(lucide_icon(
-            "file-text",
-            11.0,
-            ShellDeckColors::text_muted(),
-        ))
-        .child(div().flex_1().min_w_0().truncate().child(path.to_string()))
-        .when(changed, |row| {
-            row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(ShellDeckColors::success())
-                    .child(format!("+{}", file.additions)),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(ShellDeckColors::error())
-                    .child(format!("−{}", file.deletions)),
-            )
-        })
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .flex_shrink_0()
-                .size(px(16.0))
-                .rounded(px(4.0))
-                .bg(marker_color.opacity(0.12))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(marker_color)
-                .child(marker),
-        )
-        .into_any_element()
 }
 
 fn trace_row(trace: &AgentTraceEvent) -> AnyElement {
@@ -736,7 +520,7 @@ fn trace_row(trace: &AgentTraceEvent) -> AnyElement {
         .child(
             div()
                 .flex_shrink_0()
-                .font_family("monospace")
+                .font_family(MONO)
                 .text_size(px(8.5))
                 .text_color(ShellDeckColors::text_muted())
                 .child(crate::i18n::rel_time(trace.at_ms as f64)),
@@ -864,9 +648,12 @@ mod tests {
         assert_eq!(files.len(), 2);
         let read = files.get("src/main.rs").unwrap();
         assert!(read.read);
-        assert_eq!((read.additions, read.deletions), (0, 0));
+        assert_eq!((read.additions, read.deletions, read.at_ms), (0, 0, 2));
         let changed = files.get("src/lib.rs").unwrap();
         assert!(!changed.read);
-        assert_eq!((changed.additions, changed.deletions), (12, 4));
+        assert_eq!(
+            (changed.additions, changed.deletions, changed.at_ms),
+            (12, 4, 3)
+        );
     }
 }

@@ -972,12 +972,19 @@ For a Dev-capable account, the integrated Assistant Sheet and standalone Dock
 observe this same collection without becoming a second runtime owner. Their
 Suivi, Fichiers and Git panels select the active (or most relevant retained)
 session, show its provider/model/target, real lifecycle timing, typed trace,
-deduplicated read/changed paths and diff totals. A local session also receives
-a throttled, read-only porcelain Git status for its actual working directory;
-SSH sessions are never misrepresented as local Git. The observer can open the
-Agents cockpit explicitly, but cannot stage, commit, push, run a command, or
-bypass its access confirmation. Non-super-admin accounts never receive these
-Dev observability activities.
+duration/tool/file counts and diff totals. Suivi raises an alert when another
+session needs the user, who can review it in Agents or postpone it. Fichiers
+shows the touched paths as a collapsible tree that tells read, modified and
+created files apart, using the local working tree to recognize new files. For
+a local session, Git reads the actual working directory (branch, upstream,
+staged and unstaged files with line counts, per-file diff): the user can stage,
+unstage or stage everything directly, while a commit needs an explicit
+confirmation showing its message and staged files, is refused while the
+observed session is running, and is revalidated right before it runs. Nothing
+is ever pushed from the Assistant, it never runs a command, and SSH sessions
+are never misrepresented as local Git. The composer summary line counts
+running and waiting sessions and the local diff size. Non-super-admin accounts
+never receive these Dev observability activities.
 
 ---
 
@@ -3156,6 +3163,12 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-10**: Amended SDUC-499 with SDTEST-1926 through SDTEST-1929: the
+  Assistant's Git panel stages, unstages and commits locally (the commit is
+  confirmed, refused while the session runs and never pushed), Fichiers becomes
+  a read/modified/created tree, and Suivi gains counts, an attention alert and
+  a composer summary line.
 
 - **2026-09-10**: Amended SDUC-414 with SDTEST-1925: assistant answers are laid
   out at the thread's definite content width, so Markdown tables no longer
