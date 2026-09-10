@@ -958,6 +958,17 @@ that host returns one bounded, valid absolute home directory. The Changes tab pr
 counts, and bounded previews from structured trace events, and selecting one
 highlights that exact event in the ordered timeline.
 
+For a Dev-capable account, the integrated Assistant Sheet and standalone Dock
+observe this same collection without becoming a second runtime owner. Their
+Suivi, Fichiers and Git panels select the active (or most relevant retained)
+session, show its provider/model/target, real lifecycle timing, typed trace,
+deduplicated read/changed paths and diff totals. A local session also receives
+a throttled, read-only porcelain Git status for its actual working directory;
+SSH sessions are never misrepresented as local Git. The observer can open the
+Agents cockpit explicitly, but cannot stage, commit, push, run a command, or
+bypass its access confirmation. Non-super-admin accounts never receive these
+Dev observability activities.
+
 ---
 
 ## 11. Shared platform client
@@ -1711,6 +1722,17 @@ bottom-right 12 px `radius_xl`; the complete overlay is clipped once at the
 host boundary so no dim-backdrop wedge appears between the panel and those
 outer client corners.
 
+Each conversational request belongs to its exact thread. Starting or selecting
+another conversation leaves earlier completions running in the background; the
+history row and Dock rail expose that work, and a late response can only land in
+the conversation/request pair that created it. Deleting a running conversation
+drops that local result instead of recreating the thread. Each completed
+assistant message durably records the provider, effective model, and elapsed
+time captured when the request started. The transcript marks the initial model
+and every real model transition; changing Settings later never relabels old
+answers. Pre-metadata conversations remain readable and are labelled as legacy
+rather than attributed to the current model.
+
 ### SDUC-415 — AI context and API privacy boundaries
 
 Sensitive named fields are recursively redacted and serialized context is
@@ -1968,7 +1990,9 @@ Dock rather than creating duplicates. Closing the Dock hides it and keeps an
 in-flight request alive. Reopening it re-prepares the same Global context
 *without* invalidating the pending request gate — the reply still lands with
 its loading state intact — while a genuine surface/title switch still
-invalidates the gate and drops the stale reply. It inherits ShellDeck's UI font and scale, uses a
+invalidates only a non-durable Clippy transform. A durable conversational reply
+continues against its captured context and lands in its exact thread. It
+inherits ShellDeck's UI font and scale, uses a
 bounded global context, shares durable conversations and tasks with the main
 assistant, exposes an explicit action to reopen ShellDeck, and disables
 submission with an explanation when no usable global AI backend is configured.
@@ -3119,6 +3143,13 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-09** — Amended SDUC-414, SDUC-434 and SDUC-499 with
+  SDTEST-1921 through SDTEST-1923: contextual conversations now complete
+  independently in the background with durable request-time model/timing
+  provenance, while Dev Assistant surfaces observe the canonical Agents trace,
+  file activity and read-only local Git status without gaining execution
+  authority.
 
 - **2026-09-09** — Amended SDUC-443 with SDPATCH-045 and SDTEST-1918 through
   SDTEST-1920: the compact Dev rail scrolls independently between its fixed

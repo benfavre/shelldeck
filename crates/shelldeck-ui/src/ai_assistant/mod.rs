@@ -16,10 +16,12 @@ use shelldeck_core::ai::{
     ClippyContext, ClippyContextSource, ClippyOperation as CoreClippyOperation, ClippyProposal,
     MentionCandidate, MentionRef,
 };
-use std::rc::Rc;
+use shelldeck_core::git::GitStatus;
+use std::{collections::HashMap, rc::Rc, time::Instant};
 use uuid::Uuid;
 
 mod composer;
+mod observability;
 
 use composer::{attachment_summary, MentionPicker};
 
@@ -43,6 +45,9 @@ pub enum AiAssistantEvent {
     /// Rail toolbox: open Settings. The Dock is a separate window and cannot
     /// reach the settings surface on its own, so the host does it.
     OpenSettings,
+    /// Read-only observability panels hand explicit execution control back to
+    /// the Dev Agents cockpit.
+    OpenAgents,
     /// Rail toolbox: bring the main ShellDeck window forward.
     OpenMainWindow,
     /// Rail toolbox: the command palette lives in its own window, opened by the
@@ -88,6 +93,104 @@ impl AiRequestGate {
 
     fn accepts(&self, request_id: u64) -> bool {
         request_id == self.epoch
+    }
+}
+
+#[derive(Debug)]
+struct PendingAssistantRequest {
+    request_id: u64,
+    backend: AiBackend,
+    model: String,
+    started_at: Instant,
+}
+
+#[derive(Default)]
+struct AssistantRequestTracker {
+    by_conversation: HashMap<Uuid, PendingAssistantRequest>,
+}
+
+impl AssistantRequestTracker {
+    fn begin(
+        &mut self,
+        conversation_id: Uuid,
+        request_id: u64,
+        backend: AiBackend,
+        model: String,
+    ) -> bool {
+        if self.by_conversation.contains_key(&conversation_id) {
+            return false;
+        }
+        self.by_conversation.insert(
+            conversation_id,
+            PendingAssistantRequest {
+                request_id,
+                backend,
+                model,
+                started_at: Instant::now(),
+            },
+        );
+        true
+    }
+
+    fn finish(
+        &mut self,
+        conversation_id: Uuid,
+        request_id: u64,
+    ) -> Option<PendingAssistantRequest> {
+        if self
+            .by_conversation
+            .get(&conversation_id)
+            .is_some_and(|pending| pending.request_id == request_id)
+        {
+            self.by_conversation.remove(&conversation_id)
+        } else {
+            None
+        }
+    }
+
+    fn get(&self, conversation_id: Uuid) -> Option<&PendingAssistantRequest> {
+        self.by_conversation.get(&conversation_id)
+    }
+
+    fn remove(&mut self, conversation_id: Uuid) {
+        self.by_conversation.remove(&conversation_id);
+    }
+
+    fn len(&self) -> usize {
+        self.by_conversation.len()
+    }
+}
+
+fn effective_model(backend: AiBackend, configured: &str) -> String {
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        configured.to_string()
+    } else {
+        let default = backend.default_model();
+        if default.is_empty() {
+            backend.display_name().to_string()
+        } else {
+            default.to_string()
+        }
+    }
+}
+
+fn provider_model_label(backend: AiBackend, model: &str) -> String {
+    let model = model.trim();
+    if model.is_empty() || model.eq_ignore_ascii_case(backend.display_name()) {
+        backend.display_name().to_string()
+    } else {
+        format!("{} · {model}", backend.display_name())
+    }
+}
+
+fn format_duration(duration_ms: u64) -> String {
+    if duration_ms < 1_000 {
+        format!("{duration_ms} ms")
+    } else if duration_ms < 10_000 {
+        format!("{:.1} s", duration_ms as f64 / 1_000.0)
+    } else {
+        format!("{} s", duration_ms / 1_000)
     }
 }
 
@@ -151,7 +254,10 @@ enum AiActivity {
     #[default]
     Chat,
     Clippy,
+    AgentActivity,
     Tasks,
+    AgentFiles,
+    AgentGit,
     History,
 }
 
@@ -266,6 +372,8 @@ pub struct AiAssistantView {
     loading: bool,
     error: Option<String>,
     request_gate: AiRequestGate,
+    assistant_requests: AssistantRequestTracker,
+    conversation_errors: HashMap<Uuid, String>,
     backend: AiBackend,
     model: String,
     conversations: Vec<AiConversation>,
@@ -297,6 +405,13 @@ pub struct AiAssistantView {
     clippy_error: Option<String>,
     clippy_operation: ClippyOperationKind,
     clippy_pending_request: Option<u64>,
+    /// The Dev Agents cockpit remains the sole owner of executable sessions.
+    /// Assistant surfaces observe it read-only and repaint on its notifications.
+    agent_console: Option<Entity<crate::agent_console_view::AgentConsoleView>>,
+    agent_observability_enabled: bool,
+    agent_git_status: Option<(String, GitStatus)>,
+    agent_git_last_refresh: Option<(String, Instant)>,
+    _agent_console_observer: Option<Subscription>,
     clippy_auto_import_clipboard: bool,
     /// Link action shared by user turns, assistant answers and Markdown task
     /// results. URLs are validated before this state can be populated.
@@ -358,6 +473,8 @@ impl AiAssistantView {
             loading: false,
             error: None,
             request_gate: AiRequestGate::default(),
+            assistant_requests: AssistantRequestTracker::default(),
+            conversation_errors: HashMap::new(),
             backend: AiBackend::Disabled,
             model: String::new(),
             active_conversation: conversations
@@ -388,6 +505,11 @@ impl AiAssistantView {
             clippy_error: None,
             clippy_operation: ClippyOperationKind::Rewrite,
             clippy_pending_request: None,
+            agent_console: None,
+            agent_observability_enabled: false,
+            agent_git_status: None,
+            agent_git_last_refresh: None,
+            _agent_console_observer: None,
             clippy_auto_import_clipboard: false,
             markdown_link_action: None,
             mention_directory: Rc::new(Vec::new()),
@@ -463,6 +585,7 @@ impl AiAssistantView {
                 } else {
                     AiActivity::Chat
                 };
+                self.sync_loading();
             }
         }
         cx.notify();
@@ -489,6 +612,7 @@ impl AiAssistantView {
 
     pub fn show_tasks(&mut self, cx: &mut Context<Self>) {
         self.active_tab = AiActivity::Tasks;
+        self.sync_loading();
         cx.notify();
     }
 
@@ -514,6 +638,10 @@ impl AiAssistantView {
                 self.conversations = conversations;
                 self.show_archived = false;
                 self.pending_delete = None;
+                self.error = self
+                    .active_conversation
+                    .and_then(|id| self.conversation_errors.get(&id).cloned());
+                self.sync_loading();
             }
             Err(error) => tracing::warn!("Failed to reload AI conversations: {error}"),
         }
@@ -540,17 +668,20 @@ impl AiAssistantView {
             // A genuine context switch re-arms the removable chip: the user
             // dropped the *previous* screen, not this one.
             self.context_dropped = false;
-            self.request_gate.invalidate();
-            self.loading = false;
             self.error = None;
-            // A pending Clippy id must not outlive the gate that issued it.
-            self.clippy_pending_request = None;
+            // Clippy is not tied to a durable thread, so a real context switch
+            // still cancels it. Conversational requests keep their captured
+            // context and continue in the background.
+            if self.clippy_pending_request.take().is_some() {
+                self.request_gate.invalidate();
+            }
             if self
                 .active_conversation()
                 .is_some_and(|conversation| !conversation.messages.is_empty())
             {
                 self.active_conversation = None;
             }
+            self.sync_loading();
         }
         cx.notify();
     }
@@ -559,8 +690,10 @@ impl AiAssistantView {
         let was_available = self.available;
         self.available = available;
         if !available {
-            self.request_gate.invalidate();
-            self.loading = false;
+            if self.clippy_pending_request.take().is_some() {
+                self.request_gate.invalidate();
+            }
+            self.sync_loading();
             self.error = Some(t!("ai.dock.unavailable").to_string());
         } else if !was_available {
             self.error = None;
@@ -572,8 +705,8 @@ impl AiAssistantView {
         self.clippy_available = available;
         if !available && self.clippy_pending_request.is_some() {
             self.request_gate.invalidate();
-            self.loading = false;
             self.clippy_pending_request = None;
+            self.sync_loading();
             self.clippy_error = Some(t!("ai.dock.unavailable").to_string());
         }
         cx.notify();
@@ -581,6 +714,7 @@ impl AiAssistantView {
 
     pub fn show_clippy(&mut self, cx: &mut Context<Self>) {
         self.active_tab = AiActivity::Clippy;
+        self.sync_loading();
         if should_auto_import_clippy(
             self.clippy_auto_import_clipboard,
             self.clippy_source_state.read(cx).content(),
@@ -633,6 +767,23 @@ impl AiAssistantView {
         cx.notify();
     }
 
+    /// `loading` remains the presentation flag consumed by the Composer and
+    /// Clippy controls. Its source of truth is now the operation visible in
+    /// the selected activity, not a process-wide single-flight bit.
+    fn sync_loading(&mut self) {
+        self.loading = match self.active_tab {
+            AiActivity::Chat => self
+                .active_conversation
+                .is_some_and(|id| self.assistant_requests.get(id).is_some()),
+            AiActivity::Clippy => self.clippy_pending_request.is_some(),
+            AiActivity::AgentActivity
+            | AiActivity::Tasks
+            | AiActivity::AgentFiles
+            | AiActivity::AgentGit
+            | AiActivity::History => false,
+        };
+    }
+
     pub fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
         self.loading = loading;
         if loading {
@@ -648,12 +799,12 @@ impl AiAssistantView {
         result: Result<String, String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self.request_gate.accepts(request_id) {
-            return false;
-        }
-        self.loading = false;
         if self.clippy_pending_request == Some(request_id) {
+            if !self.request_gate.accepts(request_id) {
+                return false;
+            }
             self.clippy_pending_request = None;
+            self.sync_loading();
             match result {
                 Ok(text) => match validated_clippy_result(text) {
                     Ok(result) => {
@@ -676,6 +827,14 @@ impl AiAssistantView {
             // dropped here, not one crate away.
             return false;
         }
+
+        // Chat completions are fenced by their own conversation, so another
+        // thread may start while this one continues in the background. A late
+        // response only lands in the exact thread/request pair that issued it.
+        let Some(pending) = self.assistant_requests.finish(conversation_id, request_id) else {
+            return false;
+        };
+        self.sync_loading();
         match result {
             Ok(text) => {
                 if let Some(conversation) = self
@@ -683,13 +842,34 @@ impl AiAssistantView {
                     .iter_mut()
                     .find(|conversation| conversation.id == conversation_id)
                 {
-                    conversation.push(AiChatRole::Assistant, text.clone());
+                    let duration_ms = pending
+                        .started_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64;
+                    conversation.push_assistant_response(
+                        text.clone(),
+                        pending.backend,
+                        pending.model,
+                        duration_ms,
+                    );
+                    self.conversation_errors.remove(&conversation_id);
                     self.persist_conversations();
-                    follow_latest_if_at_end(&self.message_scroll);
+                    if self.active_conversation == Some(conversation_id) {
+                        follow_latest_if_at_end(&self.message_scroll);
+                    }
                 }
-                self.error = None;
+                if self.active_conversation == Some(conversation_id) {
+                    self.error = None;
+                }
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => {
+                self.conversation_errors
+                    .insert(conversation_id, error.clone());
+                if self.active_conversation == Some(conversation_id) {
+                    self.error = Some(error);
+                }
+            }
         }
         cx.notify();
         true
@@ -784,8 +964,8 @@ impl AiAssistantView {
             }
         };
         let request_id = self.request_gate.begin();
-        self.loading = true;
         self.clippy_pending_request = Some(request_id);
+        self.sync_loading();
         self.clippy_result = None;
         self.clippy_error = None;
         cx.emit(AiAssistantEvent::Submit {
@@ -803,8 +983,8 @@ impl AiAssistantView {
 
     fn cancel_clippy(&mut self, cx: &mut Context<Self>) {
         self.request_gate.invalidate();
-        self.loading = false;
         self.clippy_pending_request = None;
+        self.sync_loading();
         self.clippy_error = None;
         cx.notify();
     }
@@ -871,7 +1051,18 @@ impl AiAssistantView {
             let prompt = self.conversation_prompt(conversation_id);
             self.prompt_state.update(cx, |state, cx| state.reset(cx));
             let request_id = self.request_gate.begin();
-            self.loading = true;
+            let model = effective_model(self.backend, &self.model);
+            // `loading` already guarantees the active thread has no request.
+            // Keep the defensive return so future callers cannot replace the
+            // request identity of an in-flight conversation.
+            if !self
+                .assistant_requests
+                .begin(conversation_id, request_id, self.backend, model)
+            {
+                return;
+            }
+            self.conversation_errors.remove(&conversation_id);
+            self.sync_loading();
             self.error = None;
             cx.emit(AiAssistantEvent::Submit {
                 request_id,
@@ -962,9 +1153,9 @@ impl AiAssistantView {
 
     fn new_conversation(&mut self, cx: &mut Context<Self>) {
         pin_to_latest(&self.message_scroll);
-        self.request_gate.invalidate();
         self.active_conversation = None;
-        self.loading = false;
+        self.active_tab = AiActivity::Chat;
+        self.sync_loading();
         self.error = None;
         self.prompt_state.update(cx, |state, cx| state.reset(cx));
         cx.notify();
@@ -983,6 +1174,9 @@ impl AiAssistantView {
             let restored = conversation.archived;
             conversation.archived = false;
             self.active_conversation = Some(id);
+            self.active_tab = AiActivity::Chat;
+            self.error = self.conversation_errors.get(&id).cloned();
+            self.sync_loading();
             if restored {
                 self.persist_conversations();
             }
@@ -1001,6 +1195,8 @@ impl AiAssistantView {
             conversation.updated_at = chrono::Utc::now();
             if conversation.archived && self.active_conversation == Some(id) {
                 self.active_conversation = None;
+                self.error = None;
+                self.sync_loading();
             }
             self.persist_conversations();
             cx.notify();
@@ -1008,11 +1204,17 @@ impl AiAssistantView {
     }
 
     fn delete_conversation(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        // Deletion is also cancellation from this view's perspective: a late
+        // completion must not recreate a conversation the user removed.
+        self.assistant_requests.remove(id);
+        self.conversation_errors.remove(&id);
         self.conversations
             .retain(|conversation| conversation.id != id);
         if self.active_conversation == Some(id) {
             self.active_conversation = None;
+            self.error = None;
         }
+        self.sync_loading();
         self.pending_delete = None;
         self.persist_conversations();
         cx.notify();
@@ -1201,7 +1403,26 @@ impl AiAssistantView {
             let updated = crate::i18n::rel_time(conversation.updated_at.timestamp_millis() as f64);
             let display_title = conversation.display_title();
             let history_labels = composer::conversation_mention_labels(conversation);
-            let history_meta = format!("{} · {updated}", conversation.context_title);
+            let pending = self.assistant_requests.get(id);
+            let failed = self.conversation_errors.contains_key(&id);
+            let latest_identity = conversation.messages.iter().rev().find_map(|message| {
+                message.backend.map(|backend| {
+                    provider_model_label(backend, message.model.as_deref().unwrap_or_default())
+                })
+            });
+            let history_meta = if let Some(pending) = pending {
+                format!(
+                    "{} · {}",
+                    provider_model_label(pending.backend, &pending.model),
+                    t!("ai.history.running")
+                )
+            } else if failed {
+                format!("{} · {updated}", t!("ai.history.failed"))
+            } else if let Some(identity) = latest_identity {
+                format!("{identity} · {updated}")
+            } else {
+                format!("{} · {updated}", conversation.context_title)
+            };
             list = list.child(
                 div()
                     .id(SharedString::from(format!("ai-conversation-{id}")))
@@ -1255,6 +1476,20 @@ impl AiAssistantView {
                                     .text_ellipsis()
                                     .text_size(px(10.0))
                                     .text_color(ShellDeckColors::text_muted())
+                                    .when(pending.is_some(), |meta| {
+                                        meta.child(
+                                            Spinner::new()
+                                                .size(SpinnerSize::Xs)
+                                                .variant(SpinnerVariant::Primary),
+                                        )
+                                    })
+                                    .when(failed, |meta| {
+                                        meta.child(lucide_icon(
+                                            "circle-alert",
+                                            11.0,
+                                            ShellDeckColors::error(),
+                                        ))
+                                    })
                                     .child(history_meta),
                             ),
                     )
@@ -1380,12 +1615,14 @@ impl AiAssistantView {
     /// selecting it changes what the panel shows. "Nouveau" sits above the
     /// separator because it is an action, not a place; it never stays selected.
     fn render_rail(&self, active_tasks: usize, cx: &mut Context<Self>) -> AnyElement {
-        let entries = [
+        let active_agents = self.observed_agent_active_count(cx);
+        let changed_files = self.observed_changed_file_count(cx);
+        let mut entries = vec![
             AiRailEntry {
                 activity: AiActivity::Chat,
                 icon: "messages-square",
                 label: t!("ai.rail.chat").to_string(),
-                badge: None,
+                badge: (self.assistant_requests.len() > 0).then_some(self.assistant_requests.len()),
             },
             AiRailEntry {
                 activity: AiActivity::Clippy,
@@ -1396,6 +1633,30 @@ impl AiAssistantView {
                 label: t!("ai.clippy.tab").to_string(),
                 badge: None,
             },
+        ];
+        if self.agent_observability_enabled {
+            entries.extend([
+                AiRailEntry {
+                    activity: AiActivity::AgentActivity,
+                    icon: "activity",
+                    label: t!("ai.rail.activity").to_string(),
+                    badge: (active_agents > 0).then_some(active_agents),
+                },
+                AiRailEntry {
+                    activity: AiActivity::AgentFiles,
+                    icon: "file-text",
+                    label: t!("ai.rail.files").to_string(),
+                    badge: None,
+                },
+                AiRailEntry {
+                    activity: AiActivity::AgentGit,
+                    icon: "git-branch",
+                    label: t!("ai.rail.git").to_string(),
+                    badge: (changed_files > 0).then_some(changed_files),
+                },
+            ]);
+        }
+        entries.extend([
             AiRailEntry {
                 activity: AiActivity::Tasks,
                 icon: "list-checks",
@@ -1408,7 +1669,7 @@ impl AiAssistantView {
                 label: t!("ai.rail.history").to_string(),
                 badge: None,
             },
-        ];
+        ]);
 
         // The rail and its glyphs are absolute pixels on purpose, exactly like
         // the Dev sidebar rail: a rem-sized 17px glyph would outgrow a fixed
@@ -1546,6 +1807,10 @@ impl AiAssistantView {
                         // `history_open` is Sheet-only state; the rail (Dock)
                         // navigates purely on `active_tab`.
                         this.active_tab = activity;
+                        this.sync_loading();
+                        if activity == AiActivity::AgentGit {
+                            this.refresh_agent_git(cx);
+                        }
                         cx.notify();
                     })),
             );
@@ -1690,13 +1955,6 @@ impl AiAssistantView {
     }
 
     fn render_messages(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        // The metadata line names the model, not the role — the role is already
-        // carried by the position and the absence of a block.
-        let meta_model = if self.model.trim().is_empty() {
-            self.backend.display_name().to_string()
-        } else {
-            self.model.trim().to_string()
-        };
         // At 780px a full-width line of prose runs past 110 characters, so the
         // Sheet gets a bounded, centred reading measure. The Dock is already
         // narrow enough to read straight.
@@ -1734,6 +1992,7 @@ impl AiAssistantView {
             // painted: a `@word` the model invented has no label behind it and
             // stays plain, which is the same rule as everywhere else.
             let thread_labels = composer::conversation_mention_labels(conversation);
+            let mut previous_assistant_identity: Option<(AiBackend, String)> = None;
             for message in &conversation.messages {
                 let is_user = message.role == AiChatRole::User;
                 let message_id = message.id;
@@ -1818,6 +2077,80 @@ impl AiAssistantView {
                         .child(markdown);
                     thread = thread.child(bubble);
                 } else {
+                    let identity = message.backend.map(|backend| {
+                        (
+                            backend,
+                            message
+                                .model
+                                .clone()
+                                .unwrap_or_else(|| effective_model(backend, "")),
+                        )
+                    });
+                    if let Some((backend, model)) = identity.as_ref() {
+                        let changed =
+                            previous_assistant_identity
+                                .as_ref()
+                                .is_some_and(|previous| {
+                                    previous != &(backend.to_owned(), model.clone())
+                                });
+                        if previous_assistant_identity.is_none() || changed {
+                            let marker_label = if changed {
+                                t!("ai.message.model_changed")
+                            } else {
+                                t!("ai.message.model_started")
+                            };
+                            thread = thread.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .w_full()
+                                    .text_size(px(10.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(
+                                        div()
+                                            .h(gpui::px(1.0))
+                                            .flex_1()
+                                            .bg(ShellDeckColors::border()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(5.0))
+                                            .px(px(8.0))
+                                            .py(px(4.0))
+                                            .rounded_full()
+                                            .bg(ShellDeckColors::bg_surface())
+                                            .child(ai_provider_icon(
+                                                *backend,
+                                                11.0,
+                                                ShellDeckColors::text_muted(),
+                                            ))
+                                            .child(format!(
+                                                "{marker_label} · {}",
+                                                provider_model_label(*backend, model)
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .h(gpui::px(1.0))
+                                            .flex_1()
+                                            .bg(ShellDeckColors::border()),
+                                    ),
+                            );
+                        }
+                        previous_assistant_identity = Some((*backend, model.clone()));
+                    }
+                    let response_meta = identity
+                        .as_ref()
+                        .map(|(backend, model)| provider_model_label(*backend, model))
+                        .unwrap_or_else(|| t!("ai.message.legacy_model").to_string());
+                    let response_meta = message
+                        .duration_ms
+                        .map_or(response_meta.clone(), |duration| {
+                            format!("{response_meta} · {}", format_duration(duration))
+                        });
                     // The assistant answers in prose on the surface: no frame, no
                     // fill, no role label. Its metadata sits underneath, quiet —
                     // not as a permanent button in a card header.
@@ -1870,7 +2203,7 @@ impl AiAssistantView {
                                                 ));
                                             }),
                                     )
-                                    .child(meta_model.clone()),
+                                    .child(response_meta),
                             ),
                     );
                 }
@@ -2698,10 +3031,70 @@ impl Render for AiAssistantView {
                         .on_click(cx.listener(|this, _, _, cx| {
                             if this.active_tab == AiActivity::Clippy {
                                 this.active_tab = AiActivity::Chat;
+                                this.sync_loading();
                                 cx.notify();
                             } else {
                                 this.show_clippy(cx);
                             }
+                        })),
+                );
+            }
+            if self.agent_observability_enabled {
+                let showing_observability = matches!(
+                    self.active_tab,
+                    AiActivity::AgentActivity | AiActivity::AgentFiles | AiActivity::AgentGit
+                );
+                let running_agents = self.observed_agent_active_count(cx);
+                conversation_header = conversation_header.child(
+                    div()
+                        .id("ai-observability-pill")
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(px(5.0))
+                        .h(px(22.0))
+                        .px(px(8.0))
+                        .rounded_full()
+                        .cursor_pointer()
+                        .bg(if showing_observability {
+                            ShellDeckColors::selected_bg()
+                        } else {
+                            ShellDeckColors::bg_surface()
+                        })
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .when(running_agents > 0, |pill| {
+                            pill.child(
+                                Spinner::new()
+                                    .size(SpinnerSize::Xs)
+                                    .variant(SpinnerVariant::Primary),
+                            )
+                        })
+                        .when(running_agents == 0, |pill| {
+                            pill.child(lucide_icon("activity", 12.0, ShellDeckColors::text_muted()))
+                        })
+                        .child(t!("ai.rail.activity").to_string())
+                        .when(running_agents > 0, |pill| {
+                            pill.child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(running_agents.to_string()),
+                            )
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.active_tab = if matches!(
+                                this.active_tab,
+                                AiActivity::AgentActivity
+                                    | AiActivity::AgentFiles
+                                    | AiActivity::AgentGit
+                            ) {
+                                AiActivity::Chat
+                            } else {
+                                AiActivity::AgentActivity
+                            };
+                            this.sync_loading();
+                            cx.notify();
                         })),
                 );
             }
@@ -2746,6 +3139,7 @@ impl Render for AiAssistantView {
                             } else {
                                 AiActivity::Tasks
                             };
+                            this.sync_loading();
                             cx.notify();
                         })),
                 );
@@ -2896,8 +3290,7 @@ impl Render for AiAssistantView {
                                     )),
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.active_conversation = Some(id);
-                                cx.notify();
+                                this.select_conversation(id, cx);
                             })),
                     );
                 }
@@ -3164,6 +3557,9 @@ impl Render for AiAssistantView {
                 let panel = match self.active_tab {
                     AiActivity::Chat => chat.into_any_element(),
                     AiActivity::Clippy => self.render_clippy(window, cx),
+                    activity @ (AiActivity::AgentActivity
+                    | AiActivity::AgentFiles
+                    | AiActivity::AgentGit) => self.render_agent_observability(activity, cx),
                     AiActivity::Tasks => self.render_tasks(window, cx),
                     AiActivity::History => self.render_history(false, window, cx),
                 };
@@ -3200,6 +3596,9 @@ impl Render for AiAssistantView {
                     match self.active_tab {
                         AiActivity::Tasks => self.render_tasks(window, cx),
                         AiActivity::Clippy => self.render_clippy(window, cx),
+                        activity @ (AiActivity::AgentActivity
+                        | AiActivity::AgentFiles
+                        | AiActivity::AgentGit) => self.render_agent_observability(activity, cx),
                         _ => chat.into_any_element(),
                     }
                 };
@@ -3521,15 +3920,18 @@ impl Render for AiAssistantView {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_sheet_header_title, context_switch_resets, sheet_message_reading_width,
-        sheet_supports_history_column, should_auto_import_clippy, validated_clippy_result,
-        AiAssistantView, AiQuickActionMode, AiRequestGate,
+        compact_sheet_header_title, context_switch_resets, effective_model, format_duration,
+        provider_model_label, sheet_message_reading_width, sheet_supports_history_column,
+        should_auto_import_clippy, validated_clippy_result, AiAssistantView, AiQuickActionMode,
+        AiRequestGate, AssistantRequestTracker,
     };
-    use shelldeck_core::ai::{AiContext, AiSurface, CLIPPY_MAX_RESULT_CHARS};
+    use shelldeck_core::ai::{AiBackend, AiContext, AiSurface, CLIPPY_MAX_RESULT_CHARS};
+    use uuid::Uuid;
 
-    // SDTEST-1341
+    // SDTEST-1341 — Clippy has no durable conversation identity, so it keeps
+    // the single-flight gate. Durable chat uses `AssistantRequestTracker`.
     #[test]
-    fn stale_ai_response_is_rejected_after_context_invalidation() {
+    fn stale_nondurable_ai_response_is_rejected_after_context_invalidation() {
         let mut gate = AiRequestGate::default();
         let old_request = gate.begin();
         assert!(gate.accepts(old_request));
@@ -3541,11 +3943,50 @@ mod tests {
         assert!(gate.accepts(current_request));
     }
 
+    // SDTEST-1922 — conversational completions no longer share the Clippy
+    // single-flight gate. Each background thread owns one exact request, and
+    // a stale/mismatched completion cannot consume another thread's slot.
+    #[test]
+    fn background_conversation_requests_are_independent_and_identity_bound() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let mut requests = AssistantRequestTracker::default();
+
+        assert!(requests.begin(
+            first,
+            11,
+            AiBackend::ClaudeCli,
+            effective_model(AiBackend::ClaudeCli, ""),
+        ));
+        assert!(requests.begin(
+            second,
+            12,
+            AiBackend::OpenAi,
+            effective_model(AiBackend::OpenAi, "gpt-test"),
+        ));
+        assert!(!requests.begin(first, 13, AiBackend::Anthropic, "other".to_string(),));
+        assert_eq!(requests.len(), 2);
+        assert!(requests.finish(first, 999).is_none());
+
+        let completed = requests.finish(second, 12).unwrap();
+        assert_eq!(completed.backend, AiBackend::OpenAi);
+        assert_eq!(completed.model, "gpt-test");
+        assert!(requests.get(first).is_some());
+        assert!(requests.get(second).is_none());
+
+        assert_eq!(
+            provider_model_label(AiBackend::OpenAi, "gpt-test"),
+            "OpenAI · gpt-test"
+        );
+        assert_eq!(format_duration(999), "999 ms");
+        assert_eq!(format_duration(1_420), "1.4 s");
+    }
+
     // SDTEST-1578 — the Dock removes its window on focus loss while the
     // controller and any in-flight request survive; reopening re-prepares the
-    // same Global context. That re-preparation must NOT invalidate the gate
-    // (the pending reply would land on a dead gate and vanish without spinner
-    // or error), while a genuine surface/title switch still must.
+    // same Global context. That re-preparation must NOT invalidate Clippy's
+    // non-durable gate, while a genuine surface/title switch still must. A
+    // durable conversational request is fenced by thread instead (SDTEST-1922).
     #[test]
     fn reopening_the_same_context_preserves_the_in_flight_request() {
         let global = AiContext::new(

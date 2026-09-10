@@ -1331,6 +1331,17 @@ pub struct AiChatMessage {
     /// conversations written before this field readable.
     #[serde(default)]
     pub mentions: Vec<String>,
+    /// Provider that produced an assistant turn. Older stored conversations
+    /// intentionally leave this empty instead of being relabelled with the
+    /// provider selected today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<AiBackend>,
+    /// Effective model at request time. This is provenance, not live config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Wall-clock completion time recorded by the requesting UI host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 impl AiChatMessage {
@@ -1341,11 +1352,27 @@ impl AiChatMessage {
             content: content.into(),
             created_at: Utc::now(),
             mentions: Vec::new(),
+            backend: None,
+            model: None,
+            duration_ms: None,
         }
     }
 
     pub fn with_mentions(mut self, mentions: Vec<String>) -> Self {
         self.mentions = mentions;
+        self
+    }
+
+    pub fn with_response_metadata(
+        mut self,
+        backend: AiBackend,
+        model: impl Into<String>,
+        duration_ms: u64,
+    ) -> Self {
+        let model = model.into();
+        self.backend = Some(backend);
+        self.model = (!model.trim().is_empty()).then_some(model);
+        self.duration_ms = Some(duration_ms);
         self
     }
 }
@@ -1399,6 +1426,30 @@ impl AiConversation {
         }
         self.messages
             .push(AiChatMessage::new(role, content).with_mentions(mentions));
+        if self.messages.len() > AiConversationStore::MAX_MESSAGES {
+            let excess = self.messages.len() - AiConversationStore::MAX_MESSAGES;
+            self.messages.drain(..excess);
+        }
+        self.updated_at = Utc::now();
+    }
+
+    /// Append an assistant answer with the immutable execution identity that
+    /// produced it. Keeping this on the message prevents a later model switch
+    /// from repainting the complete thread as if it came from the new model.
+    pub fn push_assistant_response(
+        &mut self,
+        content: impl Into<String>,
+        backend: AiBackend,
+        model: impl Into<String>,
+        duration_ms: u64,
+    ) {
+        self.messages.push(
+            AiChatMessage::new(AiChatRole::Assistant, content).with_response_metadata(
+                backend,
+                model,
+                duration_ms,
+            ),
+        );
         if self.messages.len() > AiConversationStore::MAX_MESSAGES {
             let excess = self.messages.len() - AiConversationStore::MAX_MESSAGES;
             self.messages.drain(..excess);
@@ -2277,8 +2328,9 @@ mod tests {
         assert_eq!(AiBackend::OpenAi.cli_command(), None);
     }
 
+    // SDTEST-1921
     #[test]
-    fn conversation_store_round_trips_messages_and_archive_state() {
+    fn conversation_store_round_trips_response_provenance_and_reads_legacy_messages() {
         let path = std::env::temp_dir().join(format!(
             "shelldeck-ai-conversations-{}-{}.json",
             std::process::id(),
@@ -2286,7 +2338,12 @@ mod tests {
         ));
         let mut conversation = AiConversation::new(AiSurface::Terminal, "Terminal local");
         conversation.push(AiChatRole::User, "Explique cette erreur");
-        conversation.push(AiChatRole::Assistant, "Voici le diagnostic");
+        conversation.push_assistant_response(
+            "Voici le diagnostic",
+            AiBackend::Anthropic,
+            "claude-sonnet-4-6",
+            1_420,
+        );
         conversation.archived = true;
 
         AiConversationStore::save_to(&path, &[conversation.clone()]).unwrap();
@@ -2294,6 +2351,20 @@ mod tests {
 
         assert_eq!(loaded, vec![conversation]);
         std::fs::remove_file(path).unwrap();
+
+        let mut legacy = serde_json::to_value(AiChatMessage::new(
+            AiChatRole::Assistant,
+            "Réponse historique",
+        ))
+        .unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("backend");
+        object.remove("model");
+        object.remove("duration_ms");
+        let legacy: AiChatMessage = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.backend, None);
+        assert_eq!(legacy.model, None);
+        assert_eq!(legacy.duration_ms, None);
     }
 
     #[test]

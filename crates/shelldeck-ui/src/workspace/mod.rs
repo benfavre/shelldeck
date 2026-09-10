@@ -1091,6 +1091,18 @@ impl Workspace {
         let fleet_view = cx.new(FleetView::new);
         let bext_view = cx.new(BextCloudView::new);
         ai_assistant.update(cx, |view, cx| view.set_tasks(ai_tasks.clone(), cx));
+        let agent_observability_enabled = app_config
+            .account
+            .as_ref()
+            .is_some_and(|account| account.is_superadmin);
+        ai_assistant.update(cx, |view, cx| {
+            view.bind_agent_console(agent_console.clone(), cx);
+            view.set_agent_observability_enabled(agent_observability_enabled, cx);
+        });
+        ai_dock_assistant.update(cx, |view, cx| {
+            view.bind_agent_console(agent_console.clone(), cx);
+            view.set_agent_observability_enabled(agent_observability_enabled, cx);
+        });
         // The Dock window has no titlebar, so its only account signal is the
         // one the rail draws — push it from here, where the account lives.
         let account_label = app_config.account.as_ref().map(|account| {

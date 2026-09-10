@@ -2029,6 +2029,10 @@ impl Workspace {
             // resurrect the old backend on the next settings save
             // (`.agents/session-state.md`).
             AiAssistantEvent::OpenSettings => self.open_settings(cx),
+            AiAssistantEvent::OpenAgents => {
+                self.ai_sheet = None;
+                self.activate_dev_section(SidebarSection::Agents, cx);
+            }
             // Only the Dock's rail raises these — in the Sheet the main window
             // is already in front and the palette has its own shortcut.
             AiAssistantEvent::OpenMainWindow | AiAssistantEvent::OpenPalette => {}
@@ -2143,6 +2147,9 @@ impl Workspace {
                 self.apply_ai_assistant_action(action, cx);
             }
             AiCompanionEvent::OpenSettings => self.open_settings(cx),
+            AiCompanionEvent::OpenAgents => {
+                self.activate_dev_section(SidebarSection::Agents, cx);
+            }
             // The app root already raised the main window on its way here.
             AiCompanionEvent::OpenMainWindow | AiCompanionEvent::OpenPalette => {}
             AiCompanionEvent::ResumeTask(task_id) => {

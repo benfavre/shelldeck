@@ -631,6 +631,7 @@ impl CompanionRoot {
             event,
             AiCompanionEvent::ApplyAction(_)
                 | AiCompanionEvent::OpenSettings
+                | AiCompanionEvent::OpenAgents
                 | AiCompanionEvent::OpenMainWindow
         );
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {

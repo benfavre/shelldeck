@@ -21,6 +21,7 @@ pub enum AiCompanionEvent {
     OpenMainWindow,
     /// The command palette is its own window, owned by the app root.
     OpenPalette,
+    OpenAgents,
     ResumeTask(Uuid),
     OpenTaskTarget(Uuid),
     StopTask(Uuid),
@@ -99,6 +100,9 @@ impl AiCompanionController {
                     }
                     AiAssistantEvent::OpenPalette => {
                         cx.emit(AiCompanionEvent::OpenPalette);
+                    }
+                    AiAssistantEvent::OpenAgents => {
+                        cx.emit(AiCompanionEvent::OpenAgents);
                     }
                     // Applied to the shared `AiConfig` the Workspace also
                     // holds, so the change is live in both hosts immediately.

@@ -34,6 +34,7 @@ impl Workspace {
                         if !refreshed.name.trim().is_empty() || !refreshed.email.trim().is_empty() {
                             ws.app_config.account = Some(refreshed);
                             let _ = ws.app_config.save();
+                            ws.sync_agent_observability_capability(cx);
                         }
                         // Stash the full whoami — the User "Mes informations"
                         // tab renders every field (device label, created_at,
@@ -356,6 +357,7 @@ impl Workspace {
         self.app_config.cloud_sync.enabled = true;
         self.app_config.cloud_sync.token = token;
         self.app_config.account = Some(account.clone());
+        self.sync_agent_observability_capability(cx);
         if let Err(e) = self.app_config.save() {
             tracing::error!("Failed to save config after login: {}", e);
         }
@@ -457,6 +459,20 @@ impl Workspace {
         });
     }
 
+    fn sync_agent_observability_capability(&mut self, cx: &mut Context<Self>) {
+        let enabled = self
+            .app_config
+            .account
+            .as_ref()
+            .is_some_and(|account| account.is_superadmin);
+        self.ai_assistant.update(cx, |view, cx| {
+            view.set_agent_observability_enabled(enabled, cx)
+        });
+        self.ai_dock_assistant.update(cx, |view, cx| {
+            view.set_agent_observability_enabled(enabled, cx)
+        });
+    }
+
     /// Clear Inklura Manage credentials and stop cloud-backed polls/views.
     pub(super) fn invalidate_cloud_session(&mut self, cx: &mut Context<Self>) {
         self.stop_authenticated_runtime(cx);
@@ -464,6 +480,7 @@ impl Workspace {
         // a later launch/account could restore terminals from the old session.
         self.save_workspace_state(cx);
         self.app_config.account = None;
+        self.sync_agent_observability_capability(cx);
         if let Err(error) = shelldeck_core::config::keychain::delete_manage_token() {
             tracing::warn!("Failed to delete AI Operations token from OS keychain: {error}");
         }
