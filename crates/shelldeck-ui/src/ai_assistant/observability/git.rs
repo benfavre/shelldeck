@@ -598,7 +598,14 @@ impl AiAssistantView {
                         12.0,
                         ShellDeckColors::text_muted(),
                     ))
-                    .child(div().flex_1().min_w(px(0.0)).truncate().child(branch))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(branch),
+                    )
                     .children(tree.upstream.as_ref().map(|_| {
                         div()
                             .flex_shrink_0()
@@ -794,18 +801,28 @@ impl AiAssistantView {
             } else {
                 (ShellDeckColors::text_muted(), gpui::transparent_black())
             };
+            // A row gives the text a definite, shrinkable width. A bare
+            // `truncate()` line in a column is shaped at min-content and
+            // collapses to a lone ellipsis.
             lines = lines.child(
                 div()
-                    .px(px(8.0))
+                    .flex()
+                    .w_full()
                     .min_w(px(0.0))
-                    .truncate()
+                    .px(px(8.0))
                     .bg(background)
-                    .text_color(color)
-                    .child(if line.is_empty() {
-                        " ".to_string()
-                    } else {
-                        line.to_string()
-                    }),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_color(color)
+                            .child(if line.is_empty() {
+                                " ".to_string()
+                            } else {
+                                line.to_string()
+                            }),
+                    ),
             );
         }
         Some(
