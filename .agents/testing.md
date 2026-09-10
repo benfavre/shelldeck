@@ -175,3 +175,11 @@ sync that breaks tests is a red patch and stops the workflow.
 - **Never** introduce a live-network test that runs by default. If a
   reviewer can't `cargo test` on a train without a hostile-flag, the
   contract is broken.
+- **Never** let a test write the user's real profile. Build persisted
+  state in a `tempfile::TempDir`, or bind it to one explicitly. A
+  default `AppConfig` has no backing file and refuses to save
+  (SDUC-500); hold new persisted stores to the same rule.
+  **Incident (2026-09-09):** a Workspace fixture switched modes, the
+  switch saved, and every `cargo test -p shelldeck-ui` replaced
+  `~/.config/shelldeck/config.toml` with a fake account pointing at
+  `manage.example.test`.

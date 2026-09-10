@@ -509,6 +509,16 @@ Fresh `AppConfig::default()` values (window size, theme, font,
 sidebar width) match documented defaults so a user with no config
 gets the intended first-run experience.
 
+### SDUC-500: Only a configuration read from disk is ever saved
+
+`AppConfig::save()` writes only to the file the configuration was loaded
+from or created at. A configuration assembled in memory (test fixtures,
+`AppConfig::default()`, deserialized TOML) has no backing file, and its
+save is refused instead of overwriting the user's
+`~/.config/shelldeck/config.toml`. The startup fallback used when loading
+fails binds the standard path explicitly, so an interactive session keeps
+persisting where it did before.
+
 ---
 
 ## 6. Cloud sync (Inklura Manage → connection store)
@@ -3143,6 +3153,10 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-10**: Added SDUC-500 with SDTEST-1924: `AppConfig::save()` writes
+  only to the file a configuration was read from or created at, so Workspace
+  test fixtures can no longer overwrite the user's real config.
 
 - **2026-09-09** — Amended SDUC-414, SDUC-434 and SDUC-499 with
   SDTEST-1921 through SDTEST-1923: contextual conversations now complete

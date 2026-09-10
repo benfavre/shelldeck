@@ -56,6 +56,11 @@ pub struct AppConfig {
     /// sections. Order is user-defined and preserved across sessions.
     #[serde(default)]
     pub pinned_connections: Vec<uuid::Uuid>,
+    /// File this configuration was read from or created at. `save()` writes
+    /// only there, so a configuration assembled in memory (a test fixture)
+    /// can never overwrite the user's real profile.
+    #[serde(skip)]
+    backing_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -441,26 +446,47 @@ impl AppConfig {
         Self::load_from(&Self::config_path())
     }
 
-    /// Save config to disk.
+    /// Defaults bound to the standard config file. The startup fallback uses
+    /// this when loading fails, so later saves still land where the file lives.
+    pub fn defaults_at_config_path() -> Self {
+        Self {
+            backing_file: Some(Self::config_path()),
+            ..Self::default()
+        }
+    }
+
+    /// Save config back to the file it was read from or created at. A
+    /// configuration assembled in memory has no such file and is refused
+    /// rather than written over the user's real profile.
     pub fn save(&self) -> Result<()> {
-        self.save_to(&Self::config_path())
+        let path = self.backing_file.as_deref().ok_or_else(|| {
+            ShellDeckError::Config(
+                "configuration has no backing file; refusing to write the user profile".to_string(),
+            )
+        })?;
+        self.save_to(path)
     }
 
     /// Load config from a specific path, or create and save defaults there.
+    /// Either way the result is bound to `path` for later saves.
     pub(crate) fn load_from(path: &Path) -> Result<Self> {
         if path.exists() {
             let content = std::fs::read_to_string(path)?;
-            let config: Self = toml::from_str(&content).map_err(|e| {
+            let mut config: Self = toml::from_str(&content).map_err(|e| {
                 ShellDeckError::Config(format!(
                     "Failed to parse config at {}: {}",
                     path.display(),
                     e
                 ))
             })?;
+            config.backing_file = Some(path.to_path_buf());
             info!("Loaded config from {}", path.display());
             Ok(config)
         } else {
-            let config = Self::default();
+            let config = Self {
+                backing_file: Some(path.to_path_buf()),
+                ..Self::default()
+            };
             config.save_to(path)?;
             info!("Created default config at {}", path.display());
             Ok(config)
@@ -556,6 +582,47 @@ mod tests {
         let prior = AppConfig::load_from(&prior_version).expect("load linked prior config");
         assert_eq!(current.theme, ThemePreference::Light);
         assert_eq!(prior.theme, ThemePreference::Dark);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // SDTEST-1924
+    #[test]
+    fn sdtest_1924_only_a_config_read_from_disk_is_bound_to_a_file() {
+        // In-memory configurations name no file to save to. `save()` is not
+        // called on them here: on regression that call would write the very
+        // user profile this test protects.
+        assert!(AppConfig::default().backing_file.is_none());
+        let parsed: AppConfig = toml::from_str(
+            r#"
+theme = "Light"
+
+[terminal]
+
+[general]
+"#,
+        )
+        .expect("parse minimal config");
+        assert!(parsed.backing_file.is_none());
+        assert_eq!(
+            AppConfig::defaults_at_config_path().backing_file,
+            Some(AppConfig::config_path())
+        );
+
+        // Created and re-read configurations are bound to their own path, and
+        // a clone (the Settings snapshot) keeps that binding.
+        let path = temp_path("config.toml");
+        let mut created = AppConfig::load_from(&path).expect("create default config");
+        assert_eq!(created.backing_file.as_deref(), Some(path.as_path()));
+        created.theme = ThemePreference::Light;
+        created
+            .clone()
+            .save()
+            .expect("save through the bound clone");
+
+        let reloaded = AppConfig::load_from(&path).expect("reload config");
+        assert_eq!(reloaded.theme, ThemePreference::Light);
+        assert_eq!(reloaded.backing_file.as_deref(), Some(path.as_path()));
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

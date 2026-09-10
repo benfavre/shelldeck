@@ -1822,7 +1822,7 @@ fn main() -> Result<()> {
     // Load configuration
     let mut config = AppConfig::load().unwrap_or_else(|e| {
         tracing::warn!("Failed to load config, using defaults: {}", e);
-        AppConfig::default()
+        AppConfig::defaults_at_config_path()
     });
     if config.cloud_sync.token.is_empty() {
         match shelldeck_core::config::keychain::get_manage_token() {
