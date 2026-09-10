@@ -144,7 +144,7 @@ struct PendingRun {
 }
 
 #[derive(Clone)]
-enum TimelineItem {
+pub(crate) enum TimelineItem {
     Message(AgentMessage),
     Trace(AgentTraceEvent),
 }
@@ -2559,7 +2559,7 @@ fn session_elapsed(session: &AgentSession) -> Option<String> {
     })
 }
 
-fn merged_timeline(session: &AgentSession) -> Vec<TimelineItem> {
+pub(crate) fn merged_timeline(session: &AgentSession) -> Vec<TimelineItem> {
     let mut timeline = Vec::with_capacity(session.messages.len() + session.trace.len());
     timeline.extend(session.messages.iter().cloned().map(TimelineItem::Message));
     timeline.extend(session.trace.iter().cloned().map(TimelineItem::Trace));

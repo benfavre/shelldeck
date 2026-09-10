@@ -973,7 +973,11 @@ observe this same collection without becoming a second runtime owner. Their
 Suivi, Fichiers and Git panels select the active (or most relevant retained)
 session, show its provider/model/target, real lifecycle timing, typed trace,
 duration/tool/file counts and diff totals. Suivi raises an alert when another
-session needs the user, who can review it in Agents or postpone it. Fichiers
+session needs the user, who can review it in Agents or postpone it. It also
+reads the trace as five steps (understand, plan, change, verify, summarize)
+with their timing, counts and a test progress bar, derived only from typed
+events and agent messages, and lists the agent's own messages between its
+actions in the same order as the Agents cockpit. Fichiers
 shows the touched paths as a collapsible tree that tells read, modified and
 created files apart, using the local working tree to recognize new files. For
 a local session, Git reads the actual working directory (branch, upstream,
@@ -3163,6 +3167,10 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-10**: Amended SDUC-499 with SDTEST-1930: Suivi reads the observed
+  trace as five steps with timing, counts and a test progress bar, and shows
+  the agent's messages between its actions in the Agents cockpit order.
 
 - **2026-09-10**: Amended SDUC-499 with SDTEST-1926 through SDTEST-1929: the
   Assistant's Git panel stages, unstages and commits locally (the commit is

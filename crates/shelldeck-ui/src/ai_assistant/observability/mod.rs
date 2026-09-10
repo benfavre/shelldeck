@@ -15,12 +15,12 @@ use adabraka_ui::prelude::{
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::agent_session::{
-    AgentSession, AgentSessionAttention, AgentSessionStatus, AgentTraceEvent, AgentTraceKind,
-    AgentTraceStatus,
+    AgentMessage, AgentMessageRole, AgentSession, AgentSessionAttention, AgentSessionStatus,
+    AgentTraceEvent, AgentTraceKind, AgentTraceStatus,
 };
 
 use super::{format_duration, AiActivity, AiAssistantEvent, AiAssistantView};
-use crate::agent_console_view::AgentConsoleView;
+use crate::agent_console_view::{merged_timeline, AgentConsoleView, TimelineItem};
 use crate::icons::{lucide_icon, lucide_path};
 use crate::scale::px;
 use crate::t;
@@ -29,6 +29,7 @@ use crate::theme::ShellDeckColors;
 mod files;
 mod git;
 mod signals;
+mod steps;
 
 pub(super) use git::AgentGitPanel;
 
@@ -365,12 +366,23 @@ impl AiAssistantView {
         if let Some(card) = self.render_attention_card(cx) {
             root = root.child(card);
         }
-        root = root.child(signals::render_metrics(
-            duration,
-            signals::tool_event_count(session),
-            observed_files(session).len(),
-        ));
+        root = root
+            .child(signals::render_metrics(
+                duration,
+                signals::tool_event_count(session),
+                observed_files(session).len(),
+            ))
+            .child(panel_label(t!("ai.observability.steps_title").to_string()))
+            .child(steps::render_steps(
+                &steps::session_steps(session),
+                now_ms(),
+            ))
+            .child(panel_label(
+                t!("ai.observability.timeline_title").to_string(),
+            ));
 
+        // The same ordered thread as the Agents cockpit: the agent's own
+        // messages between the actions they explain.
         let mut timeline = div()
             .flex()
             .flex_col()
@@ -379,18 +391,89 @@ impl AiAssistantView {
             .border_color(ShellDeckColors::border())
             .ml(px(5.0))
             .pl(px(12.0));
-        let traces = session.trace.iter().rev().take(16).collect::<Vec<_>>();
-        if traces.is_empty() {
+        let items = merged_timeline(session);
+        if items.is_empty() {
             timeline = timeline.child(empty_line(
                 t!("ai.observability.empty_activity").to_string(),
             ));
         } else {
-            for trace in traces.into_iter().rev() {
-                timeline = timeline.child(trace_row(trace));
+            let start = items.len().saturating_sub(MAX_TIMELINE_ITEMS);
+            for item in &items[start..] {
+                timeline = timeline.child(match item {
+                    TimelineItem::Trace(trace) => trace_row(trace),
+                    TimelineItem::Message(message) => message_row(message),
+                });
             }
         }
         root.child(timeline).into_any_element()
     }
+}
+
+/// Most recent thread rows shown in Suivi; the Agents cockpit keeps the rest.
+const MAX_TIMELINE_ITEMS: usize = 24;
+
+fn panel_label(label: String) -> AnyElement {
+    div()
+        .pt(px(2.0))
+        .text_size(px(9.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(ShellDeckColors::text_muted())
+        .child(label.to_uppercase())
+        .into_any_element()
+}
+
+fn message_row(message: &AgentMessage) -> AnyElement {
+    let (icon, color) = match message.role {
+        AgentMessageRole::User => ("user", ShellDeckColors::text_muted()),
+        AgentMessageRole::Agent => ("bot", ShellDeckColors::primary()),
+        AgentMessageRole::Error => ("circle-alert", ShellDeckColors::error()),
+    };
+    div()
+        .relative()
+        .flex()
+        .gap(px(7.0))
+        .min_w_0()
+        .py(px(6.0))
+        .child(
+            div()
+                .absolute()
+                .left(gpui::px(-17.0))
+                .top(gpui::px(11.0))
+                .size(gpui::px(9.0))
+                .rounded_full()
+                .border_2()
+                .border_color(ShellDeckColors::bg_primary())
+                .bg(color),
+        )
+        .child(
+            svg()
+                .path(lucide_path(icon))
+                .flex_shrink_0()
+                .size(gpui::px(12.0))
+                .text_color(color),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .line_clamp(3)
+                .text_size(px(10.0))
+                .text_color(if message.role == AgentMessageRole::Error {
+                    ShellDeckColors::error()
+                } else {
+                    ShellDeckColors::text_primary()
+                })
+                .child(message.text.replace('\n', " ")),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .font_family(MONO)
+                .text_size(px(8.5))
+                .text_color(ShellDeckColors::text_muted())
+                .child(crate::i18n::rel_time(message.at_ms as f64)),
+        )
+        .into_any_element()
 }
 
 fn select_observed_session(console: &AgentConsoleView) -> Option<&AgentSession> {
