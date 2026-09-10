@@ -1781,7 +1781,10 @@ The provider picker in the composer switches the provider used by the next
 request and saves it to Settings without dismissing the Sheet. An AI settings
 change closes the Sheet only when what it shows is left without a usable
 backend (signed out, unconfigured, missing CLI) or an allowed surface, Clippy
-following its own surface setting.
+following its own surface setting. A CLI provider whose program is not
+installed is shown disabled in that picker, with the reason, so choosing it
+cannot close the Sheet and hide every AI entry point; the selected provider
+always stays selectable.
 
 ### SDUC-415 — AI context and API privacy boundaries
 
@@ -3193,6 +3196,11 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-10**: Amended SDUC-414 with SDTEST-1939: the Assistant's provider
+  picker disables CLI providers whose program is not installed. Choosing the
+  uninstalled Automonique ACP from the Sheet closed it and hid every AI entry
+  point.
 
 - **2026-09-10**: Amended SDUC-499 with SDTEST-1937 and SDTEST-1938 (and
   SDTEST-1927): the commit confirmation can draft its message with the

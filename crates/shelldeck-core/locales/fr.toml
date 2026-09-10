@@ -1684,6 +1684,7 @@ toast.ai.request_draft_opened = "Brouillon de demande préparé par l’Assistan
 palette.open_ai = "Ouvrir l’assistant IA"
 palette.open_clippy = "Ouvrir Clippy"
 ai.assistant.open = "Ouvrir l’assistant IA (Ctrl/Cmd+Shift+K)"
+ai.assistant.backend_missing = "non installé"
 ai.assistant.placeholder = "Que veux-tu préparer ou analyser ?"
 ai.assistant.submit = "Générer"
 ai.assistant.hint.send = "⏎ envoyer"

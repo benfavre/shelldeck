@@ -1767,6 +1767,33 @@ pub fn command_available(command: &str) -> bool {
     crate::util::executable_on_path(command)
 }
 
+/// CLI backends a provider picker should disable because their program is
+/// not on `PATH`. The selected backend is never listed: it may run from the
+/// configured `cli_path`, and it must stay selectable.
+pub fn uninstalled_backends(current: AiBackend) -> Vec<AiBackend> {
+    uninstalled_backends_with(current, command_available)
+}
+
+fn uninstalled_backends_with(
+    current: AiBackend,
+    available: impl Fn(&str) -> bool,
+) -> Vec<AiBackend> {
+    [
+        AiBackend::ClaudeCli,
+        AiBackend::CodexCli,
+        AiBackend::AiderCli,
+        AiBackend::AutomoniqueAcp,
+    ]
+    .into_iter()
+    .filter(|backend| *backend != current)
+    .filter(|backend| {
+        backend
+            .cli_command()
+            .is_some_and(|command| !available(command))
+    })
+    .collect()
+}
+
 pub fn configured_cli_available(config: &AiConfig) -> bool {
     if !config.backend.is_cli() {
         return false;
@@ -3140,5 +3167,30 @@ mod tests {
             calls: Default::default(),
         };
         assert!(draft_commit_message(&empty, commit_message_context(None, &[], &[], "")).is_err());
+    }
+
+    #[test]
+    fn sdtest_1939_provider_picker_disables_only_missing_cli_backends() {
+        let installed = |command: &str| command == "codex" || command == "claude";
+        assert_eq!(
+            uninstalled_backends_with(AiBackend::CodexCli, installed),
+            vec![AiBackend::AiderCli, AiBackend::AutomoniqueAcp]
+        );
+        // The selected backend stays selectable even when its program is
+        // missing: it may run from the configured path.
+        assert_eq!(
+            uninstalled_backends_with(AiBackend::AutomoniqueAcp, installed),
+            vec![AiBackend::AiderCli]
+        );
+        // API backends have no program to look for.
+        assert_eq!(
+            uninstalled_backends_with(AiBackend::OpenAi, |_| false),
+            vec![
+                AiBackend::ClaudeCli,
+                AiBackend::CodexCli,
+                AiBackend::AiderCli,
+                AiBackend::AutomoniqueAcp,
+            ]
+        );
     }
 }

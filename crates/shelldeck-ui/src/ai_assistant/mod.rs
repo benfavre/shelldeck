@@ -3897,37 +3897,53 @@ impl Render for AiAssistantView {
                 .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
                     cx.stop_propagation();
                 });
+            // A CLI whose program is missing cannot run: picking it would close
+            // the Sheet and hide every AI entry point, so it is shown with the
+            // reason instead. Only read while the menu is open.
+            let missing = shelldeck_core::ai::uninstalled_backends(current);
             for (index, (backend, label)) in Self::backend_choices().into_iter().enumerate() {
                 let selected = backend == current;
-                menu = menu.child(
-                    div()
-                        .id(("ai-backend-choice", index))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .px(px(9.0))
-                        .py(px(7.0))
-                        .rounded(px(7.0))
+                let installed = !missing.contains(&backend);
+                let text_color = if installed {
+                    ShellDeckColors::text_primary()
+                } else {
+                    ShellDeckColors::text_muted()
+                };
+                let mut row = div()
+                    .id(("ai-backend-choice", index))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(9.0))
+                    .py(px(7.0))
+                    .rounded(px(7.0))
+                    .text_size(px(12.0))
+                    .text_color(text_color)
+                    .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
+                    .child(ai_provider_icon(backend, 14.0, text_color))
+                    .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
+                    .when(selected, |el| {
+                        el.child(lucide_icon("check", 13.0, ShellDeckColors::primary()))
+                    });
+                if installed {
+                    row = row
                         .cursor_pointer()
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_primary())
-                        .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
                         .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                        .child(ai_provider_icon(
-                            backend,
-                            14.0,
-                            ShellDeckColors::text_primary(),
-                        ))
-                        .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
-                        .when(selected, |el| {
-                            el.child(lucide_icon("check", 13.0, ShellDeckColors::primary()))
-                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.backend_menu_open = false;
                             cx.emit(AiAssistantEvent::SelectBackend(backend));
                             cx.notify();
-                        })),
-                );
+                        }));
+                } else {
+                    row = row.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("ai.assistant.backend_missing").to_string()),
+                    );
+                }
+                menu = menu.child(row);
             }
             root = root.child(
                 // Dismiss layer: a click anywhere else closes the menu.
