@@ -20,6 +20,7 @@ use std::{collections::HashMap, rc::Rc, time::Instant};
 use uuid::Uuid;
 
 mod composer;
+mod history;
 mod observability;
 
 use composer::{attachment_summary, MentionPicker};
@@ -1417,7 +1418,14 @@ impl AiAssistantView {
             );
         }
 
-        for conversation in conversations {
+        for entry in history::grouped_entries(&conversations) {
+            let conversation = match entry {
+                history::HistoryEntry::Group(surface) => {
+                    list = list.child(history::group_header(surface));
+                    continue;
+                }
+                history::HistoryEntry::Conversation(conversation) => conversation,
+            };
             let id = conversation.id;
             let archive_id = id;
             let delete_id = id;

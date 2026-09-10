@@ -1746,6 +1746,11 @@ bottom-right 12 px `radius_xl`; the complete overlay is clipped once at the
 host boundary so no dim-backdrop wedge appears between the panel and those
 outer client corners.
 
+The history list groups conversations under the surface they came from
+(ShellDeck, Support, Requests, Scripts, Terminal and so on), using the names
+Settings gives those surfaces. Groups follow the order of their most recent
+conversation, and rows stay newest first inside each group.
+
 Each conversational request belongs to its exact thread. Starting or selecting
 another conversation leaves earlier completions running in the background; the
 history row and Dock rail expose that work, and a late response can only land in
@@ -3167,6 +3172,10 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-10**: Amended SDUC-414 with SDTEST-1931: the Assistant history
+  groups conversations by surface, in order of each group's most recent
+  conversation, using the surface names from Settings.
 
 - **2026-09-10**: Amended SDUC-499 with SDTEST-1930: Suivi reads the observed
   trace as five steps with timing, counts and a test progress bar, and shows
