@@ -1689,10 +1689,13 @@ AI response. In the durable assistant conversation, both user and assistant
 message bodies render Markdown structure—including headings, emphasis, lists,
 links, code blocks, and tables—while the assistant copy action preserves the
 original source text. User messages form right-aligned surface bubbles: short
-one-line turns keep a compact width, while long or structured Markdown is
+one-line turns keep a compact width measured from their shaped text, so the
+bubble never wraps its last glyph, while long or structured Markdown is
 capped at 88% of the reading column and receives a definite layout width so
 every wrapped line contributes to the bubble height instead of being clipped.
-Assistant responses remain unframed prose, and both roles use compact
+Assistant responses remain unframed prose laid out at the thread's definite
+content width, so a Markdown table keeps usable columns and the scroll height
+matches what is painted. Both roles use compact
 conversation block spacing without a document-style trailing margin. Compact
 headings use a body-relative H1–H6 ramp (1.44× down to 1×) suited to the 480 px
 Dock instead of the fixed 32–16 px document typography; ordinary Markdown keeps
@@ -3119,6 +3122,11 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-10**: Amended SDUC-414 with SDTEST-1925: assistant answers are laid
+  out at the thread's definite content width, so Markdown tables no longer
+  collapse to one glyph per column, and compact user bubbles are sized from
+  their shaped text instead of a per-character estimate.
 
 - **2026-09-09** — Amended SDUC-443 with SDPATCH-045 and SDTEST-1918 through
   SDTEST-1920: the compact Dev rail scrolls independently between its fixed
