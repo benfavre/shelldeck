@@ -2339,6 +2339,79 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    // SDTEST-1935 — real provider-owned subscription credentials, no API keys.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires locally signed-in Codex/Claude subscriptions and sends two minimal completions"]
+    fn live_subscription_clis_complete_without_api_keys() {
+        const CHILD: &str = "SHELLDECK_SUBSCRIPTION_SMOKE_CHILD";
+        assert_eq!(
+            std::env::var("SHELLDECK_LIVE_SUBSCRIPTION").as_deref(),
+            Ok("1")
+        );
+        if std::env::var(CHILD).as_deref() != Ok("1") {
+            // Never mutate process-wide environment alongside other Rust tests.
+            // Retain HOME/CODEX_HOME/CLAUDE_CONFIG_DIR: the CLIs own OAuth storage.
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "ai::tests::live_subscription_clis_complete_without_api_keys",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1");
+            for key in [
+                "OPENAI_API_KEY",
+                "CODEX_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+            ] {
+                child.env_remove(key);
+            }
+            let result = child.output().unwrap();
+            assert!(String::from_utf8_lossy(&result.stdout).contains("running 1 test"));
+            assert!(
+                result.status.success(),
+                "subscription smoke failed: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
+        let codex = Command::new("codex")
+            .args(["login", "status"])
+            .output()
+            .unwrap();
+        assert!(codex.status.success());
+        assert!(
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&codex.stdout),
+                String::from_utf8_lossy(&codex.stderr)
+            )
+            .contains("ChatGPT"),
+            "Codex must be signed in with ChatGPT before this smoke"
+        );
+        let claude = Command::new("claude")
+            .args(["auth", "status"])
+            .output()
+            .unwrap();
+        assert!(claude.status.success());
+        let status: Value = serde_json::from_slice(&claude.stdout).unwrap();
+        assert_eq!(status["loggedIn"], true);
+        assert_eq!(status["authMethod"], "claude.ai");
+        for backend in [AiBackend::CodexCli, AiBackend::ClaudeCli] {
+            let config = AiConfig {
+                enabled: true,
+                backend,
+                ..AiConfig::default()
+            };
+            // create_client must not require ShellDeck's OS-keychain API key.
+            assert_eq!(test_connection(&config).unwrap().text, "SHELLDECK_AI_OK");
+        }
+    }
+
     // SDTEST-1338
     #[cfg(unix)]
     #[test]

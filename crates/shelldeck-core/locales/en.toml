@@ -2257,3 +2257,15 @@ bext.error.instance_not_found = "Resource or SDK route not found on the Bext ins
 bext.error.instance_server = "The Bext instance hit an error. Check its logs, then try again."
 bext.error.instance_bad_response = "Unexpected response from the Bext instance. Details are in the logs."
 bext.error.instance_other = "The request to the Bext instance failed. Details are in the logs."
+
+# Subscription-backed local CLI setup
+settings.ai.backend.claude_cli = "Claude Code CLI (subscription)"
+settings.ai.backend.codex_cli = "Codex CLI (ChatGPT subscription)"
+ai.subscription.claude = "Use your eligible Claude subscription through Claude Code. No API key is required in ShellDeck. Your subscription limits apply."
+ai.subscription.codex = "Use your eligible ChatGPT subscription through Codex. No API key is required in ShellDeck. Your subscription limits apply."
+ai.subscription.local = "Install the CLI, then run this command in a terminal on this computer and complete sign-in in your browser."
+ai.subscription.remote = "Install the CLI and sign in on the selected SSH host. This computer’s login is not forwarded to the remote host."
+ai.subscription.copy = "Copy command"
+ai.subscription.docs = "Sign-in guide"
+ai.subscription.status = "Check the active account: %{command}"
+ai.subscription.billing = "ShellDeck reuses the CLI login. An API key configured in the CLI or its environment can select API billing: check the active account and remove that configuration to use your subscription."

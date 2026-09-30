@@ -30,6 +30,14 @@ risques par frontière observable et impose une vérification avant correction.
 
 ## Journal
 
+- **2026-09-30 — Abonnements Codex et Claude Code vérifiés.** Les clients CLI
+  réutilisaient déjà l’authentification du fournisseur, sans clé ShellDeck,
+  mais l’interface n’expliquait pas ce parcours. Réglages et Agents partagent
+  maintenant le guide connexion/copier/statut et la frontière hôte SSH.
+  SDTEST-1935 a effectué deux complétions réelles avec login ChatGPT et
+  Claude.ai/Max après retrait des variables de clés API. Ce test reste opt-in
+  hors CI ; SDTEST-1936 reste Rouge pour le harnais visuel automatisé.
+
 - **2026-09-30 — Dernier passage, champs secrets.** Le formulaire de connexion
   et la clé API démarraient sans masquage : le bouton œil ne configurait pas
   le type de l’état. Les deux états sont maintenant initialisés en Password.

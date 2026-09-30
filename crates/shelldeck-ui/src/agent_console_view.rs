@@ -2327,31 +2327,41 @@ impl Render for AgentConsoleView {
             .px(if wide { px(24.0) } else { px(12.0) })
             .py(px(16.0));
         if !has_content {
-            output = output.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .flex_1()
-                    .gap(px(8.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(lucide_icon("bot", 27.0, ShellDeckColors::primary()))
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("agents.empty.title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .max_w(px(520.0))
-                            .text_size(px(11.0))
-                            .text_align(TextAlign::Center)
-                            .child(t!("agents.empty.description").to_string()),
-                    ),
+            let subscription_setup = crate::cli_subscription_setup::render_subscription_setup(
+                context.provider.binary(),
+                matches!(context.target, AgentTarget::Ssh { .. }),
             );
+            let mut empty_state = div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(8.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(lucide_icon("bot", 27.0, ShellDeckColors::primary()))
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(t!("agents.empty.title").to_string()),
+                )
+                .child(
+                    div()
+                        .max_w(px(520.0))
+                        .text_size(px(11.0))
+                        .text_align(TextAlign::Center)
+                        .child(t!("agents.empty.description").to_string()),
+                );
+            if subscription_setup.is_some() {
+                empty_state = empty_state.flex_shrink_0().py(px(16.0));
+            } else {
+                empty_state = empty_state.flex_1();
+            }
+            output = output.child(empty_state);
+            if let Some(setup) = subscription_setup {
+                output = output.child(div().w_full().max_w(px(520.0)).mx_auto().child(setup));
+            }
         } else {
             let mut timeline_view = div()
                 .w_full()

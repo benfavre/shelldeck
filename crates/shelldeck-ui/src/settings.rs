@@ -1455,7 +1455,7 @@ impl SettingsView {
             .child(Self::render_setting_row(
                 t!("settings.ai.backend.label").as_ref(),
                 t!("settings.ai.backend.description").as_ref(),
-                div().w(px(220.0)).child(self.ai_backend_select.clone()),
+                div().w(px(300.0)).child(self.ai_backend_select.clone()),
             ))
             .child(Self::render_setting_row(
                 t!("settings.ai.status.label").as_ref(),
@@ -1480,6 +1480,12 @@ impl SettingsView {
                 t!("settings.ai.model.description").as_ref(),
                 div().w(px(220.0)).child(model_input),
             ));
+
+        if let Some(setup) = backend.cli_command().and_then(|command| {
+            crate::cli_subscription_setup::render_subscription_setup(command, false)
+        }) {
+            root = root.child(setup);
+        }
 
         if let Some(provider) = backend.provider_key() {
             let key_state = self.ai_api_key_state.clone();
@@ -3098,8 +3104,14 @@ fn build_ai_backend_select(
             AiBackend::Disabled,
             t!("settings.ai.backend.disabled").to_string(),
         ),
-        (AiBackend::ClaudeCli, "Claude Code CLI".to_string()),
-        (AiBackend::CodexCli, "Codex CLI".to_string()),
+        (
+            AiBackend::ClaudeCli,
+            t!("settings.ai.backend.claude_cli").to_string(),
+        ),
+        (
+            AiBackend::CodexCli,
+            t!("settings.ai.backend.codex_cli").to_string(),
+        ),
         (AiBackend::AiderCli, "Aider CLI".to_string()),
         (AiBackend::AutomoniqueAcp, "Automonique ACP".to_string()),
         (AiBackend::OpenAi, "OpenAI API".to_string()),

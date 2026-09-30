@@ -250,6 +250,37 @@ A **bext Cloud** view in Dev mode integrates the hosted control plane at [cloud.
 
 Each SSH connection has a **bext** hover action that opens the Instance tab for that box. (v1 targets the local loopback `http://127.0.0.1` — managing a remote box over an SSH tunnel is the next step.) Palette: **bext Cloud : se connecter / ouvrir**.
 
+## Use Codex or Claude Code with a subscription
+
+In **Settings → AI**, choose **Codex CLI (ChatGPT subscription)** or
+**Claude Code CLI (subscription)**. These backends reuse the provider CLI's
+local login and do not require a ShellDeck API key.
+
+Install the CLI and sign in on the computer where it will run:
+
+```sh
+# Codex: sign in with your eligible ChatGPT account
+codex login
+codex login status
+
+# Claude Code: sign in with your eligible Claude subscription
+claude auth login --claudeai
+claude auth status
+```
+
+Settings shows the matching setup command, a copy button, the official sign-in
+guide, and an explicit connection test. The **Agents** empty state shows the same
+setup for its selected provider. For an SSH target, install and sign in on that
+host; ShellDeck does not forward this computer's provider credentials.
+
+The CLI determines authentication and billing. Existing API credentials in its
+configuration or environment can select API usage instead of the subscription;
+check the active login and remove that configuration when using your plan.
+Subscription limits still apply. The separate **OpenAI API** and **Anthropic
+API** backends continue to use OS-keychain API keys.
+See [Codex authentication](https://developers.openai.com/codex/auth) and
+[Claude Code authentication](https://code.claude.com/docs/en/authentication).
+
 ## Keyboard Shortcuts
 
 Use `Ctrl` on Linux/Windows and `Cmd` on macOS unless noted otherwise.

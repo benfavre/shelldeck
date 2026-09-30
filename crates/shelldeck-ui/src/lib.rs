@@ -7,6 +7,7 @@ pub mod ai_workflow;
 pub mod attachment_annotator;
 pub mod bext_cloud_view;
 pub mod brand;
+mod cli_subscription_setup;
 pub mod command_palette;
 pub mod command_palette_window;
 pub mod connection_combobox;
