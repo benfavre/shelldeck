@@ -3,7 +3,7 @@ use crate::scale::px;
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
-use adabraka_ui::components::input_state::InputState;
+use adabraka_ui::components::input_state::{InputState, InputType};
 use adabraka_ui::components::select::{Select, SelectOption};
 use adabraka_ui::components::toggle::Toggle;
 use adabraka_ui::prelude::{
@@ -376,7 +376,7 @@ impl SettingsView {
                 state.content = ai_model.into();
                 state
             }),
-            ai_api_key_state: cx.new(InputState::new),
+            ai_api_key_state: cx.new(|cx| InputState::new(cx).input_type(InputType::Password)),
             ai_connection_state: AiConnectionState::NotTested,
             shortcut_capture: None,
             shortcut_status_before_capture: None,
@@ -1489,57 +1489,62 @@ impl SettingsView {
                 t!("settings.ai.api_key.description").as_ref(),
                 div()
                     .flex()
-                    .items_center()
+                    .flex_col()
                     .gap(px(8.0))
                     .w(px(300.0))
                     .child(
-                        div().flex_grow().child(
-                            Input::new(&self.ai_api_key_state)
-                                .size(InputSize::Sm)
-                                .password(true)
-                                .placeholder(t!("settings.ai.api_key.placeholder").to_string()),
-                        ),
+                        Input::new(&self.ai_api_key_state)
+                            .w_full()
+                            .size(InputSize::Sm)
+                            .password(true)
+                            .placeholder(t!("settings.ai.api_key.placeholder").to_string()),
                     )
                     .child(
-                        Button::new(
-                            "ai-api-key-save",
-                            t!("settings.ai.api_key.save").to_string(),
-                        )
-                        .variant(ButtonVariant::Outline)
-                        .on_click(cx.listener(
-                            move |this, _, _window, cx| {
-                                let value = key_state.read(cx).content().trim().to_string();
-                                if value.is_empty() {
-                                    this.ai_connection_state = AiConnectionState::Failed(
-                                        t!("settings.ai.api_key.required").to_string(),
-                                    );
-                                    cx.notify();
-                                    return;
-                                }
-                                key_state.update(cx, |state, cx| {
-                                    state.reset(cx);
-                                });
-                                cx.emit(SettingsEvent::AiApiKeyStored { backend, value });
-                            },
-                        )),
-                    )
-                    .child(
-                        Button::new(
-                            "ai-api-key-delete",
-                            t!("settings.ai.api_key.delete").to_string(),
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .on_click(cx.listener(
-                            move |_this, _, _window, cx| {
-                                cx.emit(SettingsEvent::AiApiKeyDeleted {
-                                    backend: if provider == "openai" {
-                                        AiBackend::OpenAi
-                                    } else {
-                                        AiBackend::Anthropic
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                Button::new(
+                                    "ai-api-key-save",
+                                    t!("settings.ai.api_key.save").to_string(),
+                                )
+                                .variant(ButtonVariant::Outline)
+                                .on_click(cx.listener(
+                                    move |this, _, _window, cx| {
+                                        let value = key_state.read(cx).content().trim().to_string();
+                                        if value.is_empty() {
+                                            this.ai_connection_state = AiConnectionState::Failed(
+                                                t!("settings.ai.api_key.required").to_string(),
+                                            );
+                                            cx.notify();
+                                            return;
+                                        }
+                                        key_state.update(cx, |state, cx| {
+                                            state.reset(cx);
+                                        });
+                                        cx.emit(SettingsEvent::AiApiKeyStored { backend, value });
                                     },
-                                });
-                            },
-                        )),
+                                )),
+                            )
+                            .child(
+                                Button::new(
+                                    "ai-api-key-delete",
+                                    t!("settings.ai.api_key.delete").to_string(),
+                                )
+                                .variant(ButtonVariant::Ghost)
+                                .on_click(cx.listener(
+                                    move |_this, _, _window, cx| {
+                                        cx.emit(SettingsEvent::AiApiKeyDeleted {
+                                            backend: if provider == "openai" {
+                                                AiBackend::OpenAi
+                                            } else {
+                                                AiBackend::Anthropic
+                                            },
+                                        });
+                                    },
+                                )),
+                            ),
                     ),
             ));
         }

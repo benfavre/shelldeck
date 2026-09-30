@@ -8,7 +8,7 @@ use crate::scale::px;
 use gpui::prelude::*;
 use gpui::*;
 
-use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::components::input::{Input, InputSize, InputState, InputType};
 
 use crate::overlay::{window_backdrop, InputEscape};
 use crate::t;
@@ -84,7 +84,7 @@ impl LoginForm {
     pub fn new(server: String, device: String, cx: &mut Context<Self>) -> Self {
         Self {
             email_state: cx.new(InputState::new),
-            password_state: cx.new(InputState::new),
+            password_state: cx.new(|cx| InputState::new(cx).input_type(InputType::Password)),
             device,
             server,
             busy: false,

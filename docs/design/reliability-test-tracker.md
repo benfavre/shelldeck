@@ -30,6 +30,14 @@ risques par frontière observable et impose une vérification avant correction.
 
 ## Journal
 
+- **2026-09-30 — Dernier passage, champs secrets.** Le formulaire de connexion
+  et la clé API démarraient sans masquage : le bouton œil ne configurait pas
+  le type de l’état. Les deux états sont maintenant initialisés en Password.
+  Vérification native : masquage initial, révéler/masquer, refus 401, réouverture
+  et conservation après resize. Les actions de clé API passent sous le champ
+  pour préserver sa largeur, y compris à 580 px. SDTEST-1934 reste Rouge pour
+  le harnais automatisé ; aucun vrai secret stocké ni appel fournisseur.
+
 - **2026-09-30 — Suite de la boucle, SSH et sélection.** Un serveur SSH jetable
   sur loopback a validé l'authentification par clé, la sortie du PTY et un tunnel
   local → distant avec réponse HTTP puis arrêt. Le clic sur une ligne filtrée

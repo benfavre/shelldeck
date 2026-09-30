@@ -1479,7 +1479,9 @@ User/Support with Dev clamped to User; super-admin → persisted mode.
 Switching between Dev / User / Support hides the Dev surface without
 destroying terminal sessions (SDUC-023 must not be interrupted).
 Settings is a closable personal surface available in every authenticated
-mode. User/Support expose General, AI, Appearance and About; Dev-capable
+mode. The AI API-key field starts masked, supports explicit reveal/hide, and
+keeps its full text viewport with Save/Delete below it at compact and desktop
+widths. User/Support expose General, AI, Appearance and About; Dev-capable
 accounts additionally expose Terminal and Editor. The shared General tab also
 applies that capability boundary to its SSH-session controls: reconnecting
 terminal sessions on startup and automatically attaching tmux are absent for a
@@ -1519,7 +1521,9 @@ rather than stale search text (SDPATCH-046, SDTEST-1933).
 ### SDUC-315 — Login form flows
 
 Email + password is the one primary path and submit stays disabled while either
-field is empty. Password recovery opens the active Manage origin's public
+field is empty. Newly opened password fields start masked; explicit reveal/hide
+is retained across repaint, and failed sign-in does not change that choice.
+Password recovery opens the active Manage origin's public
 `/manage/forgot-password` page. SSO, Google, GitHub, and browser-password login
 are collapsed under Other methods by default; expanding it preserves their
 exact provider routing, with browser password emitting `StartOidc(None)`.
