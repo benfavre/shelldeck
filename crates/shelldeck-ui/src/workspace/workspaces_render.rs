@@ -1043,6 +1043,7 @@ impl Render for WorkspaceHubView {
             .flex_col()
             .size_full()
             .bg(ShellDeckColors::bg_primary())
+            .text_color(ShellDeckColors::text_primary())
             .child(self.render_header(cx))
             .child(
                 div()

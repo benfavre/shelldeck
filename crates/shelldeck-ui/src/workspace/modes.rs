@@ -252,6 +252,7 @@ impl Workspace {
         self.issue_selected = None;
         self.issue_detail = None;
         self.user_new_request_sheet_open = false;
+        self.user_new_request_needs_focus = false;
         self.user_new_request_sheet_dismissing = false;
         self.confirm_new_request_discard = false;
         self.new_request_discard_return_focus = None;

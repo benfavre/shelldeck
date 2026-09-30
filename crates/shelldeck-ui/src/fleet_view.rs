@@ -3416,18 +3416,18 @@ impl FleetView {
         list
     }
 
-    fn render_session_search(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Input::new(&self.search_state)
-            .size(InputSize::Sm)
+    fn render_session_search(&self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut input = Input::new(&self.search_state).size(InputSize::Sm);
+        // The desktop session column is 340 px with 10 px padding on each
+        // side. A definite input width prevents its text viewport from
+        // resolving a percentage against an intrinsic/min-content width.
+        if !compact {
+            input = input.w(px(320.0));
+        }
+        input
             .placeholder(t!("fleet.sessions.search").to_string())
             .clearable(true)
-            .prefix(
-                svg()
-                    .path("icons/lucide/search.svg")
-                    .size(px(12.0))
-                    .flex_shrink_0()
-                    .text_color(ShellDeckColors::text_muted()),
-            )
+            .prefix(lucide_icon("search", 12.0, ShellDeckColors::text_muted()))
             .on_change({
                 let entity = cx.entity();
                 move |value, cx| {
@@ -4060,11 +4060,15 @@ impl Render for FleetView {
                     .flex_col()
                     .child(
                         div()
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .min_w(px(0.0))
                             .px(px(10.0))
                             .py(px(8.0))
                             .border_b_1()
                             .border_color(ShellDeckColors::border())
-                            .child(self.render_session_search(cx)),
+                            .child(self.render_session_search(compact, cx)),
                     )
                     .child(self.render_pane_tabs(cx))
                     .child(self.render_selected_pane(cx))
@@ -4115,11 +4119,15 @@ impl Render for FleetView {
                         ))
                         .child(
                             div()
+                                .flex()
+                                .flex_col()
+                                .w_full()
+                                .min_w(px(0.0))
                                 .px(px(10.0))
                                 .py(px(8.0))
                                 .border_b_1()
                                 .border_color(ShellDeckColors::border())
-                                .child(self.render_session_search(cx)),
+                                .child(self.render_session_search(compact, cx)),
                         )
                         .child(self.render_sessions(cx)),
                 )

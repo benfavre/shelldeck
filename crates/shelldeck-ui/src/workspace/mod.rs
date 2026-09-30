@@ -736,6 +736,9 @@ pub struct Workspace {
     /// right-side sheet, toggled by the "Nouvelle demande" button in the list
     /// header.
     user_new_request_sheet_open: bool,
+    /// Claim title focus once the sheet is visible, including after a mode
+    /// transition. Further renders must preserve the user's chosen field.
+    user_new_request_needs_focus: bool,
     /// While `true` the composer sheet plays its slide-out/fade-out animation.
     /// Cleared (along with `..open`) by a delayed task the close handler spawns.
     user_new_request_sheet_dismissing: bool,
@@ -1530,6 +1533,7 @@ impl Workspace {
             issue_thread_link_action: None,
             _issues_poll: None,
             user_new_request_sheet_open: false,
+            user_new_request_needs_focus: false,
             user_new_request_sheet_dismissing: false,
             confirm_new_request_discard: false,
             new_request_discard_focus: cx.focus_handle(),

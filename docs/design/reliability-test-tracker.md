@@ -30,6 +30,25 @@ risques par frontière observable et impose une vérification avant correction.
 
 ## Journal
 
+- **2026-09-30 — Passe visuelle native, REL-003/006.** Sur Xvfb isolé,
+  parcours User/Support/Dev, terminaux et script locaux, formulaires, réglages,
+  navigateur local, cockpits et palette. Corrections reproduites : titre de
+  demande sans focus, focus conservé sur un contrôle masqué après fermeture,
+  recherche Platform/Agents réduite au contenu intrinsèque, texte hérité noir
+  sur les surfaces sombres Workspaces/Agents. Les parcours corrigés sont
+  revalidés en Light/Tokyo Night et fenêtres 1200 × 850 / 820 × 600.
+  [Preuves et limites](../testing/visual-qa-2026-09-30.md) ; SDTEST-1930..1932
+  restent rouges pour l'automatisation GPUI, même si la passe manuelle réussit.
+
+- **2026-09-30 — REL-010, régressions reproduites puis corrigées.**
+  SDTEST-1926..1929 échouaient avant correction : une couleur OSC 4 Unicode
+  provoquait un panic de découpage UTF-8, RIS déconnectait les réponses PTY et
+  remettait à zéro la génération des fins de commande, et un accent reçu à la
+  marge droite s'attachait au caractère précédent. Les tests traversent le
+  véritable parseur VTE et vérifient la reprise, les réponses après reset,
+  l'observation de la commande suivante et le wrap différé. Les autres lacunes
+  protocolaires de REL-010 restent à auditer.
+
 - **2026-08-22 — REL-005 terminé.** ShellDeck ne contient plus d'autorité
   d'exécution ni de compatibilité runtime. Le cockpit natif utilise le contrat
   partagé et le transport HTTPS authentifié.

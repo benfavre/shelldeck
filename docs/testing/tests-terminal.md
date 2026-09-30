@@ -46,6 +46,10 @@ cross-platform coverage.
 | SDTEST-724 | `parser.rs::dec_special_graphics_charset` | SDUC-015 | Green |
 | SDTEST-725 | `parser.rs::partial_and_malformed_sequences_do_not_panic` | SDUC-020 | Green |
 | SDTEST-726 | `parser.rs::cpr_response_sent_when_channel_present` | SDUC-019 | Green |
+| SDTEST-1926 | `parser.rs::malformed_unicode_palette_colors_preserve_state_and_parser_recovery` | SDUC-014, SDUC-020 | Green | Fragmented OSC 4 values containing non-ASCII or invalid hex preserve the existing palette without a UTF-8 slicing panic; subsequent valid colors and printable text still parse. |
+| SDTEST-1927 | `parser.rs::terminal_reset_keeps_pty_replies_connected` | SDUC-018, SDUC-019 | Green | RIS clears screen, scrollback and attributes while retaining the host response channel; subsequent cursor-position and device-attribute queries receive exact replies. |
+| SDTEST-1928 | `parser.rs::combining_characters_at_right_margin_attach_before_wrapping` | SDUC-001 | Green | A separately received accent attaches to the final glyph before delayed wrapping, including a wide glyph and a one-column terminal; the next spacing character still wraps. |
+| SDTEST-1929 | `parser.rs::command_completion_generation_stays_monotonic_across_reset` | SDUC-018, SDUC-431 | Green | RIS clears previous command output and prompt markers while preserving the session's completion generation, so a new OSC 133 completion remains visible to existing observers. |
 
 ### Gaps
 

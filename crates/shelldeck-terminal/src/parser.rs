@@ -309,7 +309,7 @@ fn parse_osc_color(spec: &str) -> Option<(u8, u8, u8)> {
         }
     } else if let Some(rest) = spec.strip_prefix('#') {
         // Format: #RRGGBB
-        if rest.len() == 6 {
+        if rest.len() == 6 && rest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             let r = u8::from_str_radix(&rest[0..2], 16).ok()?;
             let g = u8::from_str_radix(&rest[2..4], 16).ok()?;
             let b = u8::from_str_radix(&rest[4..6], 16).ok()?;
@@ -1342,5 +1342,97 @@ mod tests {
         let resp = rx.try_recv().expect("expected a CPR response");
         // Response is 1-indexed: row 3, col 3.
         assert_eq!(resp, b"\x1b[3;3R");
+    }
+
+    // SDTEST-1926
+    #[test]
+    fn malformed_unicode_palette_colors_preserve_state_and_parser_recovery() {
+        let grid = run(2, 10, b"\x1b]4;1;#123456\x07");
+        let mut processor = TerminalProcessor::new(grid.clone());
+        let mut parser = vte::Parser::new();
+        for color in ["#a€bc", "#abc€", "#é1234", "#xyzxyz"] {
+            let input = format!("\x1b]4;1;{color}\x07");
+            // PTY reads can split UTF-8 and escape sequences anywhere.
+            for chunk in input.as_bytes().chunks(3) {
+                processor.process_bytes(&mut parser, chunk);
+            }
+            assert_eq!(grid.lock().get_palette_color(1), Some((0x12, 0x34, 0x56)));
+        }
+        processor.process_bytes(&mut parser, b"\x1b]4;2;#abcdef\x07OK");
+        let grid = grid.lock();
+        assert_eq!(grid.get_palette_color(2), Some((0xab, 0xcd, 0xef)));
+        assert!(row_text(&grid, 0).starts_with("OK"));
+    }
+
+    // SDTEST-1927
+    #[test]
+    fn terminal_reset_keeps_pty_replies_connected() {
+        let grid = Arc::new(Mutex::new(TerminalGrid::new(3, 10)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        grid.lock().set_response_tx(tx);
+        let mut processor = TerminalProcessor::new(grid.clone());
+        let mut parser = vte::Parser::new();
+        processor.process_bytes(&mut parser, b"old\r\noutput\r\nlast\r\n\x1b[1m");
+        assert!(grid.lock().scrollback_len() > 0);
+        processor.process_bytes(&mut parser, b"\x1bc");
+        {
+            let grid = grid.lock();
+            assert_eq!(grid.scrollback_len(), 0);
+            assert_eq!(row_text(&grid, 0), "          ");
+            assert!(!grid.current_attrs.bold);
+        }
+        // Shells and TUIs still need device/status replies after `reset`.
+        processor.process_bytes(&mut parser, b"\x1b[2;4H\x1b[6n\x1b[c");
+        assert_eq!(rx.try_recv().expect("CPR after RIS"), b"\x1b[2;4R");
+        assert_eq!(rx.try_recv().expect("DA after RIS"), b"\x1b[?62;22c");
+    }
+
+    // SDTEST-1928
+    #[test]
+    fn combining_characters_at_right_margin_attach_before_wrapping() {
+        for (cols, text, base_col) in [(4, "abce", 3), (4, "ab界", 2), (1, "e", 0)] {
+            let grid = run(2, cols, text.as_bytes());
+            let mut processor = TerminalProcessor::new(grid.clone());
+            let mut parser = vte::Parser::new();
+            processor.process_bytes(&mut parser, "\u{0301}".as_bytes());
+            {
+                let grid = grid.lock();
+                assert_eq!(grid.cells[0][base_col].combining.as_slice(), &['\u{0301}']);
+                assert_eq!(grid.cursor.row, 0, "combining characters must not wrap");
+                for (col, cell) in grid.cells[0].iter().enumerate() {
+                    if col != base_col {
+                        assert!(cell.combining.is_empty(), "accent attached to column {col}");
+                    }
+                }
+            }
+            processor.process_bytes(&mut parser, b"X");
+            let grid = grid.lock();
+            assert_eq!(grid.cells[1][0].c, 'X');
+            assert!(grid.line_flags[1].soft_wrapped);
+        }
+    }
+
+    // SDTEST-1929
+    #[test]
+    fn command_completion_generation_stays_monotonic_across_reset() {
+        let grid = run(2, 10, b"\x1b]133;C\x07before\x1b]133;D;0\x07");
+        let observed = grid.lock().prompt_mark_sequence;
+        let mut processor = TerminalProcessor::new(grid.clone());
+        let mut parser = vte::Parser::new();
+        processor.process_bytes(&mut parser, b"\x1bc");
+        {
+            let grid = grid.lock();
+            assert!(grid.prompt_mark.is_none());
+            assert!(grid.command_output_start.is_none());
+        }
+        processor.process_bytes(&mut parser, b"\x1b]133;C\x07after\x1b]133;D;7\x07");
+        let grid = grid.lock();
+        assert!(
+            grid.prompt_mark_sequence > observed,
+            "completion must reach existing observers"
+        );
+        assert_eq!(grid.prompt_mark, Some(PromptMark::CommandFinished(Some(7))));
+        assert!(grid.command_output(10, 100).contains("after"));
+        assert!(!grid.command_output(10, 100).contains("before"));
     }
 }

@@ -53,7 +53,9 @@ impl Workspace {
         }
         self.issue_new_source = "user";
         self.reset_new_request_site_to_active(cx);
+        self.settings_open = false;
         self.user_new_request_sheet_open = true;
+        self.user_new_request_needs_focus = true;
         self.sync_issues_poll(cx);
         cx.notify();
     }
@@ -84,6 +86,8 @@ impl Workspace {
             self.set_mode(AppMode::User, cx);
         }
         self.user_new_request_sheet_open = true;
+        self.settings_open = false;
+        self.user_new_request_needs_focus = true;
         self.sync_issues_poll(cx);
         cx.notify();
     }
@@ -427,6 +431,7 @@ impl Workspace {
             cx.notify();
             return;
         }
+        self.focus_handle.focus(window);
         self.dismiss_new_request_sheet(cx);
     }
 
@@ -442,9 +447,14 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn discard_new_request_draft(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn discard_new_request_draft(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.confirm_new_request_discard = false;
         self.new_request_discard_return_focus = None;
+        self.focus_handle.focus(window);
         self.dismiss_new_request_sheet(cx);
     }
 
@@ -473,6 +483,7 @@ impl Workspace {
             return;
         }
         self.user_new_request_sheet_dismissing = true;
+        self.user_new_request_needs_focus = false;
         self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
         self.issue_ai_request_id = self.issue_ai_request_id.wrapping_add(1);
         self.issue_ai_expanded = false;

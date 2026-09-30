@@ -662,7 +662,11 @@ impl TerminalGrid {
         if width == 0 {
             let row = self.cursor.row;
             self.ensure_row(row);
-            let target_col = if self.cursor.col > 0 {
+            // At the right margin the cursor stays on the last written cell
+            // until a spacing character resolves the pending wrap.
+            let target_col = if self.pending_wrap {
+                self.cursor.col
+            } else if self.cursor.col > 0 {
                 self.cursor.col - 1
             } else {
                 0
@@ -1678,7 +1682,14 @@ impl TerminalGrid {
         let rows = self.rows;
         let cols = self.cols;
         let max_scrollback = self.max_scrollback;
+        // These belong to the session/host, rather than the resettable screen.
+        // Dropping the sender disconnects PTY replies; rewinding the generation
+        // makes existing command-completion observers miss subsequent events.
+        let response_tx = self.response_tx.take();
+        let prompt_mark_sequence = self.prompt_mark_sequence;
         *self = Self::with_scrollback(rows, cols, max_scrollback);
+        self.response_tx = response_tx;
+        self.prompt_mark_sequence = prompt_mark_sequence;
     }
 
     /// Adjust the maximum number of scrollback lines retained, preserving the

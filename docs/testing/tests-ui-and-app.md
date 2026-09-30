@@ -645,3 +645,16 @@ builds fails, the release + manifest jobs are skipped entirely".
   `shelldeck_core::util::executable_on_path`, whose contracts (multi-dir PATH
   walk, PATHEXT extensions, unix `+x` check — a stricter superset) are pinned
   by SDTEST-1591 in `tests-core.md`. IDs stay reserved per the sticky-ID rule.
+
+## Native visual regression follow-up — 2026-09-30
+
+These render/focus regressions were reproduced and rechecked in the running
+Linux app. They remain Red for **automated GPUI coverage**, not for an unresolved
+observed defect. Evidence and repeatable journeys live in
+[the visual QA record](visual-qa-2026-09-30.md).
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1930 | *to write* — request-sheet focus lifecycle | SDUC-228 | **Red / P1** | Manual X11 pass: immediate typing after opening from the palette, User Settings, and Support ticket conversion reaches the title. Escape opens the dirty-draft guard; Continue restores the caret; body focus survives repaint/resize; clean close and explicit discard restore workspace shortcuts. An automated native focus harness is still missing. |
+| SDTEST-1931 | *to write* — cockpit search viewports | SDUC-475, SDUC-476 | **Red / P1** | Manual X11 pass: Agents search accepts typing and filtering; Platform placeholder and entered query stay visible at 1200 × 850 and 820 × 600, across compact/desktop transitions and Light/Tokyo Night themes. Production session-data filtering was not exercised against a live Platform. |
+| SDTEST-1932 | *to write* — workspace and agent inherited theme text | SDUC-475, SDUC-489 | **Red / P1** | Manual X11 screenshots reproduce black inherited text on dark backgrounds, then verify Workspaces onboarding and Agents heading/session/provider labels in Tokyo Night and Light. Automated rendered contrast coverage is still missing. |
