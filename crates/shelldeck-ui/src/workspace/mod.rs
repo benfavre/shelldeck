@@ -124,6 +124,7 @@ pub(crate) mod platform_attention;
 pub use platform_attention::PlatformAttentionNotification;
 mod forwards;
 mod manage_requests;
+mod tunnel_starts;
 use manage_requests::{ManageRead, ManageRequests};
 mod mentions;
 mod menu;
@@ -498,6 +499,7 @@ pub struct Workspace {
     pub focus_handle: FocusHandle,
     /// Active tunnels keyed by the PortForward model ID (not the TunnelHandle internal id).
     active_tunnels: HashMap<Uuid, ActiveTunnel>,
+    tunnel_starts: tunnel_starts::TunnelStarts,
     /// Active script executions keyed by script ID.
     active_scripts: HashMap<Uuid, ActiveScript>,
     /// Explicit local/SSH coding-agent runs, keyed by run ID.
@@ -1443,6 +1445,7 @@ impl Workspace {
             recent_activity,
             focus_handle: cx.focus_handle(),
             active_tunnels: HashMap::new(),
+            tunnel_starts: tunnel_starts::TunnelStarts::default(),
             active_scripts: HashMap::new(),
             active_agent_runs: HashMap::new(),
             agent_session_bindings: HashMap::new(),

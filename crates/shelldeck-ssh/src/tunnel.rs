@@ -82,10 +82,11 @@ impl TunnelManager {
     }
 
     /// Start a local port forward (SSH -L equivalent).
-    /// Binds to `local_port` and forwards connections to `remote_host:remote_port` through SSH.
+    /// Binds to `local_host:local_port` and forwards connections to `remote_host:remote_port` through SSH.
     pub async fn start_local_forward(
         &mut self,
         handle: SharedHandle,
+        local_host: String,
         local_port: u16,
         remote_host: String,
         remote_port: u16,
@@ -93,7 +94,7 @@ impl TunnelManager {
         // Bind before reporting success. The previous availability probe then
         // spawned a second bind, leaving a TOCTOU window where the method
         // returned Ok even though no listener was ever created.
-        let listener = TcpListener::bind(("127.0.0.1", local_port))
+        let listener = TcpListener::bind((local_host.as_str(), local_port))
             .await
             .map_err(|error| match error.kind() {
                 std::io::ErrorKind::AddrInUse => SshError::PortInUse(local_port),
@@ -112,7 +113,8 @@ impl TunnelManager {
 
         tokio::spawn(async move {
             tracing::info!(
-                "Local forward: 127.0.0.1:{} -> {}:{}",
+                "Local forward: {}:{} -> {}:{}",
+                local_host,
                 local_port,
                 remote_host,
                 remote_port
@@ -1048,7 +1050,13 @@ mod tests {
         let local_port = unused_local_port().await;
         let mut manager = TunnelManager::new();
         let id = manager
-            .start_local_forward(handle, local_port, "echo.internal".to_owned(), 4242)
+            .start_local_forward(
+                handle,
+                "127.0.0.1".to_owned(),
+                local_port,
+                "echo.internal".to_owned(),
+                4242,
+            )
             .await
             .expect("start local forward");
 
@@ -1093,6 +1101,53 @@ mod tests {
 
         manager.cleanup();
         assert!(manager.get_tunnel(&id).is_none());
+        server_task.abort();
+    }
+
+    // SDTEST-1942
+    #[tokio::test]
+    async fn local_forward_uses_configured_bind_address_and_rejects_occupied_address() {
+        let occupied = TcpListener::bind(("::1", 0)).await.expect("IPv6 loopback");
+        let port = occupied.local_addr().expect("address").port();
+        let (handle, mut requests, server_task) = start_echo_server().await;
+        let mut manager = TunnelManager::new();
+        let error = manager
+            .start_local_forward(
+                handle.clone(),
+                "::1".into(),
+                port,
+                "echo.internal".into(),
+                4242,
+            )
+            .await
+            .expect_err("configured address is occupied");
+        assert!(matches!(error, crate::SshError::PortInUse(p) if p == port));
+        assert!(manager.tunnels().is_empty());
+        drop(occupied);
+        let id = manager
+            .start_local_forward(handle, "::1".into(), port, "echo.internal".into(), 4242)
+            .await
+            .expect("bind configured address");
+        assert!(
+            TcpStream::connect(("127.0.0.1", port)).await.is_err(),
+            "must not silently listen on the default address"
+        );
+        let mut client = TcpStream::connect(("::1", port))
+            .await
+            .expect("configured listener");
+        client.write_all(b"configured bind").await.expect("write");
+        let mut reply = [0_u8; 15];
+        client.read_exact(&mut reply).await.expect("echo");
+        assert_eq!(&reply, b"configured bind");
+        let request = timeout(Duration::from_secs(2), requests.recv())
+            .await
+            .expect("request deadline")
+            .expect("SSH request");
+        assert_eq!(request.host, "echo.internal");
+        assert_eq!(request.port, 4242);
+        manager.get_tunnel(&id).expect("handle").stop();
+        wait_until_stopped(&manager, id).await;
+        assert!(TcpStream::connect(("::1", port)).await.is_err());
         server_task.abort();
     }
 
@@ -1291,6 +1346,7 @@ mod tests {
         let error = manager
             .start_local_forward(
                 handle.clone(),
+                "127.0.0.1".to_owned(),
                 occupied_port,
                 "echo.internal".to_owned(),
                 4242,
@@ -1319,6 +1375,7 @@ mod tests {
         let first_id = manager
             .start_local_forward(
                 handle.clone(),
+                "127.0.0.1".to_owned(),
                 first_port,
                 "first.internal".to_owned(),
                 1001,
@@ -1326,7 +1383,13 @@ mod tests {
             .await
             .expect("start first tunnel");
         let second_id = manager
-            .start_local_forward(handle, second_port, "second.internal".to_owned(), 1002)
+            .start_local_forward(
+                handle,
+                "127.0.0.1".to_owned(),
+                second_port,
+                "second.internal".to_owned(),
+                1002,
+            )
             .await
             .expect("start second tunnel");
         let mut first = connect_to_tunnel(first_port).await;

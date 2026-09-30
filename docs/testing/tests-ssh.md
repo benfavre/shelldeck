@@ -151,6 +151,8 @@ Existing: **0 tests.**
 | SDTEST-620 | *to write* — `live_connect_and_exec` against `sshd` in a container | SDUC-045, SDUC-054 | **Red / P2** | Gated by `SHELLDECK_LIVE_SSH=1`. Optional; the mocks + fake transport should catch most regressions before this. |
 | SDTEST-1809 | `session.rs::fixed_workspace_subsystem_prepares_releases_and_resumes_exact_remote_repository` | SDUC-491 | Yellow / live | Against an operator-installed `shelldeck-workspace-v1` subsystem, the production client prepares and releases once without a shell, then prepares/resumes a second exact receipt and observes the fixed shell running at the retained clean repository CWD. Passing in the documented opt-in live harness, but excluded from the default suite; gated by `SHELLDECK_LIVE_SSH=1` plus explicit host/key/workspace coordinates. |
 
+| SDTEST-1942 | `tunnel.rs::local_forward_uses_configured_bind_address_and_rejects_occupied_address` | SDUC-049, SDUC-052 | Green | IPv6 loopback bind rejects occupation, accepts real SSH echo only on the configured address, and closes on stop. |
+
 ---
 
 ## Retired tests

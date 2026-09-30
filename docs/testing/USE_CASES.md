@@ -268,10 +268,10 @@ Connection share a transport or remain isolated.
 
 ### SDUC-049 — Local port forward tunnel
 
-`TunnelManager::start_local_forward` binds a local port and forwards
-each accepted connection over the SSH session. `check_port_available`
-short-circuits if the local port is taken. Bytes-transferred counters
-increment for both directions.
+`TunnelManager::start_local_forward` binds the saved local address and port
+(loopback by default) and forwards each accepted connection over SSH. Bind
+errors are returned before reporting success, including a port occupied on
+the configured address. Bytes-transferred counters increment in both directions.
 
 ### SDUC-050 — Remote port forward tunnel
 
@@ -290,6 +290,10 @@ proxies TCP through the SSH session.
 active tunnel. `cleanup` removes stopped entries so `active_count`
 matches `tunnels().len()`. Reverse forwarding explicitly cancels the exact
 server-side bind on stop, even if its owning SSH session remains connected.
+Stopping during SSH setup cancels that attempt. Stop, retry, logout and workspace
+shutdown retire older completions, so they cannot reactivate a stopped tunnel or
+replace a newer retry. The worker keeps its runtime alive for bounded cleanup
+before disconnecting SSH.
 
 ### SDUC-053 — Jump-host session
 
@@ -3181,6 +3185,10 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-30**: Amended SDUC-049/052 for saved local bind addresses, pending
+  setup cancellation, retry ownership and bounded worker cleanup. Added
+  SDTEST-1942..1944 and native forwarding QA evidence.
 
 - **2026-09-30**: Amended SDUC-050/052/152/154 for configured reverse bind
   addresses, explicit remote listener cancellation, account-bound async
