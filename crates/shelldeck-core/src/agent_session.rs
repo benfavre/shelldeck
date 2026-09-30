@@ -117,6 +117,9 @@ pub struct AgentMessage {
     #[serde(default)]
     pub sequence: u64,
     pub role: AgentMessageRole,
+    /// Original author survives later provider changes in the same session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<AgentProvider>,
     pub text: String,
     pub at_ms: i64,
 }
@@ -430,6 +433,7 @@ impl AgentSession {
                 id: Uuid::new_v4(),
                 sequence,
                 role,
+                provider: (role == AgentMessageRole::Agent).then_some(self.context.provider),
                 text: truncate_utf8(&text, MAX_AGENT_MESSAGE_BYTES),
                 at_ms: now_ms,
             },
@@ -922,6 +926,52 @@ mod tests {
             workdir: TEST_WORKDIR.to_string(),
             model: None,
         }
+    }
+
+    // SDTEST-1941 — earlier replies retain their author across provider changes
+    // and durable reload; older files without author metadata remain readable.
+    #[test]
+    fn provider_switch_preserves_reply_authorship_and_legacy_history() {
+        let mut session =
+            AgentSession::new("Providers", context(AgentProvider::Claude), 10).unwrap();
+        session.begin_run("first", 11).unwrap();
+        session.apply_stream_event(AgentStreamEvent::TextDelta("Claude".into()), 12, true);
+        session.apply_stream_event(AgentStreamEvent::TextDelta(" reply".into()), 13, true);
+        session
+            .finish(AgentSessionStatus::Completed, 14, true)
+            .unwrap();
+        session
+            .set_context(context(AgentProvider::Codex), 15)
+            .unwrap();
+        session.begin_run("second", 16).unwrap();
+        session.apply_stream_event(AgentStreamEvent::Text("Codex reply".into()), 17, true);
+        session
+            .finish(AgentSessionStatus::Completed, 18, true)
+            .unwrap();
+        let history = serde_json::to_value(&session).unwrap();
+        let restored: AgentSession = serde_json::from_value(history.clone()).unwrap();
+        let replies = restored
+            .messages
+            .iter()
+            .filter(|m| m.role == AgentMessageRole::Agent)
+            .map(|m| (m.provider, m.text.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            replies,
+            [
+                (Some(AgentProvider::Claude), "Claude reply"),
+                (Some(AgentProvider::Codex), "Codex reply")
+            ]
+        );
+        let mut legacy = history;
+        for message in legacy["messages"].as_array_mut().unwrap() {
+            message.as_object_mut().unwrap().remove("provider");
+        }
+        let legacy: AgentSession = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.messages.len(), 4);
+        assert_eq!(legacy.messages[1].text, "Claude reply");
+        assert_eq!(legacy.messages[3].text, "Codex reply");
+        assert!(legacy.messages.iter().all(|m| m.provider.is_none()));
     }
 
     // SDTEST-1879 — SDUC-499
