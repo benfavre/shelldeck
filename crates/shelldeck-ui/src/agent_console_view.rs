@@ -1285,10 +1285,11 @@ impl AgentConsoleView {
                     .border_color(ShellDeckColors::border())
                     .child(lucide_icon("search", 11.0, ShellDeckColors::text_muted()))
                     .child(
-                        div().flex_1().min_w(px(0.0)).child(
+                        div().flex().flex_col().flex_1().min_w(px(0.0)).child(
                             Input::new(&self.navigator_search)
                                 .variant(InputVariant::Bare)
                                 .size(InputSize::Sm)
+                                .w_full()
                                 .placeholder(t!("fleet.sessions.search").to_string())
                                 .on_change(move |_value, cx| {
                                     parent.update(cx, |_this, cx| cx.notify());
@@ -2489,7 +2490,8 @@ impl Render for AgentConsoleView {
             .flex()
             .size_full()
             .min_h(px(0.0))
-            .bg(ShellDeckColors::bg_primary());
+            .bg(ShellDeckColors::bg_primary())
+            .text_color(ShellDeckColors::text_primary());
         if wide {
             root = root.child(self.render_navigator(cx));
         }

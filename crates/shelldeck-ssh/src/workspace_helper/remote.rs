@@ -467,6 +467,32 @@ mod tests {
     use std::fs;
     use std::io::Cursor;
 
+    // The helper deliberately changes process cwd through a retained directory
+    // descriptor. Each successful helper journey needs its own process: a test
+    // mutex cannot protect unrelated Rust test threads from process-wide cwd.
+    fn isolated_helper_test(test_name: &str) -> bool {
+        const CHILD: &str = "SHELLDECK_REMOTE_HELPER_TEST_CHILD";
+        if std::env::var(CHILD).as_deref() == Ok(test_name) {
+            return false;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name, "--nocapture"])
+            .env(CHILD, test_name)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("running 1 test"),
+            "child test not selected: {stdout}"
+        );
+        assert!(
+            output.status.success(),
+            "isolated helper test failed: {stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
     struct TestRepository {
         root: PathBuf,
         git: PathBuf,
@@ -518,6 +544,9 @@ mod tests {
 
     #[test]
     fn retained_descriptor_receipt_revalidates_clean_exact_lineage() {
+        if isolated_helper_test("workspace_helper::remote::tests::retained_descriptor_receipt_revalidates_clean_exact_lineage") {
+            return;
+        }
         let repository = TestRepository::new();
         let config = RemoteHelperConfig::for_test(repository.root.clone(), repository.git.clone());
         let prepared = prepare_workspace(
@@ -577,6 +606,9 @@ mod tests {
 
     #[test]
     fn exchange_refuses_wrong_receipt_without_starting_shell() {
+        if isolated_helper_test("workspace_helper::remote::tests::exchange_refuses_wrong_receipt_without_starting_shell") {
+            return;
+        }
         let repository = TestRepository::new();
         let config = RemoteHelperConfig::for_test(repository.root.clone(), repository.git.clone());
         let prepare = super::super::encode_request(&RequestFrame::Prepare(

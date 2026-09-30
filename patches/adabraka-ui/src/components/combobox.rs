@@ -76,6 +76,10 @@ impl<T: Clone + 'static> ComboboxState<T> {
         } else {
             self.selected = vec![item];
             self.is_open = false;
+            // ShellDeck patch: SDPATCH-046 — committed single-select rows show
+            // their selected label rather than the obsolete search query.
+            self.search_text.clear();
+            self.focused_index = None;
         }
     }
 
@@ -273,21 +277,19 @@ impl<T: Clone + 'static> Combobox<T> {
         cx.emit(ComboboxEvent::Change);
     }
 
-    /// Select an item
-    fn select_item(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let filtered = self.filtered_items(cx);
-        if let Some(&(original_idx, _)) = filtered.get(index) {
-            if let Some(item) = self.items.get(original_idx).cloned() {
-                self.state.update(cx, |state, cx| {
-                    state.select_item(item.clone(), self.multi_select);
-                    cx.notify(); // Trigger re-render
-                });
-
-                cx.emit(ComboboxEvent::Change);
-
-                if let Some(ref callback) = self.on_select {
-                    (callback)(&item, window, cx);
-                }
+    /// Select an item by its stable index in the unfiltered item collection.
+    // ShellDeck patch: SDPATCH-046 — popup mouse-down-out may clear the filter
+    // before the row handler runs. Never resolve a rendered row against that
+    // changed filter, or row zero silently becomes the first unrelated item.
+    fn select_item(&mut self, original_idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(item) = self.items.get(original_idx).cloned() {
+            self.state.update(cx, |state, cx| {
+                state.select_item(item.clone(), self.multi_select);
+                cx.notify();
+            });
+            cx.emit(ComboboxEvent::Change);
+            if let Some(ref callback) = self.on_select {
+                (callback)(&item, window, cx);
             }
         }
     }
@@ -346,7 +348,12 @@ impl<T: Clone + 'static> Combobox<T> {
         let state = self.state.read(cx);
         if state.is_open {
             if let Some(idx) = state.focused_index {
-                self.select_item(idx, window, cx);
+                // ShellDeck patch: SDPATCH-046 — keyboard focus is a filtered
+                // position; resolve it to the same original index as mouse rows.
+                let original_idx = self.filtered_items(cx).get(idx).map(|(index, _)| *index);
+                if let Some(original_idx) = original_idx {
+                    self.select_item(original_idx, window, cx);
+                }
             }
         } else {
             self.toggle_dropdown(window, cx);
@@ -626,8 +633,10 @@ impl<T: Clone + PartialEq + 'static> Render for Combobox<T> {
                                                                     .cursor(CursorStyle::PointingHand)
                                                                     .text_size(px(14.0))
                                                                     .font_family(theme.tokens.font_family.clone())
+                                                                    // ShellDeck patch: SDPATCH-046 — capture the rendered
+                                                                    // row identity before outside-click closes the filter.
                                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                                                        this.select_item(display_idx, window, cx);
+                                                                        this.select_item(_original_idx, window, cx);
                                                                     }))
                                                                     .child(item_text)
                                                                     .when(is_selected, |div| {

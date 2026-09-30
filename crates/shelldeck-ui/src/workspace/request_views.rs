@@ -967,11 +967,21 @@ impl Workspace {
     }
 
     pub(super) fn render_user_new_request_sheet(
-        &self,
+        &mut self,
         is_maximized: bool,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        if self.user_new_request_needs_focus
+            && self.mode_transition.is_none()
+            && !self.confirm_new_request_discard
+        {
+            self.user_new_request_needs_focus = false;
+            self.issue_title_state
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window);
+        }
         let viewport_width = window.viewport_size().width.to_f64() as f32;
         let (panel_width, compact) = user_request_sheet_layout(viewport_width, self.ui_font_size);
         // One chip, not four. Four badges plus a 186px site select overflowed
@@ -1721,9 +1731,9 @@ impl Workspace {
                                 )
                                 .variant(ButtonVariant::Destructive)
                                 .icon(IconSource::from("trash-2"))
-                                .on_click(move |_, _, cx| {
+                                .on_click(move |_, window, cx| {
                                     discard_entity.update(cx, |this, cx| {
-                                        this.discard_new_request_draft(cx);
+                                        this.discard_new_request_draft(window, cx);
                                     });
                                 }),
                             ),

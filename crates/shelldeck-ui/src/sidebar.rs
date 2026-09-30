@@ -53,6 +53,18 @@ fn conn_matches_site_filter(site_filter: Option<Uuid>, conn_site_id: Option<Uuid
     }
 }
 
+fn connection_matches_search(conn: &Connection, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let q = query.to_lowercase();
+    fuzzy_match(conn.display_name(), &q)
+        || fuzzy_match(&conn.hostname, &q)
+        || fuzzy_match(&conn.user, &q)
+        || conn.group.as_deref().is_some_and(|g| fuzzy_match(g, &q))
+        || conn.tags.iter().any(|tag| fuzzy_match(tag, &q))
+}
+
 /// Returns indices of matched characters in haystack for a fuzzy needle.
 fn fuzzy_match_indices(haystack: &str, needle: &str) -> Option<Vec<usize>> {
     let haystack_lower: Vec<char> = haystack.to_lowercase().chars().collect();
@@ -828,14 +840,7 @@ impl SidebarView {
     }
 
     fn conn_matches_search(&self, conn: &Connection) -> bool {
-        if self.search_query.is_empty() {
-            return true;
-        }
-        let q = &self.search_query;
-        fuzzy_match(conn.display_name(), q)
-            || fuzzy_match(&conn.hostname, q)
-            || fuzzy_match(&conn.user, q)
-            || conn.group.as_deref().is_some_and(|g| fuzzy_match(g, q))
+        connection_matches_search(conn, &self.search_query)
     }
 
     fn render_search_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1352,10 +1357,37 @@ impl Render for SidebarView {
 #[cfg(test)]
 mod tests {
     use super::{
-        conn_matches_site_filter, fuzzy_match_indices, rail_scroll_child_index,
-        sidebar_total_width, RAIL_WIDTH,
+        conn_matches_site_filter, connection_matches_search, fuzzy_match_indices,
+        rail_scroll_child_index, sidebar_total_width, RAIL_WIDTH,
     };
     use uuid::Uuid;
+
+    // SDTEST-1025 — search admission must agree with case-insensitive highlights
+    // and must consult every advertised connection field.
+    #[test]
+    fn connection_search_matches_all_fields_case_insensitively() {
+        let mut conn = shelldeck_core::models::Connection::new_manual(
+            "QA isolated SSH".into(),
+            "build.exemple.test".into(),
+            "Déploiement".into(),
+        );
+        conn.group = Some("Production".into());
+        conn.tags = vec!["Critical".into()];
+        for query in ["QA isolated", "QISS", "BUILD", "DÉP", "PROD", "CRIT", ""] {
+            assert!(
+                connection_matches_search(&conn, query),
+                "missing match: {query}"
+            );
+        }
+        for query in ["missing", "SSHQ", "dèp"] {
+            assert!(
+                !connection_matches_search(&conn, query),
+                "unexpected match: {query}"
+            );
+        }
+        conn.alias.clear();
+        assert!(connection_matches_search(&conn, "BUILD"));
+    }
 
     // ── sidebar_total_width ────────────────────────────────────────────
 

@@ -25,6 +25,8 @@ Writing printable bytes into the parser produces glyphs in the grid at
 the expected cell, advances the cursor left-to-right, and wraps at the
 right edge when auto-wrap is on. Combining characters attach to the
 previous cell; wide characters occupy two cells.
+At the right margin, a combining character attaches to the last written
+glyph without resolving the pending wrap; the next spacing character wraps.
 
 ### SDUC-002 — Control chars behave per VT100
 
@@ -120,6 +122,8 @@ CSI `?25h/l` toggles cursor visibility, observable via a public
 
 `ESC c` (RIS) clears the grid, resets attributes, clears scrollback,
 homes the cursor. Soft reset does the subset per VT220.
+Full reset preserves the live session's PTY response channel and monotonic
+command-completion generation while clearing its prompt markers and output.
 
 ### SDUC-019 — Cursor position report
 
@@ -130,6 +134,8 @@ channel when one is wired.
 
 Truncated or invalid escape sequences are dropped without panicking
 and the parser recovers on the next valid byte.
+Malformed OSC palette values, including fragmented non-ASCII color strings,
+leave existing palette entries intact.
 
 ### SDUC-021 — URL & path detection in scrollback
 
@@ -870,6 +876,10 @@ at a short cadence; background runtime refreshes never erase an in-flight chat.
 
 ### SDUC-475 — Coding agents run on an explicit local or SSH target
 
+The session search has a usable text viewport, and inherited navigator/provider
+labels follow the active theme in both light and dark appearances
+(SDTEST-1931/1932, manual native validation).
+
 Dev mode exposes one provider-neutral agent console for Claude Code, Codex,
 Automonique ACP, DeepSeek through Jcode, and Jcode's configured/default provider.
 Every run names a target-valid working directory (a native absolute path locally,
@@ -1024,6 +1034,10 @@ Retired 2026-08-22. ShellDeck no longer registers as an execution runtime.
 
 ### SDUC-476 — Fleet observation and control use the shared platform boundary
 
+The session search displays its placeholder and query in both the fixed desktop
+column and compact full-width view, preserving text across resize and theme
+changes (SDTEST-1931, manual native validation).
+
 ShellDeck is a presentation client. It may read scoped fleet state and request
 typed server-side control, but it never opens a provider process, claims a job,
 or owns an execution lease locally. The first load is a snapshot; subsequent
@@ -1096,6 +1110,11 @@ Any endpoint without an auth header returns 401.
 Workspace polls issues every 15s while User or Support is visible.
 
 ### SDUC-228 — User "Mes demandes" view
+
+The New Request title receives focus once the sheet is visible, including after
+a mode transition or opening from Settings. Later renders preserve the chosen
+field. Clean close and explicit discard return focus to the workspace so
+keyboard shortcuts continue working (SDTEST-1930, manual native validation).
 
 `render_user_requests` shows the caller's own issues with expand-to-comment
 and create composer. The composer exposes a searchable site picker backed by
@@ -1435,7 +1454,9 @@ filters.
 
 ### SDUC-306 — Sidebar search bar filters connections
 
-`conn_matches_search` matches on alias, hostname, user, and tag.
+`conn_matches_search` matches on alias, hostname, user, group, and tags.
+Queries are normalized case-insensitively before fuzzy matching; uppercase
+letters must not make a visible connection disappear (SDTEST-1025).
 
 ### SDUC-307 — Sidebar resize width bounds
 
@@ -1458,7 +1479,9 @@ User/Support with Dev clamped to User; super-admin → persisted mode.
 Switching between Dev / User / Support hides the Dev surface without
 destroying terminal sessions (SDUC-023 must not be interrupted).
 Settings is a closable personal surface available in every authenticated
-mode. User/Support expose General, AI, Appearance and About; Dev-capable
+mode. The AI API-key field starts masked, supports explicit reveal/hide, and
+keeps its full text viewport with Save/Delete below it at compact and desktop
+widths. User/Support expose General, AI, Appearance and About; Dev-capable
 accounts additionally expose Terminal and Editor. The shared General tab also
 applies that capability boundary to its SSH-session controls: reconnecting
 terminal sessions on startup and automatically attaching tmux are absent for a
@@ -1490,12 +1513,17 @@ validates via `port_forward::validate_port`.
 ### SDUC-314 — Port forward form connection picker
 
 Picker shows only connected (or connectable) hosts; disabled when
-none.
+none. Filtered mouse rows retain their original connection identity even if
+outside-click dismissal clears the query before selection. Keyboard selection
+uses the same identity, and the committed label shows the actual chosen host
+rather than stale search text (SDPATCH-046, SDTEST-1933).
 
 ### SDUC-315 — Login form flows
 
 Email + password is the one primary path and submit stays disabled while either
-field is empty. Password recovery opens the active Manage origin's public
+field is empty. Newly opened password fields start masked; explicit reveal/hide
+is retained across repaint, and failed sign-in does not change that choice.
+Password recovery opens the active Manage origin's public
 `/manage/forgot-password` page. SSO, Google, GitHub, and browser-password login
 are collapsed under Other methods by default; expanding it preserves their
 exact provider routing, with browser password emitting `StartOidc(None)`.
@@ -1913,6 +1941,8 @@ under every autonomy policy. A full plan may advance step by step only after a
 deduplicated `OSC 133;D` completion event; missing shell integration is framed
 by ShellDeck, non-zero exit stops the sequence, output is bounded, and Ctrl+C
 remains the stop path.
+The completion generation stays monotonic across a terminal reset, so an
+already attached observer can still detect the next command's completion.
 
 ### SDUC-432 — Requests and Support tickets accept image evidence through every desktop path
 
@@ -2821,6 +2851,9 @@ host or filesystem authority.
 
 ### SDUC-489 — Manual and external-task intake share one workspace lifecycle
 
+Workspace onboarding inherits the active primary text color so checkout labels
+remain readable in dark and light themes (SDTEST-1932, manual native validation).
+
 Manual creation and issue, pull-request, or task-prefilled creation enter the
 same validated launcher and produce the same resumable local workspace record.
 Local UUIDs are never treated as Platform identities: a durable project,
@@ -3122,6 +3155,19 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-30**: Amended SDUC-306/314 after loopback SSH/tunnel QA:
+  uppercase/tag connection searches now match, and filtered combobox clicks
+  preserve the displayed host identity (SDTEST-1025, SDPATCH-046/SDTEST-1933).
+- **2026-09-30**: Amended SDUC-228/475/476/489 after native X11 visual QA:
+  request-sheet opening/closing retains keyboard focus, cockpit searches keep a
+  visible text viewport, and onboarding/navigator labels inherit theme text.
+  SDTEST-1930..1932 record the remaining automated GPUI gaps; dated screenshots
+  and verified journeys are in `visual-qa-2026-09-30.md`.
+- **2026-09-30**: Amended SDUC-001/018/020/431 with SDTEST-1926 through
+  SDTEST-1929: malformed Unicode palette colors are ignored safely, accents
+  remain attached at the right margin, and full reset retains PTY replies and
+  command-completion generations without retaining old output.
 
 - **2026-09-10**: Amended SDUC-414 with SDTEST-1925: assistant answers are laid
   out at the thread's definite content width, so Markdown tables no longer
