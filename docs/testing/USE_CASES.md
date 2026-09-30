@@ -1454,7 +1454,9 @@ filters.
 
 ### SDUC-306 — Sidebar search bar filters connections
 
-`conn_matches_search` matches on alias, hostname, user, and tag.
+`conn_matches_search` matches on alias, hostname, user, group, and tags.
+Queries are normalized case-insensitively before fuzzy matching; uppercase
+letters must not make a visible connection disappear (SDTEST-1025).
 
 ### SDUC-307 — Sidebar resize width bounds
 
@@ -1509,7 +1511,10 @@ validates via `port_forward::validate_port`.
 ### SDUC-314 — Port forward form connection picker
 
 Picker shows only connected (or connectable) hosts; disabled when
-none.
+none. Filtered mouse rows retain their original connection identity even if
+outside-click dismissal clears the query before selection. Keyboard selection
+uses the same identity, and the committed label shows the actual chosen host
+rather than stale search text (SDPATCH-046, SDTEST-1933).
 
 ### SDUC-315 — Login form flows
 
@@ -3147,6 +3152,9 @@ an unavailable adapter refuses before any effect.
 
 ## Change log
 
+- **2026-09-30**: Amended SDUC-306/314 after loopback SSH/tunnel QA:
+  uppercase/tag connection searches now match, and filtered combobox clicks
+  preserve the displayed host identity (SDTEST-1025, SDPATCH-046/SDTEST-1933).
 - **2026-09-30**: Amended SDUC-228/475/476/489 after native X11 visual QA:
   request-sheet opening/closing retains keyboard focus, cockpit searches keep a
   visible text viewport, and onboarding/navigator labels inherit theme text.

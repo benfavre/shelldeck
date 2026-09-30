@@ -30,6 +30,16 @@ risques par frontière observable et impose une vérification avant correction.
 
 ## Journal
 
+- **2026-09-30 — Suite de la boucle, SSH et sélection.** Un serveur SSH jetable
+  sur loopback a validé l'authentification par clé, la sortie du PTY et un tunnel
+  local → distant avec réponse HTTP puis arrêt. Le clic sur une ligne filtrée
+  de Combobox sélectionnait le premier hôte non filtré après fermeture du popup :
+  SDPATCH-046 capture maintenant l'identité rendue, vérifiée dans le JSON avant
+  toute nouvelle exécution. Le filtre Sidebar ignorait les requêtes majuscules
+  et les tags : SDTEST-1025 couvre désormais les cinq champs. Une répétition de
+  la suite a aussi révélé la course de cwd entre SDTEST-1788/1789 ; les parcours
+  du helper sont isolés dans deux processus de test distincts.
+
 - **2026-09-30 — Passe visuelle native, REL-003/006.** Sur Xvfb isolé,
   parcours User/Support/Dev, terminaux et script locaux, formulaires, réglages,
   navigateur local, cockpits et palette. Corrections reproduites : titre de
