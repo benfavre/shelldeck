@@ -183,6 +183,7 @@ impl TunnelManager {
     pub async fn start_remote_forward(
         &mut self,
         handle: SharedHandle,
+        remote_host: String,
         remote_port: u16,
         local_host: String,
         local_port: u16,
@@ -191,7 +192,7 @@ impl TunnelManager {
         // Request remote forwarding from the server.
         {
             let h = handle.lock().await;
-            h.tcpip_forward("0.0.0.0", remote_port as u32)
+            h.tcpip_forward(&remote_host, remote_port as u32)
                 .await
                 .map_err(|e| SshError::Tunnel(format!("Remote forward request failed: {}", e)))?;
         }
@@ -277,6 +278,20 @@ impl TunnelManager {
 
             connections.abort_all();
             while connections.join_next().await.is_some() {}
+            // Release the exact server-side listener even when the caller
+            // retains its SSH session after stopping this tunnel.
+            let cancel = async {
+                handle
+                    .lock()
+                    .await
+                    .cancel_tcpip_forward(&remote_host, remote_port as u32)
+                    .await
+            };
+            match tokio::time::timeout(std::time::Duration::from_secs(5), cancel).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%error, "Remote forward cancellation failed"),
+                Err(_) => tracing::warn!("Remote forward cancellation timed out"),
+            }
             *status_clone.lock() = TunnelStatus::Stopped;
         });
 
@@ -810,7 +825,7 @@ mod tests {
     /// hands its own [`server::Handle`] back to the test so the test can play
     /// the remote side and open a forwarded-tcpip channel on demand.
     struct RemoteForwardServer {
-        forward_requests: mpsc::UnboundedSender<(String, u32)>,
+        forward_requests: mpsc::UnboundedSender<(bool, String, u32)>,
         server_handles: mpsc::UnboundedSender<server::Handle>,
     }
 
@@ -827,8 +842,22 @@ mod tests {
             port: &mut u32,
             session: &mut Session,
         ) -> Result<bool, Self::Error> {
-            let _ = self.forward_requests.send((address.to_owned(), *port));
+            let _ = self
+                .forward_requests
+                .send((true, address.to_owned(), *port));
             let _ = self.server_handles.send(session.handle());
+            Ok(true)
+        }
+
+        async fn cancel_tcpip_forward(
+            &mut self,
+            address: &str,
+            port: u32,
+            _session: &mut Session,
+        ) -> Result<bool, Self::Error> {
+            let _ = self
+                .forward_requests
+                .send((false, address.to_owned(), port));
             Ok(true)
         }
     }
@@ -836,7 +865,7 @@ mod tests {
     #[allow(clippy::type_complexity)]
     async fn start_remote_forward_server() -> (
         SharedHandle,
-        mpsc::UnboundedReceiver<(String, u32)>,
+        mpsc::UnboundedReceiver<(bool, String, u32)>,
         mpsc::UnboundedReceiver<server::Handle>,
         mpsc::UnboundedReceiver<ForwardedTcpIpEvent>,
         JoinHandle<()>,
@@ -1075,14 +1104,14 @@ mod tests {
         let (local_port, echo_task) = start_local_echo_target().await;
         let mut manager = TunnelManager::new();
 
-        // Unlike the local and SOCKS forwards, `start_remote_forward` does not
-        // keep the client handle: its channels are opened by the server, not by
-        // the tunnel. Production holds it through the owning `SshSession`, so
-        // the test has to hold it too or the transport closes underneath us.
+        // Keep the owning SSH session alive beyond tunnel stop, so receiving
+        // cancel-tcpip-forward proves explicit listener cleanup rather than
+        // incidental cleanup from disconnecting the transport.
         let session_handle = handle.clone();
         let id = manager
             .start_remote_forward(
                 handle,
+                "127.0.0.1".to_owned(),
                 8443,
                 "127.0.0.1".to_owned(),
                 local_port,
@@ -1091,14 +1120,14 @@ mod tests {
             .await
             .expect("start remote forward");
 
-        // The server must be asked to listen on the *remote* port, on every
-        // interface — this is what makes it a reverse forward.
+        // Honor the configured remote interface instead of exposing the
+        // listener on every interface regardless of the saved profile.
         assert_eq!(
             timeout(Duration::from_secs(2), forward_requests.recv())
                 .await
                 .expect("tcpip-forward request timed out")
                 .expect("tcpip-forward request channel closed"),
-            ("0.0.0.0".to_owned(), 8443),
+            (true, "127.0.0.1".to_owned(), 8443),
         );
 
         // Play the remote side: a client hit the forwarded port, so the server
@@ -1108,7 +1137,7 @@ mod tests {
             .expect("server handle timed out")
             .expect("server handle channel closed");
         let channel = server_handle
-            .channel_open_forwarded_tcpip("0.0.0.0", 8443, "203.0.113.7", 54321)
+            .channel_open_forwarded_tcpip("127.0.0.1", 8443, "203.0.113.7", 54321)
             .await
             .expect("open forwarded-tcpip channel");
 
@@ -1136,6 +1165,14 @@ mod tests {
 
         manager.get_tunnel(&id).expect("tunnel handle").stop();
         wait_until_stopped(&manager, id).await;
+        assert_eq!(
+            timeout(Duration::from_secs(2), forward_requests.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            (false, "127.0.0.1".to_owned(), 8443),
+            "stop must cancel the exact listener while the session remains connected"
+        );
 
         let mut one = [0_u8; 1];
         assert_eq!(
