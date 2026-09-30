@@ -55,16 +55,16 @@ requests, and automation into one role-aware control plane.
 
 ## Install
 
-Download the latest release from **[shelldeck.1clic.pro](https://shelldeck.1clic.pro)** (Linux AppImage/tarball, macOS DMG, Windows installer), or use the install script:
+Download the latest release from **[shelldeck.bext.dev](https://shelldeck.bext.dev/telecharger)** (Linux AppImage/tarball, macOS DMG, Windows installer), or use the install script:
 
 ```bash
 # Linux / macOS
-curl -fsSL https://shelldeck.1clic.pro/install.sh | bash
+curl -fsSL https://shelldeck.bext.dev/install.sh | bash
 ```
 
 ```powershell
 # Windows
-powershell -c "irm shelldeck.1clic.pro/install.ps1 | iex"
+powershell -c "irm https://shelldeck.bext.dev/install.ps1 | iex"
 ```
 
 ShellDeck auto-updates itself once installed. To build from source instead, see below.
