@@ -4,8 +4,9 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **148**
-(sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
+Total markers in code: **179**
+(the previous total of 148 was stale: 175 markers preceded SDPATCH-046;
+SDPATCH-046 adds four markers. The per-entry `Markers` lists remain the inventory; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
 ## Patches
@@ -1091,3 +1092,14 @@ carries no marker of its own — see its entry).
 ## Retired patches
 
 *(empty for now)*
+
+### SDPATCH-046 — Filtered combobox clicks preserve the displayed item
+
+- **Files / symbols**: `src/components/combobox.rs` — `ComboboxState::select_item`, `Combobox::select_item`, `Combobox::combobox_confirm`, popup row mouse handler.
+- **Markers** (4):
+  - `// ShellDeck patch: SDPATCH-046 — committed single-select rows show`
+  - `// ShellDeck patch: SDPATCH-046 — popup mouse-down-out may clear the filter`
+  - `// ShellDeck patch: SDPATCH-046 — keyboard focus is a filtered`
+  - `// ShellDeck patch: SDPATCH-046 — capture the rendered`
+- **Why**: On X11 the outside mouse-down closes the deferred dropdown and clears its search before a row handler resolves its filtered position. A click on the sole matching SSH connection consequently chose the first unfiltered host. Mouse rows now capture the original index, keyboard focus resolves to that same identity, and committed single selections clear stale query/focus state so the actual selected label is visible.
+- **Validation**: SDTEST-1933 records native filtered mouse/keyboard selection and saved target checks. Automated GPUI event-order coverage remains a gap. No upstream version or dependency entry changed.
