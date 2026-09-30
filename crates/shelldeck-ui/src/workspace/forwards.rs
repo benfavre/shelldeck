@@ -58,7 +58,9 @@ impl Workspace {
                 };
 
                 // Don't start if already active
-                if self.active_tunnels.contains_key(&forward_id) {
+                if self.active_tunnels.contains_key(&forward_id)
+                    || self.tunnel_starts.contains(forward_id)
+                {
                     tracing::warn!("Port forward {} is already active", forward_id);
                     return;
                 }
@@ -134,6 +136,10 @@ impl Workspace {
                 let remote_port = forward.remote_port;
                 let local_host = forward.local_host.clone();
 
+                let (attempt, thread_shutdown_tx, mut thread_shutdown_rx) =
+                    self.tunnel_starts.begin(forward_id);
+                let setup_shutdown_tx = thread_shutdown_tx.clone();
+
                 // Spawn a dedicated thread with its own tokio runtime for the SSH tunnel.
                 // The thread stays alive as long as the tunnel is running; the tokio runtime
                 // drives the TcpListener accept loop inside start_local_forward/start_remote_forward.
@@ -154,94 +160,96 @@ impl Workspace {
                         };
 
                         rt.block_on(async move {
-                            // Establish SSH connection
-                            let client = SshClient::new();
-                            let mut session = match client.connect(&connection).await {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    let msg = format!("SSH connection failed: {}", e);
-                                    tracing::error!("{}", msg);
-                                    let _ = result_tx.send(Err(msg));
-                                    return;
-                                }
-                            };
-                            tracing::info!(
-                                "SSH connected for tunnel to {}",
-                                connection.display_name()
-                            );
-
-                            let shared_handle = session.shared_handle();
-                            let mut tunnel_manager = shelldeck_ssh::tunnel::TunnelManager::new();
-
-                            let tunnel_result = match direction {
-                                ForwardDirection::LocalToRemote => {
-                                    tunnel_manager
-                                        .start_local_forward(
-                                            shared_handle,
-                                            local_port,
-                                            remote_host,
-                                            remote_port,
-                                        )
-                                        .await
-                                }
-                                ForwardDirection::RemoteToLocal => {
-                                    match session.take_forwarded_tcpip_rx() {
-                                        Some(forwarded_rx) => {
-                                            tunnel_manager
-                                                .start_remote_forward(
-                                                    shared_handle,
-                                                    remote_host,
-                                                    remote_port,
-                                                    local_host,
-                                                    local_port,
-                                                    forwarded_rx,
-                                                )
-                                                .await
-                                        }
-                                        None => Err(shelldeck_ssh::SshError::Tunnel(
-                                            "remote forwarding channel already taken".to_string(),
-                                        )),
+                            // Cancellation covers SSH authentication as well as listener setup.
+                            let setup = async {
+                                let client = SshClient::new();
+                                let mut session = client.connect(&connection).await?;
+                                let shared_handle = session.shared_handle();
+                                let mut manager = shelldeck_ssh::tunnel::TunnelManager::new();
+                                let id = match direction {
+                                    ForwardDirection::LocalToRemote => {
+                                        manager
+                                            .start_local_forward(
+                                                shared_handle,
+                                                local_host,
+                                                local_port,
+                                                remote_host,
+                                                remote_port,
+                                            )
+                                            .await?
                                     }
-                                }
-                                ForwardDirection::Dynamic => {
-                                    tunnel_manager
-                                        .start_socks_forward(shared_handle, local_host, local_port)
-                                        .await
-                                }
+                                    ForwardDirection::RemoteToLocal => {
+                                        let rx =
+                                            session.take_forwarded_tcpip_rx().ok_or_else(|| {
+                                                shelldeck_ssh::SshError::Tunnel(
+                                                    "remote forwarding channel already taken"
+                                                        .to_string(),
+                                                )
+                                            })?;
+                                        manager
+                                            .start_remote_forward(
+                                                shared_handle,
+                                                remote_host,
+                                                remote_port,
+                                                local_host,
+                                                local_port,
+                                                rx,
+                                            )
+                                            .await?
+                                    }
+                                    ForwardDirection::Dynamic => {
+                                        manager
+                                            .start_socks_forward(
+                                                shared_handle,
+                                                local_host,
+                                                local_port,
+                                            )
+                                            .await?
+                                    }
+                                };
+                                Ok::<_, shelldeck_ssh::SshError>((session, manager, id))
                             };
-
-                            match tunnel_result {
-                                Ok(_tunnel_id) => {
-                                    // Create a proxy shutdown channel so the UI thread can
-                                    // signal this background thread to tear down the tunnel.
-                                    let (thread_shutdown_tx, mut thread_shutdown_rx) =
-                                        tokio::sync::mpsc::channel::<()>(1);
-
-                                    // Build a proxy TunnelHandle that shares the real tunnel's
-                                    // Arc-wrapped status and byte counters but uses the
-                                    // thread-level shutdown channel.
-                                    let tunnel_ref = &tunnel_manager.tunnels()
-                                        [tunnel_manager.tunnels().len() - 1];
-                                    let proxy_handle = TunnelHandle::new_proxy(
-                                        tunnel_ref.id,
-                                        tunnel_ref.status.clone(),
-                                        tunnel_ref.bytes_sent.clone(),
-                                        tunnel_ref.bytes_received.clone(),
+                            let result = tokio::select! {
+                                biased;
+                                _ = thread_shutdown_rx.recv() => return,
+                                result = setup => result,
+                            };
+                            match result {
+                                Ok((session, manager, id)) => {
+                                    let tunnel =
+                                        manager.get_tunnel(&id).expect("newly started tunnel");
+                                    let proxy = TunnelHandle::new_proxy(
+                                        id,
+                                        tunnel.status.clone(),
+                                        tunnel.bytes_sent.clone(),
+                                        tunnel.bytes_received.clone(),
                                         thread_shutdown_tx,
                                     );
-
-                                    let _ = result_tx.send(Ok(proxy_handle));
-
-                                    // Park this thread -- keep the tokio runtime alive so the
-                                    // tunnel's spawned tasks continue to run. Wait for shutdown.
-                                    thread_shutdown_rx.recv().await;
-
-                                    // Shutdown received -- stop all tunnels and exit
+                                    // If the UI timed out or disappeared, tear down immediately.
+                                    if result_tx.send(Ok(proxy)).is_ok() {
+                                        thread_shutdown_rx.recv().await;
+                                    }
                                     tracing::info!("Stopping tunnels for forward {}", forward_id);
-                                    tunnel_manager.stop_all();
-
-                                    // Give tunnel tasks a moment to clean up
-                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                    manager.stop_all();
+                                    // Keep the runtime alive through listener/channel cleanup and
+                                    // remote cancel acknowledgement (bounded internally to 5s).
+                                    let _ = tokio::time::timeout(
+                                        std::time::Duration::from_secs(6),
+                                        async {
+                                            while manager.tunnels().iter().any(|t| t.is_active()) {
+                                                tokio::time::sleep(
+                                                    std::time::Duration::from_millis(10),
+                                                )
+                                                .await;
+                                            }
+                                        },
+                                    )
+                                    .await;
+                                    let _ = tokio::time::timeout(
+                                        std::time::Duration::from_secs(2),
+                                        session.disconnect(),
+                                    )
+                                    .await;
                                 }
                                 Err(e) => {
                                     let msg = format!("Tunnel start failed: {}", e);
@@ -254,6 +262,7 @@ impl Workspace {
                 let thread_handle = match thread_handle {
                     Ok(h) => h,
                     Err(e) => {
+                        self.tunnel_starts.cancel(forward_id);
                         tracing::error!("Failed to spawn tunnel thread: {}", e);
                         self.port_forwards.update(cx, |pf, _| {
                             if let Some(f) = pf.forwards.iter_mut().find(|f| f.id == forward_id) {
@@ -277,7 +286,6 @@ impl Workspace {
 
                 // Now wait for the result from the background thread.
                 // We use cx.spawn to avoid blocking the UI thread.
-                let pf_handle = self.port_forwards.downgrade();
                 let weak_self = cx.entity().downgrade();
                 let label_for_activity = label.clone();
 
@@ -292,15 +300,19 @@ impl Workspace {
                         })
                         .await;
 
-                    match result {
-                        Ok(Ok(tunnel_handle)) => {
-                            tracing::info!(
-                                "Tunnel started successfully for forward {}",
-                                forward_id
-                            );
-
-                            // Store the active tunnel in the workspace
-                            let _ = weak_self.update(cx, |ws, cx| {
+                    if result.is_err() {
+                        let _ = setup_shutdown_tx.try_send(());
+                    }
+                    let _ = weak_self.update(cx, |ws, cx| {
+                        // Stop, retry, logout and workspace shutdown retire older callbacks.
+                        if !ws.tunnel_starts.finish(forward_id, attempt) {
+                            if let Ok(Ok(handle)) = result {
+                                handle.stop();
+                            }
+                            return;
+                        }
+                        match result {
+                            Ok(Ok(tunnel_handle)) => {
                                 ws.active_tunnels.insert(
                                     forward_id,
                                     ActiveTunnel {
@@ -308,16 +320,14 @@ impl Workspace {
                                         _thread: thread_handle,
                                     },
                                 );
-
-                                // Update forward status to Active
-                                ws.port_forwards.update(cx, |pf, _| {
+                                ws.port_forwards.update(cx, |pf, cx| {
                                     if let Some(f) =
                                         pf.forwards.iter_mut().find(|f| f.id == forward_id)
                                     {
                                         f.status = ForwardStatus::Active;
                                     }
+                                    cx.notify();
                                 });
-
                                 ws.add_activity_entry(
                                     ActivityEntry::new(
                                         ActivityKind::Forward,
@@ -337,73 +347,60 @@ impl Workspace {
                                     ToastLevel::Success,
                                     cx,
                                 );
-                                ws.update_dashboard_stats(cx);
-                                cx.notify();
-                            });
-                        }
-                        Ok(Err(err_msg)) => {
-                            tracing::error!(
-                                "Tunnel failed for forward {}: {}",
-                                forward_id,
-                                err_msg
-                            );
-
-                            let _ = pf_handle.update(cx, |pf, cx| {
-                                if let Some(f) = pf.forwards.iter_mut().find(|f| f.id == forward_id)
-                                {
-                                    f.status = ForwardStatus::Error;
+                            }
+                            error => {
+                                // Also stop a worker whose result did not arrive within 30s.
+                                // The receiver has gone away; a later success is never published.
+                                ws.port_forwards.update(cx, |pf, cx| {
+                                    if let Some(f) =
+                                        pf.forwards.iter_mut().find(|f| f.id == forward_id)
+                                    {
+                                        f.status = ForwardStatus::Error;
+                                    }
+                                    cx.notify();
+                                });
+                                match error {
+                                    Ok(Err(err_msg)) => {
+                                        ws.add_activity(
+                                            t!("activity.forward_failed", error = err_msg.as_str())
+                                                .to_string(),
+                                            ActivityKind::Error,
+                                            cx,
+                                        );
+                                        ws.show_toast(
+                                            t!("toast.forward.failed", error = err_msg.as_str())
+                                                .to_string(),
+                                            ToastLevel::Error,
+                                            cx,
+                                        );
+                                    }
+                                    Err(_) => {
+                                        ws.add_activity(
+                                            t!(
+                                                "activity.forward_timeout",
+                                                label = label_for_activity.as_str()
+                                            )
+                                            .to_string(),
+                                            ActivityKind::Error,
+                                            cx,
+                                        );
+                                        ws.show_toast(
+                                            t!(
+                                                "toast.forward.timeout",
+                                                label = label_for_activity.as_str()
+                                            )
+                                            .to_string(),
+                                            ToastLevel::Warning,
+                                            cx,
+                                        );
+                                    }
+                                    Ok(Ok(_)) => unreachable!(),
                                 }
-                                cx.notify();
-                            });
-
-                            let _ = weak_self.update(cx, |ws, cx| {
-                                ws.add_activity(
-                                    t!("activity.forward_failed", error = err_msg.as_str())
-                                        .to_string(),
-                                    ActivityKind::Error,
-                                    cx,
-                                );
-                                ws.show_toast(
-                                    t!("toast.forward.failed", error = err_msg.as_str())
-                                        .to_string(),
-                                    ToastLevel::Error,
-                                    cx,
-                                );
-                            });
+                            }
                         }
-                        Err(_timeout) => {
-                            tracing::error!("Tunnel setup timed out for forward {}", forward_id);
-
-                            let _ = pf_handle.update(cx, |pf, cx| {
-                                if let Some(f) = pf.forwards.iter_mut().find(|f| f.id == forward_id)
-                                {
-                                    f.status = ForwardStatus::Error;
-                                }
-                                cx.notify();
-                            });
-
-                            let _ = weak_self.update(cx, |ws, cx| {
-                                ws.add_activity(
-                                    t!(
-                                        "activity.forward_timeout",
-                                        label = label_for_activity.as_str()
-                                    )
-                                    .to_string(),
-                                    ActivityKind::Error,
-                                    cx,
-                                );
-                                ws.show_toast(
-                                    t!(
-                                        "toast.forward.timeout",
-                                        label = label_for_activity.as_str()
-                                    )
-                                    .to_string(),
-                                    ToastLevel::Warning,
-                                    cx,
-                                );
-                            });
-                        }
-                    }
+                        ws.update_dashboard_stats(cx);
+                        cx.notify();
+                    });
                 })
                 .detach();
 
@@ -413,6 +410,8 @@ impl Workspace {
                 let forward_id = *id;
                 tracing::info!("Stop forward requested: {}", forward_id);
 
+                // Cancel setup before retiring an already running tunnel.
+                let was_starting = self.tunnel_starts.cancel(forward_id);
                 // Look up and remove the active tunnel
                 if let Some(active_tunnel) = self.active_tunnels.remove(&forward_id) {
                     // Signal the tunnel to stop. This sends through the shutdown channel
@@ -469,7 +468,19 @@ impl Workspace {
                     });
 
                     self.add_activity(
-                        t!("activity.forward_stop_no_active").to_string(),
+                        if was_starting {
+                            let label = self
+                                .port_forwards
+                                .read(cx)
+                                .forwards
+                                .iter()
+                                .find(|f| f.id == forward_id)
+                                .map(|f| f.label.clone().unwrap_or_else(|| f.description()))
+                                .unwrap_or_else(|| forward_id.to_string());
+                            t!("activity.forward_stopped", label = label.as_str()).to_string()
+                        } else {
+                            t!("activity.forward_stop_no_active").to_string()
+                        },
                         ActivityKind::Forward,
                         cx,
                     );

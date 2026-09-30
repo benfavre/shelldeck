@@ -1,0 +1,38 @@
+{
+  "baseline-bind": {
+    "127.0.0.1": "open",
+    "127.0.0.2": "closed"
+  },
+  "baseline-pending": {
+    "stop_during_authentication": "reactivated",
+    "port_after_stop": "open",
+    "worker_log_order": [
+      "Start",
+      "Stop (no active handle)",
+      "Tunnel started successfully"
+    ]
+  },
+  "fixed-bind": {
+    "127.0.0.1": "closed",
+    "127.0.0.2": "open",
+    "forwarded_http_status": 200
+  },
+  "fixed-pending": {
+    "stop_during_authentication": "stays inactive",
+    "port_after_6_seconds": "closed",
+    "worker_log_order": [
+      "Start",
+      "Stop (pending)"
+    ]
+  },
+  "fixed-reverse": {
+    "cancel_delay_seconds": 2,
+    "listener_closed_after_seconds": 2.03,
+    "http_status": 200
+  },
+  "fixed-logout": {
+    "auth_delay_seconds": 10,
+    "port_after_logout_and_delay": "closed",
+    "pending_start_verified_in_worker_log": true
+  }
+}

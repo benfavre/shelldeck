@@ -157,6 +157,14 @@ impl Workspace {
     /// Stop runtime resources that must never survive an account boundary.
     /// Unlike `shutdown`, this keeps the Workspace itself alive for login.
     pub(super) fn stop_authenticated_runtime(&mut self, cx: &mut Context<Self>) {
+        // Retire setup attempts before stopping completed tunnels.
+        self.tunnel_starts.cancel_all();
+        self.port_forwards.update(cx, |pf, cx| {
+            for forward in &mut pf.forwards {
+                forward.status = shelldeck_core::models::port_forward::ForwardStatus::Inactive;
+            }
+            cx.notify();
+        });
         // Stop all active tunnels
         for (fwd_id, tunnel) in self.active_tunnels.drain() {
             tracing::info!("Stopping tunnel for forward {}", fwd_id);
