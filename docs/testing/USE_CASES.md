@@ -880,6 +880,10 @@ The session search has a usable text viewport, and inherited navigator/provider
 labels follow the active theme in both light and dark appearances
 (SDTEST-1931/1932, manual native validation).
 
+The empty Claude Code/Codex session shows the shared subscription sign-in
+guide. SSH targets require their own installed CLI and provider login; local
+provider credentials are never forwarded to them.
+
 Dev mode exposes one provider-neutral agent console for Claude Code, Codex,
 Automonique ACP, DeepSeek through Jcode, and Jcode's configured/default provider.
 Every run names a target-valid working directory (a native absolute path locally,
@@ -1702,7 +1706,13 @@ the sidebar connection action. Unknown and malformed menu ids are ignored.
 
 Settings → IA selects one local CLI (Claude Code, Codex, Aider) or API
 provider (OpenAI, Anthropic), an optional model, and per-surface opt-outs. API
-keys live only in the OS keychain. The assistant affordance remains hidden
+keys live only in the OS keychain. Codex and Claude Code CLI backends also
+reuse their provider-owned subscription login, without requiring a ShellDeck
+API key. Settings labels those options and shows sign-in/copy/status guidance;
+API billing remains a separate choice and CLI-configured credentials can
+override subscription usage. A gated live smoke checks both subscription
+methods before completing with API-key environment variables removed.
+The assistant affordance remains hidden
 when AI or the current surface is disabled, or when a selected local CLI is
 not executable. The explicit connection test sends a real minimal completion
 and reports the provider/model result, but does not become a per-launch lock.

@@ -370,6 +370,7 @@ Existing: **0 tests**.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-1338 | `ai.rs::fake_local_clis_complete_the_real_connection_test_path` | SDUC-413, SDUC-416 | Green | Fake executable Claude/Codex clients traverse config → subprocess → provider parsing → exact connection-test response without contacting a real provider. |
+| SDTEST-1935 | `ai.rs::live_subscription_clis_complete_without_api_keys` (`#[ignore]`, `SHELLDECK_LIVE_SUBSCRIPTION=1`) | SDUC-413, SDUC-416 | Green (live, opt-in) | Passed 2026-09-30 against Codex 0.159.2 (ChatGPT) and Claude Code 2.1.285 (Claude.ai/Max). Child process removes OPENAI_API_KEY, CODEX_API_KEY, ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN, retains provider-owned OAuth storage, checks subscription auth modes, then traverses ShellDeck create_client → complete → exact connection-test response for both. Sends two minimal real completions; normal CI never runs it. |
 | SDTEST-1339 | `ai.rs::api_payloads_keep_guardrails_outside_untrusted_input_and_disable_storage` | SDUC-415 | Green | Pins OpenAI `instructions` + `store=false` and Anthropic `system`, separate from untrusted user context. |
 | SDTEST-1340 | `ai.rs::configured_cli_requires_an_executable_file` | SDUC-413 | Green | A present but non-executable custom CLI path cannot be reported as available. |
 | SDTEST-1342 | `app_config.rs::ai_config_round_trips_without_any_credential_field` | SDUC-413, SDUC-415 | Green | Pins backward-compatible `[ai]` persistence while proving API credentials have no serializable config field. |
