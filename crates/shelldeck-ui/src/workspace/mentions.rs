@@ -19,7 +19,7 @@ use shelldeck_core::config::manage_directory;
 use shelldeck_core::models::script::ScriptTarget;
 use std::rc::Rc;
 
-use super::Workspace;
+use super::{ManageRead, Workspace};
 use crate::t;
 
 impl Workspace {
@@ -558,6 +558,7 @@ impl Workspace {
         let base = self.app_config.cloud_sync.base_url.clone();
         let token = self.app_config.cloud_sync.token.clone();
         let site = self.app_config.cloud_sync.active_site_id.clone();
+        let request = self.manage_requests.begin(ManageRead::People);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -565,16 +566,21 @@ impl Workspace {
                     async move { manage_directory::fetch_people(&base, &token, site.as_deref()) },
                 )
                 .await;
-            let _ = this.update(cx, |workspace, cx| match result {
-                Ok(people) => {
-                    let changed = workspace.mention_people != people;
-                    workspace.mention_people = people;
-                    if changed {
-                        workspace.refresh_mention_directory(cx);
-                    }
+            let _ = this.update(cx, |workspace, cx| {
+                if !workspace.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(error) => {
-                    tracing::debug!(%error, "mentionable people unavailable");
+                match result {
+                    Ok(people) => {
+                        let changed = workspace.mention_people != people;
+                        workspace.mention_people = people;
+                        if changed {
+                            workspace.refresh_mention_directory(cx);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "mentionable people unavailable");
+                    }
                 }
             });
         })

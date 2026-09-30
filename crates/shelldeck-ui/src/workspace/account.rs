@@ -21,12 +21,16 @@ impl Workspace {
         }
         let base = self.account_base_url();
         let token = self.app_config.cloud_sync.token.clone();
+        let request = self.manage_requests.begin(ManageRead::Account);
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move { cloud_account::whoami(&base, &token) })
                 .await;
             let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
+                }
                 match result {
                     Ok(info) => {
                         ws.account_status = AccountStatus::Ok;
@@ -35,6 +39,7 @@ impl Workspace {
                             ws.app_config.account = Some(refreshed);
                             let _ = ws.app_config.save();
                         }
+                        ws.sync_settings_config(cx);
                         // Stash the full whoami — the User "Mes informations"
                         // tab renders every field (device label, created_at,
                         // last_seen_at, …) that `AccountInfo` doesn't persist.
@@ -111,6 +116,7 @@ impl Workspace {
 
     /// Open the password + OIDC login modal.
     pub fn show_login_form(&mut self, cx: &mut Context<Self>) {
+        self.manage_requests.begin(ManageRead::Login);
         let server = self.account_base_url();
         let device = cloud_account::device_name();
         let form = cx.new(|form_cx| LoginForm::new(server, device, form_cx));
@@ -128,6 +134,7 @@ impl Workspace {
                     this.open_forgot_password(cx);
                 }
                 LoginFormEvent::Cancel => {
+                    this.manage_requests.begin(ManageRead::Login);
                     this.login_form = None;
                     this._login_form_sub = None;
                     cx.notify();
@@ -217,6 +224,7 @@ impl Workspace {
     ) {
         let base = self.account_base_url();
         let device = cloud_account::device_name();
+        let request = self.manage_requests.begin(ManageRead::Login);
         if let Some(form) = &self.login_form {
             form.update(cx, |f, cx| {
                 f.set_busy(true);
@@ -230,21 +238,26 @@ impl Workspace {
                     async move { cloud_account::login_password(&base, &email, &password, &device) },
                 )
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok((token, account)) => ws.apply_login(token, account, cx),
-                Err(e) => {
-                    let msg = crate::i18n::login_error_message(&e);
-                    // Une seule fois, et à l'endroit où l'on regarde : sous les
-                    // champs. La bulle en bas à droite répétait mot pour mot le
-                    // message déjà affiché dans la modale.
-                    if let Some(form) = &ws.login_form {
-                        form.update(cx, |f, cx| {
-                            f.set_busy(false);
-                            f.set_error(msg);
-                            cx.notify();
-                        });
-                    } else {
-                        ws.show_toast(msg, ToastLevel::Error, cx);
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.manage_requests.is_current(request) {
+                    return;
+                }
+                match result {
+                    Ok((token, account)) => ws.apply_login(token, account, cx),
+                    Err(e) => {
+                        let msg = crate::i18n::login_error_message(&e);
+                        // Une seule fois, et à l'endroit où l'on regarde : sous les
+                        // champs. La bulle en bas à droite répétait mot pour mot le
+                        // message déjà affiché dans la modale.
+                        if let Some(form) = &ws.login_form {
+                            form.update(cx, |f, cx| {
+                                f.set_busy(false);
+                                f.set_error(msg);
+                                cx.notify();
+                            });
+                        } else {
+                            ws.show_toast(msg, ToastLevel::Error, cx);
+                        }
                     }
                 }
             });
@@ -255,6 +268,7 @@ impl Workspace {
     /// Start the browser device-authorize flow: bind a loopback listener, open
     /// the system browser, and wait (background) for the token redirect.
     pub(super) fn start_oidc_login(&mut self, provider: Option<String>, cx: &mut Context<Self>) {
+        let request = self.manage_requests.begin(ManageRead::Login);
         let base = self.account_base_url();
         let device = cloud_account::device_name();
 
@@ -326,17 +340,22 @@ impl Workspace {
                     ))
                 })
                 .await;
-            let _ = this.update(cx, |ws, cx| match outcome {
-                Ok((token, account)) => ws.apply_login(token, account, cx),
-                Err(e) => ws.show_toast(
-                    t!(
-                        "toast.browser_login_failed",
-                        error = crate::i18n::api_error_message(&e)
-                    )
-                    .to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.manage_requests.is_current(request) {
+                    return;
+                }
+                match outcome {
+                    Ok((token, account)) => ws.apply_login(token, account, cx),
+                    Err(e) => ws.show_toast(
+                        t!(
+                            "toast.browser_login_failed",
+                            error = crate::i18n::api_error_message(&e)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
             });
         })
         .detach();
@@ -350,6 +369,7 @@ impl Workspace {
         account: AccountInfo,
         cx: &mut Context<Self>,
     ) {
+        self.manage_requests.change_session();
         if let Err(error) = shelldeck_core::config::keychain::store_manage_token(&token) {
             tracing::error!("Failed to store AI Operations token in OS keychain: {error}");
         }
@@ -383,46 +403,56 @@ impl Workspace {
         // subset, but "Mes informations" needs the richer payload.
         self.check_account_on_startup(cx);
         let cfg = self.app_config.cloud_sync.clone();
+        let request = self.manage_requests.begin(ManageRead::Sync);
+        let login_session = self.manage_requests.session();
         let name = account.display_name();
         let splash_started_at = std::time::Instant::now();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    shelldeck_core::config::cloud_sync::sync_now(&cfg, shelldeck_core::VERSION)
+                    shelldeck_core::config::cloud_sync::fetch_sync(&cfg, shelldeck_core::VERSION)
                 })
                 .await;
             if let Some(remaining) = post_login_splash_remaining(splash_started_at.elapsed()) {
                 cx.background_executor().timer(remaining).await;
             }
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(_stats) => {
-                    ws.reload_connections_after_sync(cx);
-                    let n = ws
-                        .connections
-                        .iter()
-                        .filter(|c| c.source == ConnectionSource::CloudSync)
-                        .count();
-                    ws.show_toast(
-                        t!("toast.login_synced", name = name.as_str(), count = n).to_string(),
-                        ToastLevel::Success,
-                        cx,
-                    );
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(e) => {
-                    ws.show_toast(
-                        t!(
-                            "toast.login_sync_failed",
-                            name = name.as_str(),
-                            error = crate::i18n::api_error_message(&e)
-                        )
-                        .to_string(),
-                        ToastLevel::Warning,
-                        cx,
-                    );
+                let result = result.and_then(|payload| ws.apply_cloud_profiles(payload, cx));
+                match result {
+                    Ok(_stats) => {
+                        let n = ws
+                            .connections
+                            .iter()
+                            .filter(|c| c.source == ConnectionSource::CloudSync)
+                            .count();
+                        ws.show_toast(
+                            t!("toast.login_synced", name = name.as_str(), count = n).to_string(),
+                            ToastLevel::Success,
+                            cx,
+                        );
+                    }
+                    Err(e) => {
+                        ws.show_toast(
+                            t!(
+                                "toast.login_sync_failed",
+                                name = name.as_str(),
+                                error = crate::i18n::api_error_message(&e)
+                            )
+                            .to_string(),
+                            ToastLevel::Warning,
+                            cx,
+                        );
+                    }
                 }
             });
             let _ = this.update(cx, |ws, cx| {
+                if !ws.manage_requests.is_current(login_session) {
+                    return;
+                }
                 if let Some(splash) = &mut ws.post_login_splash {
                     splash.dismissing = true;
                 }
@@ -432,6 +462,9 @@ impl Workspace {
                 .timer(std::time::Duration::from_millis(POST_LOGIN_SPLASH_FADE_MS))
                 .await;
             let _ = this.update(cx, |ws, cx| {
+                if !ws.manage_requests.is_current(login_session) {
+                    return;
+                }
                 ws.post_login_splash = None;
                 ws.maybe_show_onboarding(cx);
                 cx.notify();
@@ -459,6 +492,7 @@ impl Workspace {
 
     /// Clear Inklura Manage credentials and stop cloud-backed polls/views.
     pub(super) fn invalidate_cloud_session(&mut self, cx: &mut Context<Self>) {
+        self.manage_requests.change_session();
         self.stop_authenticated_runtime(cx);
         // Overwrite the persisted workspace after closing sessions. Otherwise
         // a later launch/account could restore terminals from the old session.
@@ -499,7 +533,9 @@ impl Workspace {
         self.issues_list_owner_scoped = false;
         self.issues_instances.clear();
         self.issues_staff = false;
-        self.reset_issue_selection(cx);
+        self.reset_request_session(cx);
+        self.mention_people.clear();
+        self.refresh_mention_directory(cx);
         self.issue_new_site_id = None;
         self.rebuild_issue_site_select(cx);
         self.site_menu_open = false;
