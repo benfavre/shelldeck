@@ -252,6 +252,7 @@ impl Workspace {
             v.set_loading(true);
             cx.notify();
         });
+        let request = self.manage_requests.begin(ManageRead::Support);
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let (list, agents) = cx
                 .background_executor()
@@ -266,6 +267,9 @@ impl Workspace {
                 })
                 .await;
             let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, list.as_ref().err(), cx) {
+                    return;
+                }
                 ws.support.update(cx, |v, cx| {
                     match list {
                         Ok(mut r) => {
@@ -298,6 +302,7 @@ impl Workspace {
     }
 
     pub(super) fn select_support_ticket(&mut self, id: String, cx: &mut Context<Self>) {
+        let request = self.manage_requests.begin(ManageRead::SupportDetail);
         let base = self.account_base_url();
         let token = self.app_config.cloud_sync.token.clone();
         self.add_activity_entry(
@@ -331,26 +336,33 @@ impl Workspace {
                 .spawn(async move {
                     let detail = manage_support::support_ticket(&base, &token, &id);
                     // Best-effort mark-read; ignore result.
-                    let _ = manage_support::support_read(&base, &token, &id);
+                    if detail.is_ok() {
+                        let _ = manage_support::support_read(&base, &token, &id);
+                    }
                     detail
                 })
                 .await;
-            let _ = this.update(cx, |ws, cx| match detail {
-                Ok(t) => {
-                    ws.support.update(cx, |v, cx| {
-                        v.set_detail(t, cx);
-                        cx.notify();
-                    });
-                    // Unread counts drift ≤30 s until the poll runs — an
-                    // eager `refresh_support` here doubled the HTTP round
-                    // trips on every selection.
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, detail.as_ref().err(), cx) {
+                    return;
                 }
-                Err(e) => {
-                    let msg = crate::i18n::api_error_message(&e);
-                    ws.support.update(cx, |v, cx| {
-                        v.set_error(msg);
-                        cx.notify();
-                    });
+                match detail {
+                    Ok(t) => {
+                        ws.support.update(cx, |v, cx| {
+                            v.set_detail(t, cx);
+                            cx.notify();
+                        });
+                        // Unread counts drift ≤30 s until the poll runs — an
+                        // eager `refresh_support` here doubled the HTTP round
+                        // trips on every selection.
+                    }
+                    Err(e) => {
+                        let msg = crate::i18n::api_error_message(&e);
+                        ws.support.update(cx, |v, cx| {
+                            v.set_error(msg);
+                            cx.notify();
+                        });
+                    }
                 }
             });
         })
@@ -594,29 +606,40 @@ impl Workspace {
             v.set_loading(true);
             cx.notify();
         });
+        let request = self.manage_requests.session();
+        let detail_request = self.manage_requests.current(ManageRead::SupportDetail);
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move { f(base, token) })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(t) => {
-                    ws.support.update(cx, |v, cx| {
-                        v.set_detail(t, cx);
-                        if let Some(id) = sent_ticket_id.as_deref() {
-                            v.clear_ticket_draft_after_send(id, cx);
-                        }
-                        cx.notify();
-                    });
-                    ws.refresh_support(cx);
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(e) => {
-                    let msg = crate::i18n::api_error_message(&e);
-                    ws.support.update(cx, |v, cx| {
-                        v.set_error(msg.clone());
-                        cx.notify();
-                    });
-                    ws.show_toast(msg, ToastLevel::Error, cx);
+                match result {
+                    Ok(t) => {
+                        ws.support.update(cx, |v, cx| {
+                            if ws.manage_requests.is_current(detail_request)
+                                && v.selected_id().as_deref() == Some(t.id.as_str())
+                            {
+                                v.set_detail(t, cx);
+                            }
+                            if let Some(id) = sent_ticket_id.as_deref() {
+                                v.clear_ticket_draft_after_send(id, cx);
+                            }
+                            cx.notify();
+                        });
+                        ws.refresh_support(cx);
+                    }
+                    Err(e) => {
+                        let msg = crate::i18n::api_error_message(&e);
+                        ws.support.update(cx, |v, cx| {
+                            v.set_error(msg.clone());
+                            cx.notify();
+                        });
+                        ws.show_toast(msg, ToastLevel::Error, cx);
+                    }
                 }
             });
         })

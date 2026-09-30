@@ -4,9 +4,9 @@ impl Workspace {
     /// Pull SSH connection profiles from Inklura Manage on demand.
     ///
     /// If Cloud Sync isn't configured, this just explains how to set it up.
-    /// Otherwise the blocking network fetch + merge runs on a background thread
-    /// (never the UI thread), and on completion the merged connections are
-    /// reloaded into the sidebar/dashboard and a toast reports the stats.
+    /// Otherwise the blocking network fetch runs on a background thread. The
+    /// current session commits profiles in the completion callback, reloads
+    /// the sidebar/dashboard, and reports the merge stats.
     pub fn cloud_sync_now(&mut self, cx: &mut Context<Self>) {
         if !self.signed_in() {
             return;
@@ -45,38 +45,44 @@ impl Workspace {
             );
         }
         let version = shelldeck_core::VERSION;
+        let request = self.manage_requests.begin(ManageRead::Sync);
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
-                .spawn(async move { shelldeck_core::config::cloud_sync::sync_now(&cfg, version) })
+                .spawn(async move { shelldeck_core::config::cloud_sync::fetch_sync(&cfg, version) })
                 .await;
 
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(stats) => {
-                    ws.reload_connections_after_sync(cx);
-                    ws.show_toast(
-                        t!(
-                            "toast.cloud_sync.done",
-                            added = stats.added,
-                            updated = stats.updated,
-                            removed = stats.removed
-                        )
-                        .to_string(),
-                        ToastLevel::Success,
-                        cx,
-                    );
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(e) => {
-                    ws.show_toast(
-                        t!(
-                            "toast.cloud_sync.failed",
-                            error = crate::i18n::api_error_message(&e)
-                        )
-                        .to_string(),
-                        ToastLevel::Error,
-                        cx,
-                    );
+                let result = result.and_then(|payload| ws.apply_cloud_profiles(payload, cx));
+                match result {
+                    Ok(stats) => {
+                        ws.show_toast(
+                            t!(
+                                "toast.cloud_sync.done",
+                                added = stats.added,
+                                updated = stats.updated,
+                                removed = stats.removed
+                            )
+                            .to_string(),
+                            ToastLevel::Success,
+                            cx,
+                        );
+                    }
+                    Err(e) => {
+                        ws.show_toast(
+                            t!(
+                                "toast.cloud_sync.failed",
+                                error = crate::i18n::api_error_message(&e)
+                            )
+                            .to_string(),
+                            ToastLevel::Error,
+                            cx,
+                        );
+                    }
                 }
             });
         })

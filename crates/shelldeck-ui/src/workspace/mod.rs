@@ -123,6 +123,8 @@ mod fleet;
 pub(crate) mod platform_attention;
 pub use platform_attention::PlatformAttentionNotification;
 mod forwards;
+mod manage_requests;
+use manage_requests::{ManageRead, ManageRequests};
 mod mentions;
 mod menu;
 mod modes;
@@ -565,6 +567,7 @@ pub struct Workspace {
     /// bits `AccountInfo` persists. Refreshed by `check_account_on_startup`
     /// and set on login. Cleared on logout.
     last_whoami: Option<cloud_account::WhoamiInfo>,
+    manage_requests: ManageRequests,
     /// Which User-mode home tab is showing (Sites / Demandes / Infos).
     user_home_tab: UserHomeTab,
     /// Cached Inklura Manage sites directory + areas (fetched after sign-in).
@@ -1478,6 +1481,7 @@ impl Workspace {
             _login_form_sub: None,
             _onboarding_sub: None,
             last_whoami: None,
+            manage_requests: ManageRequests::default(),
             user_home_tab: UserHomeTab::Home,
             site_directory: None,
             site_menu_open: false,

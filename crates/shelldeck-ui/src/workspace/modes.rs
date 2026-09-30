@@ -249,6 +249,10 @@ impl Workspace {
     /// land on an empty state. Any new issue-selection field added to
     /// `Workspace` must be reset here too.
     pub(super) fn reset_issue_selection(&mut self, cx: &mut Context<Self>) {
+        self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
+        self.issue_attachment_busy = false;
+        self.manage_requests.begin(ManageRead::IssueDetail);
+        self.manage_requests.begin(ManageRead::SupportDetail);
         self.issue_selected = None;
         self.issue_detail = None;
         self.user_new_request_sheet_open = false;

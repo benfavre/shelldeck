@@ -205,11 +205,10 @@ impl Workspace {
                 })
                 .await;
             let _ = this.update(cx, |ws, cx| {
-                ws.issue_attachment_busy = false;
                 if generation != ws.issue_attachment_generation {
-                    cx.notify();
                     return;
                 }
+                ws.issue_attachment_busy = false;
                 for result in loaded {
                     match result {
                         Ok(draft) => ws.add_attachment_draft(target, draft, cx),
@@ -298,11 +297,10 @@ impl Workspace {
                 .spawn(async move { issues::download_issue_image_url(&url) })
                 .await;
             let _ = this.update(cx, |ws, cx| {
-                ws.issue_attachment_busy = false;
                 if generation != ws.issue_attachment_generation {
-                    cx.notify();
                     return;
                 }
+                ws.issue_attachment_busy = false;
                 match result.and_then(|upload| {
                     AttachmentDraft::from_bytes(upload.filename, upload.bytes)
                         .map_err(shelldeck_core::ShellDeckError::Connection)
@@ -345,11 +343,10 @@ impl Workspace {
                 .spawn(async { capture_region() })
                 .await;
             let _ = this.update(cx, |ws, cx| {
-                ws.issue_attachment_busy = false;
                 if generation != ws.issue_attachment_generation {
-                    cx.notify();
                     return;
                 }
+                ws.issue_attachment_busy = false;
                 match result {
                     Ok(draft) => ws.open_issue_capture_annotator(target, draft, cx),
                     Err(error) => ws.show_toast(
@@ -475,6 +472,23 @@ impl Workspace {
         self.rebuild_issue_site_select(cx);
     }
 
+    /// Drafts survive navigation within an account, but never a sign-out.
+    pub(super) fn reset_request_session(&mut self, cx: &mut Context<Self>) {
+        self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
+        self.issue_ai_request_id = self.issue_ai_request_id.wrapping_add(1);
+        self.issue_attachment_busy = false;
+        self.issue_ai_loading = false;
+        self.issue_ai_error = None;
+        self.issue_ai_expanded = false;
+        self.issue_capture_annotator = None;
+        self.issue_thread_link_action = None;
+        self.issue_comment_attachments.clear();
+        self.issue_comment_attachments_open = false;
+        Self::reset_input(&self.issue_comment_state.clone(), cx);
+        self.reset_issue_selection(cx);
+        self.reset_new_request_draft(cx);
+    }
+
     /// Close the "Nouvelle demande" sheet after a clean close or an explicit
     /// discard. Plays the exit animation first, then clears the buffers only
     /// once the panel has left the viewport.
@@ -485,17 +499,22 @@ impl Workspace {
         self.user_new_request_sheet_dismissing = true;
         self.user_new_request_needs_focus = false;
         self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
+        self.issue_attachment_busy = false;
         self.issue_ai_request_id = self.issue_ai_request_id.wrapping_add(1);
         self.issue_ai_expanded = false;
         self.issue_ai_loading = false;
         self.issue_ai_error = None;
         self.issue_capture_annotator = None;
         cx.notify();
+        let request = self.manage_requests.session();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(SHEET_ANIM_MS))
                 .await;
             let _ = this.update(cx, |ws, cx| {
+                if !ws.manage_requests.is_current(request) {
+                    return;
+                }
                 ws.user_new_request_sheet_open = false;
                 ws.user_new_request_sheet_dismissing = false;
                 ws.reset_new_request_draft(cx);
@@ -512,7 +531,9 @@ impl Workspace {
             return;
         }
         self.user_issue_detail_dismissing = true;
+        let request = self.manage_requests.begin(ManageRead::IssueDetail);
         self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
+        self.issue_attachment_busy = false;
         self.issue_capture_annotator = None;
         self.issue_thread_link_action = None;
         cx.notify();
@@ -521,6 +542,9 @@ impl Workspace {
                 .timer(std::time::Duration::from_millis(SHEET_ANIM_MS))
                 .await;
             let _ = this.update(cx, |ws, cx| {
+                if !ws.manage_requests.is_current(request) {
+                    return;
+                }
                 ws.issue_selected = None;
                 ws.issue_detail = None;
                 ws.user_issue_detail_dismissing = false;
@@ -790,34 +814,40 @@ impl Workspace {
         // Support mode retains its triage filters and broader staff scope.
         let filter = issue_list_filter_for_mode(self.effective_mode(), &self.issues_filter);
         let owner_scoped = filter.mine;
+        let request = self.manage_requests.begin(ManageRead::Issues);
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move { issues::list_issues(&base, &token, &filter) })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(list) => {
-                    ws.issues_list = list.issues.clone();
-                    ws.issues_counts = list.counts;
-                    ws.issues_list_owner_scoped = owner_scoped;
-                    ws.issues_staff = list.staff;
-                    ws.issues_instances = list.instances.clone();
-                    // Fixture de phase de test uniquement : son interrupteur
-                    // reste coupé en utilisation normale. Même activée, elle
-                    // n'affecte que la mémoire et n'est jamais envoyée à Manage.
-                    Self::inject_thread_showcase(&mut ws.issues_list, ws.issues_staff);
-                    ws.push_issues_to_support(cx);
-                    cx.notify();
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(e) => ws.show_toast(
-                    t!(
-                        "toast.issue.list_failed",
-                        error = crate::i18n::api_error_message(&e)
-                    )
-                    .to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
+                match result {
+                    Ok(list) => {
+                        ws.issues_list = list.issues.clone();
+                        ws.issues_counts = list.counts;
+                        ws.issues_list_owner_scoped = owner_scoped;
+                        ws.issues_staff = list.staff;
+                        ws.issues_instances = list.instances.clone();
+                        // Fixture de phase de test uniquement : son interrupteur
+                        // reste coupé en utilisation normale. Même activée, elle
+                        // n'affecte que la mémoire et n'est jamais envoyée à Manage.
+                        Self::inject_thread_showcase(&mut ws.issues_list, ws.issues_staff);
+                        ws.push_issues_to_support(cx);
+                        cx.notify();
+                    }
+                    Err(e) => ws.show_toast(
+                        t!(
+                            "toast.issue.list_failed",
+                            error = crate::i18n::api_error_message(&e)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
             });
         })
         .detach();
@@ -890,6 +920,8 @@ impl Workspace {
     }
 
     pub fn select_issue(&mut self, id: String, cx: &mut Context<Self>) {
+        self.user_issue_detail_dismissing = false;
+        let request = self.manage_requests.begin(ManageRead::IssueDetail);
         // La fixture n'existe pas côté Manage : demander son détail renvoie 404
         // et un toast erroné. On prend la version qu'on a déjà en mémoire.
         if id == Self::FAKE_SHOWCASE_ID {
@@ -906,6 +938,7 @@ impl Workspace {
             return;
         };
         if self.issue_selected.as_deref() != Some(id.as_str()) {
+            self.issue_attachment_busy = false;
             self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
             self.issue_comment_attachments.clear();
             Self::reset_input(&self.issue_attachment_url_state.clone(), cx);
@@ -928,24 +961,29 @@ impl Workspace {
                 .background_executor()
                 .spawn(async move { issues::get_issue(&base, &token, &id) })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(iss) => {
-                    ws.issue_detail = Some(iss);
-                    if pin_user_thread {
-                        crate::follow_scroll::pin_to_latest(&ws.user_issue_thread_scroll);
-                    }
-                    ws.push_issues_to_support(cx);
-                    cx.notify();
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(e) => ws.show_toast(
-                    t!(
-                        "toast.issue.detail_failed",
-                        error = crate::i18n::api_error_message(&e)
-                    )
-                    .to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
+                match result {
+                    Ok(iss) => {
+                        ws.issue_detail = Some(iss);
+                        if pin_user_thread {
+                            crate::follow_scroll::pin_to_latest(&ws.user_issue_thread_scroll);
+                        }
+                        ws.push_issues_to_support(cx);
+                        cx.notify();
+                    }
+                    Err(e) => ws.show_toast(
+                        t!(
+                            "toast.issue.detail_failed",
+                            error = crate::i18n::api_error_message(&e)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
             });
         })
         .detach();
@@ -989,6 +1027,8 @@ impl Workspace {
         self.issue_attachment_busy = true;
         self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
         cx.notify();
+        let request = self.manage_requests.session();
+        let attachment_generation = self.issue_attachment_generation;
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -1023,7 +1063,16 @@ impl Workspace {
                 })
                 .await;
             let _ = this.update(cx, |ws, cx| {
-                ws.issue_attachment_busy = false;
+                let error = result
+                    .as_ref()
+                    .err()
+                    .or_else(|| result.as_ref().ok().and_then(|(_, error)| error.as_ref()));
+                if !ws.accept_manage_result(request, error, cx) {
+                    return;
+                }
+                if ws.issue_attachment_generation == attachment_generation {
+                    ws.issue_attachment_busy = false;
+                }
                 match result {
                     Ok((iss, attachment_error)) => {
                         let preserve_attachments = attachment_error.is_some();
@@ -1042,6 +1091,12 @@ impl Workspace {
                             .with_action(ActivityAction::OpenIssue),
                             cx,
                         );
+                        ws.upsert_issue_in_list(iss.clone());
+                        if ws.issue_attachment_generation != attachment_generation {
+                            ws.push_issues_to_support(cx);
+                            cx.notify();
+                            return;
+                        }
                         // Success: close the composer sheet, clear its buffers,
                         // and pop the detail sheet on the newly-created request.
                         ws.user_new_request_sheet_open = false;
@@ -1056,7 +1111,6 @@ impl Workspace {
                         ws.issue_ai_expanded = false;
                         ws.issue_ai_loading = false;
                         ws.issue_ai_error = None;
-                        ws.upsert_issue_in_list(iss.clone());
                         ws.issue_detail = Some(iss.clone());
                         ws.issue_selected = Some(iss.id.clone());
                         ws.push_issues_to_support(cx);
@@ -1114,6 +1168,9 @@ impl Workspace {
         self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
         let sent_issue_id = id.clone();
         cx.notify();
+        let request = self.manage_requests.session();
+        let attachment_generation = self.issue_attachment_generation;
+        let detail_request = self.manage_requests.current(ManageRead::IssueDetail);
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -1132,17 +1189,25 @@ impl Workspace {
                 })
                 .await;
             let _ = this.update(cx, |ws, cx| {
-                ws.issue_attachment_busy = false;
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
+                }
+                if ws.issue_attachment_generation == attachment_generation {
+                    ws.issue_attachment_busy = false;
+                }
                 match result {
                     Ok(iss) => {
                         ws.upsert_issue_in_list(iss.clone());
-                        ws.issue_detail = Some(iss);
-                        crate::follow_scroll::pin_to_latest(&ws.user_issue_thread_scroll);
-                        if let Some((id, title)) = ws
-                            .issue_detail
-                            .as_ref()
-                            .map(|detail| (detail.id.clone(), detail.title.clone()))
+                        if ws.manage_requests.is_current(detail_request)
+                            && ws.issue_selected.as_deref() == Some(iss.id.as_str())
                         {
+                            ws.issue_detail = Some(iss.clone());
+                        }
+                        if ws.manage_requests.is_current(detail_request) {
+                            crate::follow_scroll::pin_to_latest(&ws.user_issue_thread_scroll);
+                        }
+                        {
+                            let (id, title) = (iss.id.clone(), iss.title.clone());
                             ws.add_activity_entry(
                                 ActivityEntry::new(
                                     ActivityKind::Issue,
@@ -1158,11 +1223,16 @@ impl Workspace {
                         ws.support.update(cx, |view, cx| {
                             view.clear_issue_draft_after_send(&sent_issue_id, cx);
                         });
-                        Self::reset_input(&ws.issue_comment_state.clone(), cx);
-                        Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
-                        ws.issue_attachment_url_open = false;
-                        ws.issue_comment_attachments.clear();
-                        ws.issue_comment_attachments_open = false;
+                        if ws.manage_requests.is_current(detail_request)
+                            && ws.issue_selected.as_deref() == Some(sent_issue_id.as_str())
+                            && ws.issue_attachment_generation == attachment_generation
+                        {
+                            Self::reset_input(&ws.issue_comment_state.clone(), cx);
+                            Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                            ws.issue_attachment_url_open = false;
+                            ws.issue_comment_attachments.clear();
+                            ws.issue_comment_attachments_open = false;
+                        }
                         cx.notify();
                     }
                     Err(e) => {
@@ -1196,42 +1266,51 @@ impl Workspace {
         let Some((base, token)) = self.manage_base_token() else {
             return;
         };
+        let request = self.manage_requests.session();
+        let detail_request = self.manage_requests.current(ManageRead::IssueDetail);
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move { f(base, token) })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(iss) => {
-                    ws.upsert_issue_in_list(iss.clone());
-                    ws.issue_detail = Some(iss);
-                    if let Some((id, title)) = ws
-                        .issue_detail
-                        .as_ref()
-                        .map(|detail| (detail.id.clone(), detail.title.clone()))
-                    {
-                        ws.add_activity_entry(
-                            ActivityEntry::new(
-                                ActivityKind::Issue,
-                                t!("activity.issue.updated", title = title.as_str()).to_string(),
-                            )
-                            .with_target(id, title)
-                            .with_action(ActivityAction::OpenIssue),
-                            cx,
-                        );
-                    }
-                    ws.push_issues_to_support(cx);
-                    cx.notify();
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(e) => ws.show_toast(
-                    t!(
-                        "toast.issue.staff_failed",
-                        error = crate::i18n::api_error_message(&e)
-                    )
-                    .to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
+                match result {
+                    Ok(iss) => {
+                        ws.upsert_issue_in_list(iss.clone());
+                        if ws.manage_requests.is_current(detail_request)
+                            && ws.issue_selected.as_deref() == Some(iss.id.as_str())
+                        {
+                            ws.issue_detail = Some(iss.clone());
+                        }
+                        {
+                            let (id, title) = (iss.id.clone(), iss.title.clone());
+                            ws.add_activity_entry(
+                                ActivityEntry::new(
+                                    ActivityKind::Issue,
+                                    t!("activity.issue.updated", title = title.as_str())
+                                        .to_string(),
+                                )
+                                .with_target(id, title)
+                                .with_action(ActivityAction::OpenIssue),
+                                cx,
+                            );
+                        }
+                        ws.push_issues_to_support(cx);
+                        cx.notify();
+                    }
+                    Err(e) => ws.show_toast(
+                        t!(
+                            "toast.issue.staff_failed",
+                            error = crate::i18n::api_error_message(&e)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
             });
         })
         .detach();
@@ -1297,6 +1376,7 @@ impl Workspace {
             ToastLevel::Info,
             cx,
         );
+        let request = self.manage_requests.session();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -1315,38 +1395,46 @@ impl Workspace {
                     })
                 })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(issue) => {
-                    ws.upsert_issue_in_list(issue.clone());
-                    ws.issue_detail = Some(issue.clone());
-                    ws.push_issues_to_support(cx);
-                    ws.add_activity_entry(
-                        ActivityEntry::new(
-                            ActivityKind::Issue,
-                            t!("activity.issue.updated", title = issue.title.as_str()).to_string(),
-                        )
-                        .with_target(issue.id, issue.title)
-                        .with_action(ActivityAction::OpenIssue),
-                        cx,
-                    );
-                    ws.show_toast(
-                        t!("toast.ai.triage_applied", count = change_count).to_string(),
-                        ToastLevel::Success,
-                        cx,
-                    );
-                    cx.notify();
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(error) => {
-                    ws.show_toast(
-                        t!(
-                            "toast.ai.triage_failed",
-                            error = crate::i18n::api_error_message(&error)
-                        )
-                        .to_string(),
-                        ToastLevel::Error,
-                        cx,
-                    );
-                    ws.refresh_issues(cx);
+                match result {
+                    Ok(issue) => {
+                        ws.upsert_issue_in_list(issue.clone());
+                        if ws.issue_selected.as_deref() == Some(issue.id.as_str()) {
+                            ws.issue_detail = Some(issue.clone());
+                        }
+                        ws.push_issues_to_support(cx);
+                        ws.add_activity_entry(
+                            ActivityEntry::new(
+                                ActivityKind::Issue,
+                                t!("activity.issue.updated", title = issue.title.as_str())
+                                    .to_string(),
+                            )
+                            .with_target(issue.id, issue.title)
+                            .with_action(ActivityAction::OpenIssue),
+                            cx,
+                        );
+                        ws.show_toast(
+                            t!("toast.ai.triage_applied", count = change_count).to_string(),
+                            ToastLevel::Success,
+                            cx,
+                        );
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        ws.show_toast(
+                            t!(
+                                "toast.ai.triage_failed",
+                                error = crate::i18n::api_error_message(&error)
+                            )
+                            .to_string(),
+                            ToastLevel::Error,
+                            cx,
+                        );
+                        ws.refresh_issues(cx);
+                    }
                 }
             });
         })
@@ -1405,6 +1493,7 @@ impl Workspace {
             ToastLevel::Info,
             cx,
         );
+        let request = self.manage_requests.session();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -1427,38 +1516,46 @@ impl Workspace {
                     })
                 })
                 .await;
-            let _ = this.update(cx, |workspace, cx| match result {
-                Ok(ticket) => {
-                    let label = ticket.subject.clone();
-                    let id = ticket.id.clone();
-                    workspace.support.update(cx, |view, cx| {
-                        view.set_detail(ticket, cx);
-                    });
-                    workspace.add_activity_entry(
-                        ActivityEntry::new(
-                            ActivityKind::Support,
-                            t!("activity.support.updated", subject = label.as_str()).to_string(),
-                        )
-                        .with_target(id, label)
-                        .with_action(ActivityAction::OpenTicket),
-                        cx,
-                    );
-                    workspace.show_toast(
-                        t!("toast.ai.triage_applied", count = change_count).to_string(),
-                        ToastLevel::Success,
-                        cx,
-                    );
-                    workspace.refresh_support(cx);
+            let _ = this.update(cx, |workspace, cx| {
+                if !workspace.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(error) => workspace.show_toast(
-                    t!(
-                        "toast.ai.triage_failed",
-                        error = crate::i18n::api_error_message(&error)
-                    )
-                    .to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
+                match result {
+                    Ok(ticket) => {
+                        let label = ticket.subject.clone();
+                        let id = ticket.id.clone();
+                        workspace.support.update(cx, |view, cx| {
+                            if view.selected_id().as_deref() == Some(ticket.id.as_str()) {
+                                view.set_detail(ticket, cx);
+                            }
+                        });
+                        workspace.add_activity_entry(
+                            ActivityEntry::new(
+                                ActivityKind::Support,
+                                t!("activity.support.updated", subject = label.as_str())
+                                    .to_string(),
+                            )
+                            .with_target(id, label)
+                            .with_action(ActivityAction::OpenTicket),
+                            cx,
+                        );
+                        workspace.show_toast(
+                            t!("toast.ai.triage_applied", count = change_count).to_string(),
+                            ToastLevel::Success,
+                            cx,
+                        );
+                        workspace.refresh_support(cx);
+                    }
+                    Err(error) => workspace.show_toast(
+                        t!(
+                            "toast.ai.triage_failed",
+                            error = crate::i18n::api_error_message(&error)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
             });
         })
         .detach();
@@ -1472,40 +1569,47 @@ impl Workspace {
             return;
         };
         let deleted_id = id.clone();
+        let request = self.manage_requests.session();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move { issues::delete_issue(&base, &token, &id) })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(_) => {
-                    ws.add_activity(
-                        t!("activity.issue.deleted", id = deleted_id.as_str()).to_string(),
-                        ActivityKind::Issue,
-                        cx,
-                    );
-                    ws.remove_issue_from_list(&deleted_id);
-                    if ws.issue_selected.as_deref() == Some(deleted_id.as_str()) {
-                        ws.issue_selected = None;
-                        ws.issue_detail = None;
-                    }
-                    ws.push_issues_to_support(cx);
-                    ws.show_toast(
-                        t!("toast.issue.deleted").to_string(),
-                        ToastLevel::Success,
-                        cx,
-                    );
-                    cx.notify();
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(e) => ws.show_toast(
-                    t!(
-                        "toast.issue.delete_failed",
-                        error = crate::i18n::api_error_message(&e)
-                    )
-                    .to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
+                match result {
+                    Ok(_) => {
+                        ws.add_activity(
+                            t!("activity.issue.deleted", id = deleted_id.as_str()).to_string(),
+                            ActivityKind::Issue,
+                            cx,
+                        );
+                        ws.remove_issue_from_list(&deleted_id);
+                        if ws.issue_selected.as_deref() == Some(deleted_id.as_str()) {
+                            ws.manage_requests.begin(ManageRead::IssueDetail);
+                            ws.issue_selected = None;
+                            ws.issue_detail = None;
+                        }
+                        ws.push_issues_to_support(cx);
+                        ws.show_toast(
+                            t!("toast.issue.deleted").to_string(),
+                            ToastLevel::Success,
+                            cx,
+                        );
+                        cx.notify();
+                    }
+                    Err(e) => ws.show_toast(
+                        t!(
+                            "toast.issue.delete_failed",
+                            error = crate::i18n::api_error_message(&e)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
             });
         })
         .detach();
@@ -1520,6 +1624,7 @@ impl Workspace {
         let Some((base, token)) = self.manage_base_token() else {
             return;
         };
+        let request = self.manage_requests.session();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -1527,29 +1632,34 @@ impl Workspace {
                     issues::delete_issue_attachment(&base, &token, &id, &attachment_id)
                 })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(issue) => {
-                    ws.upsert_issue_in_list(issue.clone());
-                    if ws.issue_selected.as_deref() == Some(issue.id.as_str()) {
-                        ws.issue_detail = Some(issue);
-                    }
-                    ws.push_issues_to_support(cx);
-                    ws.show_toast(
-                        t!("toast.issue.attachment_deleted").to_string(),
-                        ToastLevel::Success,
-                        cx,
-                    );
-                    cx.notify();
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(error) => ws.show_toast(
-                    t!(
-                        "toast.issue.attachment_delete_failed",
-                        error = crate::i18n::api_error_message(&error)
-                    )
-                    .to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
+                match result {
+                    Ok(issue) => {
+                        ws.upsert_issue_in_list(issue.clone());
+                        if ws.issue_selected.as_deref() == Some(issue.id.as_str()) {
+                            ws.issue_detail = Some(issue);
+                        }
+                        ws.push_issues_to_support(cx);
+                        ws.show_toast(
+                            t!("toast.issue.attachment_deleted").to_string(),
+                            ToastLevel::Success,
+                            cx,
+                        );
+                        cx.notify();
+                    }
+                    Err(error) => ws.show_toast(
+                        t!(
+                            "toast.issue.attachment_delete_failed",
+                            error = crate::i18n::api_error_message(&error)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
             });
         })
         .detach();

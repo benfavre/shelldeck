@@ -2328,8 +2328,8 @@ impl Render for AgentConsoleView {
             .py(px(16.0));
         if !has_content {
             let subscription_setup = crate::cli_subscription_setup::render_subscription_setup(
-                context.provider.binary(),
-                matches!(context.target, AgentTarget::Ssh { .. }),
+                self.provider.binary(),
+                self.selected_connection.is_some(),
             );
             let mut empty_state = div()
                 .flex()
@@ -2380,7 +2380,11 @@ impl Render for AgentConsoleView {
                         };
                         let label = match message.role {
                             AgentMessageRole::User => t!("agents.role.you").to_string(),
-                            AgentMessageRole::Agent => context.provider.display_name().to_string(),
+                            AgentMessageRole::Agent => message
+                                .provider
+                                .unwrap_or(context.provider)
+                                .display_name()
+                                .to_string(),
                             AgentMessageRole::Error => t!("agents.activity.title").to_string(),
                         };
                         timeline_view = timeline_view.child(

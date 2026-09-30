@@ -100,27 +100,33 @@ impl Workspace {
         }
         let base = self.account_base_url();
         let token = self.app_config.cloud_sync.token.clone();
+        let request = self.manage_requests.begin(ManageRead::Sites);
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move { manage_sites::fetch_sites(&base, &token) })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(payload) => {
-                    tracing::info!(
-                        "Loaded {} manage sites, {} areas",
-                        payload.sites.len(),
-                        payload.areas.len()
-                    );
-                    ws.site_directory = Some(payload);
-                    ws.rebuild_issue_site_select(cx);
-                    ws.refresh_command_palette(cx);
-                    // Server may have just delivered the Monique config (super-admin).
-                    ws.update_monique_availability(cx);
-                    ws.sync_monique_poll(cx);
-                    cx.notify();
+            let _ = this.update(cx, |ws, cx| {
+                if !ws.accept_manage_result(request, result.as_ref().err(), cx) {
+                    return;
                 }
-                Err(e) => tracing::warn!("Failed to load manage sites: {}", e),
+                match result {
+                    Ok(payload) => {
+                        tracing::info!(
+                            "Loaded {} manage sites, {} areas",
+                            payload.sites.len(),
+                            payload.areas.len()
+                        );
+                        ws.site_directory = Some(payload);
+                        ws.rebuild_issue_site_select(cx);
+                        ws.refresh_command_palette(cx);
+                        // Server may have just delivered the Monique config (super-admin).
+                        ws.update_monique_availability(cx);
+                        ws.sync_monique_poll(cx);
+                        cx.notify();
+                    }
+                    Err(e) => tracing::warn!("Failed to load manage sites: {}", e),
+                }
             });
         })
         .detach();

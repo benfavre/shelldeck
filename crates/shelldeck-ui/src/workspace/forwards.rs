@@ -190,6 +190,7 @@ impl Workspace {
                                             tunnel_manager
                                                 .start_remote_forward(
                                                     shared_handle,
+                                                    remote_host,
                                                     remote_port,
                                                     local_host,
                                                     local_port,
