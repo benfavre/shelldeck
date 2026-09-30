@@ -2743,7 +2743,7 @@ mod tests {
         Snapshot {
             mode: String,
             outcome: String,
-            snapshot: CorpusSnapshot,
+            snapshot: Box<CorpusSnapshot>,
         },
         Refusal {
             category: String,

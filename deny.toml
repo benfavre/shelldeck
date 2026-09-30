@@ -7,8 +7,11 @@ targets = [
 all-features = true
 
 [advisories]
-unmaintained = "workspace"
+unmaintained = "all"
 unsound = "all"
+# Keep the target-agnostic cargo-audit baseline mirrored below. cargo-deny's
+# configured desktop graph does not encounter the WASM-only `instant` edge.
+unused-ignored-advisory = "allow"
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa is transitive through russh's default rsa feature; the advisory records no patched release at all, and dropping the feature would remove RSA SSH key support" },
     { id = "RUSTSEC-2024-0384", reason = "instant is transitive through futures-lite 1 in adabraka_util 0.5.1, a crates.io sibling of the vendored GPUI that we do not fork" },
