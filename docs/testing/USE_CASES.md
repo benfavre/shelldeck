@@ -276,8 +276,8 @@ increment for both directions.
 ### SDUC-050 — Remote port forward tunnel
 
 `TunnelManager::start_remote_forward` requests remote port binding via
-the SSH channel and forwards `ForwardedTcpIpEvent`s back to a local
-target.
+the SSH channel using the saved remote bind address (loopback by default)
+and forwards `ForwardedTcpIpEvent`s back to a local target.
 
 ### SDUC-051 — SOCKS forward tunnel
 
@@ -288,7 +288,8 @@ proxies TCP through the SSH session.
 
 `stop()` on a tunnel drains and closes cleanly. `stop_all` walks every
 active tunnel. `cleanup` removes stopped entries so `active_count`
-matches `tunnels().len()`.
+matches `tunnels().len()`. Reverse forwarding explicitly cancels the exact
+server-side bind on stop, even if its owning SSH session remains connected.
 
 ### SDUC-053 — Jump-host session
 
@@ -732,6 +733,9 @@ AI Dock, native tray and pinned connections) enforce the same gate in their
 handlers. Logout closes authenticated auxiliary windows, stops terminals,
 tunnels and scripts, clears account-scoped caches, and persists an empty
 terminal workspace so runtime authority cannot cross an account boundary.
+Pending Manage reads/writes cannot publish into a later session, even when a
+re-login reuses the same token. Request creation/comment drafts, attachment
+imports, pending AI request drafts and mention identities clear on sign-out.
 
 ### SDUC-153 — Login persists identity, enables cloud sync, toasts profile count
 
@@ -741,8 +745,15 @@ profiles merged.
 
 ### SDUC-154 — Startup account check refreshes silently
 
-`check_account_on_startup` runs whoami in the background; on 401/403
-it clears `account` but leaves cloud_sync config alone.
+`check_account_on_startup` runs whoami in the background and refreshes the
+Workspace and Settings identity together. A current 401 from whoami, sync,
+sites, requests or Support invalidates credentials, clears account state and
+stops authenticated polls. A 403 remains a permission failure; transient
+network/server failures retain the session for retry. Old-session responses
+cannot reject or restore the new account. Independent surfaces may refresh
+concurrently; the newest read of each surface owns its result, so an older
+request/ticket detail cannot replace a newer selection. Successful writes may
+update the list cache but cannot replace another selected detail or its draft.
 
 ---
 
@@ -937,6 +948,11 @@ absolute path as the remote default. An explicit catalog checkout root remains
 authoritative when one is available.
 
 ### SDUC-499 — Agent work remains independently identifiable and observable
+
+Each new agent reply retains its original provider attribution across later
+provider changes and durable reload. Older history without author metadata
+remains readable. Empty-session subscription guidance follows the provider and
+local/SSH target currently selected before the first run.
 
 The Dev cockpit retains multiple named provider-neutral agent sessions rather
 than replacing one global transcript. Up to four run concurrently by default,
@@ -3165,6 +3181,14 @@ review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
 ## Change log
+
+- **2026-09-30**: Amended SDUC-050/052/152/154 for configured reverse bind
+  addresses, explicit remote listener cancellation, account-bound async
+  results, current-token expiry and request draft cleanup. SDTEST-565 and
+  SDTEST-1937..1939 pin the protocol and completion-order regressions.
+  Native evidence and published Linux update validation are recorded in
+  `feature-followup-qa-2026-09-30.md`. SDUC-499/SDTEST-1941 additionally pin
+  retained reply authorship when the selected provider changes.
 
 - **2026-09-30**: Amended SDUC-306/314 after loopback SSH/tunnel QA:
   uppercase/tag connection searches now match, and filtered combobox clicks

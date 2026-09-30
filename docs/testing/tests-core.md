@@ -598,3 +598,9 @@ Existing: **0 tests**.
 ## Retired tests
 
 *(none yet)*
+
+## Provider attribution regression — 2026-09-30
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1941 | `agent_session.rs::provider_switch_preserves_reply_authorship_and_legacy_history` | SDUC-499 | Green | Claude deltas form one authored reply, a later Codex run retains its own author, and durable reload preserves both. Legacy message JSON without provider metadata remains readable with unchanged content. Native SSH reproduction previously relabeled the Claude reply as Codex after switching providers. |
