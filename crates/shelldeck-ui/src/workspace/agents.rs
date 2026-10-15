@@ -145,6 +145,17 @@ impl Workspace {
             return;
         }
         match event {
+            AgentConsoleEvent::RefreshRemoteSessions => self.refresh_fleet_view(cx),
+            AgentConsoleEvent::OpenPlatformSession(session) => {
+                if self.platform_connection().is_some()
+                    && self
+                        .fleet_view
+                        .update(cx, |view, cx| view.select_agent_session(&session, cx))
+                {
+                    self.agent_console
+                        .update(cx, |view, cx| view.set_remote_session_active(true, cx));
+                }
+            }
             AgentConsoleEvent::SaveFile(request) => self.save_agent_file(request, cx),
             AgentConsoleEvent::Run(request) => self.prepare_agent_run(request, cx),
             AgentConsoleEvent::Stop(run_id) => self.stop_agent_run(run_id, cx),

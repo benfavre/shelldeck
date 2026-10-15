@@ -11,6 +11,7 @@ impl AgentConsoleView {
             .map(|session| u64::from(session.unread_count))
             .sum::<u64>();
         let mut body = div().flex().flex_col().gap(px(4.0)).px(px(6.0)).py(px(7.0));
+        body = body.child(self.render_remote_session_rows(cx));
         if self.project_groups.is_empty() {
             body = body.child(self.render_session_rows(None, cx));
         } else {
@@ -41,10 +42,11 @@ impl AgentConsoleView {
                 );
                 for worktree in &project.worktrees {
                     let worktree_option = worktree.clone();
-                    let worktree_selected = self
-                        .sessions
-                        .selected()
-                        .is_some_and(|session| session_worktree_matches(session, worktree));
+                    let worktree_selected = !self.remote_sessions.active
+                        && self
+                            .sessions
+                            .selected()
+                            .is_some_and(|session| session_worktree_matches(session, worktree));
                     body = body.child(
                         div()
                             .id(("agent-worktree", stable_string_key(&worktree.id)))
@@ -264,7 +266,7 @@ impl AgentConsoleView {
             .filter(|session| include(session))
         {
             let id = session.id;
-            let selected = self.sessions.selected_id() == Some(id);
+            let selected = !self.remote_sessions.active && self.sessions.selected_id() == Some(id);
             let removable = self.sessions.sessions().len() > 1 && !session.status.is_active();
             let mut row = div()
                 .id(("agent-nav-session", uuid_key(id)))
