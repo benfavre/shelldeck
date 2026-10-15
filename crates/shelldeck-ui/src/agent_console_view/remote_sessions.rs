@@ -79,7 +79,7 @@ impl AgentConsoleView {
         let source = source.read(cx);
         let sessions = matching_sessions(
             source.agent_sessions(),
-            self.navigator_search.read(cx).content().as_ref(),
+            self.navigator_search.read(cx).content(),
         );
         list = list.child(
             div()
