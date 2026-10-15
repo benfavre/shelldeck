@@ -1114,6 +1114,9 @@ impl Workspace {
         let support = cx.new(SupportView::new);
         let monique_view = cx.new(MoniqueView::new);
         let fleet_view = cx.new(FleetView::new);
+        agent_console.update(cx, |view, cx| {
+            view.set_remote_session_source(fleet_view.clone(), cx)
+        });
         let bext_view = cx.new(BextCloudView::new);
         ai_assistant.update(cx, |view, cx| view.set_tasks(ai_tasks.clone(), cx));
         // The Dock window has no titlebar, so its only account signal is the

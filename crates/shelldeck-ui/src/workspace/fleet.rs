@@ -181,6 +181,21 @@ fn unavailable_review_capabilities(
 
 const FLEET_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+fn platform_poll_visible(
+    connected: bool,
+    mode: AppMode,
+    settings_open: bool,
+    view: ActiveView,
+) -> bool {
+    connected
+        && mode == AppMode::Dev
+        && !settings_open
+        && matches!(
+            view,
+            ActiveView::Fleet | ActiveView::Workspaces | ActiveView::Agents
+        )
+}
+
 fn fleet_retry_delay(consecutive_failures: u32) -> std::time::Duration {
     let exponent = consecutive_failures.saturating_sub(1).min(2);
     std::time::Duration::from_secs(30 * (1_u64 << exponent))
@@ -220,10 +235,12 @@ impl Workspace {
     }
 
     pub(super) fn platform_surface_visible(&self) -> bool {
-        !self.settings_open
-            && self.platform_connection().is_some()
-            && self.effective_mode() == AppMode::Dev
-            && matches!(self.active_view, ActiveView::Fleet | ActiveView::Workspaces)
+        platform_poll_visible(
+            self.platform_connection().is_some(),
+            self.effective_mode(),
+            self.settings_open,
+            self.active_view,
+        )
     }
 
     pub(super) fn update_fleet_availability(&mut self, cx: &mut Context<Self>) {
@@ -232,6 +249,8 @@ impl Workspace {
             sidebar.set_fleet_available(show);
             cx.notify();
         });
+        self.agent_console
+            .update(cx, |view, cx| view.set_remote_sessions_available(show, cx));
     }
 
     pub(super) fn refresh_fleet_view(&mut self, cx: &mut Context<Self>) {
@@ -723,6 +742,34 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    // SDTEST-2647 / SDUC-559
+    #[test]
+    fn sdtest_2647_remote_directory_refresh_follows_agents_visibility_and_authentication() {
+        use super::{platform_poll_visible, ActiveView, AppMode};
+        for surface in [
+            ActiveView::Agents,
+            ActiveView::Fleet,
+            ActiveView::Workspaces,
+        ] {
+            assert!(platform_poll_visible(true, AppMode::Dev, false, surface));
+            assert!(!platform_poll_visible(false, AppMode::Dev, false, surface));
+            assert!(!platform_poll_visible(true, AppMode::User, false, surface));
+            assert!(!platform_poll_visible(
+                true,
+                AppMode::Support,
+                false,
+                surface
+            ));
+            assert!(!platform_poll_visible(true, AppMode::Dev, true, surface));
+        }
+        assert!(!platform_poll_visible(
+            true,
+            AppMode::Dev,
+            false,
+            ActiveView::Terminal
+        ));
+    }
+
     use super::{
         fleet_retry_delay, fleet_should_log_failure, platform_connection_is_current,
         review_action_for_active_context, review_attention_presence, review_for_active_context,

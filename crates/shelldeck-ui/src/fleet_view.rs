@@ -40,6 +40,9 @@ use crate::workspace::platform_attention::{
     attention_reason_label, platform_attention_state_label, PlatformAttentionPresentation,
 };
 
+#[path = "fleet_view/agents.rs"]
+mod agents;
+
 /// Bound on the chronological activity rows drawn at once. The full count
 /// stays visible in the section badge so nothing is silently dropped.
 const MAX_ATTENTION_ACTIVITY_ROWS: usize = 8;

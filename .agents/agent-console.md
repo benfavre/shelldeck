@@ -18,6 +18,12 @@ conversation/execution timeline.
   rows and tabs. Selecting an actually visible session marks it read and
   restores its context and composer draft; hidden selection is navigation
   identity only.
+- The Agents navigator includes every remote session in the authenticated
+  Platform directory, including observation-only and stale sessions, without
+  requiring a local checkout mapping. Reuse Fleet's typed directory and retained
+  cockpit; refresh it while Agents is visible. Remote selection keeps local
+  sessions hidden for unread accounting and never attaches or claims control
+  implicitly. Account reset clears the shared directory.
 - Treat provider, target, permissions, workdir, and model as one execution
   context, collapsed into the compact session header by default.
 - Change execution context through the core context setter so an opaque resume

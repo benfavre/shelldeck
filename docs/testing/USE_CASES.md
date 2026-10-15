@@ -3223,6 +3223,9 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-15** — Added SDUC-559 for remote Platform sessions in the Agents
+  sidebar, shared retained detail, authenticated refresh and hidden local-session
+  attention. Covered by SDTEST-2645..2647.
 - **2026-10-15** — Added SDUC-558 for production `--agents` launch, single-instance
   presentation handoff and installed launchers; SDTEST-2630..2632 cover offline
   AppImage/installer contracts. Amended SDUC-557 for public runtime permissions
@@ -4365,3 +4368,21 @@ failed dependency deployment. Linux release builds run the native packaged CEF
 fixture before compression. This feature does not by
 itself publish a release, change account roles, grant browser authority or add a
 second application runtime. Usage: [agents-launch.md](../agents-launch.md).
+
+### SDUC-559 — Remote sessions in the Agents sidebar
+
+For an authenticated Dev account, Agents lists every remote session returned by
+the account's Platform directory alongside its local conversation library.
+Sessions do not require a local checkout mapping, attachability or control
+permission to appear. Search matches remote summaries and IDs, including stale
+and observation-only entries. Loading, empty and network-error states remain
+visible, with explicit refresh and the existing periodic Platform refresh while
+Agents is foregrounded. Settings, signed-out and non-Dev surfaces stop polling.
+
+Selecting a full remote resource coordinate keeps the Agents sidebar visible and
+opens Fleet's retained session detail. Observation and control use the existing
+explicit attach/claim actions and server-issued permissions; selecting a row does
+not attach or acquire control. Hidden local sessions keep unread output until
+they are selected again. Directory replacement removes vanished entries; account
+reset clears the shared directory and remote selection is retired when access is
+lost. No email-specific role override or second session store is introduced.

@@ -61,6 +61,8 @@ mod model;
 mod navigator;
 #[path = "agent_console_view/progress.rs"]
 mod progress;
+#[path = "agent_console_view/remote_sessions.rs"]
+mod remote_sessions;
 use live_input::PendingLiveInput;
 #[path = "agent_console_view/review.rs"]
 mod review;
@@ -116,6 +118,8 @@ struct InspectorDiff {
 
 #[derive(Debug, Clone)]
 pub enum AgentConsoleEvent {
+    RefreshRemoteSessions,
+    OpenPlatformSession(shelldeck_core::config::platform::ResourceCoordinate),
     SaveFile(AgentFileSaveRequest),
     Run(AgentRunRequest),
     Stop(Uuid),
@@ -286,6 +290,7 @@ pub struct AgentConsoleView {
     model_discovery: model::AgentModelDiscoveryUi,
     navigator_search: Entity<InputState>,
     sessions: AgentSessionCollection,
+    remote_sessions: remote_sessions::RemoteAgentSessionsUi,
     session_ui: HashMap<Uuid, AgentSessionUi>,
     run_sessions: HashMap<Uuid, Uuid>,
     foreground_runs: HashSet<Uuid>,
@@ -402,6 +407,7 @@ impl AgentConsoleView {
             model_discovery: model::AgentModelDiscoveryUi::new(),
             navigator_search: input_state(cx, String::new()),
             sessions,
+            remote_sessions: remote_sessions::RemoteAgentSessionsUi::default(),
             session_ui,
             run_sessions: HashMap::new(),
             foreground_runs: HashSet::new(),
@@ -704,7 +710,8 @@ impl AgentConsoleView {
     }
 
     pub fn run_requests_focus(&self, run_id: Uuid) -> bool {
-        self.foreground_runs.contains(&run_id)
+        !self.remote_sessions.active
+            && self.foreground_runs.contains(&run_id)
             && self.run_sessions.get(&run_id).copied() == self.sessions.selected_id()
     }
 
@@ -763,6 +770,7 @@ impl AgentConsoleView {
         if self.sessions.select(session_id).is_err() {
             return false;
         }
+        self.set_remote_session_active(false, cx);
         self.apply_selected_context(cx);
         self.schedule_library_save(cx);
         pin_to_latest(&self.scroll);
@@ -781,6 +789,7 @@ impl AgentConsoleView {
             .create(name, context, now_ms())
             .map_err(|error| error.to_string())?;
         self.session_ui.insert(session_id, AgentSessionUi::new(cx));
+        self.set_remote_session_active(false, cx);
         self.apply_selected_context(cx);
         self.schedule_library_save(cx);
         pin_to_latest(&self.scroll);
@@ -806,7 +815,11 @@ impl AgentConsoleView {
     }
 
     pub fn set_surface_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        if self.sessions.set_surface_visible(visible) {
+        self.remote_sessions.surface_visible = visible;
+        if self
+            .sessions
+            .set_surface_visible(visible && !self.remote_sessions.active)
+        {
             cx.notify();
         }
     }
@@ -1549,6 +1562,9 @@ impl AgentConsoleView {
 
 impl Render for AgentConsoleView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.remote_sessions.active && self.remote_sessions.available {
+            return self.render_remote_session(cx);
+        }
         if self.surface_focus_requested
             && self.pending_confirm.is_none()
             && self.workflows.dialog.is_none()
@@ -2129,7 +2145,7 @@ impl Render for AgentConsoleView {
             .absolute()
             .size_full(),
         );
-        root
+        root.into_any_element()
     }
 }
 
