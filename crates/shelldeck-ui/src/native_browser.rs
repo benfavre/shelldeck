@@ -208,6 +208,15 @@ impl NativeBrowserView {
         self.active
     }
 
+    pub fn request_focus(&mut self, cx: &mut Context<Self>) {
+        if self.page_dialog.is_some() {
+            self.dialog_focus_requested = true;
+        } else {
+            self.focus_page_requested = true;
+        }
+        cx.notify();
+    }
+
     pub fn browser_ids(&self) -> Vec<BrowserId> {
         self.tabs.iter().map(|tab| tab.state.browser_id).collect()
     }

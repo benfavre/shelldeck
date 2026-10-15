@@ -17,6 +17,12 @@ and surface. Frames travel over a bounded binary stdin/stdout protocol; they are
 not base64 screenshots and they are not captured on a timer. GPUI uploads the
 pixels and handles pointer, scrolling, key, focus and UTF-16 IME input.
 
+Desktop clipboard integration currently supports plain text. Copy/cut exports
+the selected text; paste inserts desktop text through Chromium's IME input path.
+It does not deliver a DOM `paste`/`ClipboardEvent`, rich HTML, or clipboard images.
+Pages whose behavior depends on a paste-event handler therefore do not receive
+the same event sequence as a regular browser paste.
+
 On Linux the helper selects Chromium's `--ozone-platform=headless` backend with
 software rendering (`--disable-gpu`, `--disable-gpu-compositing`). GPUI continues
 to use the user's native Wayland connection. This does not embed an X11 child
@@ -38,6 +44,15 @@ DevTools commands go through `BrowserHost::execute_dev_tools_method` and a
 registered observer. No remote debugging port is opened. Provider access is a
 separate, revocable, capability-scoped MCP bridge owned by the host client.
 The runtime never starts a provider or makes an agent task implicitly.
+
+## Using the browser
+
+Choose Browser in an agent session’s middle pane and enter a URL. Conversation,
+Editor and Browser retain their contents when switching. Local Codex, Claude
+Code and Automonique runs can observe the shared tabs; enable “Allow agent
+control” with writable run permissions before the next prompt to permit actions.
+Turning control off revokes it immediately. SSH-hosted agents do not receive a
+capability to control the local browser.
 
 ## Building and staging
 
@@ -98,9 +113,10 @@ its fixture screenshot, event trace, stderr and Chromium log. It never launches
 the production ShellDeck app or uses a real browser profile.
 
 Linux helper verification passed on 2026-10-15 with CEF's headless Ozone backend
-and the renderer sandbox enabled. Native GPUI/Wayland viewport, DOM and rendering integration also passed. macOS and
-Windows builds are tracked in the normal native UI/release matrix. A Linux
-helper smoke alone is not evidence for the other two platforms.
+and the renderer sandbox enabled. Native GPUI/Wayland viewport, DOM and
+rendering integration also passed. The CI matrix additionally passed actual
+packaged launcher and MCP browser workflows on native macOS and Windows.
+Native GPUI human-input verification currently covers Linux.
 
 Primary implementation references: [CEF off-screen rendering](https://github.com/chromiumembedded/cef/blob/master/docs/general_usage.md#off-screen-rendering),
 [cef-rs OSR example](https://github.com/tauri-apps/cef-rs/tree/dev/examples/osr),
@@ -121,6 +137,11 @@ assertions; a related popup using an exact decimal string ID; exclusion of an
 unshared preexisting tab; and immediate control/grant revocation. The fixture
 starts no model or provider and saves only local fixture screenshots/profile.
 
+The native GPUI preview supports `SHELLDECK_PREVIEW_AUDIT=1`. Its opt-in audit
+waits up to 25 seconds for the loopback navigation, expected live DOM controls,
+and a nonblank CEF frame, then verifies viewport/DPI geometry and writes PNG/DOM
+evidence under the disposable XDG cache. Audit mode keeps the preview open for
+at least 30 seconds and cannot exit successfully before these checks complete.
 
 The provider bridge was also exercised through its real stdio subprocess against
 CEF (SDTEST-2555), including read-only refusal, actual Unicode input, Enter form

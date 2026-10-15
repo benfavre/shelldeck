@@ -9,7 +9,7 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 struct Assets;
@@ -77,8 +77,13 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(60)
         .clamp(5, 300);
     let audit = std::env::var_os("SHELLDECK_PREVIEW_AUDIT").is_some();
+    // Give the bounded audit time to fail explicitly even if the caller asks
+    // for a short visual preview. An early window close still fails below.
+    let seconds = if audit { seconds.max(30) } else { seconds };
     let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let audit_failed = failed.clone();
+    let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(!audit));
+    let audit_completed = completed.clone();
     Application::new().with_assets(Assets).run(move |cx| {
         adabraka_ui::init(cx);
         adabraka_ui::components::input::init(cx);
@@ -124,20 +129,41 @@ fn main() -> anyhow::Result<()> {
                 if audit {
                     let view = view.downgrade();
                     let failed = audit_failed.clone();
+                    let completed = audit_completed.clone();
                     cx.spawn(async move |cx| {
-                        cx.background_executor().timer(Duration::from_secs(5)).await;
-                        let browser =
-                            view.update(cx, |view, _| (view.control(), view.active_browser_id()));
-                        let result = match browser {
-                            Ok((Some(client), Some(id))) => {
-                                cx.background_executor()
-                                    .spawn(async move { audit_browser(client, id) })
-                                    .await
+                        let deadline = Instant::now() + Duration::from_secs(25);
+                        let result = loop {
+                            match view
+                                .update(cx, |view, _| (view.control(), view.active_browser_id()))
+                            {
+                                Ok((Some(client), Some(id))) => {
+                                    break cx
+                                        .background_executor()
+                                        .spawn(async move { audit_browser(client, id, deadline) })
+                                        .await;
+                                }
+                                Err(error) => {
+                                    break Err(anyhow::anyhow!(
+                                        "browser fixture closed before its audit: {error}"
+                                    ))
+                                }
+                                _ if Instant::now() >= deadline => {
+                                    break Err(anyhow::anyhow!(
+                                        "browser fixture did not connect before the audit deadline"
+                                    ))
+                                }
+                                _ => {
+                                    cx.background_executor()
+                                        .timer(Duration::from_millis(100))
+                                        .await
+                                }
                             }
-                            _ => Err(anyhow::anyhow!("browser fixture did not connect")),
                         };
                         match result {
-                            Ok(()) => eprintln!("Native browser fixture audit passed"),
+                            Ok(()) => {
+                                completed.store(true, std::sync::atomic::Ordering::SeqCst);
+                                eprintln!("Native browser fixture audit passed");
+                            }
                             Err(error) => {
                                 eprintln!("Native browser fixture audit failed: {error:#}");
                                 failed.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -167,19 +193,63 @@ fn main() -> anyhow::Result<()> {
         !failed.load(std::sync::atomic::Ordering::SeqCst),
         "native browser fixture audit failed"
     );
+    anyhow::ensure!(
+        completed.load(std::sync::atomic::Ordering::SeqCst),
+        "native browser fixture closed before the audit completed successfully"
+    );
     Ok(())
 }
 
 fn audit_browser(
     client: shelldeck_browser::BrowserClient,
     id: shelldeck_browser::BrowserId,
+    deadline: Instant,
 ) -> anyhow::Result<()> {
-    let frame = client
-        .latest_frame(id)
-        .ok_or_else(|| anyhow::anyhow!("CEF did not paint the page"))?;
-    let (width, height, scale) = client
-        .viewport(id)
-        .ok_or_else(|| anyhow::anyhow!("browser viewport was not recorded"))?;
+    let mut last_state = "waiting for the fixture navigation".to_owned();
+    let (frame, (width, height, scale), dom) = loop {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "browser audit timed out: {last_state}"
+        );
+        if let Some(error) = client.failure() {
+            anyhow::bail!("browser helper failed during its audit: {error}");
+        }
+        match (
+            client.latest_frame(id),
+            client.viewport(id),
+            client.state(id),
+        ) {
+            (Some(frame), Some(viewport), Some(state))
+                if !state.loading && state.url.starts_with("http://127.0.0.1:") =>
+            {
+                let timeout = deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_secs(2));
+                match client.devtools(id, "Runtime.evaluate", serde_json::json!({"expression":"({title:document.title,width:innerWidth,height:innerHeight,input:!!document.querySelector('#name'),enterForm:!!document.querySelector('#enter-form'),submits:Number(document.querySelector('#enter-form')?.dataset.submits||0),textarea:!!document.querySelector('#notes'),select:!!document.querySelector('#option')})", "returnByValue":true}), timeout) {
+                    Ok(dom) => {
+                        let value = &dom["result"]["value"];
+                        let controls = value["title"] == "Native Chromium fixture" && value["input"] == true && value["enterForm"] == true && value["textarea"] == true && value["select"] == true;
+                        // A correctly sized about:blank frame must not count as
+                        // a painted fixture while its first real paint is queued.
+                        let painted = frame.bgra.chunks_exact(4).next().is_some_and(|first| frame.bgra.chunks_exact(4).any(|pixel| pixel != first));
+                        if controls && painted { break (frame, viewport, dom); }
+                        last_state = format!("fixture DOM/paint not ready (painted={painted}): {dom}");
+                    }
+                    Err(error) => last_state = format!("fixture DOM not ready: {error}"),
+                }
+            }
+            (_, _, Some(state)) => {
+                last_state = format!(
+                    "navigation not ready (loading={}, url={})",
+                    state.loading, state.url
+                );
+            }
+            _ => {}
+        }
+        // This is a bounded, opt-in fixture wait on its background worker, not
+        // a production browser repaint loop. Production painting stays reactive.
+        std::thread::sleep(Duration::from_millis(100));
+    };
     anyhow::ensure!(
         (frame.width as f32 - width as f32 * scale).abs() <= 1.0
             && (frame.height as f32 - height as f32 * scale).abs() <= 1.0,
@@ -187,7 +257,6 @@ fn audit_browser(
         frame.width,
         frame.height
     );
-    let dom = client.devtools(id, "Runtime.evaluate", serde_json::json!({"expression":"({title:document.title,width:innerWidth,height:innerHeight,input:!!document.querySelector('#name'),enterForm:!!document.querySelector('#enter-form'),submits:Number(document.querySelector('#enter-form')?.dataset.submits||0),textarea:!!document.querySelector('#notes'),select:!!document.querySelector('#option')})", "returnByValue":true}), Duration::from_secs(5)).map_err(anyhow::Error::msg)?;
     let value = &dom["result"]["value"];
     anyhow::ensure!(
         value["title"] == "Native Chromium fixture"

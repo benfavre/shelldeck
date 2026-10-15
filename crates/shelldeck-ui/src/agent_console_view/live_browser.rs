@@ -150,6 +150,7 @@ impl AgentConsoleView {
         } else if view.read(cx).browser_ids().is_empty() {
             view.update(cx, |view, cx| view.navigate("about:blank".into(), cx));
         }
+        view.update(cx, |view, cx| view.request_focus(cx));
         cx.notify();
     }
 

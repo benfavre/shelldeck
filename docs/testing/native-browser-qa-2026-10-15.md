@@ -7,7 +7,7 @@ were not used for these checks.
 
 - Native Wayland launch inherited `WAYLAND_DISPLAY=wayland-0`. The opt-in fixture
   verified a live 1100×656 Chromium viewport, matching frame/DPI, DOM and geometry;
-  its audit completed successfully. Evidence: `/tmp/shelldeck-browser-wayland-final.YLYze7/cache`.
+  its bounded navigation/paint audit completed successfully. Evidence: `/tmp/shelldeck-browser-wayland-delivery.fQiZN2/cache`.
 - Native pointer/keyboard checks targeted only the fixture's own X11 test window:
   typing `qa` once, clicking the page's submit button, switching browser tabs,
   Ctrl+T then Ctrl+W while the address field owned focus, returning to retained
@@ -29,6 +29,11 @@ were not used for these checks.
   were traced to Git 2.34's lack of `worktree list -z`; strict compatibility
   handling now preserves the same authority checks and passes those cases.
 
-Native macOS and Windows helper compilation, launcher loading and packaging are
-covered by the added CI matrix. Remote results must be checked before a release;
-a Linux test does not establish native input or signing behavior on those OSes.
+The [native CI matrix](https://github.com/benfavre/shelldeck/actions/runs/38795148349)
+passed CEF helper compilation, complete payload staging, packaged launcher
+loading and the actual MCP computer-use workflow on Linux, macOS and Windows.
+The local UI suite was repeated with all three XDG directories isolated and
+passed all 236 tests. Strict workspace Clippy and the full application build
+also passed. Linux CI passed all 996 workspace tests. Native GPUI human-input
+checks cover Linux; release signing and
+notarization remain release-pipeline checks.
