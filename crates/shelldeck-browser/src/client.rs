@@ -93,6 +93,7 @@ impl BrowserClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         // Affect the helper only; never alter GPUI's process-global environment.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Some(directory) = launch.executable.parent() {
             #[cfg(target_os = "linux")]
             {

@@ -152,25 +152,29 @@ impl BrowserGrant {
         self.state.include_new_tabs.store(true, Ordering::SeqCst);
     }
     pub fn configuration(&self) -> BrowserMcpConfig {
-        let mut env = HashMap::from([
+        let env = HashMap::from([
             (ENDPOINT_ENV.into(), self.state.endpoint.to_string()),
             (CAPABILITY_ENV.into(), self.state.token.clone()),
         ]);
         #[cfg(any(target_os = "linux", target_os = "windows"))]
-        if let Some(directory) = self.state.client.launch().executable.parent() {
-            let name = if cfg!(target_os = "windows") {
-                "PATH"
-            } else {
-                "LD_LIBRARY_PATH"
-            };
-            let mut paths = vec![directory.to_path_buf()];
-            if let Some(existing) = std::env::var_os(name) {
-                paths.extend(std::env::split_paths(&existing));
+        let env = {
+            let mut env = env;
+            if let Some(directory) = self.state.client.launch().executable.parent() {
+                let name = if cfg!(target_os = "windows") {
+                    "PATH"
+                } else {
+                    "LD_LIBRARY_PATH"
+                };
+                let mut paths = vec![directory.to_path_buf()];
+                if let Some(existing) = std::env::var_os(name) {
+                    paths.extend(std::env::split_paths(&existing));
+                }
+                if let Ok(value) = std::env::join_paths(paths) {
+                    env.insert(name.into(), value.to_string_lossy().into_owned());
+                }
             }
-            if let Ok(value) = std::env::join_paths(paths) {
-                env.insert(name.into(), value.to_string_lossy().into_owned());
-            }
-        }
+            env
+        };
         BrowserMcpConfig {
             command: self
                 .state

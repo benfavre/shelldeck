@@ -402,11 +402,11 @@ impl FileEditorView {
         else {
             return;
         };
-        if !self.tabs[index]
+        if self.tabs[index]
             .external
             .as_ref()
             .and_then(|document| document.pending_save.as_ref())
-            .is_some_and(|save| save.request_id == request_id)
+            .is_none_or(|save| save.request_id != request_id)
         {
             return;
         }

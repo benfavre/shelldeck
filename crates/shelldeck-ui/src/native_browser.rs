@@ -29,7 +29,7 @@ pub enum NativeBrowserEvent {
     /// The helper is connected; the same client is available through control().
     Ready,
     ActiveTabChanged,
-    /// Explicit user consent, initially false and never persisted across runs.
+    /// Explicit user consent, initially false and never persisted across app restarts.
     ControlChanged {
         allowed: bool,
     },
@@ -552,32 +552,30 @@ impl NativeBrowserView {
                 Event::Created {
                     browser_id,
                     parent_id: Some(parent_id),
-                } => {
+                } if client.owns(browser_id)
+                    && self
+                        .tabs
+                        .iter()
+                        .any(|tab| tab.state.browser_id == parent_id)
+                    && !self
+                        .tabs
+                        .iter()
+                        .any(|tab| tab.state.browser_id == browser_id) =>
+                {
                     // The helper creates true Chromium popup children so
                     // window.opener/postMessage and OAuth returns survive.
                     // The transport validates parent ownership and child IDs.
-                    if client.owns(browser_id)
-                        && self
-                            .tabs
-                            .iter()
-                            .any(|tab| tab.state.browser_id == parent_id)
-                        && !self
-                            .tabs
-                            .iter()
-                            .any(|tab| tab.state.browser_id == browser_id)
-                    {
-                        if self.tabs.len() >= MAX_TABS {
-                            self.send(Command::Close { browser_id }, cx);
-                            self.error =
-                                Some(t!("native_browser.tab_limit", count = MAX_TABS).to_string());
-                        } else {
-                            let url = client
-                                .state(browser_id)
-                                .map(|state| state.url)
-                                .unwrap_or_else(|| "about:blank".into());
-                            self.tabs.push(BrowserTab::new(browser_id, url));
-                            self.select_tab(browser_id, cx);
-                        }
+                    if self.tabs.len() >= MAX_TABS {
+                        self.send(Command::Close { browser_id }, cx);
+                        self.error =
+                            Some(t!("native_browser.tab_limit", count = MAX_TABS).to_string());
+                    } else {
+                        let url = client
+                            .state(browser_id)
+                            .map(|state| state.url)
+                            .unwrap_or_else(|| "about:blank".into());
+                        self.tabs.push(BrowserTab::new(browser_id, url));
+                        self.select_tab(browser_id, cx);
                     }
                 }
                 Event::CursorChanged { browser_id, cursor } => {
@@ -617,10 +615,11 @@ impl NativeBrowserView {
                 // This notification is only CEF's explicit user-link tab
                 // disposition (Ctrl/middle click). JavaScript/target popups
                 // retain their opener via parent-correlated Created above.
-                Event::NewWindow { browser_id, url } => {
-                    if client.owns(browser_id) && shelldeck_browser::navigation_url(&url).is_ok() {
-                        self.new_tab(url, cx);
-                    }
+                Event::NewWindow { browser_id, url }
+                    if client.owns(browser_id)
+                        && shelldeck_browser::navigation_url(&url).is_ok() =>
+                {
+                    self.new_tab(url, cx);
                 }
                 Event::Popup {
                     browser_id,
@@ -1407,43 +1406,19 @@ impl Render for NativeBrowserView {
                 .on_mouse_down(
                     button,
                     cx.listener(move |view, event: &MouseDownEvent, window, cx| {
-                        view.mouse_button(
-                            event.position,
-                            event.modifiers,
-                            button,
-                            true,
-                            event.click_count,
-                            window,
-                            cx,
-                        )
+                        view.mouse_button(surface::ButtonEvent::Press(event), window, cx)
                     }),
                 )
                 .on_mouse_up(
                     button,
                     cx.listener(move |view, event: &MouseUpEvent, window, cx| {
-                        view.mouse_button(
-                            event.position,
-                            event.modifiers,
-                            button,
-                            false,
-                            event.click_count,
-                            window,
-                            cx,
-                        )
+                        view.mouse_button(surface::ButtonEvent::Release(event), window, cx)
                     }),
                 )
                 .on_mouse_up_out(
                     button,
                     cx.listener(move |view, event: &MouseUpEvent, window, cx| {
-                        view.mouse_button(
-                            event.position,
-                            event.modifiers,
-                            button,
-                            false,
-                            event.click_count,
-                            window,
-                            cx,
-                        )
+                        view.mouse_button(surface::ButtonEvent::Release(event), window, cx)
                     }),
                 );
         }

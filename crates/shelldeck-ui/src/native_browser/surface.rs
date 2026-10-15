@@ -2,6 +2,11 @@
 use super::*;
 use geometry::{event_modifiers, utf16_slice, viewport_point, virtual_key};
 
+pub(super) enum ButtonEvent<'a> {
+    Press(&'a MouseDownEvent),
+    Release(&'a MouseUpEvent),
+}
+
 pub(super) struct BrowserSurface {
     view: Entity<NativeBrowserView>,
 }
@@ -177,14 +182,26 @@ impl NativeBrowserView {
 
     pub(super) fn mouse_button(
         &mut self,
-        position: Point<Pixels>,
-        modifiers: Modifiers,
-        button: MouseButton,
-        pressed: bool,
-        click_count: usize,
+        event: ButtonEvent<'_>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let (position, modifiers, button, pressed, click_count) = match event {
+            ButtonEvent::Press(event) => (
+                event.position,
+                event.modifiers,
+                event.button,
+                true,
+                event.click_count,
+            ),
+            ButtonEvent::Release(event) => (
+                event.position,
+                event.modifiers,
+                event.button,
+                false,
+                event.click_count,
+            ),
+        };
         let Some(browser_id) = self.active else {
             return;
         };
@@ -326,15 +343,11 @@ impl NativeBrowserView {
         }
         if !released && stroke.modifiers.secondary() {
             match stroke.key.as_str() {
-                "c" | "x" => {
+                "c" | "x" if !self.selected_text.is_empty() => {
                     // The headless CEF helper has its own clipboard backend.
                     // Bridge explicit user copy/cut into the desktop clipboard;
                     // raw Cut still reaches Chromium to remove the selection.
-                    if !self.selected_text.is_empty() {
-                        cx.write_to_clipboard(ClipboardItem::new_string(
-                            self.selected_text.clone(),
-                        ));
-                    }
+                    cx.write_to_clipboard(ClipboardItem::new_string(self.selected_text.clone()));
                 }
                 "v" => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {

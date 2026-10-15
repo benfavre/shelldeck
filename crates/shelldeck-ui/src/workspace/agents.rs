@@ -225,22 +225,9 @@ impl Workspace {
                     );
                 }
             }
-            AgentConsoleEvent::BrowseRemoteDirectory {
-                session_id,
-                connection_id,
-                path,
-                request_id,
-                context,
-                root,
-            } => self.browse_remote_agent_directory(
-                session_id,
-                connection_id,
-                request_id,
-                context,
-                root,
-                path,
-                cx,
-            ),
+            AgentConsoleEvent::BrowseRemoteDirectory(request) => {
+                self.browse_remote_agent_directory(request, cx);
+            }
             AgentConsoleEvent::CloseSession(session_id) => {
                 self.agent_session_bindings.remove(&session_id);
                 self.workspace_hub.update(cx, |hub, cx| {
@@ -666,14 +653,17 @@ impl Workspace {
 
     fn browse_remote_agent_directory(
         &mut self,
-        session_id: Uuid,
-        connection_id: Uuid,
-        request_id: Uuid,
-        context: shelldeck_core::agent_session::AgentExecutionContext,
-        root: String,
-        path: String,
+        request: crate::agent_console_view::AgentRemoteDirectoryRequest,
         cx: &mut Context<Self>,
     ) {
+        let crate::agent_console_view::AgentRemoteDirectoryRequest {
+            session_id,
+            connection_id,
+            context,
+            root,
+            path,
+            ..
+        } = request.clone();
         let matches = self.agent_console.read(cx).selected_execution_context(cx)
             .is_some_and(|(id, current)| id == session_id && current == context && matches!(current.target, AgentTarget::Ssh { connection_id: selected, .. } if selected == connection_id));
         let connection = matches
@@ -728,15 +718,13 @@ impl Workspace {
                 };
                 this.agent_console.update(cx, |view, cx| {
                     view.set_remote_directory_listing(
-                        session_id,
-                        connection_id,
-                        request_id,
-                        context,
-                        root,
-                        truncated,
-                        requested_path,
-                        path,
-                        entries,
+                        crate::agent_console_view::AgentRemoteDirectoryListing {
+                            request,
+                            root,
+                            truncated,
+                            resolved_path: path,
+                            result: entries,
+                        },
                         cx,
                     )
                 });

@@ -153,14 +153,7 @@ pub enum AgentConsoleEvent {
         session_id: Uuid,
         path: PathBuf,
     },
-    BrowseRemoteDirectory {
-        request_id: Uuid,
-        context: AgentExecutionContext,
-        root: String,
-        session_id: Uuid,
-        connection_id: Uuid,
-        path: String,
-    },
+    BrowseRemoteDirectory(AgentRemoteDirectoryRequest),
 }
 
 impl EventEmitter<AgentConsoleEvent> for AgentConsoleView {}
@@ -177,6 +170,24 @@ pub struct AgentRemoteFileEntry {
     pub path: String,
     pub name: String,
     pub is_dir: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentRemoteDirectoryRequest {
+    pub session_id: Uuid,
+    pub connection_id: Uuid,
+    pub request_id: Uuid,
+    pub context: AgentExecutionContext,
+    pub root: String,
+    pub path: String,
+}
+
+pub struct AgentRemoteDirectoryListing {
+    pub request: AgentRemoteDirectoryRequest,
+    pub root: String,
+    pub truncated: bool,
+    pub resolved_path: String,
+    pub result: Result<Vec<AgentRemoteFileEntry>, String>,
 }
 
 /// Project/worktree data supplied by the workspace catalog. Sessions are
@@ -587,17 +598,24 @@ impl AgentConsoleView {
 
     pub fn set_remote_directory_listing(
         &mut self,
-        session_id: Uuid,
-        connection_id: Uuid,
-        request_id: Uuid,
-        context: AgentExecutionContext,
-        root: String,
-        truncated: bool,
-        requested_path: String,
-        resolved_path: String,
-        result: Result<Vec<AgentRemoteFileEntry>, String>,
+        listing: AgentRemoteDirectoryListing,
         cx: &mut Context<Self>,
     ) {
+        let AgentRemoteDirectoryListing {
+            request:
+                AgentRemoteDirectoryRequest {
+                    session_id,
+                    connection_id,
+                    request_id,
+                    context,
+                    path: requested_path,
+                    ..
+                },
+            root,
+            truncated,
+            resolved_path,
+            result,
+        } = listing;
         let selected_matches = self.sessions.selected_id() == Some(session_id)
             && matches!(self.displayed_context(cx).target,AgentTarget::Ssh{connection_id:selected,..}if selected==connection_id);
         if !selected_matches
@@ -641,17 +659,19 @@ impl AgentConsoleView {
         self.inspector_remote_pending_path = Some(path.clone());
         self.inspector_remote_loading = true;
         self.inspector_remote_error = None;
-        cx.emit(AgentConsoleEvent::BrowseRemoteDirectory {
-            request_id: self.inspector_remote_request,
-            context: self.displayed_context(cx),
-            root: self
-                .inspector_remote_root
-                .clone()
-                .unwrap_or_else(|| self.displayed_context(cx).workdir),
-            session_id,
-            connection_id,
-            path,
-        });
+        cx.emit(AgentConsoleEvent::BrowseRemoteDirectory(
+            AgentRemoteDirectoryRequest {
+                request_id: self.inspector_remote_request,
+                context: self.displayed_context(cx),
+                root: self
+                    .inspector_remote_root
+                    .clone()
+                    .unwrap_or_else(|| self.displayed_context(cx).workdir),
+                session_id,
+                connection_id,
+                path,
+            },
+        ));
         cx.notify();
     }
 

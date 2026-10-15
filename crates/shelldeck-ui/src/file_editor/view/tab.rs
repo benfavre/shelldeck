@@ -299,10 +299,10 @@ impl EditorTab {
         let Some(document) = self.external.as_mut() else {
             return false;
         };
-        if !document
+        if document
             .pending_save
             .as_ref()
-            .is_some_and(|save| save.request_id == request_id)
+            .is_none_or(|save| save.request_id != request_id)
         {
             return false;
         }
