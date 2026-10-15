@@ -768,7 +768,7 @@ mod tests {
             provider: AgentProvider::Codex,
             target: AgentTarget::Local,
             access: AgentAccessMode::ReadOnly,
-            workdir: "/workspace".into(),
+            workdir: std::env::temp_dir().to_string_lossy().into_owned(),
             model: None,
         }
     }
