@@ -687,3 +687,12 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2493 | `agent_codex/model_discovery.rs::sdtest_2493_model_discovery_caps_catalog_and_preserves_legacy_modality_defaults` | SDUC-551 | Green | Catalog retention caps at 128 models; absent legacy modality metadata follows the documented text/image compatibility rule. Passed in the 473-test central snapshot. |
 
 | SDTEST-2494 | `agent_review.rs::sdtest_2494_large_tracked_assets_remain_complete_and_detect_intervening_edits` | SDUC-552 | Green | Default budgets admit large tracked native assets while an intervening asset edit still refuses a prepared index mutation. Passed in the final 474-test core run. |
+
+
+## Native browser provider attachment — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2585 | `agent_browser_tools.rs` | SDUC-557 | Green | Claude private-file flags, redacted debug, native Codex override and ACP stdio transport keep capability values out of CLI arguments. |
+| SDTEST-2586 | `agent_browser_tools.rs` | SDUC-557 | Green | Remote/unsupported targets, unsafe server names and relative helper paths refuse. |
+| SDTEST-2590 | `agent_codex/tests.rs` | SDUC-557 | Green | Fake app-server pipe verifies scoped MCP config on both new and resumed threads before the turn is submitted. No inference. |

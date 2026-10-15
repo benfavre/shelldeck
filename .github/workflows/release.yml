@@ -70,7 +70,7 @@ jobs:
             archive_ext: zip
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -91,6 +91,31 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-release-
 
+      - name: Install packaging Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify browser archive contracts
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-browser-packaging.py
+
+      - name: Configure isolated CEF build cache
+        shell: bash
+        run: echo "CEF_PATH=${RUNNER_TEMP}/shelldeck-cef" >> "$GITHUB_ENV"
+
+      - name: Cache pinned Chromium runtime
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/shelldeck-cef
+          key: ${{ runner.os }}-cef-${{ hashFiles('crates/shelldeck-browser/Cargo.toml') }}
+
+      - name: Configure Windows native compiler
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       # Linux dependencies
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -109,12 +134,31 @@ jobs:
             libxkbcommon-x11-dev \
             libdbus-1-dev \
             libxdo-dev \
-            libfuse2
+            libfuse2 \
+            cmake \
+            ninja-build \
+            libgtk-3-0 \
+            libnss3 \
+            libnspr4 \
+            libatk-bridge2.0-0 \
+            libatspi2.0-0 \
+            libcups2 \
+            libdrm2 \
+            libgbm1 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxrandr2 \
+            libasound2 \
+            libxss1 \
+            libx11-xcb1 \
+            libxcursor1 \
+            libxtst6 \
+            xvfb
 
       # macOS dependencies
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install openssl pkg-config create-dmg
+        run: brew install openssl pkg-config create-dmg cmake ninja
 
       - name: Require update verification key for tagged releases
         if: startsWith(github.ref, 'refs/tags/v')
@@ -130,6 +174,10 @@ jobs:
         env:
           SHELLDECK_DEFER_ARCHIVE: "1"
         run: bash scripts/build-release.sh
+
+      - name: Verify packaged browser native entry point
+        shell: bash
+        run: python3 scripts/test-browser-helper-launch.py target/release/browser
 
       # ─── Native Installers ───
 
@@ -223,7 +271,7 @@ jobs:
         shell: bash
         run: choco install nsis -y
 
-      - name: Sign Windows executable
+      - name: Sign Windows application and browser binaries
         if: runner.os == 'Windows' && (startsWith(github.ref, 'refs/tags/v') || inputs.test_windows_signing)
         shell: pwsh
         env:
@@ -262,25 +310,39 @@ jobs:
             )
             Write-Host "Loaded the self-signed certificate without modifying Windows trust stores"
           }
-          if ($useSelfSignedCertificate) {
-            $signature = Set-AuthenticodeSignature `
-              -FilePath "target/release/shelldeck.exe" `
-              -Certificate $testCertificate `
-              -HashAlgorithm SHA256
-            if (
-              -not $signature.SignerCertificate -or
-              $signature.SignerCertificate.Thumbprint -ne $testCertificate.Thumbprint
-            ) {
-              throw "Self-signed Authenticode signature verification failed"
-            }
-          } else {
+          $version = "${{ needs.prepare.outputs.version }}"
+          $browserRoot = Join-Path "target/release/browser" $version
+          $payload = @((Resolve-Path "target/release/shelldeck.exe").Path)
+          $payload += Get-ChildItem $browserRoot -Recurse -File |
+            Where-Object { $_.Extension -in ".exe", ".dll" } |
+            Select-Object -ExpandProperty FullName
+          if (-not $useSelfSignedCertificate) {
             $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
               Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
             if (-not $signtool) { throw "signtool.exe was not found" }
-            & $signtool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
-              /f $certificate /p $certificatePassword `
-              "target/release/shelldeck.exe"
-            & $signtool verify /pa /all /v "target/release/shelldeck.exe"
+          }
+          foreach ($binary in $payload) {
+            # Chromium's bootstrap and chrome_elf must have the same identity.
+            # Preserve valid signatures on other third-party dependencies.
+            $forced = [IO.Path]::GetFileName($binary) -in @(
+              "shelldeck.exe", "shelldeck-browser.exe", "shelldeck-browser.dll", "chrome_elf.dll"
+            )
+            $existing = Get-AuthenticodeSignature -FilePath $binary
+            if (-not $forced -and $existing.Status -eq "Valid") { continue }
+            if ($useSelfSignedCertificate) {
+              $signature = Set-AuthenticodeSignature -FilePath $binary `
+                -Certificate $testCertificate -HashAlgorithm SHA256
+              if (
+                -not $signature.SignerCertificate -or
+                $signature.SignerCertificate.Thumbprint -ne $testCertificate.Thumbprint
+              ) { throw "Self-signed Authenticode signature verification failed: $binary" }
+            } else {
+              & $signtool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
+                /f $certificate /p $certificatePassword $binary
+              if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed: $binary" }
+              & $signtool verify /pa /all /tw /v $binary
+              if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed: $binary" }
+            }
           }
 
       - name: Build NSIS installer

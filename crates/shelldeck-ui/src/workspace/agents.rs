@@ -127,6 +127,13 @@ impl Workspace {
         if !self.can_access_mode(AppMode::Dev) {
             self.agent_console.update(cx, |view, cx| {
                 view.set_workflows_authorized(false, cx);
+                if let AgentConsoleEvent::SaveFile(request) = &event {
+                    view.complete_agent_file_save(
+                        request,
+                        Err(t!("agents.live.authorization_lost").to_string()),
+                        cx,
+                    );
+                }
                 if let AgentConsoleEvent::Run(request) = &event {
                     view.reject_run_for(
                         request.id,
@@ -138,6 +145,7 @@ impl Workspace {
             return;
         }
         match event {
+            AgentConsoleEvent::SaveFile(request) => self.save_agent_file(request, cx),
             AgentConsoleEvent::Run(request) => self.prepare_agent_run(request, cx),
             AgentConsoleEvent::Stop(run_id) => self.stop_agent_run(run_id, cx),
             AgentConsoleEvent::OpenLocalFile { session_id, path } => {
@@ -153,11 +161,19 @@ impl Workspace {
             AgentConsoleEvent::OpenTerminal { context } => self.open_agent_terminal(context, cx),
             AgentConsoleEvent::OpenWorkspaceLauncher => self.open_agent_workspace_launcher(cx),
             AgentConsoleEvent::OpenRemoteFile {
+                context,
                 session_id,
                 request_id,
                 connection_id,
                 path,
-            } => self.open_remote_agent_file(session_id, request_id, connection_id, path, cx),
+            } => self.open_remote_agent_file(
+                session_id,
+                request_id,
+                connection_id,
+                context,
+                path,
+                cx,
+            ),
             AgentConsoleEvent::Steer { run_id, text } => self.send_live_codex(
                 run_id,
                 shelldeck_core::agent_codex::LiveCodexCommand::Steer { text },
@@ -213,7 +229,18 @@ impl Workspace {
                 session_id,
                 connection_id,
                 path,
-            } => self.browse_remote_agent_directory(session_id, connection_id, path, cx),
+                request_id,
+                context,
+                root,
+            } => self.browse_remote_agent_directory(
+                session_id,
+                connection_id,
+                request_id,
+                context,
+                root,
+                path,
+                cx,
+            ),
             AgentConsoleEvent::CloseSession(session_id) => {
                 self.agent_session_bindings.remove(&session_id);
                 self.workspace_hub.update(cx, |hub, cx| {
@@ -285,9 +312,15 @@ impl Workspace {
                 }
             }
         }
-        let options = self
+        let mut options = self
             .agent_console
             .update(cx, |view, _| view.take_run_options(request.id));
+        if let Err(error) = self.agent_console.update(cx, |view, cx| {
+            view.attach_browser_tools(&request, &mut options, cx)
+        }) {
+            self.reject_agent_run(&request, error, ToastLevel::Error, cx);
+            return;
+        }
         let mut spec = match AgentCommandSpec::for_request_with_options(&request, &options) {
             Ok(spec) => spec,
             Err(error) => {
@@ -497,6 +530,21 @@ impl Workspace {
         }
 
         let run_id = request.id;
+        let mut options = self
+            .agent_console
+            .update(cx, |view, _| view.take_run_options(run_id));
+        if let Err(error) = self.agent_console.update(cx, |view, cx| {
+            view.attach_browser_tools(&request, &mut options, cx)
+        }) {
+            self.reject_agent_run(&request, error, ToastLevel::Error, cx);
+            return;
+        }
+        if let Err(error) =
+            shelldeck_core::agent_browser_tools::validate_browser_mcp(&request, &options)
+        {
+            self.reject_agent_run(&request, error.to_string(), ToastLevel::Error, cx);
+            return;
+        }
         self.agent_console
             .update(cx, |view, cx| view.begin_run(request.clone(), cx));
         if let Err(message) = self.bind_agent_run_to_workspace(&request, cx) {
@@ -516,13 +564,13 @@ impl Workspace {
             std::time::Duration::from_secs(180),
         ));
         let thread = match spawn_local_automonique_agent(
-            run_id,
             request,
             program,
             cancel_rx,
             event_tx,
             done_tx,
             broker.clone(),
+            options,
         ) {
             Ok(thread) => thread,
             Err(error) => {
@@ -606,6 +654,8 @@ impl Workspace {
     }
 
     fn stop_agent_run(&mut self, run_id: Uuid, cx: &mut Context<Self>) {
+        self.agent_console
+            .update(cx, |view, _| view.retire_browser_run(run_id));
         if let Some(run) = self.active_agent_runs.get(&run_id) {
             run.stop();
         } else {
@@ -618,174 +668,79 @@ impl Workspace {
         &mut self,
         session_id: Uuid,
         connection_id: Uuid,
+        request_id: Uuid,
+        context: shelldeck_core::agent_session::AgentExecutionContext,
+        root: String,
         path: String,
         cx: &mut Context<Self>,
     ) {
-        let selected_context_matches = self.agent_console.read(cx).selected_execution_context(cx)
-            .is_some_and(|(id,context)| id==session_id && matches!(context.target,AgentTarget::Ssh{connection_id:selected,..}if selected==connection_id));
-        let Some(connection) = selected_context_matches
-            .then_some({
+        let matches = self.agent_console.read(cx).selected_execution_context(cx)
+            .is_some_and(|(id, current)| id == session_id && current == context && matches!(current.target, AgentTarget::Ssh { connection_id: selected, .. } if selected == connection_id));
+        let connection = matches
+            .then(|| {
                 self.connections
                     .iter()
-                    .find(|connection| connection.id == connection_id)
+                    .find(|c| c.id == connection_id)
                     .cloned()
             })
-            .flatten()
-        else {
-            self.agent_console.update(cx, |view, cx| {
-                view.set_remote_directory_listing(
-                    session_id,
-                    connection_id,
-                    path.clone(),
-                    path,
-                    Err(t!("agents.error.target_missing").to_string()),
-                    cx,
-                )
-            });
-            return;
-        };
-        if path.len() > shelldeck_core::agent_runtime::MAX_AGENT_WORKDIR_BYTES
-            || (path != shelldeck_core::agent_runtime::AGENT_REMOTE_HOME_WORKDIR
-                && RemotePosixPath::new(path.clone()).is_err())
-        {
-            self.agent_console.update(cx, |view, cx| {
-                view.set_remote_directory_listing(
-                    session_id,
-                    connection_id,
-                    path.clone(),
-                    path,
-                    Err(t!("agents.error.workdir_absolute").to_string()),
-                    cx,
-                )
-            });
-            return;
-        }
-
+            .flatten();
         let requested_path = path.clone();
-        let (result_tx, result_rx) = std::sync::mpsc::channel();
-        let spawn_result = std::thread::Builder::new()
-            .name(format!("agent-remote-files-{session_id}"))
-            .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        let _ = result_tx.send(Err(error.to_string()));
-                        return;
-                    }
-                };
-                let result = runtime.block_on(async move {
+        let task = cx.background_executor().spawn(async move {
+            let connection =
+                connection.ok_or_else(|| t!("agents.error.target_missing").to_string())?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            runtime.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(30), async {
                     let session = SshClient::new()
                         .connect(&connection)
                         .await
-                        .map_err(|error| error.to_string())?;
-                    let canonical_path = if requested_path
-                        == shelldeck_core::agent_runtime::AGENT_REMOTE_HOME_WORKDIR
-                    {
-                        let home = session
-                            .exec("printf '%s\\n' \"$HOME\"")
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        if !home.success() {
-                            return Err("remote home directory is unavailable".to_string());
-                        }
-                        parse_remote_home(&home.stdout)?
-                    } else {
-                        requested_path
-                    };
-                    let command = shelldeck_core::models::discovery::ls_command(&canonical_path);
-                    let fallback =
-                        shelldeck_core::models::discovery::ls_command_fallback(&canonical_path);
-                    let primary = session
-                        .exec(&command)
+                        .map_err(|e| e.to_string())?;
+                    shelldeck_ssh::agent_files::list(&session, &root, &path)
                         .await
-                        .map_err(|error| error.to_string())?;
-                    let entries = if primary.success() && !primary.stdout.is_empty() {
-                        shelldeck_core::models::discovery::parse_stat_output(
-                            &String::from_utf8_lossy(&primary.stdout),
-                            &canonical_path,
-                        )
-                    } else {
-                        let fallback = session
-                            .exec(&fallback)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        if !fallback.success() {
-                            return Err("remote directory is unavailable".to_string());
-                        }
-                        shelldeck_core::models::discovery::parse_ls_output(
-                            &String::from_utf8_lossy(&fallback.stdout),
-                            &canonical_path,
-                        )
-                    };
-                    Ok((canonical_path, remote_agent_file_entries(entries)))
+                        .map_err(super::agent_tools::agent_file_error)
+                })
+                .await
+                .map_err(|_| t!("agents.editor.timeout").to_string())?
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                let (root, path, truncated, entries) = match result {
+                    Ok(directory) => (
+                        directory.root,
+                        directory.path,
+                        directory.truncated,
+                        Ok(directory
+                            .entries
+                            .into_iter()
+                            .map(|entry| AgentRemoteFileEntry {
+                                path: entry.path,
+                                name: entry.name,
+                                is_dir: entry.is_dir,
+                            })
+                            .collect()),
+                    ),
+                    Err(error) => (String::new(), requested_path.clone(), false, Err(error)),
+                };
+                this.agent_console.update(cx, |view, cx| {
+                    view.set_remote_directory_listing(
+                        session_id,
+                        connection_id,
+                        request_id,
+                        context,
+                        root,
+                        truncated,
+                        requested_path,
+                        path,
+                        entries,
+                        cx,
+                    )
                 });
-                let _ = result_tx.send(result);
             });
-        if let Err(error) = spawn_result {
-            self.agent_console.update(cx, |view, cx| {
-                view.set_remote_directory_listing(
-                    session_id,
-                    connection_id,
-                    path.clone(),
-                    path,
-                    Err(error.to_string()),
-                    cx,
-                )
-            });
-            return;
-        }
-
-        let console = self.agent_console.downgrade();
-        cx.spawn(async move |_this, cx: &mut AsyncApp| loop {
-            match result_rx.try_recv() {
-                Ok(Ok((canonical_path, entries))) => {
-                    let _ = console.update(cx, |view, cx| {
-                        view.set_remote_directory_listing(
-                            session_id,
-                            connection_id,
-                            path.clone(),
-                            canonical_path,
-                            Ok(entries),
-                            cx,
-                        )
-                    });
-                    break;
-                }
-                Ok(Err(error)) => {
-                    let _ = console.update(cx, |view, cx| {
-                        view.set_remote_directory_listing(
-                            session_id,
-                            connection_id,
-                            path.clone(),
-                            path,
-                            Err(error),
-                            cx,
-                        )
-                    });
-                    break;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(50))
-                        .await;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    let _ = console.update(cx, |view, cx| {
-                        view.set_remote_directory_listing(
-                            session_id,
-                            connection_id,
-                            path.clone(),
-                            path,
-                            Err(t!("agents.error.runtime_lost").to_string()),
-                            cx,
-                        )
-                    });
-                    break;
-                }
-            }
         })
         .detach();
     }
@@ -1045,47 +1000,6 @@ fn mapped_remote_agent_workdir(
         .map(|(_, mapped)| mapped)
 }
 
-fn remote_agent_file_entries(
-    entries: Vec<shelldeck_core::models::server_sync::FileEntry>,
-) -> Vec<AgentRemoteFileEntry> {
-    entries
-        .into_iter()
-        .map(|entry| AgentRemoteFileEntry {
-            path: entry.path,
-            name: entry.name,
-            is_dir: entry.is_dir,
-        })
-        .collect()
-}
-
-fn authorized_local_agent_file(
-    sessions: &[shelldeck_core::agent_session::AgentSession],
-    session_id: Uuid,
-    requested: &std::path::Path,
-) -> Option<std::path::PathBuf> {
-    let session = sessions.iter().find(|session| {
-        session.id == session_id && matches!(session.context.target, AgentTarget::Local)
-    })?;
-    let root = std::fs::canonicalize(&session.context.workdir).ok()?;
-    let requested = std::fs::canonicalize(requested).ok()?;
-    (requested.is_file() && requested.starts_with(root)).then_some(requested)
-}
-
-fn parse_remote_home(stdout: &[u8]) -> Result<String, String> {
-    let home = std::str::from_utf8(stdout)
-        .map_err(|_| "remote home directory is not UTF-8".to_string())?;
-    let home = home.strip_suffix('\n').unwrap_or(home);
-    let home = home.strip_suffix('\r').unwrap_or(home);
-    if home.is_empty()
-        || home.len() > shelldeck_core::agent_runtime::MAX_AGENT_WORKDIR_BYTES
-        || home.contains(['\n', '\r'])
-        || RemotePosixPath::new(home.to_string()).is_err()
-    {
-        return Err("remote home directory is invalid".to_string());
-    }
-    Ok(home.to_string())
-}
-
 pub(crate) fn resolve_local_agent_program(program: &str) -> Option<String> {
     if shelldeck_core::util::executable_on_path(program) {
         return Some(program.to_string());
@@ -1178,19 +1092,22 @@ fn forward_local_stream(
 }
 
 fn spawn_local_automonique_agent(
-    run_id: Uuid,
     request: AgentRunRequest,
     program: String,
     cancel_rx: shelldeck_core::acp::AcpCancelReceiver,
     event_tx: std::sync::mpsc::Sender<AgentStreamEvent>,
     done_tx: std::sync::mpsc::Sender<AgentDone>,
     permissions: std::sync::Arc<AcpInteractivePermissionBroker>,
+    options: shelldeck_core::agent_runtime::AgentInputOptions,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
+    let run_id = request.id;
     std::thread::Builder::new()
         .name(format!("agent-acp-{run_id}"))
         .spawn(move || {
             let mut turn =
                 shelldeck_core::acp::AcpTurnRequest::text(&request.workdir, request.prompt);
+            turn.mcp_servers =
+                shelldeck_core::agent_browser_tools::acp_browser_servers(&options.mcp_servers);
             if let Some(session) = request.resume_session {
                 turn = turn.resume(session);
             }
@@ -1380,10 +1297,10 @@ fn spawn_remote_agent(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_run_has_capacity, authorized_local_agent_file, automonique_agent_admission,
-        forward_local_stream, mapped_remote_agent_workdir, parse_remote_home, spawn_local_agent,
-        AgentCommandSpec, AgentStreamEvent, AgentStreamFrame, AgentStreamFramer,
-        AGENT_STREAM_OVERSIZED_LABEL, DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS,
+        agent_run_has_capacity, automonique_agent_admission, forward_local_stream,
+        mapped_remote_agent_workdir, spawn_local_agent, AgentCommandSpec, AgentStreamEvent,
+        AgentStreamFrame, AgentStreamFramer, AGENT_STREAM_OVERSIZED_LABEL,
+        DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS,
     };
     use shelldeck_core::agent_runtime::{
         AgentAccessMode, AgentProvider, AgentRunRequest, AgentTarget,
@@ -1533,66 +1450,6 @@ mod tests {
             mapped_remote_agent_workdir(&catalog, connection_id, "/srv/explicit-remote-path")
                 .is_none()
         );
-    }
-
-    // SDTEST-1908 — SDUC-475
-    #[test]
-    fn sdtest_1908_remote_home_probe_accepts_one_absolute_path_only() {
-        assert_eq!(
-            parse_remote_home(b"/home/remote user\n").unwrap(),
-            "/home/remote user"
-        );
-        assert_eq!(parse_remote_home(b"/root\r\n").unwrap(), "/root");
-        assert!(parse_remote_home(b"relative/home\n").is_err());
-        assert!(parse_remote_home(b"/home/first\n/home/second\n").is_err());
-        assert!(parse_remote_home(b"/home/remote\0escape\n").is_err());
-        assert!(parse_remote_home(&[0xff, b'\n']).is_err());
-    }
-
-    // SDTEST-1909 — SDUC-499
-    #[test]
-    fn sdtest_1909_agent_file_open_stays_inside_the_selected_local_session_root() {
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let admitted = root.path().join("src.rs");
-        let refused = outside.path().join("secret.txt");
-        std::fs::write(&admitted, "safe").unwrap();
-        std::fs::write(&refused, "outside").unwrap();
-        let context = shelldeck_core::agent_session::AgentExecutionContext {
-            provider: AgentProvider::Claude,
-            target: AgentTarget::Local,
-            access: AgentAccessMode::ReadOnly,
-            workdir: root.path().display().to_string(),
-            model: None,
-        };
-        let session = shelldeck_core::agent_session::AgentSession::new("local", context, 1)
-            .expect("valid local session");
-        assert_eq!(
-            authorized_local_agent_file(std::slice::from_ref(&session), session.id, &admitted),
-            Some(std::fs::canonicalize(&admitted).unwrap())
-        );
-        assert!(
-            authorized_local_agent_file(std::slice::from_ref(&session), session.id, &refused)
-                .is_none()
-        );
-        assert!(authorized_local_agent_file(
-            std::slice::from_ref(&session),
-            Uuid::new_v4(),
-            &admitted
-        )
-        .is_none());
-
-        #[cfg(unix)]
-        {
-            let escape = root.path().join("escape.txt");
-            std::os::unix::fs::symlink(&refused, &escape).unwrap();
-            assert!(authorized_local_agent_file(
-                std::slice::from_ref(&session),
-                session.id,
-                &escape
-            )
-            .is_none());
-        }
     }
 
     // SDTEST-1897 — SDUC-499

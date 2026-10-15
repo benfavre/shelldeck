@@ -46,6 +46,17 @@ mkdir -p "$APP_DIR/Contents/Resources"
 cp "$BINARY" "$APP_DIR/Contents/MacOS/shelldeck"
 chmod +x "$APP_DIR/Contents/MacOS/shelldeck"
 
+# The CEF runtime is a separate app with its own subprocess helpers and
+# framework. Preserve framework symlinks and sign it before the outer GPUI app.
+BROWSER_APP="$(dirname "$BINARY")/browser/ShellDeck Browser.app"
+if [ ! -x "$BROWSER_APP/Contents/MacOS/shelldeck-browser" ] || \
+   [ ! -d "$BROWSER_APP/Contents/Frameworks/Chromium Embedded Framework.framework" ]; then
+    echo "ERROR: Missing native browser runtime; run scripts/build-release.sh first" >&2
+    exit 1
+fi
+mkdir -p "$APP_DIR/Contents/Frameworks/browser"
+ditto "$BROWSER_APP" "$APP_DIR/Contents/Frameworks/browser/ShellDeck Browser.app"
+
 # Create Info.plist
 cat > "$APP_DIR/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -145,15 +156,38 @@ if [ "${SHELLDECK_REQUIRE_SIGNING:-0}" = "1" ] && [ "$SIGNING_IDENTITY" = "-" ];
     exit 1
 fi
 
-if [ "$SIGNING_IDENTITY" = "-" ]; then
-    echo "==> Applying ad-hoc signature for local development"
-    codesign --force --deep --sign - "$APP_DIR"
-else
-    echo "==> Signing app as $SIGNING_IDENTITY"
-    codesign --force --deep --strict --options runtime --timestamp \
-        --sign "$SIGNING_IDENTITY" "$APP_DIR"
-    codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+SIGN_ARGS=(--force --sign "$SIGNING_IDENTITY")
+if [ "$SIGNING_IDENTITY" != "-" ]; then
+    SIGN_ARGS+=(--timestamp)
 fi
+BUNDLED_BROWSER="$APP_DIR/Contents/Frameworks/browser/ShellDeck Browser.app"
+CEF_FRAMEWORK="$BUNDLED_BROWSER/Contents/Frameworks/Chromium Embedded Framework.framework"
+# Sign actual library files once (not their version symlinks). Process
+# entitlements belong to the helper apps, rather than their loaded libraries.
+while IFS= read -r -d '' library; do
+    if /usr/bin/file -b "$library" | /usr/bin/grep -q 'Mach-O'; then
+        codesign "${SIGN_ARGS[@]}" "$library"
+        codesign --verify --strict "$library"
+    fi
+done < <(find "$CEF_FRAMEWORK" -type f -print0)
+codesign "${SIGN_ARGS[@]}" "$CEF_FRAMEWORK"
+for role in "" " (Alerts)" " (GPU)" " (Plugin)" " (Renderer)"; do
+    HELPER="$BUNDLED_BROWSER/Contents/Frameworks/shelldeck-browser Helper${role}.app"
+    if [ ! -d "$HELPER" ]; then
+        echo "ERROR: Missing CEF subprocess bundle: $HELPER" >&2
+        exit 1
+    fi
+    if [ "$role" = " (Renderer)" ] || [ "$role" = " (GPU)" ]; then
+        codesign "${SIGN_ARGS[@]}" --options runtime \
+            --entitlements "$SCRIPT_DIR/browser-jit.entitlements.plist" "$HELPER"
+    else
+        codesign "${SIGN_ARGS[@]}" --options runtime "$HELPER"
+    fi
+    codesign --verify --strict "$HELPER"
+done
+codesign "${SIGN_ARGS[@]}" --options runtime "$BUNDLED_BROWSER"
+codesign "${SIGN_ARGS[@]}" --options runtime "$APP_DIR"
+codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 if [ "${SHELLDECK_MACOS_APP_ONLY:-0}" = "1" ]; then
     echo "==> App bundle ready at dist/ShellDeck.app"

@@ -6,6 +6,9 @@ impl FileEditorView {
     // -----------------------------------------------------------------------
 
     pub fn toggle_find_in_files(&mut self) {
+        if self.embedded {
+            return;
+        }
         self.fif_visible = !self.fif_visible;
         if self.fif_visible {
             self.search_visible = false;
@@ -19,6 +22,9 @@ impl FileEditorView {
     /// results are applied back on the UI thread, so a large tree can never
     /// freeze or crash the editor.
     pub fn run_find_in_files(&mut self, cx: &mut Context<Self>) {
+        if self.embedded {
+            return;
+        }
         self.fif_results.clear();
         self.fif_selected = 0;
         let query = self.fif_query.trim().to_string();

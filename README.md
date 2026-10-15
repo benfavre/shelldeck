@@ -48,6 +48,7 @@ requests, and automation into one role-aware control plane.
 - **Cloud Sync** -- Pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal into your connection store
 - **Role-Aware Workspaces** -- Dedicated User, Support, and Dev surfaces gated by the signed-in Manage account
 - **Support & Requests** -- Triage support tickets and manage tenant/site requests with comments, attachments, GitHub sync, and AI Operations dispatch
+- **Agent Workspace** -- Retained conversations, native local/SSH file editor, Git review, and an embedded Chromium browser with scoped computer-use tools ([browser architecture](docs/native-browser.md))
 - **Contextual AI** -- Detachable AI assistant window, monitor/edge docking where desktop placement is supported, plus Monique and the shared platform cockpit
 - **Auto-Update** -- Checks for and installs new releases automatically
 - **Context Menu** -- Right-click for copy, paste, search, and URL actions

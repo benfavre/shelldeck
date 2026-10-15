@@ -32,6 +32,13 @@ struct Script {
 }
 impl Script {
     fn new(access: AgentAccessMode, resume: Option<&str>) -> Self {
+        Self::with_browser(access, resume, Vec::new())
+    }
+    fn with_browser(
+        access: AgentAccessMode,
+        resume: Option<&str>,
+        mcp_servers: Vec<crate::agent_browser_tools::AgentMcpServerLaunch>,
+    ) -> Self {
         let workdir = std::env::current_dir()
             .unwrap()
             .to_string_lossy()
@@ -46,8 +53,10 @@ impl Script {
         );
         request.resume_session = resume.map(str::to_string);
         let options = AgentInputOptions {
+            mcp_servers,
             reasoning_effort: Some(AgentReasoningEffort::High),
             image_paths: vec![std::env::temp_dir().join("selected screenshot.png")],
+            ..Default::default()
         };
         let (incoming, in_rx) = mpsc::channel();
         let (out_tx, outgoing) = mpsc::channel();
@@ -136,6 +145,14 @@ impl Script {
             approval_policy(self.request.access)
         );
         assert_eq!(thread["params"]["approvalsReviewer"], "user");
+        if self.options.mcp_servers.is_empty() {
+            assert!(thread["params"].get("config").is_none());
+        } else {
+            assert_eq!(
+                thread["params"]["config"],
+                crate::agent_browser_tools::codex_browser_config(&self.options.mcp_servers)
+            );
+        }
         if self.request.resume_session.is_some() {
             assert_eq!(thread["params"]["threadId"], "thread-1");
         }
@@ -669,4 +686,28 @@ fn sdtest_2368_codex_file_approval_requires_complete_unredacted_proposed_patch()
         script.join.join().unwrap().unwrap(),
         LiveCodexOutcome::Completed
     );
+}
+
+// SDTEST-2590 — SDUC-557
+#[test]
+fn browser_mcp_is_injected_into_both_new_and_resumed_codex_threads() {
+    for resume in [None, Some("thread-1")] {
+        let server = crate::agent_browser_tools::AgentMcpServerLaunch {
+            name: "shelldeck_browser".into(),
+            command: std::env::temp_dir().join("browser-helper"),
+            args: vec!["--mcp".into()],
+            env: std::collections::BTreeMap::from([(
+                "SHELLDECK_BROWSER_CAPABILITY".into(),
+                "fixture-private-token".into(),
+            )]),
+            claude_config_path: None,
+        };
+        let script = Script::with_browser(AgentAccessMode::ReadOnly, resume, vec![server]);
+        script.start();
+        script.complete("completed");
+        assert!(matches!(
+            script.join.join().unwrap().unwrap(),
+            LiveCodexOutcome::Completed
+        ));
+    }
 }

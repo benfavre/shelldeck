@@ -516,8 +516,8 @@ parallel `cargo test`.
 | SDTEST-1903 | `agent_console_view::tests::sdtest_1903_target_switch_defaults_and_validation_are_target_aware` | SDUC-475, SDUC-499 | Green | Local→SSH replaces only the inherited local default with the exact remote-home sentinel, SSH→Local restores the native default, explicit worktree paths survive, and validation accepts only target-appropriate absolute paths. |
 | SDTEST-1905 | `workspace::agents::tests::sdtest_1905_remote_launch_maps_an_inherited_local_checkout_path` | SDUC-475 | Green | A stale Local→SSH run maps the longest matching local checkout authority to the one unambiguous same-project SSH checkout on the selected connection, preserving a validated relative suffix; unrelated and explicit remote paths are untouched. |
 | SDTEST-1907 | `workspace::agents::tests::sdtest_1907_automonique_never_falls_back_from_ssh_to_local_acp` | SDUC-475, SDUC-480 | Green | Automonique ACP admits the local target with its provider-owned model, rejects an SSH target instead of executing locally on the wrong host, and rejects a CLI model override that the ACP contract cannot honor. |
-| SDTEST-1908 | `workspace::agents::tests::sdtest_1908_remote_home_probe_accepts_one_absolute_path_only` | SDUC-475 | Green | The remote-files adapter accepts one UTF-8 absolute home (including spaces and CRLF transport) and rejects relative, multiline, NUL-bearing, or non-UTF-8 probe output before using it in a listing command. |
-| SDTEST-1909 | `workspace::agents::tests::sdtest_1909_agent_file_open_stays_inside_the_selected_local_session_root` | SDUC-499 | Green | Local inspector opens require the exact local session plus a canonical regular file beneath its canonical working root; unrelated paths, stale session IDs, and symlink escapes are refused. |
+| SDTEST-1908 | Retired 2026-10-15 — remote home shell probe replaced by canonical-root JSON helper | SDUC-475 | Retired | Superseded by SDTEST-2510..2515. |
+| SDTEST-1909 | `agent_console_view/editor.rs::sdtest_1909_agent_file_open_stays_inside_the_selected_local_session_root` | SDUC-499, SDUC-551 | Green | Uses production local snapshot loader; canonical scope, regular-file reads and symlink escape refusal. |
 | SDTEST-1708 | `workspace::user_home::tests::sdtest_1708_welcome_height_breakpoint_tracks_ui_scale` | SDUC-441 | Green | The welcome screen centers its authentication task and pins the publisher at normal heights, then switches to one scrollable column below 560 logical pixels; the same boundary holds at 1× and 2× App Font Size. |
 | SDTEST-1710 | *to write* — the wrapped welcome promise stays centered with the authentication task | SDUC-152, SDUC-441 | **Red / P2** | GPUI integration: in French and English, at wide and compact widths, every wrapped tagline line remains centered beneath the title and above the two centered actions. |
 | SDTEST-1212 | *to write* — Workspace surfaces re-layout at non-default App Font Size | SDUC-441 | **Red / P2** | GPUI integration: at 10px and 22px the User home, welcome screen and account/site/mode titlebar dropdowns scale proportionally while the client inset, shadow geometry and window-resize border stay in device pixels. Needs a `TestAppContext` harness we do not have yet. |
@@ -716,4 +716,39 @@ for provider limits and the remaining native acceptance journeys.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-2300 | `workspace/agent_tools.rs::remote_preview_keeps_hostile_paths_quoted_and_enforces_root` | SDUC-551 | Green | Bounded SSH preview command rejects ambiguous/relative roots, shell-quotes hostile paths and refuses symlink leaves. Passed in the full 2026-10-15 UI run. |
+| SDTEST-2300 | Retired 2026-10-15 — shell text preview replaced by bounded stdin JSON filesystem helper | SDUC-551 | Retired | Superseded by SDTEST-2510..2518; remote documents now use the native middle-pane editor. |
+
+
+## Agent file explorer and embedded editor — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2495 | `file_editor/buffer.rs` | SDUC-475, SDUC-551 | Green | Storage-level read-only mode refuses every mutation entry point while preserving selection/copy. Passed in the isolated UI suite. |
+| SDTEST-2496 | `file_editor/view/tab.rs` | SDUC-475, SDUC-551 | Green | Async save completion cannot erase newer edits or close a changed buffer. |
+| SDTEST-2497 | `file_editor/view/tab.rs` | SDUC-475, SDUC-551 | Green | Stale/replayed acknowledgments and failed saves preserve dirty text and allow retry. |
+| SDTEST-2498 | `file_editor/file_browser.rs` | SDUC-475, SDUC-551 | Green | Hidden-file controls, build/Git exclusions and bounded traversal. |
+| SDTEST-2500 | `agent_console_view/explorer.rs` | SDUC-551 | Green | Remote parent navigation respects component-boundary roots. |
+| SDTEST-2501 | `agent_console_view/explorer.rs` | SDUC-551 | Green | Breadcrumb paths never climb above the canonical remote root. |
+| SDTEST-2502 | `agent_console_view/explorer.rs` | SDUC-551 | Green | Dotfile filtering excludes traversal/internal Git entries. |
+| SDTEST-2503 | `agent_console_view/explorer.rs` | SDUC-551 | Green | Highlight only the active editor file, never directories or prefix matches. |
+| SDTEST-2520 | `agent_console_view/editor.rs::local_editor_save_preserves_external_changes_and_scopes_the_target` | SDUC-551 | Green | Local explicit save refuses changed content and mismatched roots; accepted save replaces exact intended file. |
+| SDTEST-2521 | Native middle-pane editor journeys | SDUC-551 | Yellow | Native isolated edit→Conversation→Editor→Save and two-tab activation passed; 1280px/700px captures inspected. Session-switch and real SSH-host journeys remain pending. See agent-editor-qa-2026-10-15.md. |
+| SDTEST-2522 | `agent_console_view/editor.rs::remote_source_file_urls_keep_posix_paths_on_every_desktop` | SDUC-551 | Green | Remote file URI decoding is independent of desktop path semantics; other host/scheme/NUL URLs refuse. |
+
+
+## Live native browser and engine updates — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2570 | `native_browser/geometry.rs` | SDUC-557 | Green | Browser-local pointer coordinates and captured drags across viewport bounds; passed in the 235-test UI suite. |
+| SDTEST-2571 | `native_browser/geometry.rs` | SDUC-557 | Green | UTF-16 selection never splits a surrogate pair. |
+| SDTEST-2572 | `native_browser/geometry.rs` | SDUC-557 | Green | Virtual keys and modifier translation retain browser shortcuts. |
+| SDTEST-2573 | `native_browser.rs` | SDUC-557 | Green | Raw BGRA frames and screenshot PNG channel conversion remain distinct. |
+| SDTEST-2574 | `native_browser.rs` | SDUC-557 | Green | Profile components cannot introduce path traversal. |
+| SDTEST-2575 | `native_browser.rs` | SDUC-557 | Green | Popup screenshot composition respects HiDPI scaling and clipping. |
+| SDTEST-2587 | `agent_console_view/live_browser.rs` | SDUC-557 | Green | Profiles separate session identities and full execution contexts. |
+| SDTEST-2588 | `shelldeck-update/src/installer.rs` | SDUC-557 | Green | Publishing a versioned engine preserves active versions and rolls back on unsuccessful main replacement. |
+| SDTEST-2589 | `shelldeck-update/src/installer.rs` | SDUC-557 | Green | Incomplete engine payload refuses before touching installed files. |
+| SDTEST-2591 | Native GPUI browser fixture | SDUC-557 | Yellow | Native Wayland live viewport/DOM audit passed. Isolated native window click/type, form submit, address-focused Ctrl+T/Ctrl+W, tab state retention and native dropdown selection passed; screenshot inspected. |
+
+| SDTEST-2605 | `workspace/native_lifecycle.rs` | SDUC-491 | Green | Git 2.34 worktree-list fallback accepts only the precise unsupported-z diagnostic and preserves quoted/newline path authority. Full UI suite now passes all 235 tests, including the three previously failing lifecycle cases. |

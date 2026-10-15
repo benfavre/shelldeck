@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 shelldeck-core = { path = "../shelldeck-core" }
+shelldeck-browser = { path = "../shelldeck-browser" }
 shelldeck-ssh = { path = "../shelldeck-ssh" }
 shelldeck-terminal = { path = "../shelldeck-terminal" }
 shelldeck-update = { path = "../shelldeck-update" }

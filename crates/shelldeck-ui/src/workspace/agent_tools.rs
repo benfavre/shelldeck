@@ -213,78 +213,103 @@ impl Workspace {
         session_id: Uuid,
         request_id: Uuid,
         connection_id: Uuid,
+        captured_context: AgentExecutionContext,
         path: String,
         cx: &mut Context<Self>,
     ) {
-        let Some((selected, context)) = self.agent_console.read(cx).selected_execution_context(cx)
-        else {
-            return;
-        };
-        if selected != session_id
-            || !matches!(context.target,AgentTarget::Ssh{connection_id:id,..}if id==connection_id)
-        {
-            return;
-        }
-        let Some(connection) = self
+        let context = self.agent_console.read(cx).selected_execution_context(cx)
+            .filter(|(id, context)| *id == session_id && *context == captured_context && matches!(context.target, AgentTarget::Ssh { connection_id: selected, .. } if selected == connection_id))
+            .map(|(_, context)| context);
+        let connection = self
             .connections
             .iter()
             .find(|c| c.id == connection_id)
-            .cloned()
-        else {
-            return;
-        };
-        let command = match remote_preview_command(&context.workdir, &path) {
-            Ok(command) => command,
-            Err(error) => {
-                self.agent_console.update(cx, |view, cx| {
-                    view.set_remote_file_preview(session_id, request_id, path, Err(error), cx)
-                });
-                return;
-            }
-        };
+            .cloned();
         let task = cx.background_executor().spawn(async move {
+            let context = context.ok_or_else(|| t!("agents.editor.context_changed").to_string())?;
+            let connection =
+                connection.ok_or_else(|| t!("agents.error.target_missing").to_string())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .map_err(|e| e.to_string())?;
-            runtime.block_on(async move {
-                let client = shelldeck_ssh::client::SshClient::new();
-                let session = client
-                    .connect(&connection)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_secs(15),
-                    session.exec(&command),
-                )
+            runtime.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                    let session = shelldeck_ssh::client::SshClient::new()
+                        .connect(&connection)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    shelldeck_ssh::agent_files::read(&session, &context.workdir, &path)
+                        .await
+                        .map_err(agent_file_error)
+                })
                 .await
-                .map_err(|_| "Remote preview timed out".to_string())?
-                .map_err(|e| e.to_string())?;
-                if !result.success() {
-                    return Err(
-                        "Remote file is unavailable or outside the session working directory"
-                            .to_string(),
-                    );
-                }
-                if result.stdout.len() > 1024 * 1024 {
-                    return Err("Remote preview exceeds 1 MiB".to_string());
-                }
-                let text = String::from_utf8(result.stdout)
-                    .map_err(|_| "Binary remote files cannot be previewed as text".to_string())?;
-                if text.contains('\0') {
-                    return Err("Binary remote files cannot be previewed as text".to_string());
-                }
-                Ok(text
-                    .chars()
-                    .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
-                    .collect::<String>())
+                .map_err(|_| t!("agents.editor.timeout").to_string())?
             })
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.agent_console.update(cx, |view, cx| {
-                    view.set_remote_file_preview(session_id, request_id, path, result, cx)
+                    view.set_remote_file_document(session_id, request_id, result, cx)
+                });
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn save_agent_file(
+        &mut self,
+        request: crate::agent_console_view::AgentFileSaveRequest,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::agent_console_view::AgentFileOrigin;
+        let matches = self
+            .agent_console
+            .read(cx)
+            .selected_execution_context(cx)
+            .is_some_and(|(id, context)| id == request.session_id && context == request.context);
+        if !matches {
+            self.agent_console.update(cx, |view, cx| {
+                view.complete_agent_file_save(
+                    &request,
+                    Err(t!("agents.editor.context_changed").to_string()),
+                    cx,
+                )
+            });
+            return;
+        }
+        let connection = match &request.origin {
+            AgentFileOrigin::Remote { connection_id, .. } => self
+                .connections
+                .iter()
+                .find(|c| c.id == *connection_id)
+                .cloned(),
+            _ => None,
+        };
+        let operation = request.clone();
+        let task = cx.background_executor().spawn(async move {
+            match operation.origin {
+                origin @ AgentFileOrigin::Local {..} => crate::agent_console_view::save_local_document(&operation.context.workdir, origin, operation.text),
+                AgentFileOrigin::Remote {root, path, revision, connection_id} => {
+                    if !matches!(operation.context.target, AgentTarget::Ssh {connection_id: id, ..} if id == connection_id) { return Err(t!("agents.editor.context_changed").to_string()); }
+                    let connection = connection.ok_or_else(|| t!("agents.error.target_missing").to_string())?;
+                    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+                    runtime.block_on(async {
+                        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                            let session = shelldeck_ssh::client::SshClient::new().connect(&connection).await.map_err(|e| e.to_string())?;
+                            let document = shelldeck_ssh::agent_files::save(&session, &root, &path, &revision, &operation.text).await.map_err(agent_file_error)?;
+                            Ok(AgentFileOrigin::Remote {root: document.root, path: document.path, revision: document.revision, connection_id})
+                        }).await.map_err(|_| t!("agents.editor.timeout").to_string())?
+                    })
+                }
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.agent_console.update(cx, |view, cx| {
+                    view.complete_agent_file_save(&request, result, cx)
                 });
             });
         })
@@ -292,34 +317,15 @@ impl Workspace {
     }
 }
 
-fn remote_preview_command(root: &str, path: &str) -> Result<String, String> {
-    use shelldeck_core::{config::workspace_catalog::RemotePosixPath, util::shell_escape};
-    RemotePosixPath::new(path.to_string()).map_err(|e| e.to_string())?;
-    if root != "~" {
-        RemotePosixPath::new(root.to_string()).map_err(|e| e.to_string())?;
+pub(super) fn agent_file_error(error: shelldeck_ssh::agent_files::AgentFileError) -> String {
+    if error.is_conflict() {
+        return t!("agents.editor.conflict").to_string();
     }
-    let root = if root == "~" {
-        "\"$HOME\"".to_string()
-    } else {
-        shell_escape(root)
-    };
-    let path = shell_escape(path);
-    Ok(format!("root=$(cd -P -- {root} && pwd -P) || exit 1; file={path}; dir=$(cd -P -- \"$(dirname -- \"$file\")\" && pwd -P) || exit 1; file=\"$dir/$(basename -- \"$file\")\"; case \"$file\" in \"${{root%/}}\"/*) ;; *) exit 1 ;; esac; test -f \"$file\" && test ! -L \"$file\" || exit 1; head -c 1048577 -- \"$file\""))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::remote_preview_command;
-    // SDTEST-2300
-    #[test]
-    fn remote_preview_keeps_hostile_paths_quoted_and_enforces_root() {
-        let command =
-            remote_preview_command("/srv/project", "/srv/project/a'$(touch bad)").unwrap();
-        assert!(command.contains("'\\''"));
-        assert!(command.contains("test ! -L"));
-        assert!(command.contains("1048577"));
-        assert!(remote_preview_command("/srv/project", "../escape").is_err());
-        assert!(remote_preview_command("~/ambiguous", "/srv/file").is_err());
+    match error {
+        shelldeck_ssh::agent_files::AgentFileError::UnsupportedHost => {
+            t!("agents.editor.remote_requirements").to_string()
+        }
+        error => error.to_string(),
     }
 }
 

@@ -4,7 +4,9 @@ use adabraka_ui::prelude::*;
 use gpui::*;
 use shelldeck_core::agent_runtime::*;
 use shelldeck_core::agent_session::{storage::*, *};
-use shelldeck_ui::agent_console_view::AgentConsoleView;
+use shelldeck_ui::agent_console_view::{
+    save_local_document, AgentConsoleEvent, AgentConsoleView, AgentFileOrigin,
+};
 use std::{borrow::Cow, path::PathBuf, time::Duration};
 
 struct Assets;
@@ -79,6 +81,13 @@ fn main() -> anyhow::Result<()> {
         "Add coverage for a reconnect while the page is hidden.".into(),
     );
     AgentSessionStore::default().save(&snapshot)?;
+    let preview_editor = std::env::var_os("SHELLDECK_PREVIEW_EDITOR").is_some();
+    let editor_path = root.join("src/main.rs");
+    let preview_seconds = std::env::var("SHELLDECK_PREVIEW_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(45)
+        .clamp(5, 120);
     let width = std::env::var("SHELLDECK_PREVIEW_WIDTH")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
@@ -102,17 +111,56 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             },
             |_, cx| {
-                cx.new(|cx| {
+                let view = cx.new(|cx| {
                     let mut view = AgentConsoleView::new(cx);
                     view.set_surface_visible(true, cx);
                     view
+                });
+                // This fixture has no Workspace orchestrator. Its Save adapter
+                // accepts only local documents in the disposable fixture root.
+                let fixture_root = editor_path
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .to_path_buf();
+                cx.subscribe(&view, move |view, event: &AgentConsoleEvent, cx| {
+                    if let AgentConsoleEvent::SaveFile(request) = event {
+                        let result = match &request.origin {
+                            AgentFileOrigin::Local { root, .. } if root == &fixture_root => {
+                                save_local_document(
+                                    &request.context.workdir,
+                                    request.origin.clone(),
+                                    request.text.clone(),
+                                )
+                            }
+                            _ => Err("Fixture refuses all non-fixture saves".to_string()),
+                        };
+                        view.update(cx, |view, cx| {
+                            view.complete_agent_file_save(request, result, cx)
+                        });
+                    }
                 })
+                .detach();
+                if preview_editor {
+                    let editor_view = view.downgrade();
+                    cx.spawn(async move |cx| {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(500))
+                            .await;
+                        let _ = editor_view.update(cx, |view, cx| {
+                            view.open_local_agent_preview(editor_path, cx)
+                        });
+                    })
+                    .detach();
+                }
+                view
             },
         )
         .unwrap();
         cx.spawn(async move |cx| {
             cx.background_executor()
-                .timer(Duration::from_secs(45))
+                .timer(Duration::from_secs(preview_seconds))
                 .await;
             let _ = cx.update(|cx| cx.quit());
         })

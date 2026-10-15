@@ -901,6 +901,8 @@ at a short cadence; background runtime refreshes never erase an in-flight chat.
 
 ### SDUC-475 — Coding agents run on an explicit local or SSH target
 
+Files open in a retained middle-pane custom editor, with Conversation/Editor switching and explicit local/SSH Save. Remote navigation stays rooted to the session; file revisions protect against stale saves, and pending saves preserve newer edits. SDUC-551 details this editor and explorer contract.
+
 The session search has a usable text viewport, and inherited navigator/provider
 labels follow the active theme in both light and dark appearances
 (SDTEST-1931/1932, manual native validation).
@@ -3221,6 +3223,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-15**: Amended SDUC-551 and SDUC-475 for the retained middle-pane custom editor, scoped remote Files navigation, external document save acknowledgments, and explicit conflict handling. SDTEST-2495..2498, 2500..2503, 2510..2518 and 2520 cover editor buffers, explorer navigation, bounded SSH transport and local save conflicts.
+
 - **2026-10-14**: Amended SDUC-434: primary-display opening, sliding visibility,
   detachable window chrome, monitor/edge selection and native snapping.
   SDTEST-1956..1959 cover placement, completed-tile detection, hide/reopen races
@@ -4209,6 +4213,21 @@ questions and advertised approval choices. Claude partial blocks and Codex item
 snapshots avoid duplicate visible text, and streaming credentials are redacted
 across chunk boundaries. Adjacent panels expose files, actual Git review, retained
 terminals, local instructions, sources, browser snapshots and the session library.
+Files open in the middle pane in a retained instance of the native custom editor,
+with per-session/context tabs, syntax highlighting, search, undo and unsaved-close
+handling. Conversation/Editor switching preserves buffers. Local image/PDF/binary
+previews reuse the custom editor. The right Files pane stays available; on narrow
+panes its drawer closes after opening a file so the editor remains usable. Files
+navigation has breadcrumbs, scoped parent navigation, refresh, hidden-file filtering,
+keyboard-accessible rows and active-tab highlighting. Directory traversal and rendered
+pages are bounded. Remote browsing and text editing require Python 3 with POSIX
+filesystem support on the SSH host. Remote documents use explicit external identities
+and never become local filesystem save paths. Human Save requests check the captured
+content revision; changed files retain the draft and report a conflict. Save completion
+cleans only the acknowledged snapshot, preserving edits typed while the save runs.
+Pending or failed saves retain the buffer. These editor buffers survive in-app pane
+and session changes; unsaved edits are not persisted across app exit.
+
 The displayed target is also the inspector's context; asynchronous results are
 fenced to their original session and context. This is not cross-provider model
 or tool discovery,
@@ -4229,6 +4248,9 @@ submission. SSH Git review, hunk staging and a provider-independent ownership
 proof are outside this contract.
 
 ### SDUC-553 — Explicit isolated browser snapshots and visual feedback
+
+Historical snapshot interface, superseded by SDUC-557 on 2026-10-15. The
+bounded capture library remains covered by its existing core contract tests.
 
 An explicit HTTP(S) visit uses installed Chrome/Chromium with a fresh private
 profile to capture bounded rendered DOM and a PNG under a deadline. Invalid URLs,
@@ -4283,3 +4305,31 @@ are never staged, checked out or committed by delivery. Branch creation uses the
 existing workspace launcher. SSH delivery, distinct fetch/push repositories,
 multiple origin destinations, noncanonical GitHub origins and incomplete review
 snapshots are not supported. No live push or PR mutation is part of the test suite.
+
+### SDUC-557 — Shared native Chromium browser and scoped computer use
+
+Conversation, the native editor, and a live Chromium browser share the agent
+middle pane. Up to four session/execution-context browser instances retain eight
+tabs each, including forms, navigation, cookies and local storage in separate
+ShellDeck profiles. Native input includes pointer/drag/scroll, keyboard, UTF-16
+IME, clipboard text, find, HTML popup menus, page dialogs, file choosers and
+explicit download destinations. Related browser windows retain opener messaging.
+The browser can attach a screenshot to the matching conversation draft.
+
+The CEF helper renders live BGRA frames into GPUI; no external Chrome install,
+snapshot fallback, X11 child window, or public debugging port is involved. A
+missing engine reports an error. Scoped MCP tools attach to the next local
+Codex, Claude Code or Automonique run. Observation is the default. Control also
+requires the visible browser toggle and a confirmed writable execution context.
+Tool grants admit only the matching helper's tabs, including newly opened related
+tabs, and expire on completion, rejection, Stop, browser close or logout. Secrets
+stay outside saved ShellDeck sessions and global provider configuration. SSH and
+unsupported providers do not receive a local desktop capability.
+
+Release payloads include the matching CEF engine on Linux, macOS and Windows.
+Linux/Windows engine versions stay at stable paths during updates; publishing a
+new engine precedes replacing the main executable, and a failed replacement
+rolls the new engine back. macOS ships and updates a complete signed app bundle.
+Camera, microphone, screen sharing and browser permission grants are outside the
+initial browser contract. See `docs/native-browser.md` and the browser test
+inventory for native platform verification status.

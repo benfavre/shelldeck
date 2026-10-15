@@ -82,7 +82,6 @@ impl AgentStreamParser {
         };
         if !finish
             && active.pending[..end]
-                .trim_end()
                 .split_whitespace()
                 .last()
                 .is_some_and(|word| word.eq_ignore_ascii_case("bearer"))

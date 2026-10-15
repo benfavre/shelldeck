@@ -89,10 +89,11 @@ async fn download_verified_payload(release: &ReleaseInfo, dest: &Path) -> Result
 /// - **Linux**: extract tar.gz, stage beside the executable, then rename with rollback.
 /// - **macOS**: extract a complete signed `.app`, then rename the bundle with rollback.
 /// - **Windows**: extract zip to a staging directory, rename-and-replace strategy.
-pub async fn install(archive: &Path) -> Result<()> {
+pub async fn install(archive: &Path, version: &str) -> Result<()> {
+    semver::Version::parse(version).context("Invalid update version")?;
     #[cfg(target_os = "linux")]
     {
-        install_linux(archive).await
+        install_linux(archive, version).await
     }
     #[cfg(target_os = "macos")]
     {
@@ -100,7 +101,7 @@ pub async fn install(archive: &Path) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        install_windows(archive).await
+        install_windows(archive, version).await
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
@@ -110,7 +111,7 @@ pub async fn install(archive: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-async fn install_linux(archive: &Path) -> Result<()> {
+async fn install_linux(archive: &Path, version: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let current_exe =
@@ -140,6 +141,8 @@ async fn install_linux(archive: &Path) -> Result<()> {
     // Find the new binary inside the extracted directory
     let new_binary = find_binary_in_dir(&staging)?;
 
+    let browser_payload = publish_browser_payload(&new_binary, parent, version)?;
+
     // Stage the replacement on the same filesystem, then swap with rollback.
     let backup = current_exe.with_extension("bak");
     let replacement = current_exe.with_extension("new");
@@ -147,6 +150,7 @@ async fn install_linux(archive: &Path) -> Result<()> {
     std::fs::copy(&new_binary, &replacement).context("Failed to stage new binary")?;
     std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o755))?;
     atomic_replace_file(&current_exe, &replacement, &backup)?;
+    browser_payload.commit();
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&staging);
@@ -230,7 +234,7 @@ fn find_app_bundle(dir: &Path) -> Result<std::path::PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-async fn install_windows(archive: &Path) -> Result<()> {
+async fn install_windows(archive: &Path, version: &str) -> Result<()> {
     let current_exe =
         std::env::current_exe().context("Failed to determine current executable path")?;
     let parent = current_exe
@@ -267,8 +271,10 @@ async fn install_windows(archive: &Path) -> Result<()> {
 
     let new_binary = find_binary_in_dir(&staging)?;
 
+    let browser_payload = publish_browser_payload(&new_binary, parent, version)?;
     let old = current_exe.with_extension("old.exe");
     pending_replace_file(&current_exe, &new_binary, &old)?;
+    browser_payload.commit();
 
     let _ = std::fs::remove_dir_all(&staging);
 
@@ -296,6 +302,129 @@ fn pending_replace_file(current: &Path, replacement: &Path, old: &Path) -> Resul
         return Err(error).context("Failed to copy new binary");
     }
     Ok(())
+}
+
+/// Publish a new version of CEF before replacing the main executable. Existing
+/// versions stay at their original paths: Chromium launches child processes from
+/// that path and Windows keeps its DLLs locked while the browser is running.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+struct BrowserPayloadPublication {
+    path: Option<std::path::PathBuf>,
+}
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl BrowserPayloadPublication {
+    fn commit(mut self) {
+        self.path.take();
+    }
+}
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl Drop for BrowserPayloadPublication {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn publish_browser_payload(
+    new_binary: &Path,
+    install_dir: &Path,
+    expected_version: &str,
+) -> Result<BrowserPayloadPublication> {
+    let source_root = new_binary
+        .parent()
+        .context("Update executable has no parent")?
+        .join("browser");
+    let mut entries =
+        std::fs::read_dir(&source_root).context("Update archive is missing its browser engine")?;
+    let source = entries
+        .next()
+        .context("Browser engine directory is empty")??
+        .path();
+    anyhow::ensure!(
+        entries.next().is_none(),
+        "Update archive must contain one browser engine version"
+    );
+    let version = source
+        .file_name()
+        .and_then(|v| v.to_str())
+        .context("Invalid browser version directory")?;
+    semver::Version::parse(version).context("Invalid browser engine version")?;
+    anyhow::ensure!(
+        version == expected_version,
+        "Browser engine version does not match the signed release"
+    );
+    anyhow::ensure!(
+        source.symlink_metadata()?.is_dir(),
+        "Browser engine must be a real directory"
+    );
+    let helper = if cfg!(target_os = "windows") {
+        "shelldeck-browser.exe"
+    } else {
+        "shelldeck-browser"
+    };
+    let cef = if cfg!(target_os = "windows") {
+        "libcef.dll"
+    } else {
+        "libcef.so"
+    };
+    for required in [
+        helper,
+        cef,
+        "icudtl.dat",
+        "resources.pak",
+        "chrome_100_percent.pak",
+        "chrome_200_percent.pak",
+        "v8_context_snapshot.bin",
+        "locales/en-US.pak",
+        "runtime.json",
+    ] {
+        anyhow::ensure!(
+            source
+                .join(required)
+                .symlink_metadata()
+                .map(|m| m.is_file())
+                .unwrap_or(false),
+            "Browser engine is missing {required}"
+        );
+    }
+    #[cfg(target_os = "windows")]
+    for required in ["shelldeck-browser.dll", "chrome_elf.dll"] {
+        anyhow::ensure!(
+            source.join(required).is_file(),
+            "Browser engine is missing {required}"
+        );
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(source.join("runtime.json"))?)
+            .context("Invalid browser runtime metadata")?;
+    anyhow::ensure!(
+        metadata["shelldeck_version"].as_str() == Some(expected_version),
+        "Browser runtime metadata does not match the signed release"
+    );
+    anyhow::ensure!(
+        metadata["platform"].as_str()
+            == Some(if cfg!(target_os = "windows") {
+                "windows"
+            } else {
+                "linux"
+            }),
+        "Browser runtime targets a different platform"
+    );
+    let destination_root = install_dir.join("browser");
+    std::fs::create_dir_all(&destination_root)?;
+    let destination = destination_root.join(version);
+    anyhow::ensure!(
+        !destination.exists(),
+        "Browser engine version {version} already exists; the update was not applied"
+    );
+    // Both paths live beside the executable. Existing Chromium processes retain
+    // their version paths; only an uncommitted new payload is removed on error.
+    std::fs::rename(&source, &destination).context("Failed to publish browser engine")?;
+    Ok(BrowserPayloadPublication {
+        path: Some(destination),
+    })
 }
 
 /// Walk a directory to find the `shelldeck` binary (or `shelldeck.exe` on Windows).
@@ -365,6 +494,70 @@ mod tests {
             pub_date: "2026-07-23T12:00:00Z".into(),
             signature: String::new(),
         }
+    }
+
+    // SDTEST-2588 — SDUC-557
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn browser_engine_update_preserves_live_versions_and_rolls_back_failed_binary_swap() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("install");
+        let stage = temp.path().join("stage");
+        let version = stage.join("browser/1.2.3");
+        std::fs::create_dir_all(&version).unwrap();
+        std::fs::create_dir_all(install.join("browser/1.0.0")).unwrap();
+        std::fs::write(install.join("browser/1.0.0/live-resource"), b"in-use").unwrap();
+        let helper = if cfg!(target_os = "windows") {
+            "shelldeck-browser.exe"
+        } else {
+            "shelldeck-browser"
+        };
+        let cef = if cfg!(target_os = "windows") {
+            "libcef.dll"
+        } else {
+            "libcef.so"
+        };
+        for name in [
+            helper,
+            cef,
+            "icudtl.dat",
+            "shelldeck-browser.dll",
+            "chrome_elf.dll",
+            "resources.pak",
+            "chrome_100_percent.pak",
+            "chrome_200_percent.pak",
+            "v8_context_snapshot.bin",
+            "locales/en-US.pak",
+        ] {
+            std::fs::create_dir_all(version.join(name).parent().unwrap()).unwrap();
+            std::fs::write(version.join(name), b"engine").unwrap();
+        }
+        std::fs::write(version.join("runtime.json"), serde_json::to_vec(&serde_json::json!({"shelldeck_version":"1.2.3", "platform":if cfg!(target_os = "windows") { "windows" } else { "linux" }})).unwrap()).unwrap();
+        let binary = stage.join("shelldeck");
+        let publication = publish_browser_payload(&binary, &install, "1.2.3").unwrap();
+        assert!(install.join("browser/1.2.3").is_dir());
+        assert_eq!(
+            std::fs::read(install.join("browser/1.0.0/live-resource")).unwrap(),
+            b"in-use"
+        );
+        drop(publication);
+        assert!(!install.join("browser/1.2.3").exists());
+        assert!(install.join("browser/1.0.0/live-resource").is_file());
+    }
+
+    // SDTEST-2589 — SDUC-557
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn incomplete_browser_payload_fails_before_changing_installed_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        let install = temp.path().join("install");
+        std::fs::create_dir_all(stage.join("browser/1.2.3")).unwrap();
+        let error = publish_browser_payload(&stage.join("shelldeck"), &install, "1.2.3")
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("Browser engine is missing"));
+        assert!(!install.exists());
     }
 
     // SDTEST-1240 — a bad digest never publishes the destination archive.

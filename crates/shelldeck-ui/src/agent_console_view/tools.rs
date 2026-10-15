@@ -1,13 +1,10 @@
 use super::*;
-use crate::file_editor::view::FileEditorView;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum AgentToolSurface {
-    Preview,
     Sources,
     Instructions,
     Terminal,
-    Browser,
     Library,
     Workflows,
     Delivery,
@@ -19,38 +16,26 @@ pub(super) struct AgentToolsUi {
     pub navigator_visible: bool,
     pub panel_width: f32,
     pub measured_width: f32,
-    pub editor: Entity<FileEditorView>,
-    preview_editors: HashMap<PathBuf, Entity<FileEditorView>>,
-    pub preview_title: String,
-    pub remote_preview: Option<String>,
+    pub inspector_wide: bool,
     pub instructions: Vec<(String, String)>,
     pub loading: bool,
     pub error: Option<String>,
-    pub preview_session: Option<Uuid>,
-    pub preview_request: Uuid,
-    pub preview_context: Option<AgentExecutionContext>,
     pub instructions_request: Uuid,
     pub inspector_context: Option<AgentExecutionContext>,
     pub terminal: Option<Entity<crate::terminal_view::TerminalView>>,
 }
 impl AgentToolsUi {
-    pub fn new(cx: &mut Context<AgentConsoleView>) -> Self {
+    pub fn new(_cx: &mut Context<AgentConsoleView>) -> Self {
         Self {
             active: None,
             panel_visible: false,
             navigator_visible: true,
             panel_width: 360.0,
             measured_width: 0.0,
-            editor: cx.new(FileEditorView::new),
-            preview_editors: HashMap::new(),
-            preview_title: String::new(),
-            remote_preview: None,
+            inspector_wide: false,
             instructions: Vec::new(),
             loading: false,
             error: None,
-            preview_session: None,
-            preview_request: Uuid::new_v4(),
-            preview_context: None,
             instructions_request: Uuid::new_v4(),
             terminal: None,
             inspector_context: None,
@@ -101,99 +86,6 @@ impl AgentConsoleView {
                 (!m.is_empty()).then_some(m)
             },
         }
-    }
-
-    pub fn open_local_agent_preview(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let context = self.displayed_context(cx);
-        let Some(session_id) = self.sessions.selected_id() else {
-            return;
-        };
-        if !matches!(context.target, AgentTarget::Local) {
-            return;
-        }
-        self.tools.active = Some(AgentToolSurface::Preview);
-        self.tools.panel_visible = true;
-        self.tools.preview_session = Some(session_id);
-        let request_id = Uuid::new_v4();
-        self.tools.preview_request = request_id;
-        self.tools.preview_context = Some(context.clone());
-        self.tools.loading = true;
-        self.tools.error = None;
-        self.tools.remote_preview = None;
-        let preview_context = context.clone();
-        let result = cx.background_executor().spawn(async move {
-            let root = std::fs::canonicalize(&context.workdir).map_err(|e| e.to_string())?;
-            let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-            let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-            if !path.starts_with(root) || !metadata.is_file() || metadata.len() > 8 * 1024 * 1024 {
-                return Err(
-                    "File is outside this session or exceeds the 8 MiB preview limit".to_string(),
-                );
-            }
-            Ok(path)
-        });
-        cx.spawn(async move |this, cx| {
-            let result = result.await;
-            let _ = this.update(cx, |this, cx| {
-                if this.sessions.selected_id() != Some(session_id)
-                    || this.tools.preview_request != request_id
-                    || this.displayed_context(cx) != preview_context
-                {
-                    return;
-                }
-                this.tools.loading = false;
-                match result {
-                    Ok(path) => {
-                        this.tools.preview_title = path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-                        let editor = this
-                            .tools
-                            .preview_editors
-                            .entry(path.clone())
-                            .or_insert_with(|| {
-                                cx.new(|cx| {
-                                    let mut editor = FileEditorView::new(cx);
-                                    editor.file_browser_visible = false;
-                                    editor.open_file(path, cx);
-                                    editor
-                                })
-                            })
-                            .clone();
-                        this.tools.editor = editor;
-                    }
-                    Err(error) => this.tools.error = Some(error),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
-    pub fn set_remote_file_preview(
-        &mut self,
-        session_id: Uuid,
-        request_id: Uuid,
-        path: String,
-        result: Result<String, String>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.sessions.selected_id() != Some(session_id)
-            || self.tools.preview_request != request_id
-            || self.tools.preview_context.as_ref() != Some(&self.displayed_context(cx))
-        {
-            return;
-        }
-        self.tools.loading = false;
-        self.tools.preview_title = path;
-        match result {
-            Ok(text) => self.tools.remote_preview = Some(text),
-            Err(error) => self.tools.error = Some(error),
-        }
-        cx.notify();
     }
 
     pub(super) fn show_project_instructions(&mut self, cx: &mut Context<Self>) {
@@ -277,7 +169,7 @@ impl AgentConsoleView {
                 })
                 .icon(IconSource::from(icon))
                 .tooltip(t!(key).to_string())
-                .on_click(cx.listener(move |this, _, window, cx| {
+                .on_click(cx.listener(move |this, _, _, cx| {
                     match id {
                         "files" => {
                             let close = this.tools.active.is_none()
@@ -296,7 +188,7 @@ impl AgentConsoleView {
                         "terminal" => cx.emit(AgentConsoleEvent::OpenTerminal {
                             context: this.displayed_context(cx),
                         }),
-                        "browser" => this.show_agent_browser(None, window, cx),
+                        "browser" => this.show_live_browser(None, cx),
                         "library" => {
                             this.tools.active = Some(AgentToolSurface::Library);
                             this.tools.panel_visible = true;
@@ -337,14 +229,10 @@ impl AgentConsoleView {
         session: &AgentSession,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.tools.active == Some(AgentToolSurface::Browser) {
-            return self.render_browser_panel(cx);
-        }
         let title = match self.tools.active {
             Some(AgentToolSurface::Library) => t!("agents.parity.sessions").to_string(),
             Some(AgentToolSurface::Workflows) => t!("agents.workflows.title").to_string(),
             Some(AgentToolSurface::Delivery) => t!("agents.delivery.title").to_string(),
-            Some(AgentToolSurface::Preview) => self.tools.preview_title.clone(),
             Some(AgentToolSurface::Sources) => t!("agents.parity.sources").to_string(),
             Some(AgentToolSurface::Terminal) => t!("agents.parity.terminal").to_string(),
             _ => t!("agents.parity.instructions").to_string(),
@@ -426,12 +314,9 @@ impl AgentConsoleView {
                                     .size(ButtonSize::Sm)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if let Some(url) = safe_browser_url(&action_uri) {
-                                            cx.open_url(&url);
+                                            this.show_live_browser(Some(url), cx);
                                         } else {
-                                            let context = this.displayed_context(cx);
-                                            let path = std::path::Path::new(&context.workdir)
-                                                .join(&action_uri);
-                                            this.open_local_agent_preview(path, cx);
+                                            this.open_agent_source_file(&action_uri, cx);
                                         }
                                     })),
                             )
@@ -457,26 +342,6 @@ impl AgentConsoleView {
                             body =
                                 body.child(Badge::new(tool.clone()).variant(BadgeVariant::Outline));
                         }
-                    }
-                }
-                Some(AgentToolSurface::Preview) => {
-                    if let Some(text) = &self.tools.remote_preview {
-                        for line in text.lines() {
-                            body = body.child(
-                                div()
-                                    .font_family("JetBrains Mono")
-                                    .text_size(px(11.0))
-                                    .child(line.to_string()),
-                            );
-                        }
-                    } else if self.tools.preview_session == Some(session.id) {
-                        return div()
-                            .flex()
-                            .flex_col()
-                            .size_full()
-                            .child(header)
-                            .child(div().flex_1().min_h_0().child(self.tools.editor.clone()))
-                            .into_any_element();
                     }
                 }
                 Some(AgentToolSurface::Terminal) => {
@@ -515,7 +380,6 @@ impl AgentConsoleView {
                 Some(AgentToolSurface::Delivery) => {
                     body = body.child(self.render_delivery_controls(session, cx));
                 }
-                Some(AgentToolSurface::Browser) => {}
                 None => {}
             }
         }

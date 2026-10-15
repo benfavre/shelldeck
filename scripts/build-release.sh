@@ -71,7 +71,14 @@ echo "==> Applying crate patches..."
 bash "$SCRIPT_DIR/apply-crate-patches.sh"
 
 echo "==> Building release binary..."
-cargo build --release -p shelldeck
+if [ "$PLATFORM" = "linux-x86_64" ]; then
+    export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+fi
+cargo build --locked --release -p shelldeck
+# Keep these separate: the main GPUI process must never link Chromium. Only
+# the dedicated helper enables CEF, and provider stdio mode uses that helper.
+cargo build --locked --release -p shelldeck-browser --features runtime
+python3 scripts/bundle-browser-runtime.py --profile release
 
 # ---------------------------------------------------------------------------
 # Determine binary path

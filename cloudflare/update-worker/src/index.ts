@@ -174,14 +174,39 @@ case "$DOWNLOAD_URL" in
   *)        error "Unknown archive format" ;;
 esac
 
-BINARY="$(find "$WORK_DIR" -name 'shelldeck' -type f ! -path "$ARCHIVE" 2>/dev/null | head -1)"
-if [ -z "$BINARY" ]; then
-  BINARY="$(find "$WORK_DIR" -type f ! -name '*.tar.gz' ! -name '*.zip' ! -path "$ARCHIVE" 2>/dev/null | head -1)"
+if [ "$OS" = "Darwin" ]; then
+  APP_BUNDLE="$WORK_DIR/ShellDeck.app"
+  [ -d "$APP_BUNDLE/Contents/MacOS" ] || error "Archive does not contain ShellDeck.app"
+  APP_DEST="$HOME/Applications/ShellDeck.app"
+  mkdir -p "$HOME/Applications"
+  APP_BACKUP="$APP_DEST.previous-$VERSION-$$"
+  [ ! -e "$APP_DEST" ] || mv "$APP_DEST" "$APP_BACKUP"
+  if ! mv "$APP_BUNDLE" "$APP_DEST"; then
+    [ ! -e "$APP_BACKUP" ] || mv "$APP_BACKUP" "$APP_DEST"
+    error "Could not install the complete app bundle"
+  fi
+  ln -sfn "$APP_DEST/Contents/MacOS/shelldeck" "$INSTALL_DIR/shelldeck"
+else
+  BINARY="$WORK_DIR/shelldeck"
+  [ -f "$BINARY" ] || error "Could not find shelldeck binary in archive"
+  BROWSER_SOURCE="$WORK_DIR/browser/$VERSION"
+  # Older published releases predate the bundled engine. Keep their installer
+  # working while worker code and the next desktop release roll out separately.
+  if [ -d "$WORK_DIR/browser" ]; then
+    [ -d "$BROWSER_SOURCE" ] || error "Browser engine version does not match the release"
+    [ -x "$BROWSER_SOURCE/shelldeck-browser" ] && [ -f "$BROWSER_SOURCE/libcef.so" ] || error "Archive contains an incomplete browser engine"
+    for RESOURCE in icudtl.dat resources.pak chrome_100_percent.pak chrome_200_percent.pak v8_context_snapshot.bin locales/en-US.pak runtime.json; do
+      [ -f "$BROWSER_SOURCE/$RESOURCE" ] || error "Archive is missing browser resource $RESOURCE"
+    done
+    mkdir -p "$INSTALL_DIR/browser"
+    if [ ! -d "$INSTALL_DIR/browser/$VERSION" ]; then
+      mv "$BROWSER_SOURCE" "$INSTALL_DIR/browser/$VERSION"
+    fi
+  fi
+  cp "$BINARY" "$INSTALL_DIR/shelldeck.new"
+  chmod +x "$INSTALL_DIR/shelldeck.new"
+  mv -f "$INSTALL_DIR/shelldeck.new" "$INSTALL_DIR/shelldeck"
 fi
-[ -z "$BINARY" ] && error "Could not find shelldeck binary in archive"
-
-cp "$BINARY" "$INSTALL_DIR/shelldeck"
-chmod +x "$INSTALL_DIR/shelldeck"
 ok "Installed to $INSTALL_DIR/shelldeck"
 
 # Check runtime dependencies on Linux
@@ -319,7 +344,9 @@ Write-Host "==> Installing ShellDeck v$Version..." -ForegroundColor Blue
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 # Download
-$TmpFile = Join-Path ([System.IO.Path]::GetTempPath()) "shelldeck-download.zip"
+$StageDir = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $StageDir | Out-Null
+$TmpFile = Join-Path $StageDir "shelldeck-download.zip"
 Write-Host "==> Downloading..." -ForegroundColor Blue
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -344,7 +371,7 @@ if ($ExpectedHash -ne "") {
 # Extract
 Write-Host "==> Extracting..." -ForegroundColor Blue
 try {
-    Expand-Archive -Path $TmpFile -DestinationPath $InstallDir -Force
+    Expand-Archive -Path $TmpFile -DestinationPath (Join-Path $StageDir "payload") -Force
 } catch {
     Remove-Item -Force $TmpFile -ErrorAction SilentlyContinue
     Write-Host "error: Extraction failed: $_" -ForegroundColor Red
@@ -352,20 +379,31 @@ try {
 }
 Remove-Item -Force $TmpFile -ErrorAction SilentlyContinue
 
-# Find binary
-$Binary = Get-ChildItem -Path $InstallDir -Filter "shelldeck.exe" -Recurse -File | Select-Object -First 1
-if (-not $Binary) {
-    $Binary = Get-ChildItem -Path $InstallDir -Filter "*.exe" -Recurse -File | Select-Object -First 1
+# Keep the complete, versioned Chromium engine beside the application.
+$Payload = Join-Path $StageDir "payload"
+$Binary = Join-Path $Payload "shelldeck.exe"
+$BrowserSource = Join-Path $Payload "browser\\$Version"
+if (-not (Test-Path -LiteralPath $Binary)) { throw "Archive is missing shelldeck.exe" }
+if (Test-Path -LiteralPath (Join-Path $Payload "browser")) {
+    if (-not (Test-Path -LiteralPath $BrowserSource)) { throw "Browser engine version does not match the release" }
+    foreach ($Resource in @("shelldeck-browser.exe", "shelldeck-browser.dll", "libcef.dll", "chrome_elf.dll", "icudtl.dat", "resources.pak", "chrome_100_percent.pak", "chrome_200_percent.pak", "v8_context_snapshot.bin", "locales/en-US.pak", "runtime.json")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $BrowserSource $Resource))) { throw "Archive is missing browser resource $Resource" }
+    }
 }
-if (-not $Binary) {
-    Write-Host "error: Could not find shelldeck.exe in archive" -ForegroundColor Red
-    exit 1
+$BrowserDestination = Join-Path $InstallDir "browser\\$Version"
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "browser") | Out-Null
+if ((Test-Path -LiteralPath $BrowserSource) -and -not (Test-Path -LiteralPath $BrowserDestination)) {
+    Move-Item -LiteralPath $BrowserSource -Destination $BrowserDestination
 }
-
-# Move binary to install dir root if nested
-if ($Binary.DirectoryName -ne $InstallDir) {
-    Move-Item -Path $Binary.FullName -Destination (Join-Path $InstallDir "shelldeck.exe") -Force
+$InstalledExe = Join-Path $InstallDir "shelldeck.exe"
+$OldExe = Join-Path $InstallDir "shelldeck.previous.exe"
+if (Test-Path -LiteralPath $InstalledExe) { Move-Item -LiteralPath $InstalledExe -Destination $OldExe -Force }
+try { Copy-Item -LiteralPath $Binary -Destination $InstalledExe }
+catch {
+    if (Test-Path -LiteralPath $OldExe) { Move-Item -LiteralPath $OldExe -Destination $InstalledExe -Force }
+    throw
 }
+Remove-Item -LiteralPath $StageDir -Recurse -Force
 
 # Add to PATH
 $CurrentPath = [Environment]::GetEnvironmentVariable("Path", "User")

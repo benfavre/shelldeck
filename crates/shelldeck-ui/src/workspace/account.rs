@@ -39,6 +39,7 @@ impl Workspace {
                             ws.app_config.account = Some(refreshed);
                             let _ = ws.app_config.save();
                         }
+                        ws.sync_agent_browser_account(cx);
                         ws.sync_settings_config(cx);
                         // Stash the full whoami — the User "Mes informations"
                         // tab renders every field (device label, created_at,
@@ -376,6 +377,7 @@ impl Workspace {
         self.app_config.cloud_sync.enabled = true;
         self.app_config.cloud_sync.token = token;
         self.app_config.account = Some(account.clone());
+        self.sync_agent_browser_account(cx);
         if let Err(e) = self.app_config.save() {
             tracing::error!("Failed to save config after login: {}", e);
         }
@@ -602,5 +604,19 @@ impl Workspace {
         self.invalidate_cloud_session(cx);
         self.show_toast(t!("toast.logged_out").to_string(), ToastLevel::Info, cx);
         cx.notify();
+    }
+}
+
+impl Workspace {
+    fn sync_agent_browser_account(&mut self, cx: &mut Context<Self>) {
+        let origin = self.app_config.cloud_sync.base_url.clone();
+        let email = self
+            .app_config
+            .account
+            .as_ref()
+            .map(|account| account.email.clone());
+        self.agent_console.update(cx, |view, cx| {
+            view.set_browser_account(&origin, email.as_deref(), cx)
+        });
     }
 }

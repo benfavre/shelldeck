@@ -36,96 +36,15 @@ mkdir -p "$TOOLS_DIR"
 LINUXDEPLOY="$TOOLS_DIR/linuxdeploy-x86_64.AppImage"
 if [ ! -f "$LINUXDEPLOY" ]; then
     echo "==> Downloading linuxdeploy..."
-    curl -fsSL -o "$LINUXDEPLOY" \
-        "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
-    chmod +x "$LINUXDEPLOY"
-fi
-
-# ---------------------------------------------------------------------------
-# Create AppDir structure
-# ---------------------------------------------------------------------------
-APPDIR="$PROJECT_ROOT/dist/ShellDeck.AppDir"
-rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/bin"
-mkdir -p "$APPDIR/usr/share/applications"
-mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
-
-# Copy binary
-cp "$BINARY" "$APPDIR/usr/bin/shelldeck"
-chmod +x "$APPDIR/usr/bin/shelldeck"
-
-# Copy .desktop file
-cp "$SCRIPT_DIR/shelldeck.desktop" "$APPDIR/usr/share/applications/shelldeck.desktop"
-
-# Copy icon (use project icon or generate a placeholder)
-ICON_SRC="$PROJECT_ROOT/packaging/icons/shelldeck-256.png"
-if [ -f "$ICON_SRC" ]; then
-    cp "$ICON_SRC" "$APPDIR/usr/share/icons/hicolor/256x256/apps/shelldeck.png"
-else
-    echo "WARNING: No icon at $ICON_SRC, generating placeholder..."
-    # Create a simple 256x256 placeholder with ImageMagick if available
-    if command -v convert &>/dev/null && convert -size 256x256 xc:'#1a1b26' \
-            -fill '#7aa2f7' -font Helvetica-Bold -pointsize 72 \
-            -gravity center -annotate 0 'SD' \
-            "$APPDIR/usr/share/icons/hicolor/256x256/apps/shelldeck.png" 2>/dev/null; then
-        echo "  Generated placeholder PNG with ImageMagick"
-    elif command -v python3 &>/dev/null; then
-        # Generate a minimal 256x256 PNG with Python (no dependencies)
-        python3 -c "
-import struct, zlib
-w, h = 256, 256
-# RGBA: dark blue #1a1b26
-row = b'\\x00' + (b'\\x1a\\x1b\\x26\\xff' * w)
-raw = row * h
-compressed = zlib.compress(raw)
-def chunk(t, d):
-    c = t + d
-    return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-with open('$APPDIR/usr/share/icons/hicolor/256x256/apps/shelldeck.png', 'wb') as f:
-    f.write(b'\\x89PNG\\r\\n\\x1a\\n')
-    f.write(chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)))
-    f.write(chunk(b'IDAT', compressed))
-    f.write(chunk(b'IEND', b''))
-"
-        echo "  Generated placeholder PNG with Python"
-    else
-        echo "WARNING: No icon, no ImageMagick, no Python. AppImage will have no icon."
-    fi
-fi
-
-# ---------------------------------------------------------------------------
-# Build AppImage
-# ---------------------------------------------------------------------------
-mkdir -p "$PROJECT_ROOT/dist"
-
-export ARCH=x86_64
-export VERSION="$VERSION"
-
-# linuxdeploy prepares the AppDir. appimagetool is invoked separately so CI
-# can embed a GPG signature in the final AppImage.
-"$LINUXDEPLOY" \
+    curl -fsSL -o if ! "$LINUXDEPLOY" \
     --appdir "$APPDIR" \
-    --desktop-file "$APPDIR/usr/share/applications/shelldeck.desktop" 2>&1 || {
-    echo "==> linuxdeploy failed; using the manually prepared AppDir"
+    --deploy-deps-only "$APPDIR/usr/bin/browser/$VERSION" \
+    --desktop-file "$APPDIR/usr/share/applications/shelldeck.desktop"; then
+    echo "ERROR: Could not bundle ShellDeck and Chromium's shared-library dependencies" >&2
+    exit 1
+fi
 
-    # Create AppRun
-    cat > "$APPDIR/AppRun" << 'APPRUN'
-#!/bin/bash
-SELF=$(readlink -f "$0")
-HERE=${SELF%/*}
-export PATH="${HERE}/usr/bin:${PATH}"
-export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH:-}"
-exec "${HERE}/usr/bin/shelldeck" "$@"
-APPRUN
-    chmod +x "$APPDIR/AppRun"
-
-    # Symlink icon and desktop to AppDir root
-    ln -sf usr/share/icons/hicolor/256x256/apps/shelldeck.png "$APPDIR/shelldeck.png" 2>/dev/null || true
-    ln -sf usr/share/applications/shelldeck.desktop "$APPDIR/shelldeck.desktop"
-
-}
-
-# linuxdeploy normally creates AppRun. Preserve the fallback for older builds.
+# linuxdeploy normally creates AppRun; older successful versions may omit it.
 if [ ! -x "$APPDIR/AppRun" ]; then
     ln -sf usr/bin/shelldeck "$APPDIR/AppRun"
 fi

@@ -273,6 +273,9 @@ fn drive(
     let mut params = json!({"cwd":request.workdir.trim(),"model":request.model,
         "sandbox":sandbox_name,"approvalPolicy":approval_policy(request.access),
         "approvalsReviewer":"user"});
+    if !options.mcp_servers.is_empty() {
+        params["config"] = crate::agent_browser_tools::codex_browser_config(&options.mcp_servers);
+    }
     let method = if let Some(resume) = &request.resume_session {
         params["threadId"] = json!(resume);
         "thread/resume"

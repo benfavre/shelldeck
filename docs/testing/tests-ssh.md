@@ -169,3 +169,18 @@ Existing: **0 tests.**
 | ID | Previous contract | Status | Reason |
 |---|---|---|---|
 | SDTEST-526 | EOF makes `SshChannel::read` return `None` | Retired 2026-07-24 | The reader now returns explicit `CleanEnd` versus `ConnectionLost`; SDTEST-1413 covers the stronger observable contract. |
+
+
+## Agent remote file editor — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2510 | `agent_files.rs` | SDUC-475, SDUC-551 | Green | Remote root/path/text are JSON stdin data, never shell/argv fragments. |
+| SDTEST-2511 | `agent_files.rs` | SDUC-475, SDUC-551 | Green | Invalid paths, revisions and oversized documents refuse before execution. |
+| SDTEST-2512 | `agent_files.rs` | SDUC-475, SDUC-551 | Green | Conflicts do not retry; missing Python3 yields explicit unsupported-host error. |
+| SDTEST-2513 | `agent_files.rs` | SDUC-475, SDUC-551 | Green | UTF-8/control/CRLF bytes remain exact; malformed/oversized documents refuse. |
+| SDTEST-2514 | `agent_files.rs` | SDUC-475, SDUC-551 | Green | Listing canonical root, child paths, count bounds and truncation are validated. |
+| SDTEST-2515 | `agent_files.rs` | SDUC-475, SDUC-551 | Green | Invalid protocol, missing exit status and oversized diagnostics fail closed. |
+| SDTEST-2516 | `session.rs` | SDUC-475, SDUC-551 | Green | In-memory SSH early exit keeps the unsupported-host status after EOF. |
+| SDTEST-2517 | `session.rs` | SDUC-475, SDUC-551 | Green | In-memory transport caps stdin, stdout and stderr. |
+| SDTEST-2518 | `session.rs` | SDUC-475, SDUC-551 | Green | Cancelling a bounded operation sends channel EOF/Close. |

@@ -56,6 +56,12 @@ Section "Install"
     ; Main binary
     File "target\release\shelldeck.exe"
 
+    ; Versioned Chromium payload: never overwrite a helper/DLL in use by an
+    ; existing session. The new main binary discovers this matching version.
+    SetOutPath "$INSTDIR\browser\${VERSION}"
+    File /r "target\release\browser\${VERSION}\*"
+    SetOutPath "$INSTDIR"
+
     ; Icon (if available)
     !if /FileExists "packaging\icons\shelldeck.ico"
         File /oname=shelldeck.ico "packaging\icons\shelldeck.ico"
@@ -118,6 +124,7 @@ Section "Uninstall"
     Delete "$INSTDIR\${APP_EXE}"
     Delete "$INSTDIR\shelldeck.ico"
     Delete "$INSTDIR\Uninstall.exe"
+    RMDir /r "$INSTDIR\browser"
     RMDir "$INSTDIR"
 
     ; Remove shortcuts

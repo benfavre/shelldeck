@@ -548,6 +548,9 @@ impl Workspace {
                 self.file_editor.update(cx, |ed, cx| {
                     ed.apply_editor_config(&editor_cfg, cx);
                 });
+                self.agent_console.update(cx, |view, cx| {
+                    view.apply_agent_editor_config(&editor_cfg, cx)
+                });
                 // Apply auto-update preference
                 let auto_update = self.app_config.general.auto_update;
                 self.auto_updater.update(cx, |updater, cx| {

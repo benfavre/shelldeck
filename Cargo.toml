@@ -7,6 +7,7 @@ members = [
     "crates/shelldeck-terminal",
     "crates/shelldeck-ui",
     "crates/shelldeck-update",
+    "crates/shelldeck-browser",
 ]
 
 [workspace.package]

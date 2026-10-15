@@ -163,6 +163,7 @@ impl AgentConsoleView {
             return Err(t!("agents.composer.image_unsupported").to_string());
         }
         Ok(AgentInputOptions {
+            mcp_servers: Vec::new(),
             image_paths,
             reasoning_effort: self
                 .provider
@@ -1112,6 +1113,7 @@ mod tests {
             options: AgentInputOptions {
                 image_paths: vec![PathBuf::from("selected-image.png")],
                 reasoning_effort: Some(AgentReasoningEffort::High),
+                ..Default::default()
             },
             source_draft: None,
         }
