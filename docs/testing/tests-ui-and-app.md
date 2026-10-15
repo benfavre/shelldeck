@@ -752,3 +752,56 @@ for provider limits and the remaining native acceptance journeys.
 | SDTEST-2591 | Native GPUI browser fixture | SDUC-557 | Yellow | Native Wayland live viewport/DOM audit passed. Isolated native window click/type, form submit, address-focused Ctrl+T/Ctrl+W, tab state retention, native dropdown selection and exactly-once Enter submission passed; screenshots inspected. |
 | SDTEST-2605 | `workspace/native_lifecycle.rs` | SDUC-491 | Green | Git 2.34 worktree-list fallback accepts only the precise unsupported-z diagnostic and preserves quoted/newline path authority. Full UI suite now passes all 236 tests, including the three previously failing lifecycle cases. |
 | SDTEST-2606 | `native_browser/geometry.rs` | SDUC-557 | Green | Human Enter produces the Chromium CHAR action for form submission and newlines; printable IME text and modified shortcuts remain single events. |
+
+
+## Production Agents launch packaging — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2630 | `scripts/test-agents-packaging.py::test_sdtest_2630_appimage_launches_agents_with_matching_browser_payload` | SDUC-558, SDUC-557 | Green | Offline temporary AppDir with fake AppImage tools executes AppRun against a harmless argv fixture: `--agents` and a spaced argument arrive intact. The default/protocol entry and Agents action coexist; matching browser resources/symlinks survive while stale versions are excluded. |
+| SDTEST-2631 | `scripts/test-agents-packaging.py::test_sdtest_2631_appimage_refuses_missing_browser_and_failed_dependencies` | SDUC-558, SDUC-557 | Green | A missing browser resource refuses before tool execution; dependency-deployment failure, silent helper-loader failure and a foreign libcef resolution refuse before an AppImage artifact can be reported. Explicit helper scanning keeps one canonical versioned engine. No real application, browser or download is used. |
+| SDTEST-2632 | `scripts/test-agents-packaging.py::test_sdtest_2632_installers_keep_production_agents_arguments_separate` | SDUC-558 | Green | Node renders the real worker install scripts; the generated Linux desktop heredoc preserves default URL handling and quoted executable paths containing spaces. Windows shortcut TargetPath/Arguments remain separate; real NSIS compiles a small offline payload. Requires Node TypeScript stripping and NSIS (explicit skip otherwise). Native Windows shortcut activation and macOS Launch Services remain platform acceptance work. |
+| SDTEST-2633 | `shelldeck/cli.rs::sdtest_2633_launch_intents_preserve_agents_and_reject_ambiguous_targets` | SDUC-558 | Green | CLI parsing keeps Agents as a nonempty handoff intent, accepts repeat/equivalent Agents flags/routes and Finder process metadata, preserves unrelated deep links, and refuses unknown/ambiguous targets before application I/O. Help/version remain side-effect-free launch commands. Passed in the isolated application/UI suite. |
+| SDTEST-2639 | `workspace/tray.rs::sdtest_2639_agent_only_work_requires_first_close_warning_without_changing_opt_out_or_confirmation` | SDUC-558 | Green | A running agent with no terminal, tunnel or script requires the first close warning. An already-confirmed close, explicit confirmation opt-out and an idle workspace still close; existing resource categories retain the warning. Passed in the isolated application/UI suite. |
+
+Linux validation also ran `bash -n` on both installer build scripts and
+`desktop-file-validate` on the packaged desktop entry. These checks do not
+publish a release or certify native Windows/macOS activation.
+
+
+The `agents-packaging` Linux CI job installs Python 3.12, Node 24, NSIS and
+`desktop-file-utils`, then runs SDTEST-2630..2632 and SDTEST-2644, browser archive/permission contracts, and shell/desktop syntax
+checks. Its explicit tool preflight prevents SDTEST-2632 from silently skipping;
+no Cargo compilation or Chromium download is needed for that job.
+
+
+## Production Agents presentation — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2636 | `workspace/presentation.rs::sdtest_2636_agents_launch_waits_for_auth_and_clamps_staff_capabilities` | SDUC-558 | Green | A signed-out Agents request stays pending behind welcome; customer and Support capabilities resolve to the normal available mode after login. Only a Dev-authorized account activates Agents. Passed in the isolated 240-test UI suite. |
+| SDTEST-2637 | `workspace/presentation.rs::sdtest_2637_agents_presentation_restores_saved_mode_without_persisting_dev` | SDUC-558 | Green | Agents temporarily resolves Dev for an authorized account across each saved mode; returning to the normal presentation restores that saved mode, and role loss retires the dedicated request. Passed in the isolated 240-test UI suite. |
+| SDTEST-2638 | `workspace/presentation.rs::sdtest_2638_agents_poll_visibility_follows_auth_mode_settings_and_selection` | SDUC-558 | Green | Agent foreground visibility requires current Dev authorization, effective Dev mode, a selected Agents host and closed Settings. Hidden User/Support/Settings surfaces do not count as visible. Passed in the isolated 240-test UI suite. |
+
+The dedicated presentation retains the same account titlebar, Settings, status
+bar and live AgentConsole entity while hiding the full application's outer
+sidebar and application menu row. Normal launches and the titlebar's **Open full
+ShellDeck** action restore the regular shell. Mode choices retire the transient
+request; opening a different native Dev surface reveals that destination in the
+full shell. Pending signed-out requests do not auto-open a login modal.
+
+
+## Production Agents command line
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2640 | `scripts/test-agents-cli.py` | SDUC-558 | Green | The actual Linux executable handles help, version and invalid/ambiguous arguments with no display, instance discovery or profile writes. Disposable XDG homes remain empty. Passed against the final production executable. |
+| SDTEST-2641 | `scripts/test-agents-cli.py` | SDUC-558 | Green | Actual secondary executable forwards the exact Agents URI or bare normal-launch intent to a private primary fixture and exits before GUI/config initialization. Discovery identity and profile contents remain unchanged. Blocked startup returns nonzero before GUI/config initialization. Passed against the final production executable. |
+
+
+## Public browser runtime permissions — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2642 | `scripts/test-browser-packaging.py::test_sdtest_2642_public_runtime_modes_preserve_executables_and_framework_links` | SDUC-557, SDUC-558 | Green | Runs the actual bundler with private-mode Linux/macOS fixture inputs. Published directory/data modes are 0755/0644, executable helpers retain executable roles, macOS framework symlinks remain links, and source modes stay unchanged. Unix-mode contract explicitly skips on Windows, where inherited installation ACLs apply. Runs in the lightweight Linux packaging CI job; no CEF download, native process or profile is involved. |
+| SDTEST-2644 | `scripts/test-agents-packaging.py::test_sdtest_2644_appimage_includes_matching_dynamic_nss_modules` | SDUC-557, SDUC-558 | Green | Packages the exact NSS distribution discovered through Chromium's linked libnss3, including its dynamically loaded softokn/freebl/root/database modules. A missing source module or a bundler silently omitting modules refuses before compression. Offline fixture paths contain spaces. The Linux release job additionally enables the real packaged CEF fixture before compression. |

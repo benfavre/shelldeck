@@ -18,6 +18,7 @@
 //! | URL | Variant |
 //! |-----|---------|
 //! | `shelldeck://assistant`              | [`DeepLink::Assistant`] |
+//! | `shelldeck://agents`                 | [`DeepLink::Agents`] |
 //! | `shelldeck://open/connection/<uuid>` | [`DeepLink::OpenConnection`] |
 //! | `shelldeck://ssh/connect/<uuid>`     | [`DeepLink::SshConnect`] |
 //! | `shelldeck://tunnel/start/<uuid>`    | [`DeepLink::TunnelStart`] |
@@ -44,6 +45,9 @@ pub const SCHEME: &str = "shelldeck";
 pub enum DeepLink {
     /// Show and focus the standalone AI Dock without opening the main window.
     Assistant,
+    /// Show the retained Agents workspace presentation after authentication
+    /// and Dev capability checks. This intent grants no execution authority.
+    Agents,
     /// Focus the connections view and highlight this connection (no SSH).
     OpenConnection(Uuid),
     /// Open the app and start an SSH session for this connection.
@@ -91,6 +95,7 @@ impl DeepLink {
         let verbs: Vec<&str> = verbs.iter().map(|s| s.as_str()).collect();
         match verbs.as_slice() {
             ["assistant"] => Some(DeepLink::Assistant),
+            ["agents"] => Some(DeepLink::Agents),
             ["open", "connection", _] => Uuid::parse_str(segments[2])
                 .ok()
                 .map(DeepLink::OpenConnection),
@@ -120,7 +125,7 @@ impl DeepLink {
 /// the returned remainder keeps its original casing (UUIDs/IDs are
 /// case-sensitive on the ID side).
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+    if s.get(..prefix.len())?.eq_ignore_ascii_case(prefix) {
         Some(&s[prefix.len()..])
     } else {
         None
@@ -155,6 +160,10 @@ mod tests {
         assert_eq!(
             DeepLink::parse("shelldeck://assistant"),
             Some(DeepLink::Assistant)
+        );
+        assert_eq!(
+            DeepLink::parse("shelldeck://agents"),
+            Some(DeepLink::Agents)
         );
         assert_eq!(
             DeepLink::parse(&format!("shelldeck://open/connection/{UUID}")),
@@ -223,5 +232,29 @@ mod tests {
         assert!(DeepLink::looks_like("  ShellDeck://ticket/y  "));
         assert!(!DeepLink::looks_like("/usr/bin/shelldeck"));
         assert!(!DeepLink::looks_like("--minimized"));
+    }
+
+    // SDTEST-2634 — SDUC-558
+    #[test]
+    fn sdtest_2634_agents_intent_accepts_only_its_route_without_panicking_on_unicode() {
+        for url in [
+            "shelldeck://agents",
+            "ShellDeck://AGENTS/",
+            "shelldeck://agents?source=launcher#conversation",
+        ] {
+            assert_eq!(DeepLink::parse(url), Some(DeepLink::Agents), "{url}");
+        }
+        for url in [
+            "shelldeck://agent",
+            "shelldeck://agents/session/foreign",
+            "shelldeck://agents/extra",
+            "shelldeck://%61gents",
+            "https://agents",
+            "shelldeck:agents",
+            "xéééééé",
+        ] {
+            assert_eq!(DeepLink::parse(url), None, "{url}");
+        }
+        assert!(!DeepLink::looks_like("xéééééé"));
     }
 }

@@ -138,6 +138,8 @@ mod overlays;
 mod palette;
 mod panels;
 mod polling;
+mod presentation;
+pub use presentation::WorkspacePresentation;
 mod render;
 mod request_views;
 mod requests;
@@ -476,6 +478,9 @@ pub struct Workspace {
     template_browser: Option<Entity<TemplateBrowser>>,
     variable_prompt: Option<Entity<VariablePrompt>>,
     active_view: ActiveView,
+    presentation: WorkspacePresentation,
+    agents_focus_pending: bool,
+    native_title: Option<(gpui::WindowId, bool)>,
     /// Settings is a global personal surface, available from every app mode.
     /// Keeping this separate from `active_view` preserves the hidden Dev view
     /// (including live terminal tabs) while Settings is open.
@@ -1446,6 +1451,9 @@ impl Workspace {
             template_browser: None,
             variable_prompt: None,
             active_view: ActiveView::Dashboard,
+            presentation: WorkspacePresentation::Main,
+            agents_focus_pending: false,
+            native_title: None,
             settings_open: false,
             menu_bar,
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),

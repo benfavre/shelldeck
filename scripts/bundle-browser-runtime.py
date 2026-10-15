@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import re
+import stat
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -123,6 +124,28 @@ def stage(build: Path, cef: Path, destination: Path, system: str, version: str) 
     raise ValueError(f"Unsupported browser platform: {system}")
 
 
+def normalize_runtime_permissions(directory: Path) -> None:
+    """Publish application resources, not the private staging directory's mode.
+
+    macOS framework links must remain links and must never chmod their targets
+    outside this generated payload. Profiles are created by the runtime later;
+    this function is called only on the fresh temporary distribution tree.
+    """
+    for current, directories, files in os.walk(directory, followlinks=False):
+        current = Path(current)
+        current.chmod(0o755)
+        for name in files:
+            path = current / name
+            if path.is_symlink():
+                continue
+            mode = stat.S_IMODE(path.stat().st_mode)
+            path.chmod(0o755 if mode & 0o111 else 0o644)
+        for name in directories:
+            path = current / name
+            if not path.is_symlink():
+                path.chmod(0o755)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="release")
@@ -149,6 +172,7 @@ def main() -> None:
     try:
         executable = stage(build, cef, temporary, system, version)
         (temporary / "runtime.json").write_text(json.dumps({"shelldeck_version": version, "cef_bindings": "154.5.0+154.0.34", "platform": system, "executable": str(executable.relative_to(temporary)).replace("\\", "/")}, indent=2) + "\n")
+        normalize_runtime_permissions(temporary)
         # Only replace generated build output. A published/runtime install is the
         # updater's responsibility; never put production profiles in this folder.
         if output.exists():

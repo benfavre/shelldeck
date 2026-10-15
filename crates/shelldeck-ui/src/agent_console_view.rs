@@ -296,6 +296,7 @@ pub struct AgentConsoleView {
     context_expanded: bool,
     inspector_tab: AgentInspectorTab,
     focused_trace: Option<Uuid>,
+    surface_focus_requested: bool,
     inspector_local_browser: FileBrowserPanel,
     inspector_remote_request: Uuid,
     inspector_remote_root: Option<String>,
@@ -411,6 +412,7 @@ impl AgentConsoleView {
             context_expanded: false,
             inspector_tab: AgentInspectorTab::Files,
             focused_trace: None,
+            surface_focus_requested: false,
             inspector_local_browser,
             inspector_remote_request: Uuid::new_v4(),
             inspector_remote_root: None,
@@ -435,6 +437,13 @@ impl AgentConsoleView {
         };
         view.restore_library(cx);
         view
+    }
+
+    /// Activate the retained middle pane when the production window is shown.
+    /// Focus is applied during rendering, once that pane belongs to a window.
+    pub fn request_surface_focus(&mut self, cx: &mut Context<Self>) {
+        self.surface_focus_requested = true;
+        cx.notify();
     }
 
     fn build_provider_select(
@@ -1540,6 +1549,23 @@ impl AgentConsoleView {
 
 impl Render for AgentConsoleView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.surface_focus_requested
+            && self.pending_confirm.is_none()
+            && self.workflows.dialog.is_none()
+            && self.delivery.dialog.is_none()
+            && self.review.dialog.is_none()
+        {
+            self.surface_focus_requested = false;
+            if !self.focus_visible_browser(cx) && !self.focus_visible_editor(window, cx) {
+                if let Some(ui) = self
+                    .sessions
+                    .selected_id()
+                    .and_then(|id| self.session_ui.get(&id))
+                {
+                    ui.prompt.read(cx).focus_handle(cx).focus(window);
+                }
+            }
+        }
         let width = if self.tools.measured_width > 0.0 {
             self.tools.measured_width
         } else {

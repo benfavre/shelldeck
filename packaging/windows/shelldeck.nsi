@@ -74,6 +74,8 @@ Section "Install"
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"
     CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" \
         "" "$INSTDIR\shelldeck.ico"
+    CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME} Agents.lnk" "$INSTDIR\${APP_EXE}" \
+        "--agents" "$INSTDIR\shelldeck.ico"
     CreateShortcut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
     ; Desktop shortcut
@@ -129,6 +131,7 @@ Section "Uninstall"
 
     ; Remove shortcuts
     Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
+    Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME} Agents.lnk"
     Delete "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk"
     RMDir "$SMPROGRAMS\${APP_NAME}"
     Delete "$DESKTOP\${APP_NAME}.lnk"

@@ -50,6 +50,21 @@ pub(super) struct AgentEditorsUi {
 }
 
 impl AgentConsoleView {
+    pub(super) fn focus_visible_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self
+            .editor_index(cx)
+            .filter(|index| self.editors.instances[*index].visible)
+        else {
+            return false;
+        };
+        self.editors.instances[index]
+            .editor
+            .read(cx)
+            .focus_handle
+            .focus(window);
+        true
+    }
+
     fn editor_index(&self, cx: &App) -> Option<usize> {
         let id = self.sessions.selected_id()?;
         let context = self.displayed_context(cx);

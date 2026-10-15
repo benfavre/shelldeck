@@ -464,6 +464,7 @@ sidebar.unpin_connection = "Désépingler la connexion"
 toast.connection.pinned = "%{name} épinglée"
 toast.connection.unpinned = "%{name} désépinglée"
 toast.connection.pin_failed = "Impossible d’enregistrer les favoris : %{error}"
+toast.window.close_active_work = "Activités en cours : %{terminals} terminal(aux), %{tunnels} tunnel(s), %{scripts} script(s), %{agents} agent(s). Fermez à nouveau pour confirmer la sortie."
 
 # Dashboard
 dashboard.welcome = "Bienvenue sur ShellDeck"
@@ -2617,3 +2618,6 @@ native_browser.stay_on_page = "Rester sur la page"
 "agents.live_browser.local_tools" = "Les outils de navigation sont disponibles pour les exécutions locales Codex, Claude Code et Automonique."
 
 "agents.live_browser.close" = "Fermer le navigateur"
+
+"agents.presentation.full_app" = "Ouvrir ShellDeck complet"
+"agents.presentation.unavailable" = "Les agents nécessitent un compte ShellDeck Dev. Votre espace disponible est ouvert."

@@ -204,8 +204,7 @@ impl Workspace {
     pub(super) fn open_agent_workspace_launcher(&mut self, cx: &mut Context<Self>) {
         self.workspace_hub
             .update(cx, |hub, cx| hub.show_launcher(cx));
-        self.set_active_view(ActiveView::Workspaces);
-        self.on_active_view_changed(cx);
+        self.set_active_view(ActiveView::Workspaces, cx);
     }
 
     pub(super) fn open_remote_agent_file(

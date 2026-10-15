@@ -251,14 +251,21 @@ if [ "$OS" = "Linux" ]; then
 [Desktop Entry]
 Name=ShellDeck
 Comment=GPU-accelerated terminal and SSH companion
-Exec=$INSTALL_DIR/shelldeck %u
+Exec="$INSTALL_DIR/shelldeck" %u
 Icon=shelldeck
 Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
-Keywords=terminal;ssh;shell;
+Keywords=terminal;ssh;shell;agents;ai;
 StartupWMClass=shelldeck
 MimeType=x-scheme-handler/shelldeck;
+Actions=Agents;
+
+[Desktop Action Agents]
+Name=Open Agents
+Name[fr]=Ouvrir Agents
+Exec="$INSTALL_DIR/shelldeck" --agents
+Icon=shelldeck
 DESKTOP
   if command -v xdg-mime &>/dev/null; then
     xdg-mime default shelldeck.desktop x-scheme-handler/shelldeck 2>/dev/null || true
@@ -410,6 +417,27 @@ $CurrentPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($CurrentPath -notlike "*$InstallDir*") {
     [Environment]::SetEnvironmentVariable("Path", "$InstallDir;$CurrentPath", "User")
     Write-Host "==> Added $InstallDir to user PATH" -ForegroundColor Blue
+}
+
+# Per-user Start Menu entries use the same production executable. Arguments
+# remain separate from TargetPath so spaces in the install location are safe.
+try {
+    $Programs = [Environment]::GetFolderPath("Programs")
+    if ([string]::IsNullOrWhiteSpace($Programs)) { throw "Start Menu folder is unavailable" }
+    $ShortcutDir = Join-Path $Programs "ShellDeck"
+    New-Item -ItemType Directory -Force -Path $ShortcutDir | Out-Null
+    $ShortcutShell = New-Object -ComObject WScript.Shell
+    foreach ($Launch in @(@{Name="ShellDeck"; Arguments=""}, @{Name="ShellDeck Agents"; Arguments="--agents"})) {
+        $Shortcut = $ShortcutShell.CreateShortcut((Join-Path $ShortcutDir ($Launch.Name + ".lnk")))
+        $Shortcut.TargetPath = $InstalledExe
+        $Shortcut.Arguments = $Launch.Arguments
+        $Shortcut.WorkingDirectory = $InstallDir
+        $Shortcut.IconLocation = "$InstalledExe,0"
+        $Shortcut.Save()
+    }
+    Write-Host "==> Created ShellDeck and Agents Start Menu entries" -ForegroundColor Blue
+} catch {
+    Write-Host "warn: could not create Start Menu entries: $_" -ForegroundColor Yellow
 }
 
 # Register the shelldeck:// URL protocol so deep links open the app (per-user).

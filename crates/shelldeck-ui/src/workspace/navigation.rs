@@ -193,9 +193,11 @@ impl Workspace {
         self.ai_action_confirmation = None;
     }
 
-    pub fn set_active_view(&mut self, view: ActiveView) {
+    pub fn set_active_view(&mut self, view: ActiveView, cx: &mut Context<Self>) {
         self.close_titlebar_menus();
         self.active_view = view;
+        self.on_active_view_changed(cx);
+        cx.notify();
     }
 
     /// Open the Monique console (palette / action). Switches to Dev mode for
@@ -225,6 +227,13 @@ impl Workspace {
     /// UUID, no permission) toasts instead of failing.
     pub fn open_deep_link(&mut self, link: DeepLink, cx: &mut Context<Self>) {
         tracing::info!("deep link: {link:?}");
+        if matches!(link, DeepLink::Agents) {
+            self.request_agents_presentation(cx);
+            return;
+        }
+        if !matches!(link, DeepLink::Assistant) {
+            self.show_main_presentation(cx);
+        }
         if !matches!(link, DeepLink::Assistant) && !self.signed_in() {
             self.show_login_form(cx);
             return;
@@ -233,7 +242,7 @@ impl Workspace {
             // The application-level CompanionRuntime owns this target. It
             // authenticates before forwarding, so keep this arm inert if
             // another caller accidentally routes it into Workspace.
-            DeepLink::Assistant => {}
+            DeepLink::Assistant | DeepLink::Agents => {}
             DeepLink::OpenConnection(id) => {
                 if !self.enter_dev_mode(cx) {
                     return;
@@ -271,7 +280,7 @@ impl Workspace {
                         .with_action(ActivityAction::ConnectConnection),
                         cx,
                     );
-                    self.active_view = ActiveView::Terminal;
+                    self.set_active_view(ActiveView::Terminal, cx);
                     cx.notify();
                 } else {
                     self.show_toast(
@@ -469,12 +478,24 @@ impl Workspace {
     /// console just became visible.
     pub(super) fn on_active_view_changed(&mut self, cx: &mut Context<Self>) {
         self.close_titlebar_menus();
+        // Native navigation from the dedicated Agents surface must reveal its
+        // destination in the full Dev shell, including when the saved mode was
+        // User or Support before the transient Agents launch.
+        if self.agents_presentation_active() && self.active_view != ActiveView::Agents {
+            self.presentation = WorkspacePresentation::Main;
+            self.agents_focus_pending = false;
+            self.set_mode(AppMode::Dev, cx);
+        }
         let workspace_agent = (self.active_view == ActiveView::Workspaces)
             .then(|| self.workspace_hub.read(cx).active_agent_session_id())
             .flatten();
-        let agent_visible = !self.settings_open
-            && (self.active_view == ActiveView::Agents || workspace_agent.is_some());
         let workflows_authorized = self.can_access_mode(AppMode::Dev);
+        let agent_visible = super::presentation::agent_surface_visible(
+            workflows_authorized,
+            self.effective_mode(),
+            self.settings_open,
+            self.active_view == ActiveView::Agents || workspace_agent.is_some(),
+        );
         self.agent_console.update(cx, |view, cx| {
             view.set_workflows_authorized(workflows_authorized, cx);
             if let Some(session_id) = workspace_agent {
@@ -617,7 +638,7 @@ impl Workspace {
         self.terminal.update(cx, |terminal, cx| {
             terminal.spawn_local_terminal(cx);
         });
-        self.active_view = ActiveView::Terminal;
+        self.set_active_view(ActiveView::Terminal, cx);
         self.add_activity_entry(
             ActivityEntry::new(
                 ActivityKind::Terminal,

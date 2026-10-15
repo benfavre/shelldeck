@@ -6,6 +6,13 @@ Icon=shelldeck
 Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
-Keywords=terminal;ssh;shell;
+Keywords=terminal;ssh;shell;agents;ai;
 StartupWMClass=shelldeck
 MimeType=x-scheme-handler/shelldeck;
+Actions=Agents;
+
+[Desktop Action Agents]
+Name=Open Agents
+Name[fr]=Ouvrir Agents
+Exec=shelldeck --agents
+Icon=shelldeck

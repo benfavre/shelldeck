@@ -107,6 +107,16 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.window_active = _window.is_window_active();
+        let agents_presentation = self.agents_presentation_active();
+        let native_title = (_window.window_handle().window_id(), agents_presentation);
+        if self.native_title != Some(native_title) {
+            _window.set_window_title(if agents_presentation {
+                "ShellDeck Agents"
+            } else {
+                "ShellDeck"
+            });
+            self.native_title = Some(native_title);
+        }
         // Window chrome geometry is in real device-independent pixels.
         _window.set_client_inset(gpui::px(5.0));
 
@@ -128,7 +138,7 @@ impl Render for Workspace {
         self.rebuild_menu_bar(_cx);
         // Same reasoning: the contextual panel reads several live entities
         // with no shared change signal.
-        if self.effective_mode() == AppMode::Dev {
+        if self.effective_mode() == AppMode::Dev && !agents_presentation {
             self.refresh_sidebar_panels(_cx);
         }
 
@@ -180,11 +190,9 @@ impl Render for Workspace {
                     main_area = main_area.child(self.render_user_home(is_maximized, _window, _cx));
                 }
                 AppMode::Dev => {
-                    // Always rendered: the activity rail stays on screen even
-                    // when the panel is collapsed (VS Code layout). The
-                    // sidebar itself decides what to draw from its own
-                    // collapsed / nav-collapsed state.
-                    main_area = main_area.child(self.sidebar.clone());
+                    if !agents_presentation {
+                        main_area = main_area.child(self.sidebar.clone());
+                    }
 
                     let mut content = div().flex_grow().w_full().min_h(px(0.0)).overflow_hidden();
                     if !output_resizing && !sidebar_resizing {
@@ -318,7 +326,7 @@ impl Render for Workspace {
                         if !ws.enter_dev_mode(cx) {
                             return;
                         }
-                        ws.set_active_view(ActiveView::Scripts);
+                        ws.set_active_view(ActiveView::Scripts, cx);
                         ws.show_template_browser(cx);
                         cx.notify();
                     });
@@ -330,7 +338,7 @@ impl Render for Workspace {
                         if !ws.enter_dev_mode(cx) {
                             return;
                         }
-                        ws.set_active_view(ActiveView::Scripts);
+                        ws.set_active_view(ActiveView::Scripts, cx);
                         ws.show_script_form(cx);
                         cx.notify();
                     });
@@ -569,6 +577,7 @@ impl Render for Workspace {
         let titlebar = Self::render_titlebar(
             is_maximized,
             compact_titlebar,
+            agents_presentation,
             self.account_menu_open,
             self.mode_menu_open,
             self.app_config.account.clone(),
@@ -599,7 +608,7 @@ impl Render for Workspace {
         // in every mode, including the pre-login welcome screen (where
         // `menu_bar_spec` reduces it to sign-in / quit / zoom / about).
         root = root.child(titlebar);
-        if self.app_config.general.menu_bar_visible {
+        if self.app_config.general.menu_bar_visible && !agents_presentation {
             root = root.child(self.menu_bar.clone());
         }
         let show_status_bar =

@@ -30,6 +30,7 @@ impl Workspace {
     pub(super) fn render_titlebar(
         is_maximized: bool,
         compact: bool,
+        agents_presentation: bool,
         account_menu_open: bool,
         mode_menu_open: bool,
         account: Option<AccountInfo>,
@@ -71,6 +72,14 @@ impl Workspace {
             title_area = title_area
                 .child(crate::brand::brand_badge(20.0))
                 .child(crate::brand::brand_wordmark(12.0));
+            if agents_presentation {
+                title_area = title_area.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(title_dim)
+                        .child(t!("agents.title").to_string()),
+                );
+            }
         }
 
         let control_btn = crate::window_chrome::control_button;
@@ -313,7 +322,7 @@ impl Workspace {
         // The menu row contains its own visibility toggle, so hiding it would
         // otherwise remove the only discoverable way to restore it. This
         // compact titlebar affordance exists only while the row is hidden.
-        let restore_menu_button = (!menu_bar_visible).then(|| {
+        let restore_menu_button = (!menu_bar_visible && !agents_presentation).then(|| {
             let tooltip: SharedString =
                 format!("{} · Ctrl+Shift+M", t!("menu.view.menu_bar")).into();
             let workspace = handle.clone();
@@ -338,6 +347,22 @@ impl Workspace {
                     }
                 })
                 .child(lucide_icon("list-checks", 14.0, btn_text))
+        });
+
+        let full_app_button = agents_presentation.then(|| {
+            let workspace = handle.clone();
+            Button::new(
+                "agents-open-full-app",
+                t!("agents.presentation.full_app").to_string(),
+            )
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .icon(IconSource::from("chevron-left"))
+            .on_click(move |_, _, cx| {
+                if let Some(workspace) = workspace.upgrade() {
+                    workspace.update(cx, |this, cx| this.show_main_presentation(cx));
+                }
+            })
         });
 
         let ai_button = ai_configured.then(|| {
@@ -478,6 +503,7 @@ impl Workspace {
                     .h_full()
                     .gap(px(4.0))
                     .pr(px(8.0))
+                    .children(full_app_button)
                     .children(restore_menu_button)
                     .children(ai_button)
                     .children(ai_dock_button)
@@ -1260,7 +1286,7 @@ impl Workspace {
                         let conn = conn.clone();
                         this.connect_ssh(conn, cx);
                     }
-                    this.active_view = ActiveView::Terminal;
+                    this.set_active_view(ActiveView::Terminal, cx);
                     cx.notify();
                 }),
             ))

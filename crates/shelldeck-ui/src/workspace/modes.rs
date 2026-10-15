@@ -67,7 +67,9 @@ impl Workspace {
             return false;
         }
         let was_settings_open = self.settings_open;
-        self.set_mode(AppMode::Dev, cx);
+        if !self.agents_presentation_active() {
+            self.set_mode(AppMode::Dev, cx);
+        }
         self.settings_open = false;
         if was_settings_open {
             self.activate_current_mode(cx);
@@ -84,21 +86,30 @@ impl Workspace {
     /// Delegates to `AppMode::resolve_effective`; that pure fn is under
     /// test in `SDTEST-1052`.
     pub fn effective_mode(&self) -> AppMode {
-        AppMode::resolve_effective(
+        let resolved = AppMode::resolve_effective(
             self.signed_in(),
             self.is_inklura_support(),
             self.is_superadmin(),
             self.app_config.cloud_sync.mode,
-        )
+        );
+        self.presentation
+            .effective_mode(self.can_access_mode(AppMode::Dev), resolved)
     }
 
     /// Switch to an allowed app mode. Dev surfaces are hidden, not destroyed —
     /// running terminal sessions keep going.
     pub fn set_mode(&mut self, mode: AppMode, cx: &mut Context<Self>) {
-        if !self.can_access_mode(mode)
-            || self.app_config.cloud_sync.mode == mode
-            || self.mode_transition.is_some()
-        {
+        if !self.can_access_mode(mode) || self.mode_transition.is_some() {
+            return;
+        }
+        let restored_main = self.presentation != WorkspacePresentation::Main;
+        self.presentation = WorkspacePresentation::Main;
+        self.agents_focus_pending = false;
+        if self.app_config.cloud_sync.mode == mode {
+            if restored_main {
+                self.activate_current_mode(cx);
+                cx.notify();
+            }
             return;
         }
 
@@ -272,6 +283,7 @@ impl Workspace {
     /// Start/stop the support poll and load support data for the current mode.
     /// Call after login / startup / a mode change.
     pub fn activate_current_mode(&mut self, cx: &mut Context<Self>) {
+        self.reconcile_presentation(cx);
         let dev_tabs_enabled = self.can_access_mode(AppMode::Dev);
         self.settings.update(cx, |settings, cx| {
             settings.set_dev_tabs_enabled(dev_tabs_enabled, cx);
@@ -290,6 +302,6 @@ impl Workspace {
         // terminal », « Basculer barre latérale », « Fermer l'onglet » et
         // « Onglet suivant » dans une surface qui n'a ni terminal, ni barre
         // latérale, ni onglets.
-        self.refresh_command_palette(cx);
+        self.on_active_view_changed(cx);
     }
 }

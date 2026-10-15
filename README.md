@@ -70,6 +70,20 @@ powershell -c "irm https://shelldeck.bext.dev/install.ps1 | iex"
 
 ShellDeck auto-updates itself once installed. To build from source instead, see below.
 
+### Open Agents directly
+
+```bash
+shelldeck --agents
+```
+
+This opens the Agents interface in the production application, using the same
+account and conversation library. Existing login and Dev access checks remain
+in force. Linux desktop launchers offer **Open Agents**, and Windows installers
+add **ShellDeck Agents** to the Start Menu. On macOS use
+`open -na ShellDeck --args --agents`. Launch ShellDeck normally to return to the
+full interface. See [launching Agents](docs/agents-launch.md) for single-instance
+behavior, AppImage usage and development commands.
+
 ## Requirements
 
 - **Rust nightly**, pinned in `rust-toolchain.toml` (do not change to floating `nightly` — it breaks the macOS build; see `CLAUDE.md`)
@@ -102,6 +116,9 @@ cargo build
 
 # Run
 cargo run
+
+# Open the production Agents interface directly
+cargo run -p shelldeck -- --agents
 
 # Run in release mode
 cargo run --release

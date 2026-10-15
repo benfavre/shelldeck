@@ -96,6 +96,61 @@ class BrowserPackaging(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
         self.assertEqual(list((self.root / "dist").glob("shelldeck-*")), [])
 
+    # SDTEST-2642 — SDUC-557, SDUC-558: public generated runtime modes are
+    # independent from private staging/source modes, without dereferencing macOS
+    # framework symlinks or changing source files. Unix modes do not map to NTFS.
+    @unittest.skipIf(os.name == "nt", "Unix public resource modes; Windows uses inherited install ACLs")
+    def test_sdtest_2642_public_runtime_modes_preserve_executables_and_framework_links(self):
+        import sys
+        cef = self.root / "fake cef source"
+        cef.mkdir()
+        (cef / "libcef.so").write_bytes(b"fake ELF resource")
+        (cef / "libcef.so").chmod(0o600)
+        (cef / "locales").mkdir(mode=0o700)
+        (cef / "locales/en-US.pak").write_bytes(b"private source data")
+        (cef / "locales/en-US.pak").chmod(0o600)
+        framework = cef / "Chromium Embedded Framework.framework"
+        resources = framework / "Versions/A/Resources"
+        resources.mkdir(parents=True, mode=0o700)
+        (resources / "resources.pak").write_bytes(b"framework data")
+        (resources / "resources.pak").chmod(0o600)
+        library = framework / "Versions/A/Chromium Embedded Framework"
+        library.write_bytes(b"fake Mach-O library")
+        library.chmod(0o750)
+        (framework / "Versions/Current").symlink_to("A", target_is_directory=True)
+        (framework / "Resources").symlink_to("Versions/Current/Resources", target_is_directory=True)
+        (framework / "Chromium Embedded Framework").symlink_to("Versions/Current/Chromium Embedded Framework")
+        for target, system in [("x86_64-unknown-linux-gnu", "linux"), ("aarch64-apple-darwin", "macos")]:
+            with self.subTest(platform=system):
+                build = self.root / "fixture target" / target / "release"
+                build.mkdir(parents=True)
+                helper = build / "shelldeck-browser"
+                helper.write_bytes(b"built helper fixture")
+                helper.chmod(0o750)
+                output = self.root / (system + " public payload")
+                result = subprocess.run([sys.executable, str(REPOSITORY / "scripts/bundle-browser-runtime.py"),
+                                         "--target", target, "--target-dir", str(self.root / "fixture target"),
+                                         "--profile", "release", "--cef-dir", str(cef), "--output", str(output)],
+                                        text=True, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(output.stat().st_mode & 0o777, 0o755)
+                self.assertEqual((output / "runtime.json").stat().st_mode & 0o777, 0o644)
+                if system == "linux":
+                    self.assertEqual((output / "shelldeck-browser").stat().st_mode & 0o777, 0o755)
+                    self.assertEqual((output / "locales").stat().st_mode & 0o777, 0o755)
+                    self.assertEqual((output / "locales/en-US.pak").stat().st_mode & 0o777, 0o644)
+                else:
+                    contents = output / "ShellDeck Browser.app/Contents"
+                    staged = contents / "Frameworks/Chromium Embedded Framework.framework"
+                    self.assertEqual((contents / "MacOS/shelldeck-browser").stat().st_mode & 0o777, 0o755)
+                    self.assertEqual((staged / "Versions/A/Resources").stat().st_mode & 0o777, 0o755)
+                    self.assertEqual((staged / "Versions/A/Resources/resources.pak").stat().st_mode & 0o777, 0o644)
+                    self.assertTrue((staged / "Versions/Current").is_symlink())
+                    self.assertEqual(os.readlink(staged / "Resources"), "Versions/Current/Resources")
+                self.assertEqual(helper.stat().st_mode & 0o777, 0o750)
+        self.assertEqual((cef / "locales/en-US.pak").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(library.stat().st_mode & 0o777, 0o750)
+
 
 if __name__ == "__main__":
     unittest.main()

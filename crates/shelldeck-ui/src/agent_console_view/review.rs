@@ -13,7 +13,7 @@ use shelldeck_core::agent_review::{
 pub(super) struct AgentReviewUi {
     sessions: HashMap<Uuid, SessionReviewUi>,
     pending: Option<PendingReviewPlan>,
-    dialog: Option<Entity<ReviewDialog>>,
+    pub(super) dialog: Option<Entity<ReviewDialog>>,
     authority_error: Option<String>,
     wrap_lines: bool,
 }

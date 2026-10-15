@@ -45,6 +45,19 @@ impl AgentConsoleView {
             .is_some_and(|i| self.live_browsers.instances[i].visible)
     }
 
+    pub(super) fn focus_visible_browser(&self, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self
+            .live_browser_index(cx)
+            .filter(|index| self.live_browsers.instances[*index].visible)
+        else {
+            return false;
+        };
+        self.live_browsers.instances[index]
+            .view
+            .update(cx, |view, cx| view.request_focus(cx));
+        true
+    }
+
     pub(super) fn hide_live_browser(&mut self, cx: &App) {
         if let Some(i) = self.live_browser_index(cx) {
             self.live_browsers.instances[i].visible = false;

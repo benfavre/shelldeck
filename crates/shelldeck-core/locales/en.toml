@@ -464,6 +464,7 @@ sidebar.unpin_connection = "Unpin connection"
 toast.connection.pinned = "Pinned %{name}"
 toast.connection.unpinned = "Unpinned %{name}"
 toast.connection.pin_failed = "Could not save favorites: %{error}"
+toast.window.close_active_work = "Running work: %{terminals} terminal(s), %{tunnels} tunnel(s), %{scripts} script(s), %{agents} agent(s). Close again to confirm exit."
 
 # Dashboard
 dashboard.welcome = "Welcome to ShellDeck"
@@ -2617,3 +2618,6 @@ native_browser.stay_on_page = "Stay on page"
 "agents.live_browser.local_tools" = "Browser tools are available to local Codex, Claude Code, and Automonique runs."
 
 "agents.live_browser.close" = "Close browser"
+
+"agents.presentation.full_app" = "Open full ShellDeck"
+"agents.presentation.unavailable" = "Agents requires a ShellDeck Dev account. Your available workspace is open."

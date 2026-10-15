@@ -189,6 +189,7 @@ impl Workspace {
             }
             _ => {}
         }
+        self.on_active_view_changed(cx);
         cx.notify();
     }
 }

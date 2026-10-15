@@ -46,7 +46,7 @@ impl Workspace {
                         cx,
                     );
                 }
-                self.active_view = ActiveView::Terminal;
+                self.set_active_view(ActiveView::Terminal, cx);
                 cx.notify();
             }
             SidebarEvent::ConnectionConnect(id) => {
@@ -65,7 +65,7 @@ impl Workspace {
                         cx,
                     );
                 }
-                self.active_view = ActiveView::Terminal;
+                self.set_active_view(ActiveView::Terminal, cx);
                 cx.notify();
             }
             SidebarEvent::AddConnection => {
@@ -181,7 +181,7 @@ impl Workspace {
         match event {
             TerminalEvent::NewTabRequested => {
                 tracing::info!("New terminal tab created");
-                self.active_view = ActiveView::Terminal;
+                self.set_active_view(ActiveView::Terminal, cx);
                 self.add_activity_entry(
                     ActivityEntry::new(
                         ActivityKind::Terminal,
@@ -222,7 +222,7 @@ impl Workspace {
                 {
                     tracing::info!("Duplicating connection tab: {}", conn.display_name());
                     self.connect_ssh(conn, cx);
-                    self.active_view = ActiveView::Terminal;
+                    self.set_active_view(ActiveView::Terminal, cx);
                     self.sync_terminal_tab_count(cx);
                     cx.notify();
                 } else {

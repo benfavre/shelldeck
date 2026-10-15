@@ -55,7 +55,7 @@ pub(super) struct AgentWorkflowsUi {
     writable: bool,
     error: Option<String>,
     feedback: Entity<WorkflowFeedback>,
-    dialog: Option<Entity<WorkflowDialog>>,
+    pub(super) dialog: Option<Entity<WorkflowDialog>>,
     form: Option<WorkflowForm>,
     pending: HashMap<Uuid, PendingWorkflow>,
     runs: HashMap<Uuid, WorkflowRun>,

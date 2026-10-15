@@ -3223,6 +3223,13 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-15** — Added SDUC-558 for production `--agents` launch, single-instance
+  presentation handoff and installed launchers; SDTEST-2630..2632 cover offline
+  AppImage/installer contracts. Amended SDUC-557 for public runtime permissions
+  (SDTEST-2642) and dynamic NSS completeness (SDTEST-2644). Linux release packaging
+  runs the real CEF fixture before compression. Startup/routing/native checks are
+  recorded in their own per-crate inventories.
+
 - **2026-10-15**: Amended SDUC-551 and SDUC-475 for the retained middle-pane custom editor, scoped remote Files navigation, external document save acknowledgments, and explicit conflict handling. SDTEST-2495..2498, 2500..2503, 2510..2518 and 2520 cover editor buffers, explorer navigation, bounded SSH transport and local save conflicts.
 
 - **2026-10-14**: Amended SDUC-434: primary-display opening, sliding visibility,
@@ -4327,9 +4334,34 @@ stay outside saved ShellDeck sessions and global provider configuration. SSH and
 unsupported providers do not receive a local desktop capability.
 
 Release payloads include the matching CEF engine on Linux, macOS and Windows.
+Published runtime directories and data remain readable by the installed desktop
+user, including macOS framework bundles. Linux AppImages explicitly include
+the matching NSS modules Chromium loads dynamically, and verify the packaged
+helper before release compression; the engine remains in one versioned path.
 Linux/Windows engine versions stay at stable paths during updates; publishing a
 new engine precedes replacing the main executable, and a failed replacement
 rolls the new engine back. macOS ships and updates a complete signed app bundle.
 Camera, microphone, screen sharing and browser permission grants are outside the
 initial browser contract. See `docs/native-browser.md` and the browser test
 inventory for native platform verification status.
+
+
+### SDUC-558 — Production Agents launch and single-instance presentation
+
+`shelldeck --agents` opens the Agents presentation through the normal production
+entry point. An existing ShellDeck process accepts the handoff through the typed
+`shelldeck://agents` route; normal application launch returns to the full
+presentation. Conversation/session state stays in the existing Workspace rather
+than a second process or example fixture. Welcome/login and current Dev
+capabilities remain authoritative before Agents is exposed or an agent runs.
+
+Linux desktop actions and Windows Start Menu shortcuts pass the flag to the same
+packaged executable, preserving the default ShellDeck launch and URL handler.
+Both generated install scripts retain the same behavior for their platforms;
+macOS uses its existing app bundle with `open -na ShellDeck --args --agents`.
+AppImage packaging includes the matching versioned browser payload and refuses
+incomplete resources, unresolved helper loaders, missing dynamic NSS modules or
+failed dependency deployment. Linux release builds run the native packaged CEF
+fixture before compression. This feature does not by
+itself publish a release, change account roles, grant browser authority or add a
+second application runtime. Usage: [agents-launch.md](../agents-launch.md).
