@@ -136,6 +136,7 @@ impl Workspace {
         // Persist open tabs before tearing sessions down so there is something
         // to restore next launch. Best-effort; never blocks shutdown.
         self.save_workspace_state(cx);
+        self.agent_console.update(cx,|view,cx| {if let Err(error)=view.flush_library(cx){tracing::warn!(%error,"Unable to save agent library on shutdown");}});
         self.stop_authenticated_runtime(cx);
         // Stop git polling
         self._git_poll_task = None;
@@ -467,7 +468,9 @@ impl Workspace {
             .flatten();
         let agent_visible = !self.settings_open
             && (self.active_view == ActiveView::Agents || workspace_agent.is_some());
+        let workflows_authorized=self.can_access_mode(AppMode::Dev);
         self.agent_console.update(cx, |view, cx| {
+            view.set_workflows_authorized(workflows_authorized,cx);
             if let Some(session_id) = workspace_agent {
                 view.select_session(session_id, cx);
             }

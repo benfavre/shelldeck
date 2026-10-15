@@ -39,9 +39,51 @@ use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
+#[path = "agent_console_view/composer.rs"]
+mod composer;
+#[path = "agent_console_view/inspector.rs"]
+mod inspector;
+#[path = "agent_console_view/library.rs"]
+mod library;
+#[path = "agent_console_view/live_input.rs"]
+mod live_input;
+#[path = "agent_console_view/model.rs"]
+mod model;
+#[path = "agent_console_view/navigator.rs"]
+mod navigator;
+#[path = "agent_console_view/progress.rs"]
+mod progress;
+use live_input::PendingLiveInput;
+#[path = "agent_console_view/review.rs"]
+mod review;
+#[path = "agent_console_view/tools.rs"]
+mod tools;
+use composer::AgentComposerUi;
+use library::AgentLibraryUi;
+use review::AgentReviewUi;
+use tools::AgentToolsUi;
+#[path = "agent_console_view/browser.rs"]
+mod browser;
+use browser::AgentBrowserUi;
+#[path = "agent_console_view/workflows.rs"]
+mod workflows;
+use workflows::AgentWorkflowsUi;
+#[path = "agent_console_view/delivery.rs"]
+mod delivery;
+use delivery::AgentDeliveryUi;
+
+actions!(
+    agent_cockpit,
+    [
+        AgentNewChat,
+        AgentFocusComposer,
+        AgentToggleFiles,
+        AgentToggleSessions,
+        AgentJumpLatest
+    ]
+);
+
 const MAX_ACTIVITY_BYTES: usize = 4 * 1024;
-const NAVIGATOR_WIDTH: f32 = 238.0;
-const INSPECTOR_WIDTH: f32 = 286.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum AgentInspectorTab {
@@ -72,6 +114,34 @@ pub enum AgentConsoleEvent {
     Run(AgentRunRequest),
     Stop(Uuid),
     CloseSession(Uuid),
+    OpenTerminal {
+        context: AgentExecutionContext,
+    },
+    OpenWorkspaceLauncher,
+    CheckReadiness {
+        check_id: Uuid,
+        context: AgentExecutionContext,
+    },
+    Steer {
+        run_id: Uuid,
+        text: String,
+    },
+    QuestionAnswer {
+        run_id: Uuid,
+        question_id: String,
+        answer: String,
+    },
+    ApprovalDecision {
+        run_id: Uuid,
+        request_id: String,
+        option_id: Option<String>,
+    },
+    OpenRemoteFile {
+        session_id: Uuid,
+        request_id: Uuid,
+        connection_id: Uuid,
+        path: String,
+    },
     OpenLocalFile {
         session_id: Uuid,
         path: PathBuf,
@@ -120,6 +190,7 @@ pub struct AgentWorktreeOption {
 }
 
 struct AgentSessionUi {
+    _draft_subscription: Subscription,
     prompt: Entity<InputState>,
     run_id: Option<Uuid>,
     received_delta: bool,
@@ -128,8 +199,18 @@ struct AgentSessionUi {
 
 impl AgentSessionUi {
     fn new(cx: &mut Context<AgentConsoleView>) -> Self {
+        let prompt = cx.new(|cx| InputState::new(cx).multi_line(true));
+        let subscription = cx.subscribe(&prompt, |this, _, event, cx| {
+            if matches!(
+                event,
+                adabraka_ui::components::input_state::InputEvent::Change
+            ) {
+                this.schedule_library_save(cx);
+            }
+        });
         Self {
-            prompt: cx.new(|cx| InputState::new(cx).multi_line(true)),
+            _draft_subscription: subscription,
+            prompt,
             run_id: None,
             received_delta: false,
             received_output: false,
@@ -141,12 +222,15 @@ struct PendingRun {
     session_id: Uuid,
     context: AgentExecutionContext,
     prompt: String,
+    options: shelldeck_core::agent_runtime::AgentInputOptions,
+    source_draft: Option<String>,
 }
 
 #[derive(Clone)]
 enum TimelineItem {
     Message(AgentMessage),
     Trace(AgentTraceEvent),
+    Boundary(shelldeck_core::agent_session::AgentHistoryBoundary),
 }
 
 impl TimelineItem {
@@ -154,6 +238,7 @@ impl TimelineItem {
         match self {
             Self::Message(message) => message.sequence,
             Self::Trace(trace) => trace.sequence,
+            Self::Boundary(boundary) => boundary.sequence,
         }
     }
 
@@ -161,6 +246,7 @@ impl TimelineItem {
         match self {
             Self::Message(message) => message.at_ms,
             Self::Trace(trace) => trace.at_ms,
+            Self::Boundary(boundary) => boundary.at_ms,
         }
     }
 }
@@ -176,10 +262,13 @@ pub struct AgentConsoleView {
     default_local_workdir: String,
     workdir_state: Entity<InputState>,
     model_state: Entity<InputState>,
+    model_discovery: model::AgentModelDiscoveryUi,
     navigator_search: Entity<InputState>,
     sessions: AgentSessionCollection,
     session_ui: HashMap<Uuid, AgentSessionUi>,
     run_sessions: HashMap<Uuid, Uuid>,
+    foreground_runs: HashSet<Uuid>,
+    pending_live_inputs: HashMap<Uuid, PendingLiveInput>,
     project_groups: Vec<AgentProjectGroup>,
     context_locks: HashSet<Uuid>,
     pending_confirm: Option<PendingRun>,
@@ -195,6 +284,13 @@ pub struct AgentConsoleView {
     inspector_remote_loading: bool,
     inspector_remote_error: Option<String>,
     scroll: ScrollHandle,
+    library: AgentLibraryUi,
+    composer_ui: AgentComposerUi,
+    review: AgentReviewUi,
+    tools: AgentToolsUi,
+    browser: AgentBrowserUi,
+    workflows: AgentWorkflowsUi,
+    delivery: AgentDeliveryUi,
 }
 
 fn input_state(cx: &mut Context<AgentConsoleView>, initial: String) -> Entity<InputState> {
@@ -207,6 +303,38 @@ fn input_state(cx: &mut Context<AgentConsoleView>, initial: String) -> Entity<In
 
 impl AgentConsoleView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let modifier = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+        cx.bind_keys([
+            KeyBinding::new(
+                &format!("{modifier}-shift-o"),
+                AgentNewChat,
+                Some("AgentConsole"),
+            ),
+            KeyBinding::new(
+                &format!("{modifier}-l"),
+                AgentFocusComposer,
+                Some("AgentConsole"),
+            ),
+            KeyBinding::new(
+                &format!("{modifier}-shift-e"),
+                AgentToggleFiles,
+                Some("AgentConsole"),
+            ),
+            KeyBinding::new(
+                &format!("{modifier}-shift-b"),
+                AgentToggleSessions,
+                Some("AgentConsole"),
+            ),
+            KeyBinding::new(
+                &format!("{modifier}-shift-j"),
+                AgentJumpLatest,
+                Some("AgentConsole"),
+            ),
+        ]);
         let parent = cx.entity();
         let provider_select =
             Self::build_provider_select(AgentProvider::Claude, false, parent.clone(), cx);
@@ -233,7 +361,7 @@ impl AgentConsoleView {
         session_ui.insert(session_id, AgentSessionUi::new(cx));
         let mut inspector_local_browser = FileBrowserPanel::new();
         inspector_local_browser.set_root(PathBuf::from(&default_workdir));
-        Self {
+        let mut view = Self {
             provider: AgentProvider::Claude,
             access: AgentAccessMode::ReadOnly,
             connections: Vec::new(),
@@ -244,10 +372,13 @@ impl AgentConsoleView {
             default_local_workdir: default_workdir.clone(),
             workdir_state: input_state(cx, default_workdir),
             model_state: input_state(cx, String::new()),
+            model_discovery: model::AgentModelDiscoveryUi::new(),
             navigator_search: input_state(cx, String::new()),
             sessions,
             session_ui,
             run_sessions: HashMap::new(),
+            foreground_runs: HashSet::new(),
+            pending_live_inputs: HashMap::new(),
             project_groups: Vec::new(),
             context_locks: HashSet::new(),
             pending_confirm: None,
@@ -263,7 +394,16 @@ impl AgentConsoleView {
             inspector_remote_loading: false,
             inspector_remote_error: None,
             scroll: ScrollHandle::new(),
-        }
+            library: AgentLibraryUi::new(cx),
+            composer_ui: AgentComposerUi::new(cx),
+            review: AgentReviewUi::new(),
+            tools: AgentToolsUi::new(cx),
+            browser: AgentBrowserUi::new(cx),
+            workflows: AgentWorkflowsUi::new(cx),
+            delivery: AgentDeliveryUi::new(cx),
+        };
+        view.restore_library(cx);
+        view
     }
 
     fn build_provider_select(
@@ -434,16 +574,8 @@ impl AgentConsoleView {
         result: Result<Vec<AgentRemoteFileEntry>, String>,
         cx: &mut Context<Self>,
     ) {
-        let selected_matches = self.sessions.selected().is_some_and(|session| {
-            session.id == session_id
-                && matches!(
-                    session.context.target,
-                    AgentTarget::Ssh {
-                        connection_id: selected,
-                        ..
-                    } if selected == connection_id
-                )
-        });
+        let selected_matches = self.sessions.selected_id() == Some(session_id)
+            && matches!(self.displayed_context(cx).target,AgentTarget::Ssh{connection_id:selected,..}if selected==connection_id);
         if !selected_matches
             || self.inspector_remote_connection != Some(connection_id)
             || self.inspector_remote_session != Some(session_id)
@@ -496,8 +628,50 @@ impl AgentConsoleView {
         self.sessions.selected_id()
     }
 
+    pub fn is_run_starting(&self, run_id: Uuid) -> bool {
+        self.run_sessions
+            .get(&run_id)
+            .and_then(|id| self.sessions.get(*id))
+            .is_some_and(|s| s.status == AgentSessionStatus::Starting)
+    }
+
     pub fn session_id_for_run(&self, run_id: Uuid) -> Option<Uuid> {
         self.run_sessions.get(&run_id).copied()
+    }
+
+    pub fn run_requests_focus(&self, run_id: Uuid) -> bool {
+        self.foreground_runs.contains(&run_id)
+            && self.run_sessions.get(&run_id).copied() == self.sessions.selected_id()
+    }
+
+    pub fn admit_starting_run_workdir(
+        &mut self,
+        request: &mut AgentRunRequest,
+        workdir: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let session_id = self
+            .run_sessions
+            .get(&request.id)
+            .copied()
+            .ok_or_else(|| t!("agents.error.runtime_lost").to_string())?;
+        if self.session_ui.get(&session_id).and_then(|ui| ui.run_id) != Some(request.id) {
+            return Err(t!("agents.error.runtime_lost").to_string());
+        }
+        let changed = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| t!("agents.error.runtime_lost").to_string())?
+            .admit_starting_workdir(request, workdir, now_ms())
+            .map_err(|error| error.to_string())?;
+        if changed {
+            if self.sessions.selected_id() == Some(session_id) {
+                self.apply_selected_context(cx);
+            }
+            self.schedule_library_save(cx);
+            cx.notify();
+        }
+        Ok(())
     }
 
     pub fn set_session_context_locked(
@@ -526,6 +700,7 @@ impl AgentConsoleView {
             return false;
         }
         self.apply_selected_context(cx);
+        self.schedule_library_save(cx);
         pin_to_latest(&self.scroll);
         cx.notify();
         true
@@ -543,6 +718,7 @@ impl AgentConsoleView {
             .map_err(|error| error.to_string())?;
         self.session_ui.insert(session_id, AgentSessionUi::new(cx));
         self.apply_selected_context(cx);
+        self.schedule_library_save(cx);
         pin_to_latest(&self.scroll);
         cx.notify();
         Ok(session_id)
@@ -560,8 +736,8 @@ impl AgentConsoleView {
             ui.run_id = Some(request.id);
             ui.received_delta = false;
             ui.received_output = false;
-            ui.prompt.update(cx, |state, cx| state.reset(cx));
         }
+        self.schedule_library_save(cx);
         cx.notify();
     }
 
@@ -583,6 +759,9 @@ impl AgentConsoleView {
     }
 
     pub fn reject_run_for(&mut self, run_id: Uuid, error: String, cx: &mut Context<Self>) {
+        self.pending_live_inputs.remove(&run_id);
+        self.foreground_runs.remove(&run_id);
+        self.workflow_finish_run(run_id, AgentSessionStatus::Failed, cx);
         let Some(session_id) = self.run_sessions.remove(&run_id) else {
             return;
         };
@@ -617,6 +796,8 @@ impl AgentConsoleView {
         let Some(session_id) = self.run_sessions.get(&run_id).copied() else {
             return;
         };
+        self.workflow_observe_event(run_id, &event, cx);
+        self.acknowledge_live_input(run_id, session_id, &event, cx);
         follow_latest_if_at_end(&self.scroll);
         let suppress_complete_jcode = matches!(event, AgentStreamEvent::Text(_))
             && self
@@ -649,6 +830,7 @@ impl AgentConsoleView {
         let _ = self
             .sessions
             .apply_stream_event(session_id, event, now_ms());
+        self.schedule_library_save(cx);
         cx.notify();
     }
 
@@ -659,6 +841,8 @@ impl AgentConsoleView {
         error: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.pending_live_inputs.remove(&run_id);
+        self.foreground_runs.remove(&run_id);
         let Some(session_id) = self.run_sessions.remove(&run_id) else {
             return;
         };
@@ -672,6 +856,7 @@ impl AgentConsoleView {
             );
         }
         let status = terminal_session_status(exit_code, error_present);
+        self.workflow_finish_run(run_id, status, cx);
         let activity = match (exit_code, error_present) {
             (Some(0), false) => t!("agents.status.completed").to_string(),
             (Some(code), _) => t!("agents.status.exit", code = code).to_string(),
@@ -688,6 +873,12 @@ impl AgentConsoleView {
             ui.run_id = None;
         }
         follow_latest_if_at_end(&self.scroll);
+        if self.sessions.selected_id() == Some(session_id) {
+            self.apply_selected_context(cx);
+        }
+        self.finish_review_run(session_id, cx);
+        self.schedule_library_save(cx);
+        self.drain_queued(session_id, cx);
         cx.notify();
     }
 
@@ -701,7 +892,7 @@ impl AgentConsoleView {
             AgentTarget::Local => None,
             AgentTarget::Ssh { connection_id, .. } => Some(*connection_id),
         };
-        let locked = self.context_locks.contains(&session.id);
+        let locked = self.context_locks.contains(&session.id) || session.status.is_active();
         self.provider_select = Self::build_provider_select(self.provider, locked, cx.entity(), cx);
         self.access_select = Self::build_access_select(self.access, locked, cx.entity(), cx);
         self.target_select = Self::build_target_select(
@@ -716,7 +907,7 @@ impl AgentConsoleView {
         match &session.context.target {
             AgentTarget::Local => {
                 let root = PathBuf::from(&session.context.workdir);
-                if root.is_dir() && self.inspector_local_browser.root() != root.as_path() {
+                if self.inspector_local_browser.root() != root.as_path() {
                     self.inspector_local_browser.set_root(root);
                 }
                 self.inspector_remote_connection = None;
@@ -816,11 +1007,51 @@ impl AgentConsoleView {
         Ok(PendingRun {
             session_id,
             context: self.context_from_controls(cx)?,
-            prompt,
+            prompt: self.prepare_composer_prompt(session_id, &prompt, cx)?,
+            options: self.composer_input_options(session_id)?,
+            source_draft: Some(prompt),
         })
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
+        if let Some((session_id, question_id)) = self.sessions.selected().and_then(|session| {
+            session
+                .question
+                .as_ref()
+                .filter(|question| question.response_supported)
+                .map(|question| (session.id, question.id.clone()))
+        }) {
+            if let Some(run_id) = self.session_ui.get(&session_id).and_then(|ui| ui.run_id) {
+                let answer = self
+                    .session_ui
+                    .get(&session_id)
+                    .unwrap()
+                    .prompt
+                    .read(cx)
+                    .content()
+                    .trim()
+                    .to_string();
+                if !answer.is_empty() && answer.len() <= MAX_AGENT_PROMPT_BYTES {
+                    if !self.reserve_live_input(
+                        run_id,
+                        PendingLiveInput::question(Some(answer.clone()), question_id.clone()),
+                        cx,
+                    ) {
+                        return;
+                    }
+                    cx.emit(AgentConsoleEvent::QuestionAnswer {
+                        run_id,
+                        question_id,
+                        answer,
+                    });
+                    self.schedule_library_save(cx);
+                }
+                return;
+            }
+        }
+        if self.queue_active_draft(cx) {
+            return;
+        }
         let selected_active = self
             .sessions
             .selected()
@@ -841,13 +1072,38 @@ impl AgentConsoleView {
     }
 
     fn start_pending(&mut self, pending: PendingRun, cx: &mut Context<Self>) {
+        if let Err(error) = self.validate_discovered_model_input(&pending.context, &pending.options)
+        {
+            self.apply_session_draft_error(pending.session_id, error, cx);
+            return;
+        }
+        let foreground = pending.source_draft.is_some();
+        let clear_draft = pending.source_draft.as_ref().is_some_and(|source| {
+            self.session_ui
+                .get(&pending.session_id)
+                .is_some_and(|ui| ui.prompt.read(cx).content().trim() == source)
+                && self
+                    .prepare_composer_prompt(pending.session_id, source, cx)
+                    .ok()
+                    .as_ref()
+                    == Some(&pending.prompt)
+                && self
+                    .composer_input_options(pending.session_id)
+                    .ok()
+                    .as_ref()
+                    == Some(&pending.options)
+        });
         let session_id = pending.session_id;
         let Some(session) = self.sessions.get_mut(session_id) else {
-            self.apply_draft_error(t!("agents.error.runtime_lost").to_string(), cx);
+            self.apply_session_draft_error(
+                session_id,
+                t!("agents.error.runtime_lost").to_string(),
+                cx,
+            );
             return;
         };
         if let Err(error) = session.set_context(pending.context, now_ms()) {
-            self.apply_draft_error(error.to_string(), cx);
+            self.apply_session_draft_error(session_id, error.to_string(), cx);
             return;
         }
         if session.messages.is_empty() {
@@ -859,25 +1115,54 @@ impl AgentConsoleView {
         {
             Ok(request) => {
                 self.run_sessions.insert(request.id, session_id);
+                if foreground {
+                    self.foreground_runs.insert(request.id);
+                }
                 if let Some(ui) = self.session_ui.get_mut(&session_id) {
                     ui.run_id = Some(request.id);
                     ui.received_delta = false;
                     ui.received_output = false;
                 }
+                self.set_run_options(request.id, pending.options);
+                if !self.workflow_register_run(&request, cx) {
+                    self.reject_run_for(
+                        request.id,
+                        t!("agents.workflows.context_changed").to_string(),
+                        cx,
+                    );
+                    return;
+                }
+                if clear_draft {
+                    if let Some(ui) = self.session_ui.get(&session_id) {
+                        ui.prompt.update(cx, |state, cx| state.reset(cx));
+                    }
+                    self.clear_composer_context(session_id);
+                }
+                if self.sessions.selected_id() == Some(session_id) {
+                    self.apply_selected_context(cx);
+                }
                 cx.emit(AgentConsoleEvent::Run(request));
+                self.schedule_library_save(cx);
             }
-            Err(error) => self.apply_draft_error(error.to_string(), cx),
+            Err(error) => self.apply_session_draft_error(session_id, error.to_string(), cx),
         }
     }
 
     fn apply_draft_error(&mut self, error: String, cx: &mut Context<Self>) {
         if let Some(session_id) = self.sessions.selected_id() {
-            let _ = self.sessions.apply_stream_event(
-                session_id,
-                AgentStreamEvent::Error(error),
-                now_ms(),
-            );
+            self.apply_session_draft_error(session_id, error, cx);
         }
+    }
+
+    fn apply_session_draft_error(
+        &mut self,
+        session_id: Uuid,
+        error: String,
+        cx: &mut Context<Self>,
+    ) {
+        let _ =
+            self.sessions
+                .apply_stream_event(session_id, AgentStreamEvent::Error(error), now_ms());
         cx.notify();
     }
 
@@ -1018,6 +1303,7 @@ impl AgentConsoleView {
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.pending_confirm = None;
+                                this.workflow_cancel_pending();
                                 cx.notify();
                             })),
                     )
@@ -1042,513 +1328,12 @@ impl AgentConsoleView {
                 move |_, cx| {
                     parent.update(cx, |this, cx| {
                         this.pending_confirm = None;
+                        this.workflow_cancel_pending();
                         cx.notify();
                     });
                 }
             })
             .into_any_element()
-    }
-
-    fn render_model_popover(&self, cx: &mut Context<Self>) -> AnyElement {
-        let locked = self
-            .sessions
-            .selected_id()
-            .is_some_and(|id| self.context_locks.contains(&id));
-        let configured = self.model_state.read(cx).content().trim().to_string();
-        let display = if configured.is_empty() {
-            t!("agents.model.auto").to_string()
-        } else {
-            configured
-        };
-        let trigger = div()
-            .id("agent-model-trigger")
-            .h(px(26.0))
-            .max_w(px(180.0))
-            .flex()
-            .items_center()
-            .gap(px(5.0))
-            .px(px(6.0))
-            .rounded(px(6.0))
-            .cursor_pointer()
-            .text_size(px(10.5))
-            .text_color(ShellDeckColors::text_muted())
-            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(display),
-            )
-            .child(lucide_icon(
-                "chevron-down",
-                11.0,
-                ShellDeckColors::text_muted(),
-            ));
-        let model_state = self.model_state.clone();
-        let parent = cx.entity();
-        Popover::new("agent-model-popover")
-            .anchor(Corner::BottomRight)
-            .trigger(trigger)
-            .content(move |window, cx| {
-                let model_state = model_state.clone();
-                let parent = parent.clone();
-                cx.new(move |content_cx| {
-                    PopoverContent::new(window, content_cx, move |_window, _cx| {
-                        let notify_parent = parent.clone();
-                        div()
-                            .w(px(260.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(7.0))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(t!("agents.model.label").to_string()),
-                            )
-                            .child(
-                                Input::new(&model_state)
-                                    .size(InputSize::Sm)
-                                    .disabled(locked)
-                                    .placeholder(t!("agents.model.auto").to_string())
-                                    .on_change(move |_value, cx| {
-                                        notify_parent.update(cx, |_this, cx| cx.notify());
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(t!("agents.model.hint").to_string()),
-                            )
-                            .into_any_element()
-                    })
-                })
-            })
-            .into_any_element()
-    }
-
-    fn render_navigator(&self, cx: &mut Context<Self>) -> AnyElement {
-        let parent = cx.entity();
-        let running_count = self.sessions.active_count();
-        let unread_count = self
-            .sessions
-            .sessions()
-            .iter()
-            .map(|session| u64::from(session.unread_count))
-            .sum::<u64>();
-        let mut body = div().flex().flex_col().gap(px(4.0)).px(px(6.0)).py(px(7.0));
-        if self.project_groups.is_empty() {
-            body = body.child(self.render_session_rows(None, cx));
-        } else {
-            for project in &self.project_groups {
-                body = body.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .px(px(6.0))
-                        .pt(px(6.0))
-                        .pb(px(3.0))
-                        .child(lucide_icon(
-                            "git-branch",
-                            12.0,
-                            ShellDeckColors::text_muted(),
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .text_size(px(10.5))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(project.label.clone()),
-                        ),
-                );
-                for worktree in &project.worktrees {
-                    let worktree_option = worktree.clone();
-                    let worktree_selected = self
-                        .sessions
-                        .selected()
-                        .is_some_and(|session| session_worktree_matches(session, worktree));
-                    body = body.child(
-                        div()
-                            .id(("agent-worktree", stable_string_key(&worktree.id)))
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .px(px(11.0))
-                            .py(px(3.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .when(worktree_selected, |row| {
-                                row.bg(ShellDeckColors::selected_bg())
-                            })
-                            .when(!worktree_selected, |row| {
-                                row.hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_worktree_session(&worktree_option, cx);
-                            }))
-                            .text_size(px(9.5))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(lucide_icon(
-                                "git-branch",
-                                10.0,
-                                ShellDeckColors::text_muted(),
-                            ))
-                            .child(worktree.label.clone())
-                            .when_some(worktree.branch.clone(), |row, branch| {
-                                row.child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.0))
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .font_family("JetBrains Mono")
-                                        .text_size(px(8.5))
-                                        .child(branch),
-                                )
-                            })
-                            .when(worktree.is_primary, |row| {
-                                row.child(
-                                    div()
-                                        .size(px(5.0))
-                                        .rounded_full()
-                                        .bg(ShellDeckColors::success()),
-                                )
-                            }),
-                    );
-                    body = body.child(self.render_session_rows(Some(worktree), cx));
-                }
-            }
-            let known_worktrees = self
-                .project_groups
-                .iter()
-                .flat_map(|project| project.worktrees.iter())
-                .collect::<Vec<_>>();
-            body = body.child(self.render_unmatched_session_rows(&known_worktrees, cx));
-        }
-        div()
-            .w(px(NAVIGATOR_WIDTH))
-            .h_full()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .bg(ShellDeckColors::bg_sidebar())
-            .border_r_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                div()
-                    .h(px(42.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(7.0))
-                    .px(px(10.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .child(lucide_icon("grid-2x2", 14.0, ShellDeckColors::primary()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(t!("agents.title").to_string()),
-                    )
-                    .when(running_count > 0, |row| {
-                        row.child(
-                            Badge::new(running_count.to_string()).variant(BadgeVariant::Secondary),
-                        )
-                    })
-                    .child(
-                        Button::new("agent-nav-new", "")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Icon)
-                            .icon(IconSource::from("plus"))
-                            .w(px(26.0))
-                            .h(px(26.0))
-                            .tooltip(t!("agents.session.new").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px(px(8.0))
-                    .py(px(6.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .child(lucide_icon("search", 11.0, ShellDeckColors::text_muted()))
-                    .child(
-                        div().flex().flex_col().flex_1().min_w(px(0.0)).child(
-                            Input::new(&self.navigator_search)
-                                .variant(InputVariant::Bare)
-                                .size(InputSize::Sm)
-                                .w_full()
-                                .placeholder(t!("fleet.sessions.search").to_string())
-                                .on_change(move |_value, cx| {
-                                    parent.update(cx, |_this, cx| cx.notify());
-                                }),
-                        ),
-                    ),
-            )
-            .child(
-                div()
-                    .id("agent-navigator-scroll")
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .overflow_y_scroll()
-                    .child(body),
-            )
-            .child(
-                div()
-                    .h(px(30.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px(px(10.0))
-                    .border_t_1()
-                    .border_color(ShellDeckColors::border())
-                    .text_size(px(9.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(lucide_icon("activity", 11.0, ShellDeckColors::warning()))
-                    .child(format!(
-                        "{running_count}/{DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS}"
-                    ))
-                    .child(t!("workspaces.agent.running").to_string())
-                    .child(div().flex_1())
-                    .when(unread_count > 0, |row| {
-                        row.child(lucide_icon("activity", 10.0, ShellDeckColors::primary()))
-                            .child(unread_count.to_string())
-                            .child(t!("workspaces.attention.unread").to_string())
-                    }),
-            )
-            .into_any_element()
-    }
-
-    fn render_session_rows(
-        &self,
-        worktree: Option<&AgentWorktreeOption>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        self.render_session_rows_matching(
-            |session| worktree.is_none_or(|worktree| session_worktree_matches(session, worktree)),
-            cx,
-        )
-    }
-
-    fn render_unmatched_session_rows(
-        &self,
-        known_worktrees: &[&AgentWorktreeOption],
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        self.render_session_rows_matching(
-            |session| {
-                !known_worktrees
-                    .iter()
-                    .any(|worktree| session_worktree_matches(session, worktree))
-            },
-            cx,
-        )
-    }
-
-    fn render_session_rows_matching(
-        &self,
-        include: impl Fn(&AgentSession) -> bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let query = self
-            .navigator_search
-            .read(cx)
-            .content()
-            .trim()
-            .to_ascii_lowercase();
-        let mut list = div().flex().flex_col().gap(px(2.0));
-        for session in self.sessions.sessions().iter().filter(|session| {
-            include(session)
-                && (query.is_empty()
-                    || session.name.to_ascii_lowercase().contains(&query)
-                    || session
-                        .context
-                        .workdir
-                        .to_ascii_lowercase()
-                        .contains(&query)
-                    || session
-                        .context
-                        .provider
-                        .display_name()
-                        .to_ascii_lowercase()
-                        .contains(&query))
-        }) {
-            let id = session.id;
-            let selected = self.sessions.selected_id() == Some(id);
-            let removable = self.sessions.sessions().len() > 1 && !session.status.is_active();
-            let mut row = div()
-                .id(("agent-nav-session", uuid_key(id)))
-                .flex()
-                .items_center()
-                .gap(px(7.0))
-                .h(px(33.0))
-                .px(px(8.0))
-                .rounded(px(5.0))
-                .cursor_pointer()
-                .when(selected, |row| row.bg(ShellDeckColors::selected_bg()))
-                .when(!selected, |row| {
-                    row.hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_session(id, cx);
-                }))
-                .child(
-                    div()
-                        .size(px(6.0))
-                        .rounded_full()
-                        .bg(status_color(session.status)),
-                )
-                .child(lucide_icon(
-                    provider_icon(session.context.provider),
-                    12.0,
-                    ShellDeckColors::text_muted(),
-                ))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_size(px(10.5))
-                        .font_weight(if selected {
-                            FontWeight::SEMIBOLD
-                        } else {
-                            FontWeight::NORMAL
-                        })
-                        .child(session.name.clone()),
-                )
-                .when_some(session_elapsed(session), |row, elapsed| {
-                    row.child(
-                        div()
-                            .font_family("JetBrains Mono")
-                            .text_size(px(8.5))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(elapsed),
-                    )
-                })
-                .when(session.unread_count > 0, |row| {
-                    row.child(
-                        Badge::new(session.unread_count.to_string())
-                            .variant(BadgeVariant::Secondary),
-                    )
-                });
-            if removable {
-                row = row.child(
-                    div()
-                        .id(("agent-close-session", uuid_key(id)))
-                        .size(px(19.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(4.0))
-                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                        .on_click(cx.listener(move |this, _event: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.close_session(id, cx);
-                        }))
-                        .child(lucide_icon("x", 10.0, ShellDeckColors::text_muted())),
-                );
-            }
-            list = list.child(row);
-        }
-        list.into_any_element()
-    }
-
-    fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut tabs = div()
-            .id("agent-session-tabs")
-            .flex()
-            .flex_1()
-            .min_w(px(0.0))
-            .h_full()
-            .overflow_x_scroll();
-        for session in self.sessions.sessions() {
-            let id = session.id;
-            let selected = self.sessions.selected_id() == Some(id);
-            let removable = self.sessions.sessions().len() > 1 && !session.status.is_active();
-            let mut tab = div()
-                .id(("agent-session-tab", uuid_key(id)))
-                .h_full()
-                .max_w(px(220.0))
-                .flex()
-                .items_center()
-                .gap(px(7.0))
-                .px(px(11.0))
-                .border_r_1()
-                .border_color(ShellDeckColors::border())
-                .cursor_pointer()
-                .when(selected, |tab| {
-                    tab.bg(ShellDeckColors::bg_primary())
-                        .border_b_2()
-                        .border_color(ShellDeckColors::primary())
-                })
-                .when(!selected, |tab| {
-                    tab.hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_session(id, cx);
-                }))
-                .child(
-                    div()
-                        .size(px(6.0))
-                        .rounded_full()
-                        .bg(status_color(session.status)),
-                )
-                .child(lucide_icon(
-                    provider_icon(session.context.provider),
-                    12.0,
-                    ShellDeckColors::text_muted(),
-                ))
-                .child(
-                    div()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_size(px(10.5))
-                        .child(session.name.clone()),
-                )
-                .when(session.attention != AgentSessionAttention::None, |tab| {
-                    tab.child(
-                        div()
-                            .size(px(5.0))
-                            .rounded_full()
-                            .bg(attention_color(session.attention)),
-                    )
-                });
-            if removable {
-                tab = tab.child(
-                    div()
-                        .id(("agent-close-tab", uuid_key(id)))
-                        .size(px(18.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(4.0))
-                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                        .on_click(cx.listener(move |this, _event: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.close_session(id, cx);
-                        }))
-                        .child(lucide_icon("x", 10.0, ShellDeckColors::text_muted())),
-                );
-            }
-            tabs = tabs.child(tab);
-        }
-        tabs.into_any_element()
     }
 
     fn render_trace(trace: &AgentTraceEvent, focused: bool) -> AnyElement {
@@ -1632,449 +1417,6 @@ impl AgentConsoleView {
             .into_any_element()
     }
 
-    fn render_inspector(&mut self, session: &AgentSession, cx: &mut Context<Self>) -> AnyElement {
-        let remote = matches!(session.context.target, AgentTarget::Ssh { .. });
-        let files = inspector_files(session);
-        let changed_count = files.iter().filter(|file| file.diff.is_some()).count();
-        let files_selected = self.inspector_tab == AgentInspectorTab::Files;
-        let changes_selected = self.inspector_tab == AgentInspectorTab::Changes;
-        let remote_parent = remote
-            .then(|| {
-                self.inspector_remote_path
-                    .as_deref()
-                    .unwrap_or(&session.context.workdir)
-            })
-            .and_then(remote_parent_path);
-
-        let tabs = div()
-            .h(px(42.0))
-            .flex()
-            .items_center()
-            .gap(px(4.0))
-            .px(px(8.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                Button::new(
-                    "agent-inspector-files",
-                    t!("agents.inspector.files").to_string(),
-                )
-                .variant(if files_selected {
-                    ButtonVariant::Secondary
-                } else {
-                    ButtonVariant::Ghost
-                })
-                .size(ButtonSize::Sm)
-                .icon(IconSource::from("file-text"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.inspector_tab = AgentInspectorTab::Files;
-                    cx.notify();
-                })),
-            )
-            .child(
-                Button::new(
-                    "agent-inspector-changes",
-                    t!("agents.inspector.changes").to_string(),
-                )
-                .variant(if changes_selected {
-                    ButtonVariant::Secondary
-                } else {
-                    ButtonVariant::Ghost
-                })
-                .size(ButtonSize::Sm)
-                .icon(IconSource::from("git-branch"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.inspector_tab = AgentInspectorTab::Changes;
-                    cx.notify();
-                })),
-            );
-
-        let mut list = div()
-            .id("agent-inspector-list")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .px(px(7.0))
-            .py(px(6.0))
-            .gap(px(4.0));
-        if files_selected && !remote {
-            let entries = self.inspector_local_browser.visible_entries();
-            if entries.is_empty() {
-                list = list.child(inspector_empty_state(
-                    "file-text",
-                    t!("agents.inspector.empty_files").to_string(),
-                ));
-            } else {
-                for entry in entries {
-                    let path = entry.path.clone();
-                    let event_path = path.clone();
-                    let is_dir = entry.is_dir;
-                    let session_id = session.id;
-                    let icon = if is_dir {
-                        if entry.is_expanded {
-                            "chevron-down"
-                        } else {
-                            "chevron-right"
-                        }
-                    } else {
-                        "file-text"
-                    };
-                    list = list.child(
-                        div()
-                            .id(SharedString::from(format!("agent-file-{}", path.display())))
-                            .h(px(25.0))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .pl(px(6.0 + entry.depth as f32 * 12.0))
-                            .pr(px(6.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if is_dir {
-                                    this.inspector_local_browser.toggle_dir(&path);
-                                    cx.notify();
-                                } else {
-                                    cx.emit(AgentConsoleEvent::OpenLocalFile {
-                                        session_id,
-                                        path: event_path.clone(),
-                                    });
-                                }
-                            }))
-                            .child(lucide_icon(icon, 11.0, ShellDeckColors::text_muted()))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .text_size(px(10.0))
-                                    .text_color(if is_dir {
-                                        ShellDeckColors::text_primary()
-                                    } else {
-                                        ShellDeckColors::text_muted()
-                                    })
-                                    .child(entry.name),
-                            ),
-                    );
-                }
-            }
-        } else if files_selected {
-            let (session_id, connection_id) = match &session.context.target {
-                AgentTarget::Ssh { connection_id, .. } => (session.id, *connection_id),
-                AgentTarget::Local => unreachable!("local files use the local browser"),
-            };
-            let request_path = self
-                .inspector_remote_path
-                .clone()
-                .unwrap_or_else(|| session.context.workdir.clone());
-            if self.inspector_remote_loading {
-                list = list.child(inspector_empty_state(
-                    "refresh-cw",
-                    t!("agents.inspector.remote_loading").to_string(),
-                ));
-            } else if let Some(error) = self.inspector_remote_error.clone() {
-                let retry_path = request_path.clone();
-                list = list
-                    .child(inspector_empty_state("circle-alert", error))
-                    .child(
-                        Button::new(
-                            "agent-remote-files-retry",
-                            t!("agents.inspector.retry").to_string(),
-                        )
-                        .variant(ButtonVariant::Secondary)
-                        .size(ButtonSize::Sm)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.request_remote_directory(
-                                session_id,
-                                connection_id,
-                                retry_path.clone(),
-                                cx,
-                            );
-                        })),
-                    );
-            } else if self.inspector_remote_entries.is_empty() {
-                let load_path = request_path.clone();
-                list = list
-                    .child(inspector_empty_state(
-                        "server",
-                        t!("agents.inspector.remote_empty").to_string(),
-                    ))
-                    .child(
-                        Button::new(
-                            "agent-remote-files-load",
-                            t!("agents.inspector.remote_load").to_string(),
-                        )
-                        .variant(ButtonVariant::Secondary)
-                        .size(ButtonSize::Sm)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.request_remote_directory(
-                                session_id,
-                                connection_id,
-                                load_path.clone(),
-                                cx,
-                            );
-                        })),
-                    );
-            } else {
-                for entry in self.inspector_remote_entries.clone() {
-                    let path = entry.path.clone();
-                    let is_dir = entry.is_dir;
-                    let mut row = div()
-                        .id(SharedString::from(format!(
-                            "agent-remote-file-{}",
-                            entry.path
-                        )))
-                        .h(px(25.0))
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .px(px(6.0))
-                        .rounded(px(4.0))
-                        .text_size(px(10.0))
-                        .text_color(if is_dir {
-                            ShellDeckColors::text_primary()
-                        } else {
-                            ShellDeckColors::text_muted()
-                        })
-                        .child(lucide_icon(
-                            if is_dir { "archive" } else { "file-text" },
-                            11.0,
-                            ShellDeckColors::text_muted(),
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(entry.name),
-                        );
-                    if is_dir {
-                        row = row
-                            .cursor_pointer()
-                            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.request_remote_directory(
-                                    session_id,
-                                    connection_id,
-                                    path.clone(),
-                                    cx,
-                                );
-                            }));
-                    } else {
-                        row = row.child(
-                            Badge::new(t!("agents.inspector.remote").to_string())
-                                .variant(BadgeVariant::Secondary),
-                        );
-                    }
-                    list = list.child(row);
-                }
-            }
-        } else {
-            let visible = files
-                .iter()
-                .filter(|file| file.diff.is_some())
-                .collect::<Vec<_>>();
-            if visible.is_empty() {
-                list = list.child(inspector_empty_state(
-                    "git-branch",
-                    t!("agents.inspector.empty_changes").to_string(),
-                ));
-            }
-            for file in visible {
-                let diff = file.diff.as_ref().expect("changed file has a diff");
-                let trace_id = diff.trace_id;
-                let selected = self.focused_trace == Some(trace_id);
-                let mut row = div()
-                    .id(("agent-inspector-trace", uuid_key(trace_id)))
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.0))
-                    .px(px(8.0))
-                    .py(px(7.0))
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(if selected {
-                        ShellDeckColors::primary()
-                    } else {
-                        ShellDeckColors::border()
-                    })
-                    .rounded(px(5.0))
-                    .bg(if selected {
-                        ShellDeckColors::primary().opacity(0.08)
-                    } else {
-                        ShellDeckColors::bg_surface()
-                    })
-                    .cursor_pointer()
-                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.focused_trace = Some(trace_id);
-                        pin_to_latest(&this.scroll);
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(lucide_icon("git-branch", 12.0, ShellDeckColors::warning()))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .font_family("JetBrains Mono")
-                                    .text_size(px(9.5))
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(file.path.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .font_family("JetBrains Mono")
-                                    .text_size(px(8.5))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(format!("+{} −{}", diff.additions, diff.deletions)),
-                            ),
-                    );
-                if let Some(preview) = diff.preview.as_ref() {
-                    row = row.child(
-                        div()
-                            .max_h(px(88.0))
-                            .overflow_hidden()
-                            .font_family("JetBrains Mono")
-                            .text_size(px(8.5))
-                            .line_height(relative(1.3))
-                            .text_color(ShellDeckColors::text_muted())
-                            .whitespace_normal()
-                            .child(preview.clone()),
-                    );
-                }
-                list = list.child(row);
-            }
-        }
-
-        div()
-            .w(px(INSPECTOR_WIDTH))
-            .h_full()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .border_l_1()
-            .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_sidebar())
-            .child(tabs)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.0))
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .when_some(remote_parent, |row, parent_path| {
-                                let (session_id, connection_id) = match &session.context.target {
-                                    AgentTarget::Ssh { connection_id, .. } => {
-                                        (session.id, *connection_id)
-                                    }
-                                    AgentTarget::Local => {
-                                        unreachable!("a remote parent requires an SSH target")
-                                    }
-                                };
-                                row.child(
-                                    Button::new("agent-remote-files-parent", "")
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Icon)
-                                        .icon(IconSource::from("arrow-up"))
-                                        .tooltip(t!("agents.inspector.remote_parent").to_string())
-                                        .w(px(24.0))
-                                        .h(px(24.0))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.request_remote_directory(
-                                                session_id,
-                                                connection_id,
-                                                parent_path.clone(),
-                                                cx,
-                                            );
-                                        })),
-                                )
-                            })
-                            .child(
-                                Badge::new(if remote {
-                                    t!("agents.inspector.remote").to_string()
-                                } else {
-                                    t!("agents.inspector.local").to_string()
-                                })
-                                .variant(BadgeVariant::Secondary),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .font_family("JetBrains Mono")
-                                    .text_size(px(9.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(session.context.workdir.clone()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .text_size(px(9.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(format!(
-                                "{} · {} {}",
-                                t!("agents.inspector.observed"),
-                                files.len(),
-                                t!("agents.inspector.files")
-                            ))
-                            .when(changed_count > 0, |row| {
-                                row.child(format!(
-                                    "· {changed_count} {}",
-                                    t!("agents.inspector.changes")
-                                ))
-                            }),
-                    ),
-            )
-            .child(list)
-            .when(changes_selected, |panel| {
-                panel.child(
-                    div()
-                        .flex_shrink_0()
-                        .px(px(10.0))
-                        .py(px(7.0))
-                        .border_t_1()
-                        .border_color(ShellDeckColors::border())
-                        .text_size(px(8.5))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("agents.inspector.focus_hint").to_string()),
-                )
-            })
-            .into_any_element()
-    }
-
     fn render_context(&self, narrow: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let locked = self
             .sessions
@@ -2151,17 +1493,46 @@ impl AgentConsoleView {
 
 impl Render for AgentConsoleView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let wide = window.viewport_size().width >= px(840.0).to_pixels(window.rem_size());
-        let inspector_wide =
-            window.viewport_size().width >= px(1180.0).to_pixels(window.rem_size());
-        let session = self
+        let width = if self.tools.measured_width > 0.0 {
+            self.tools.measured_width
+        } else {
+            window.viewport_size().width.to_f64() as f32
+        };
+        let wide = width >= px(840.0).to_pixels(window.rem_size()).to_f64() as f32;
+        let inspector_wide = width >= px(1180.0).to_pixels(window.rem_size()).to_f64() as f32;
+        let mut session = self
             .sessions
             .selected()
             .cloned()
             .expect("cockpit retains one session");
+        session.context = self.displayed_context(cx);
+        if self.tools.inspector_context.as_ref() != Some(&session.context) {
+            self.inspector_remote_entries.clear();
+            self.inspector_remote_path = None;
+            self.inspector_remote_pending_path = None;
+            self.inspector_remote_session = None;
+            self.inspector_remote_connection = None;
+            self.inspector_remote_error = None;
+            self.inspector_remote_loading = false;
+            self.tools.preview_request = Uuid::new_v4();
+            self.tools.instructions_request = Uuid::new_v4();
+            self.tools.preview_context = None;
+            self.tools.preview_session = None;
+            self.tools.loading = false;
+            self.tools.error = None;
+            self.tools.instructions.clear();
+            if matches!(
+                self.tools.active,
+                Some(tools::AgentToolSurface::Preview | tools::AgentToolSurface::Instructions)
+            ) {
+                self.tools.active = None;
+            }
+            self.tools.inspector_context = Some(session.context.clone());
+        }
+
         if matches!(session.context.target, AgentTarget::Local) {
             let root = PathBuf::from(&session.context.workdir);
-            if root.is_dir() && self.inspector_local_browser.root() != root.as_path() {
+            if self.inspector_local_browser.root() != root.as_path() {
                 self.inspector_local_browser.set_root(root);
             }
         }
@@ -2172,24 +1543,13 @@ impl Render for AgentConsoleView {
         let attention = session.attention;
         let elapsed = session_elapsed(&session);
         let timeline = merged_timeline(&session);
-        let running = self.session_ui.get(&session_id).and_then(|ui| ui.run_id);
         let received_output = self
             .session_ui
             .get(&session_id)
             .is_some_and(|ui| ui.received_output);
-        let prompt = self
-            .session_ui
-            .get(&session_id)
-            .expect("selected session has UI state")
-            .prompt
-            .clone();
         let has_content = !timeline.is_empty();
         let context_expanded = self.context_expanded;
 
-        let submit = {
-            let parent = cx.entity();
-            move |cx: &mut App| parent.update(cx, |this, cx| this.submit(cx))
-        };
         let header = div()
             .h(px(42.0))
             .flex()
@@ -2277,6 +1637,7 @@ impl Render for AgentConsoleView {
                 row.child(
                     Badge::new(target_label(&context.target)).variant(BadgeVariant::Secondary),
                 )
+                .child(Badge::new(access_label(context.access)).variant(BadgeVariant::Outline))
                 .child(
                     div()
                         .max_w(px(300.0))
@@ -2415,7 +1776,25 @@ impl Render for AgentConsoleView {
                                         .w_full()
                                         .min_w_0()
                                         .whitespace_normal(),
-                                ),
+                                )
+                                .child(self.render_message_actions(message, cx)),
+                        );
+                    }
+                    TimelineItem::Boundary(boundary) => {
+                        let key=match boundary.reason {
+                            shelldeck_core::agent_session::AgentHistoryBoundaryReason::ContextChanged=>"agents.parity.context_boundary",
+                            shelldeck_core::agent_session::AgentHistoryBoundaryReason::ApplicationRestart=>"agents.parity.restart_boundary",
+                            shelldeck_core::agent_session::AgentHistoryBoundaryReason::ConversationNotResumed=>"agents.parity.fresh_boundary",
+                            shelldeck_core::agent_session::AgentHistoryBoundaryReason::ForkedConversation=>"agents.parity.fork_boundary",
+                        };
+                        timeline_view = timeline_view.child(
+                            div()
+                                .py(px(9.0))
+                                .border_y_1()
+                                .border_color(ShellDeckColors::border())
+                                .text_size(px(10.5))
+                                .text_color(ShellDeckColors::warning())
+                                .child(t!(key).to_string()),
                         );
                     }
                     TimelineItem::Trace(trace) => {
@@ -2448,33 +1827,13 @@ impl Render for AgentConsoleView {
                         )),
                 );
             }
+            timeline_view = timeline_view
+                .child(self.render_run_progress(&session, cx))
+                .child(self.render_turn_change_cards(&session, cx));
             output = output.child(timeline_view);
         }
 
-        let mut composer = Composer::new(format!("agent-composer-{session_id}"), &prompt)
-            .placeholder(t!("agents.prompt.placeholder").to_string())
-            .min_rows(2)
-            .max_rows(8)
-            .disabled(status.is_active())
-            .on_commit(submit);
-        if context.provider != AgentProvider::Automonique {
-            composer = composer.option(self.render_model_popover(cx));
-        }
-        if let Some(run_id) = running {
-            composer = composer.without_commit().option(
-                Button::new(("agent-stop", uuid_key(run_id)), "")
-                    .variant(ButtonVariant::Destructive)
-                    .size(ButtonSize::Icon)
-                    .icon(IconSource::from("square"))
-                    .tooltip(t!("agents.stop").to_string())
-                    .w(px(28.0))
-                    .h(px(28.0))
-                    .rounded_full()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.request_stop(run_id, cx);
-                    })),
-            );
-        }
+        let composer = self.render_composer(&session, window, cx);
         let mut content = div()
             .flex()
             .flex_col()
@@ -2485,10 +1844,63 @@ impl Render for AgentConsoleView {
             content = content.child(header);
         }
         content = content.child(metadata);
+        if !wide {
+            content = content.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(12.0))
+                    .py(px(5.0))
+                    .border_b_1()
+                    .border_color(ShellDeckColors::border())
+                    .child(
+                        Badge::new(target_label(&context.target)).variant(BadgeVariant::Secondary),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(context.workdir.clone()),
+                    )
+                    .child(Badge::new(access_label(context.access)).variant(BadgeVariant::Outline)),
+            );
+        }
+        content = content.child(self.render_workspace_tools(cx));
+        if let Some(error) = &self.library.error {
+            content = content.child(
+                div()
+                    .px(px(14.0))
+                    .py(px(8.0))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::error())
+                    .child(error.clone()),
+            );
+        }
         if context_expanded {
             content = content.child(self.render_context(!wide, window, cx));
         }
-        content = content.child(output).child(
+        let away = (self.scroll.max_offset().height.to_f64() + self.scroll.offset().y.to_f64())
+            .abs()
+            > 4.0;
+        content = content.child(output);
+        if away {
+            content = content.child(
+                Button::new("agent-jump-latest", t!("agents.parity.latest").to_string())
+                    .variant(ButtonVariant::Secondary)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("arrow-down"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        pin_to_latest(&this.scroll);
+                        cx.notify();
+                    })),
+            );
+        }
+        content = content.child(
             div()
                 .flex_shrink_0()
                 .w_full()
@@ -2500,22 +1912,110 @@ impl Render for AgentConsoleView {
                 .child(div().w_full().max_w(px(940.0)).mx_auto().child(composer)),
         );
         let mut root = div()
+            .id("agent-cockpit")
+            .key_context("AgentConsole")
+            .on_action(cx.listener(|this, _: &AgentNewChat, _, cx| this.new_session(cx)))
+            .on_action(cx.listener(|this, _: &AgentFocusComposer, window, cx| {
+                if let Some(id) = this.sessions.selected_id() {
+                    if let Some(ui) = this.session_ui.get(&id) {
+                        ui.prompt.read(cx).focus_handle(cx).focus(window);
+                    }
+                }
+            }))
+            .on_action(cx.listener(|this, _: &AgentToggleFiles, _, cx| {
+                this.tools.panel_visible = !this.tools.panel_visible;
+                this.schedule_library_save(cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &AgentToggleSessions, _, cx| {
+                this.tools.navigator_visible = !this.tools.navigator_visible;
+                this.schedule_library_save(cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &AgentJumpLatest, _, cx| {
+                pin_to_latest(&this.scroll);
+                cx.notify();
+            }))
             .relative()
             .flex()
             .size_full()
             .min_h(px(0.0))
             .bg(ShellDeckColors::bg_primary())
             .text_color(ShellDeckColors::text_primary());
-        if wide {
+        if wide && self.tools.navigator_visible {
             root = root.child(self.render_navigator(cx));
         }
         root = root.child(content);
-        if inspector_wide {
-            root = root.child(self.render_inspector(&session, cx));
+        if self.tools.panel_visible {
+            let panel = if self.tools.active.is_some() {
+                self.render_tools_panel(&session, cx)
+            } else if self.inspector_tab == AgentInspectorTab::Changes {
+                self.render_review_panel(&session, cx)
+            } else {
+                self.render_inspector(&session, cx)
+            };
+            let width = self
+                .tools
+                .panel_width
+                .min((width / window.rem_size().to_f64() as f32 * 16.0 - 80.0).max(240.0));
+            let panel = div()
+                .w(px(width))
+                .h_full()
+                .flex_shrink_0()
+                .min_h_0()
+                .border_l_1()
+                .border_color(ShellDeckColors::border())
+                .bg(ShellDeckColors::bg_sidebar())
+                .child(panel);
+            if inspector_wide {
+                root = root.child(panel);
+            } else {
+                root = root.child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .top_0()
+                        .bottom_0()
+                        .occlude()
+                        .child(panel),
+                );
+            }
+        }
+        if let Some(overlay) = self.render_browser_overlay() {
+            root = root.child(overlay);
+        }
+        if let Some(dialog) = self.render_workflow_dialog() {
+            root = root.child(dialog);
+        }
+        if let Some(dialog) = self.render_delivery_dialog() {
+            root = root.child(dialog);
+        }
+        if let Some(dialog) = self.render_review_dialog() {
+            root = root.child(dialog);
+        }
+        if let Some(overlay) = self.render_composer_overlay() {
+            root = root.child(overlay);
         }
         if let Some(pending) = self.pending_confirm.as_ref() {
             root = root.child(self.render_confirmation(pending, cx));
         }
+        let measure = cx.entity().downgrade();
+        root = root.child(
+            canvas(
+                move |bounds, _, cx| {
+                    let width = bounds.size.width.to_f64() as f32;
+                    let _ = measure.update(cx, |this, cx| {
+                        if (this.tools.measured_width - width).abs() > 1.0 {
+                            this.tools.measured_width = width;
+                            cx.notify();
+                        }
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full(),
+        );
         root
     }
 }
@@ -2579,6 +2079,13 @@ fn merged_timeline(session: &AgentSession) -> Vec<TimelineItem> {
     let mut timeline = Vec::with_capacity(session.messages.len() + session.trace.len());
     timeline.extend(session.messages.iter().cloned().map(TimelineItem::Message));
     timeline.extend(session.trace.iter().cloned().map(TimelineItem::Trace));
+    timeline.extend(
+        session
+            .boundaries
+            .iter()
+            .cloned()
+            .map(TimelineItem::Boundary),
+    );
     timeline.sort_by(|left, right| match (left.sequence(), right.sequence()) {
         // Pre-sequence durable sessions deserialize with zero. Preserve their
         // historical interleaving, then place all newly sequenced rows after
@@ -3067,6 +2574,7 @@ mod tests {
         let diff_id = uuid::Uuid::new_v4();
         session.trace = vec![
             AgentTraceEvent {
+                turn_id: None,
                 id: read_id,
                 sequence: 1,
                 at_ms: 2,
@@ -3079,6 +2587,7 @@ mod tests {
                 },
             },
             AgentTraceEvent {
+                turn_id: None,
                 id: diff_id,
                 sequence: 2,
                 at_ms: 3,
@@ -3092,6 +2601,7 @@ mod tests {
                 },
             },
             AgentTraceEvent {
+                turn_id: None,
                 id: uuid::Uuid::new_v4(),
                 sequence: 3,
                 at_ms: 4,

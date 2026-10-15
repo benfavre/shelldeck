@@ -1,5 +1,14 @@
 # SDTEST inventory — `shelldeck-ssh`
 
+## Managed tmux clients
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1951 | `tmux.rs::tmux_handshake_accepts_fragmented_headers_and_preserves_terminal_output` | SDUC-500 | Green | Fragmented private startup headers retain all following TUI bytes and resolve the exact client PTY. |
+| SDTEST-1952 | `tmux.rs::tmux_handshake_rejects_invalid_identity_and_unbounded_preludes` | SDUC-500 | Green | Rejects invalid device identities and excessive pre-header output. |
+| SDTEST-1953 | `tmux.rs::tmux_controls_use_the_attached_client_and_propagate_failures_without_fallback` | SDUC-500 | Green | Fake executor observes one scoped control command, current-directory inheritance and no keyboard injection; a detached-client error propagates without another attempt. |
+| SDTEST-1955 | `session.rs::exec_retains_success_and_failure_status_after_output_eof` | SDUC-045, SDUC-500 | Green | Real in-memory SSH server sends output EOF before exit status and channel close; both zero and nonzero status retain stdout/stderr and report success correctly. |
+
 > Rules for this file live in [`.agents/testing.md`](../../.agents/testing.md).
 > Use case IDs (`SDUC-…`) resolve in [`USE_CASES.md`](./USE_CASES.md).
 
@@ -50,7 +59,7 @@ they pin the transport `session.rs` composes with `new_with_jump`.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-520 | `session.rs::shell_requests_pty_dimensions_and_propagates_resize` | SDUC-044 | Green | In-memory SSH handshake; asserts `xterm-256color`, columns, rows and shell request. |
-| SDTEST-521 | `session.rs::exec_collects_stdout_stderr_and_exit_status` | SDUC-045 | Green | Real protocol messages over an in-memory duplex stream: `Data`, `ExtendedData(1)`, `ExitStatus`, EOF. |
+| SDTEST-521 | `session.rs::exec_collects_stdout_stderr_and_exit_status` | SDUC-045 | Green | Real protocol messages over an in-memory duplex stream: `Data`, `ExtendedData(1)`, `ExitStatus`, EOF, channel close. |
 | SDTEST-522 | *to write* — exec success() bit matches exit code | SDUC-045 | **Red / P1** | |
 | SDTEST-523 | *to write* — exec_streaming yields chunks without buffering the whole output | SDUC-046 | **Red / P1** | Assert the receiver observes chunks *before* the exit signal. |
 | SDTEST-524 | `session.rs::cancellable_exec_sends_channel_eof_and_returns_no_exit_status` | SDUC-047 | Green | A held remote command receives channel EOF after cancellation and returns without an exit status. |

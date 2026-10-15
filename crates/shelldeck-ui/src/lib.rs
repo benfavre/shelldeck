@@ -49,6 +49,7 @@ pub mod terminal_view;
 pub mod theme;
 pub mod toast;
 pub mod variable_prompt;
+mod window_chrome;
 pub mod workspace;
 
 rust_i18n::i18n!("../shelldeck-core/locales", fallback = "fr");

@@ -249,6 +249,13 @@ impl Workspace {
                     tracing::error!("Split requested for unknown connection {}", connection_id);
                 }
             }
+            TerminalEvent::TmuxUnavailable => {
+                self.show_toast(
+                    t!("toast.ssh.tmux_unavailable").to_string(),
+                    ToastLevel::Error,
+                    cx,
+                );
+            }
             TerminalEvent::RunScriptRequested(id) => {
                 let id = *id;
                 if let Some(script) = self

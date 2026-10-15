@@ -1570,6 +1570,24 @@ impl TerminalGrid {
         self.scroll_offset == 0
     }
 
+    /// Whether a visible row continues the preceding row, including scrollback.
+    pub fn visible_row_is_soft_wrapped(&self, row: usize) -> bool {
+        if row >= self.rows {
+            return false;
+        }
+        let history_index =
+            self.scrollback.len() - self.scroll_offset.min(self.scrollback.len()) + row;
+        if history_index < self.scrollback.len() {
+            self.scrollback_line_flags
+                .get(history_index)
+                .is_some_and(|flags| flags.soft_wrapped)
+        } else {
+            self.line_flags
+                .get(history_index - self.scrollback.len())
+                .is_some_and(|flags| flags.soft_wrapped)
+        }
+    }
+
     /// Return the visible rows, accounting for scroll offset.
     /// When scroll_offset > 0, some rows come from the scrollback buffer.
     pub fn visible_rows(&self) -> Vec<&Vec<Cell>> {

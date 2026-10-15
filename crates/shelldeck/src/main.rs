@@ -1,4 +1,5 @@
 mod actions;
+mod ai_dock_placement;
 mod companion_desktop;
 mod tray;
 
@@ -641,7 +642,7 @@ impl CompanionRoot {
                 }
                 let _ = this.update(cx, |root, cx| {
                     if opens_workspace {
-                        if let Some(dock) = root.runtime.ai_dock_window.take() {
+                        if let Some(dock) = root.runtime.ai_dock_window {
                             let _ = dock.update(cx, |dock, window, cx| dock.close(window, cx));
                         }
                     }
@@ -1354,11 +1355,10 @@ fn companion_display(
 }
 
 fn ai_dock_bounds(display_bounds: gpui::Bounds<gpui::Pixels>) -> gpui::Bounds<gpui::Pixels> {
-    let width = gpui::px(480.0).min(display_bounds.size.width);
-    gpui::Bounds {
-        origin: gpui::point(display_bounds.right() - width, display_bounds.origin.y),
-        size: gpui::size(width, display_bounds.size.height),
-    }
+    shelldeck_ui::ai_dock::layout::dock_bounds(
+        display_bounds,
+        shelldeck_ui::ai_dock::layout::DockSide::Right,
+    )
 }
 
 /// Reassert the Dock's requested geometry after the X11 window manager has
@@ -1376,7 +1376,10 @@ fn reanchor_x11_ai_dock(
     }
 
     let apply = move |handle: gpui::WindowHandle<AiDockView>, cx: &mut gpui::App| {
-        if let Err(error) = handle.update(cx, |_, window, _| {
+        if let Err(error) = handle.update(cx, |dock, window, _| {
+            if !dock.initial_anchor_allowed() {
+                return;
+            }
             window.resize(bounds.size);
             if let Err(error) = window.set_window_origin(bounds.origin) {
                 tracing::warn!(error = %error, "failed to anchor AI Dock to the X11 work area");
@@ -1473,21 +1476,13 @@ fn open_ai_dock(
             root.runtime.ai_dock_window,
         )
     });
-    let Some(display) = companion_display(main_window, cx) else {
-        tracing::error!("failed to open AI Dock: no display available");
-        return;
-    };
     if let Some(handle) = existing {
         let (recreate, clear_handle) = match handle.update(cx, |dock, window, cx| {
-            match ai_dock_window_action(Some(window.is_window_visible()), request) {
+            match ai_dock_window_action(
+                Some(window.is_window_visible() && !dock.is_closing()),
+                request,
+            ) {
                 AiDockWindowAction::Show => {
-                    if !display
-                        .bounds
-                        .contains(&window.window_bounds().get_bounds().center())
-                    {
-                        dock.close(window, cx);
-                        return (true, true);
-                    }
                     ai_companion.update(cx, |controller, cx| match request {
                         AiDockRequest::ShowTasks => {
                             controller.prepare_task_center(cx);
@@ -1499,14 +1494,12 @@ fn open_ai_dock(
                             controller.refresh(cx);
                         }
                     });
-                    window.show_window();
-                    window.activate_window();
-                    dock.focus_composer(window, cx);
+                    dock.show(window, cx);
                     (false, false)
                 }
                 AiDockWindowAction::Hide => {
                     dock.close(window, cx);
-                    (false, true)
+                    (false, false)
                 }
                 AiDockWindowAction::Create => unreachable!(),
             }
@@ -1532,19 +1525,52 @@ fn open_ai_dock(
         AiDockRequest::ShowClippy => controller.prepare_clippy(cx),
         AiDockRequest::Toggle | AiDockRequest::Show => controller.prepare(cx),
     });
-    let bounds = ai_dock_bounds(display.bounds);
+    use shelldeck_ui::ai_dock::layout::{floating_bounds, initial_display, DockMode, DockSide};
+    let scale = main_window
+        .update(cx, |_, window, _| window.scale_factor())
+        .unwrap_or(1.0);
+    let displays = ai_dock_placement::displays(cx, scale);
+    let Some(display) = initial_display(&displays) else {
+        tracing::error!("failed to open AI Dock: no display available");
+        return;
+    };
+    let positioning_supported = ai_dock_placement::positioning_supported();
+    let dock_bounds = ai_dock_bounds(display.work_area);
+    let bounds = if positioning_supported {
+        dock_bounds
+    } else {
+        floating_bounds(display.work_area, dock_bounds)
+    };
+    let mode = if positioning_supported {
+        DockMode::Attached(DockSide::Right)
+    } else {
+        DockMode::Floating
+    };
+    tracing::info!(
+        ?mode,
+        positioning_supported,
+        ?bounds,
+        "opening assistant window"
+    );
     let options = WindowOptions {
         titlebar: None,
         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        kind: WindowKind::Overlay,
-        is_movable: false,
-        is_resizable: false,
-        is_minimizable: false,
+        kind: WindowKind::Normal,
+        is_movable: true,
+        is_resizable: true,
+        is_minimizable: true,
+        window_min_size: Some(gpui::size(
+            gpui::px(320.0).min(bounds.size.width),
+            gpui::px(220.0).min(bounds.size.height),
+        )),
+        window_background: gpui::WindowBackgroundAppearance::Transparent,
         display_id: Some(display.id),
         window_decorations: Some(WindowDecorations::Client),
         app_id: Some("shelldeck".to_string()),
         ..Default::default()
     };
+    let resolve_displays: shelldeck_ui::ai_dock::AiDockDisplaysHandler =
+        Rc::new(|window, cx| ai_dock_placement::displays(cx, window.scale_factor()));
 
     let dock_workspace = root.read(cx).workspace_slot.clone();
     let on_open_change: AiDockVisibilityHandler = Rc::new(move |open, cx| {
@@ -1555,7 +1581,19 @@ fn open_ai_dock(
         }
     });
     match cx.open_window(options, move |window, cx| {
-        cx.new(|cx| AiDockView::new(assistant, font_family, on_open_change, window, cx))
+        cx.new(|cx| {
+            AiDockView::new(
+                assistant,
+                font_family,
+                on_open_change,
+                mode,
+                positioning_supported,
+                displays,
+                resolve_displays,
+                window,
+                cx,
+            )
+        })
     }) {
         Ok(handle) => {
             root.update(cx, |root, _| {

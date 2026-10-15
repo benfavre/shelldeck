@@ -73,39 +73,7 @@ impl Workspace {
                 .child(crate::brand::brand_wordmark(12.0));
         }
 
-        // A window-control button with a rounded hover affordance and an SVG
-        // glyph. `icon_path` points at an embedded asset (see main.rs Assets).
-        //
-        // GPUI's `svg()` element paints with its OWN `style.text.color` — it
-        // does not inherit from the parent — so we set it explicitly on the
-        // SVG and swap it on group hover to whiten the icon over the red
-        // close background.
-        let control_btn =
-            |id: &'static str, icon_path: &'static str, area: WindowControlArea, danger: bool| {
-                let hover_bg = if danger {
-                    ShellDeckColors::error()
-                } else {
-                    btn_hover_bg
-                };
-                let group_name = SharedString::from(format!("ctrl-{id}"));
-                div()
-                    .id(id)
-                    .group(group_name.clone())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(28.0))
-                    .rounded(px(6.0))
-                    .hover(|s| s.bg(hover_bg))
-                    .window_control_area(area)
-                    .child(
-                        svg()
-                            .path(icon_path)
-                            .size(px(12.0))
-                            .text_color(btn_text)
-                            .group_hover(group_name, |s| s.text_color(gpui::white())),
-                    )
-            };
+        let control_btn = crate::window_chrome::control_button;
 
         let minimize_btn = control_btn(
             "titlebar-minimize",

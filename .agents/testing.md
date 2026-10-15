@@ -140,8 +140,29 @@ Every PR that adds a user-visible feature or an external contract must:
 
 ## Running the suite
 
+On the Linux desktop, isolate the XDG profile before running UI/application
+tests. Existing Workspace tests can save an `AppConfig` (for example while
+normalizing a font), so an ordinary UI test run can overwrite the signed-in
+desktop's real settings. Do not change `HOME`; use a disposable XDG profile:
+
+```bash
+shelldeck_test_root=$(mktemp -d -t shelldeck-tests.XXXXXX)
+XDG_CONFIG_HOME="$shelldeck_test_root/config" \
+XDG_DATA_HOME="$shelldeck_test_root/data" \
+XDG_CACHE_HOME="$shelldeck_test_root/cache" \
+PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig \
+cargo test --locked -p shelldeck-ui --lib -- --test-threads=1
+```
+
+Keep failure artifacts there for inspection and remove only that temporary
+directory afterward. Set the same three XDG overrides when running application
+tests or a workspace-wide sweep on a machine with a real ShellDeck profile.
+
 ```bash
 # Full workspace (Linux dev machine — set PKG_CONFIG_PATH for OpenSSL):
+XDG_CONFIG_HOME="$shelldeck_test_root/config" \
+XDG_DATA_HOME="$shelldeck_test_root/data" \
+XDG_CACHE_HOME="$shelldeck_test_root/cache" \
 PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig cargo test --workspace
 
 # Single crate:

@@ -19,6 +19,14 @@ use agent_client_protocol::schema::v1::{
 use crate::agent_session::{AgentTraceKind, AgentTraceStatus, AgentTraceUpdate};
 use crate::{Result, ShellDeckError};
 
+#[path = "agent_runtime_protocol.rs"]
+mod protocol;
+pub use protocol::*;
+
+#[path = "agent_runtime_stream.rs"]
+mod stream;
+pub use stream::AgentStreamParser;
+
 pub const MAX_AGENT_PROMPT_BYTES: usize = 48 * 1024;
 pub const MAX_AGENT_MODEL_BYTES: usize = 256;
 pub const MAX_AGENT_WORKDIR_BYTES: usize = 4096;
@@ -312,6 +320,7 @@ impl AgentCommandSpec {
                     "--output-format".to_string(),
                     "stream-json".to_string(),
                     "--verbose".to_string(),
+                    "--include-partial-messages".to_string(),
                     "--permission-mode".to_string(),
                     permission_mode.to_string(),
                 ];
@@ -701,6 +710,27 @@ pub fn terminate_local_process(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentStreamEvent {
+    /// Interactive user input delivered to the active provider turn. Host
+    /// drafts remain intact until acceptance; the presentation text is safe.
+    UserInputAccepted {
+        text: String,
+    },
+    /// A rejected live submission, correlated by the same safe presentation
+    /// text used for acceptance. Its original draft remains available.
+    UserInputRejected {
+        text: String,
+    },
+    /// The host accepted this exact question answer. Cancellation and expiry
+    /// use QuestionAnswerRejected and must never consume an unsent draft.
+    UserInputAcknowledged {
+        interaction_id: String,
+    },
+    QuestionAnswerRejected {
+        interaction_id: String,
+    },
+    InteractionResolved {
+        id: String,
+    },
     /// A complete provider message. The UI separates consecutive messages.
     Text(String),
     /// An incremental text fragment from a streaming provider.
@@ -722,6 +752,14 @@ pub enum AgentStreamEvent {
     },
     /// Safe fallback for provider activity not recognized structurally.
     Activity(String),
+    Plan(AgentPlanUpdate),
+    Usage(AgentUsageUpdate),
+    Metadata(AgentRunMetadata),
+    Question(AgentQuestionRequest),
+    Approval(AgentApprovalRequest),
+    Source(AgentSource),
+    Artifact(AgentArtifact),
+    Subagent(AgentSubagentUpdate),
     Error(String),
 }
 
@@ -788,6 +826,7 @@ pub fn acp_notification_events(notification: &SessionNotification) -> Vec<AgentS
                     summary: None,
                 },
             }));
+            events.extend(acp_resource_events(&call.content));
         }
         SessionUpdate::ToolCallUpdate(update) => {
             if let Some(status) = update.fields.status {
@@ -801,24 +840,77 @@ pub fn acp_notification_events(notification: &SessionNotification) -> Vec<AgentS
                         .map(|title| safe_provider_text(title, MAX_AGENT_TRACE_FIELD_BYTES)),
                 });
             }
+            if let Some(content) = &update.fields.content {
+                events.extend(acp_resource_events(content));
+            }
         }
         SessionUpdate::Plan(plan) => {
-            events.push(AgentStreamEvent::Trace(AgentTraceUpdate {
-                correlation_id: None,
-                detail: AgentTraceKind::Activity {
-                    label: format!("Plan updated ({} steps)", plan.entries.len()),
-                },
-            }));
+            use agent_client_protocol::schema::v1::PlanEntryStatus;
+            events.push(AgentStreamEvent::Plan(
+                AgentPlanUpdate {
+                    steps: plan
+                        .entries
+                        .iter()
+                        .take(MAX_AGENT_PLAN_STEPS)
+                        .map(|entry| AgentPlanStep {
+                            text: entry.content.clone(),
+                            status: match entry.status {
+                                PlanEntryStatus::InProgress => AgentPlanStepStatus::InProgress,
+                                PlanEntryStatus::Completed => AgentPlanStepStatus::Completed,
+                                _ => AgentPlanStepStatus::Pending,
+                            },
+                        })
+                        .collect(),
+                }
+                .bounded(),
+            ));
         }
+        SessionUpdate::UsageUpdate(usage) => events.push(AgentStreamEvent::Usage(
+            AgentUsageUpdate {
+                context_used: Some(usage.used),
+                context_size: Some(usage.size),
+                cost_amount: usage.cost.as_ref().map(|cost| cost.amount.to_string()),
+                cost_currency: usage.cost.as_ref().map(|cost| cost.currency.clone()),
+                cumulative: true,
+                ..Default::default()
+            }
+            .bounded(),
+        )),
         SessionUpdate::AvailableCommandsUpdate(_)
         | SessionUpdate::CurrentModeUpdate(_)
         | SessionUpdate::ConfigOptionUpdate(_)
-        | SessionUpdate::SessionInfoUpdate(_)
-        | SessionUpdate::UsageUpdate(_) => {}
+        | SessionUpdate::SessionInfoUpdate(_) => {}
         SessionUpdate::UserMessageChunk(_) => {}
         _ => {}
     }
     events
+}
+
+fn acp_resource_events(
+    content: &[agent_client_protocol::schema::v1::ToolCallContent],
+) -> Vec<AgentStreamEvent> {
+    use agent_client_protocol::schema::v1::ToolCallContent;
+    content
+        .iter()
+        .take(64)
+        .filter_map(|item| {
+            let ToolCallContent::Content(content) = item else {
+                return None;
+            };
+            let ContentBlock::ResourceLink(link) = &content.content else {
+                return None;
+            };
+            Some(AgentStreamEvent::Artifact(
+                AgentArtifact {
+                    id: link.uri.clone(),
+                    title: link.title.as_ref().unwrap_or(&link.name).clone(),
+                    uri: link.uri.clone(),
+                    mime_type: link.mime_type.clone(),
+                }
+                .bounded(),
+            ))
+        })
+        .collect()
 }
 
 fn acp_trace_status(status: ToolCallStatus) -> AgentTraceStatus {

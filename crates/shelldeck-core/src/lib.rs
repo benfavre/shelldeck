@@ -1,5 +1,10 @@
 pub mod acp;
 pub mod agent_runtime;
+pub mod agent_workflows;
+pub mod agent_delivery;
+pub mod agent_codex;
+pub mod agent_browser;
+pub mod agent_review;
 pub mod agent_session;
 pub mod ai;
 pub mod companion;
@@ -7,6 +12,7 @@ pub mod config;
 pub mod error;
 pub mod git;
 pub mod models;
+pub mod tmux;
 pub mod util;
 pub mod workspace_navigation;
 pub mod workspace_review;

@@ -1,9 +1,10 @@
 use super::*;
 use crate::agent_console_view::{AgentProjectGroup, AgentRemoteFileEntry, AgentWorktreeOption};
 use shelldeck_core::agent_runtime::{
-    configure_local_process, parse_stream_line, terminate_local_process, AcpAgentPermissionBroker,
+    configure_local_process, terminate_local_process, AcpInteractivePermissionBroker,
     AgentCommandSpec, AgentProvider, AgentRunRequest, AgentStreamEvent, AgentStreamFrame,
-    AgentStreamFramer, AgentTarget, LocalProcessTree, AGENT_STREAM_OVERSIZED_LABEL,
+    AgentStreamFramer, AgentStreamParser, AgentTarget, LocalProcessTree,
+    AGENT_STREAM_OVERSIZED_LABEL,
 };
 use shelldeck_core::agent_session::DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS;
 use shelldeck_core::config::workspace_catalog::{
@@ -18,16 +19,60 @@ use std::process::{Command, Stdio};
 pub(super) struct ActiveAgentRun {
     shutdown: AgentShutdown,
     _thread: std::thread::JoinHandle<()>,
+    pub(super) approval_broker: Option<std::sync::Arc<AcpInteractivePermissionBroker>>,
 }
 
 enum AgentShutdown {
+    Codex(
+        parking_lot::Mutex<
+            Option<std::sync::mpsc::SyncSender<shelldeck_core::agent_codex::LiveCodexCommand>>,
+        >,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ),
     Process(tokio::sync::mpsc::Sender<()>),
     Acp(parking_lot::Mutex<Option<shelldeck_core::acp::AcpCancelSender>>),
 }
 
 impl ActiveAgentRun {
+    pub(super) fn live_codex(
+        commands: std::sync::mpsc::SyncSender<shelldeck_core::agent_codex::LiveCodexCommand>,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: std::thread::JoinHandle<()>,
+    ) -> Self {
+        Self {
+            shutdown: AgentShutdown::Codex(parking_lot::Mutex::new(Some(commands)), cancel),
+            _thread: thread,
+            approval_broker: None,
+        }
+    }
+    pub(super) fn send_live(
+        &self,
+        command: shelldeck_core::agent_codex::LiveCodexCommand,
+    ) -> Result<(), String> {
+        if let AgentShutdown::Codex(sender, _) = &self.shutdown {
+            sender
+                .lock()
+                .as_ref()
+                .ok_or("Agent run is stopping")?
+                .try_send(command)
+                .map_err(|_| "Agent input queue is busy or closed".to_string())
+        } else {
+            Err("This agent transport does not accept live input".to_string())
+        }
+    }
+
     fn stop(&self) {
+        if let Some(broker) = &self.approval_broker {
+            broker.cancel_pending();
+        }
         match &self.shutdown {
+            AgentShutdown::Codex(sender, cancel) => {
+                cancel.store(true, std::sync::atomic::Ordering::Release);
+                if let Some(sender) = sender.lock().take() {
+                    let _ =
+                        sender.try_send(shelldeck_core::agent_codex::LiveCodexCommand::Interrupt);
+                }
+            }
             AgentShutdown::Process(sender) => {
                 let _ = sender.try_send(());
             }
@@ -75,23 +120,93 @@ impl Workspace {
         event: AgentConsoleEvent,
         cx: &mut Context<Self>,
     ) {
+        if let AgentConsoleEvent::Stop(run_id) = &event {
+            self.stop_agent_run(*run_id, cx);
+            return;
+        }
         if !self.can_access_mode(AppMode::Dev) {
+            self.agent_console.update(cx, |view, cx| {
+                view.set_workflows_authorized(false, cx);
+                if let AgentConsoleEvent::Run(request) = &event {
+                    view.reject_run_for(
+                        request.id,
+                        t!("agents.live.authorization_lost").to_string(),
+                        cx,
+                    );
+                }
+            });
             return;
         }
         match event {
-            AgentConsoleEvent::Run(request) => self.start_agent_run(request, cx),
+            AgentConsoleEvent::Run(request) => self.prepare_agent_run(request, cx),
             AgentConsoleEvent::Stop(run_id) => self.stop_agent_run(run_id, cx),
             AgentConsoleEvent::OpenLocalFile { session_id, path } => {
-                let path = authorized_local_agent_file(
-                    self.agent_console.read(cx).sessions(),
-                    session_id,
-                    &path,
-                );
-                if let Some(path) = path {
-                    self.file_editor.update(cx, |editor, cx| {
-                        editor.open_file(path, cx);
-                    });
-                    self.set_active_view(ActiveView::FileEditor);
+                self.agent_console.update(cx, |view, cx| {
+                    if view.selected_session_id() == Some(session_id) {
+                        view.open_local_agent_preview(path, cx);
+                    }
+                });
+            }
+            AgentConsoleEvent::CheckReadiness { check_id, context } => {
+                self.check_remote_agent_readiness(check_id, context, cx)
+            }
+            AgentConsoleEvent::OpenTerminal { context } => self.open_agent_terminal(context, cx),
+            AgentConsoleEvent::OpenWorkspaceLauncher => self.open_agent_workspace_launcher(cx),
+            AgentConsoleEvent::OpenRemoteFile {
+                session_id,
+                request_id,
+                connection_id,
+                path,
+            } => self.open_remote_agent_file(session_id, request_id, connection_id, path, cx),
+            AgentConsoleEvent::Steer { run_id, text } => self.send_live_codex(
+                run_id,
+                shelldeck_core::agent_codex::LiveCodexCommand::Steer { text },
+                cx,
+            ),
+            AgentConsoleEvent::QuestionAnswer {
+                run_id,
+                question_id,
+                answer,
+            } => self.send_live_codex(
+                run_id,
+                shelldeck_core::agent_codex::LiveCodexCommand::Answer {
+                    question_id,
+                    answer,
+                },
+                cx,
+            ),
+            AgentConsoleEvent::ApprovalDecision {
+                run_id,
+                request_id,
+                option_id,
+            } => {
+                if let Some(broker) = self
+                    .active_agent_runs
+                    .get(&run_id)
+                    .and_then(|run| run.approval_broker.as_ref())
+                {
+                    if let Err(error) = broker.respond(&request_id, option_id.as_deref()) {
+                        self.show_toast(error.to_string(), ToastLevel::Warning, cx);
+                    } else {
+                        self.agent_console.update(cx, |view, cx| {
+                            view.push_stream_event_for(
+                                run_id,
+                                AgentStreamEvent::InteractionResolved {
+                                    id: request_id.clone(),
+                                },
+                                cx,
+                            )
+                        });
+                    }
+                } else {
+                    self.send_live_codex(
+                        run_id,
+                        shelldeck_core::agent_codex::LiveCodexCommand::Approval {
+                            request_id,
+                            option_id,
+                        },
+                        cx,
+                    );
                 }
             }
             AgentConsoleEvent::BrowseRemoteDirectory {
@@ -119,7 +234,18 @@ impl Workspace {
         }
     }
 
-    fn start_agent_run(&mut self, mut request: AgentRunRequest, cx: &mut Context<Self>) {
+    pub(super) fn start_agent_run(&mut self, mut request: AgentRunRequest, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Dev) {
+            self.agent_console.update(cx, |view, cx| {
+                view.reject_run_for(
+                    request.id,
+                    t!("agents.live.authorization_lost").to_string(),
+                    cx,
+                )
+            });
+            return;
+        }
+
         if !agent_run_has_capacity(self.active_agent_runs.len()) {
             let message = t!(
                 "agents.error.parallel_limit",
@@ -132,6 +258,11 @@ impl Workspace {
             self.show_toast(message, ToastLevel::Warning, cx);
             return;
         }
+        if request.provider == AgentProvider::Codex && matches!(request.target, AgentTarget::Local)
+        {
+            self.start_live_codex(request, cx);
+            return;
+        }
         if request.provider == AgentProvider::Automonique {
             self.start_automonique_agent_run(request, cx);
             return;
@@ -142,10 +273,22 @@ impl Workspace {
                 *connection_id,
                 &request.workdir,
             ) {
-                request.workdir = workdir;
+                let admitted = self.agent_console.update(cx, |view, cx| {
+                    view.admit_starting_run_workdir(&mut request, &workdir, cx)
+                });
+                if let Err(message) = admitted {
+                    self.agent_console.update(cx, |view, cx| {
+                        view.reject_run_for(request.id, message.clone(), cx)
+                    });
+                    self.show_toast(message, ToastLevel::Error, cx);
+                    return;
+                }
             }
         }
-        let mut spec = match AgentCommandSpec::for_request(&request) {
+        let options = self
+            .agent_console
+            .update(cx, |view, _| view.take_run_options(request.id));
+        let mut spec = match AgentCommandSpec::for_request_with_options(&request, &options) {
             Ok(spec) => spec,
             Err(error) => {
                 let message = error.to_string();
@@ -244,6 +387,7 @@ impl Workspace {
             run_id,
             ActiveAgentRun {
                 shutdown: AgentShutdown::Process(shutdown_tx),
+                approval_broker: None,
                 _thread: thread,
             },
         );
@@ -266,6 +410,14 @@ impl Workspace {
             }
             match done_rx.try_recv() {
                 Ok((exit_code, error)) => {
+                    let trailing = event_rx.try_iter().collect::<Vec<_>>();
+                    if !trailing.is_empty() {
+                        let _ = console.update(cx, |view, cx| {
+                            for event in trailing {
+                                view.push_stream_event_for(run_id, event, cx);
+                            }
+                        });
+                    }
                     let error = error.or_else(|| {
                         (exit_code == Some(127)).then(|| {
                             t!(
@@ -275,32 +427,8 @@ impl Workspace {
                             .to_string()
                         })
                     });
-                    let _ = console.update(cx, |view, cx| {
-                        view.finish_run(run_id, exit_code, error.clone(), cx)
-                    });
                     let _ = this.update(cx, |workspace, cx| {
-                        workspace.active_agent_runs.remove(&run_id);
-                        let level = if exit_code == Some(0) && error.is_none() {
-                            ToastLevel::Success
-                        } else if exit_code.is_none() && error.is_none() {
-                            ToastLevel::Info
-                        } else {
-                            ToastLevel::Error
-                        };
-                        let message = if let Some(error) = error {
-                            t!("agents.toast.failed", error = error).to_string()
-                        } else if exit_code == Some(0) {
-                            t!("agents.toast.completed").to_string()
-                        } else if exit_code.is_none() {
-                            t!("agents.toast.stopped").to_string()
-                        } else {
-                            t!(
-                                "agents.toast.exit",
-                                code = exit_code.unwrap_or(-1).to_string()
-                            )
-                            .to_string()
-                        };
-                        workspace.show_toast(message, level, cx);
+                        workspace.complete_agent_run(run_id, exit_code, error, cx)
                     });
                     break;
                 }
@@ -382,8 +510,19 @@ impl Workspace {
         let (cancel_tx, cancel_rx) = shelldeck_core::acp::cancel_channel();
         let (event_tx, event_rx) = std::sync::mpsc::channel::<AgentStreamEvent>();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<AgentDone>();
+        let broker = std::sync::Arc::new(AcpInteractivePermissionBroker::new(
+            request.access,
+            event_tx.clone(),
+            std::time::Duration::from_secs(180),
+        ));
         let thread = match spawn_local_automonique_agent(
-            run_id, request, program, cancel_rx, event_tx, done_tx,
+            run_id,
+            request,
+            program,
+            cancel_rx,
+            event_tx,
+            done_tx,
+            broker.clone(),
         ) {
             Ok(thread) => thread,
             Err(error) => {
@@ -397,6 +536,7 @@ impl Workspace {
             run_id,
             ActiveAgentRun {
                 shutdown: AgentShutdown::Acp(parking_lot::Mutex::new(Some(cancel_tx))),
+                approval_broker: Some(broker),
                 _thread: thread,
             },
         );
@@ -419,25 +559,16 @@ impl Workspace {
             }
             match done_rx.try_recv() {
                 Ok((exit_code, error)) => {
-                    let _ = console.update(cx, |view, cx| {
-                        view.finish_run(run_id, exit_code, error.clone(), cx)
-                    });
+                    let trailing = event_rx.try_iter().collect::<Vec<_>>();
+                    if !trailing.is_empty() {
+                        let _ = console.update(cx, |view, cx| {
+                            for event in trailing {
+                                view.push_stream_event_for(run_id, event, cx);
+                            }
+                        });
+                    }
                     let _ = this.update(cx, |workspace, cx| {
-                        workspace.active_agent_runs.remove(&run_id);
-                        let (message, level) = if let Some(error) = error {
-                            (
-                                t!("agents.toast.failed", error = error).to_string(),
-                                ToastLevel::Error,
-                            )
-                        } else if exit_code == Some(0) {
-                            (
-                                t!("agents.toast.completed").to_string(),
-                                ToastLevel::Success,
-                            )
-                        } else {
-                            (t!("agents.toast.stopped").to_string(), ToastLevel::Info)
-                        };
-                        workspace.show_toast(message, level, cx);
+                        workspace.complete_agent_run(run_id, exit_code, error, cx)
                     });
                     break;
                 }
@@ -474,9 +605,12 @@ impl Workspace {
         self.show_toast(message, level, cx);
     }
 
-    fn stop_agent_run(&mut self, run_id: Uuid, _cx: &mut Context<Self>) {
+    fn stop_agent_run(&mut self, run_id: Uuid, cx: &mut Context<Self>) {
         if let Some(run) = self.active_agent_runs.get(&run_id) {
             run.stop();
+        } else {
+            self.agent_console
+                .update(cx, |view, cx| view.finish_run(run_id, None, None, cx));
         }
     }
 
@@ -487,21 +621,8 @@ impl Workspace {
         path: String,
         cx: &mut Context<Self>,
     ) {
-        let selected_context_matches =
-            self.agent_console
-                .read(cx)
-                .sessions()
-                .iter()
-                .any(|session| {
-                    session.id == session_id
-                        && matches!(
-                            session.context.target,
-                            AgentTarget::Ssh {
-                                connection_id: selected,
-                                ..
-                            } if selected == connection_id
-                        )
-                });
+        let selected_context_matches = self.agent_console.read(cx).selected_execution_context(cx)
+            .is_some_and(|(id,context)| id==session_id && matches!(context.target,AgentTarget::Ssh{connection_id:selected,..}if selected==connection_id));
         let Some(connection) = selected_context_matches
             .then_some({
                 self.connections
@@ -699,7 +820,7 @@ impl Workspace {
             .update(cx, |view, cx| view.set_project_groups(groups, cx));
     }
 
-    fn bind_agent_run_to_workspace(
+    pub(super) fn bind_agent_run_to_workspace(
         &mut self,
         request: &AgentRunRequest,
         cx: &mut Context<Self>,
@@ -724,25 +845,34 @@ impl Workspace {
             .find(|session| session.id == session_id)
             .map(|session| session.name.clone())
             .unwrap_or_else(|| t!("agents.session.new").to_string());
-        self.workspace_hub.update(cx, |hub, cx| {
-            hub.open_or_focus_agent_session(
-                workspace,
-                title,
-                AgentSessionBinding {
-                    checkout_id,
-                    session_id,
-                },
-                cx,
-            )
-            .map(|_| ())
-        })?;
+        let foreground = self.agent_console.read(cx).run_requests_focus(request.id)
+            && matches!(
+                self.active_view,
+                ActiveView::Agents | ActiveView::Workspaces
+            );
+        if foreground {
+            self.workspace_hub.update(cx, |hub, cx| {
+                hub.open_or_focus_agent_session(
+                    workspace,
+                    title,
+                    AgentSessionBinding {
+                        checkout_id,
+                        session_id,
+                    },
+                    cx,
+                )
+                .map(|_| ())
+            })?;
+        }
         self.agent_session_bindings
             .insert(session_id, (workspace, checkout_id));
         self.agent_console.update(cx, |view, cx| {
             view.set_session_context_locked(session_id, true, cx)
         });
-        self.active_view = ActiveView::Workspaces;
-        self.on_active_view_changed(cx);
+        if foreground {
+            self.active_view = ActiveView::Workspaces;
+            self.on_active_view_changed(cx);
+        }
         Ok(())
     }
 }
@@ -956,7 +1086,7 @@ fn parse_remote_home(stdout: &[u8]) -> Result<String, String> {
     Ok(home.to_string())
 }
 
-fn resolve_local_agent_program(program: &str) -> Option<String> {
+pub(crate) fn resolve_local_agent_program(program: &str) -> Option<String> {
     if shelldeck_core::util::executable_on_path(program) {
         return Some(program.to_string());
     }
@@ -993,14 +1123,14 @@ fn resolve_local_agent_program(program: &str) -> Option<String> {
 
 fn send_stream_frames(
     frames: Vec<AgentStreamFrame>,
-    provider: shelldeck_core::agent_runtime::AgentProvider,
+    parser: &mut AgentStreamParser,
     parse_json: bool,
     event_tx: &std::sync::mpsc::Sender<AgentStreamEvent>,
 ) {
     for frame in frames {
         match frame {
             AgentStreamFrame::Line(line) if parse_json => {
-                for event in parse_stream_line(provider, &line) {
+                for event in parser.parse_line(&line) {
                     let _ = event_tx.send(event);
                 }
             }
@@ -1025,17 +1155,26 @@ fn forward_local_stream(
     event_tx: &std::sync::mpsc::Sender<AgentStreamEvent>,
 ) {
     let mut framer = AgentStreamFramer::default();
+    let mut parser = AgentStreamParser::new(provider);
     let mut chunk = [0_u8; 8 * 1024];
     loop {
         match reader.read(&mut chunk) {
             Ok(0) => break,
-            Ok(read) => {
-                send_stream_frames(framer.push(&chunk[..read]), provider, parse_json, event_tx)
-            }
+            Ok(read) => send_stream_frames(
+                framer.push(&chunk[..read]),
+                &mut parser,
+                parse_json,
+                event_tx,
+            ),
             Err(_) => break,
         }
     }
-    send_stream_frames(framer.finish(), provider, parse_json, event_tx);
+    send_stream_frames(framer.finish(), &mut parser, parse_json, event_tx);
+    if parse_json {
+        for event in parser.finish() {
+            let _ = event_tx.send(event);
+        }
+    }
 }
 
 fn spawn_local_automonique_agent(
@@ -1045,13 +1184,11 @@ fn spawn_local_automonique_agent(
     cancel_rx: shelldeck_core::acp::AcpCancelReceiver,
     event_tx: std::sync::mpsc::Sender<AgentStreamEvent>,
     done_tx: std::sync::mpsc::Sender<AgentDone>,
+    permissions: std::sync::Arc<AcpInteractivePermissionBroker>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name(format!("agent-acp-{run_id}"))
         .spawn(move || {
-            use std::sync::Arc;
-
-            let permissions = Arc::new(AcpAgentPermissionBroker::new(request.access));
             let mut turn =
                 shelldeck_core::acp::AcpTurnRequest::text(&request.workdir, request.prompt);
             if let Some(session) = request.resume_session {
@@ -1215,10 +1352,14 @@ fn spawn_remote_agent(
                 let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                 let forward = tokio::spawn(async move {
                     let mut framer = AgentStreamFramer::default();
+                    let mut parser = AgentStreamParser::new(provider);
                     while let Some(bytes) = output_rx.recv().await {
-                        send_stream_frames(framer.push(&bytes), provider, true, &event_tx);
+                        send_stream_frames(framer.push(&bytes), &mut parser, true, &event_tx);
                     }
-                    send_stream_frames(framer.finish(), provider, true, &event_tx);
+                    send_stream_frames(framer.finish(), &mut parser, true, &event_tx);
+                    for event in parser.finish() {
+                        let _ = event_tx.send(event);
+                    }
                 });
                 let result = session
                     .exec_cancellable(&spec.remote_shell_command(), output_tx, shutdown_rx)

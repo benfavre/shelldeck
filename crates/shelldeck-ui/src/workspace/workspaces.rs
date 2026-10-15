@@ -830,6 +830,10 @@ fn retained_surface_entity(
 }
 
 impl WorkspaceHubView {
+    pub(super) fn show_launcher(&mut self, cx: &mut Context<Self>) {
+        self.launcher_open = true; self.error = None; cx.notify();
+    }
+
     /// Resolve the active workspace through the catalog's exact reconciliation.
     /// Provider session bindings are deliberately not considered authority.
     pub(super) fn active_platform_review_target(&self) -> Option<PlatformReviewTarget> {

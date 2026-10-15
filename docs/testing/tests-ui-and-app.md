@@ -1,5 +1,15 @@
 # SDTEST inventory — `shelldeck-ui`, `shelldeck`, `shelldeck-update`
 
+## Assistant docking and floating windows
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1956 | `ai_dock::layout::initial_dock_uses_primary_display_and_usable_edges_on_either_side` | SDUC-434 | Green | Primary display wins over array/pointer order; left/right placement, negative monitor origins, usable area, small screens, floating size and physical positioning coordinates. |
+| SDTEST-1957 | `ai_dock::layout::native_tiles_change_the_frame_without_treating_maximized_or_crossing_windows_as_docked` | SDUC-434 | Green | Completed left/right native tiles change shape; floating monitor crossings and maximized bounds do not masquerade as attached panels. |
+| SDTEST-1958 | `ai_dock::layout::reopening_cancels_a_pending_hide_without_cancelling_the_next_close` | SDUC-434 | Green | A stale exit timer cannot hide a reopened window or complete a later close. |
+| SDTEST-1959 | `ai_dock_placement::xrandr_dock_inventory_retains_primary_negative_origins_and_work_area` | SDUC-434 | Green | Physical X11 monitors remain separate despite sharing a GPUI root display ID; primary flag and usable areas survive parsing. |
+| SDTEST-1960 | Native docking/drag/rounding and macOS/Windows compile matrix | SDUC-434 | Yellow | Linux build and pure geometry/lifecycle tests run locally. Native multi-monitor pointer QA and macOS/Windows matrix remain required before release; Wayland exact placement is unavailable, with native movement/snapping retained. |
+
 > Rules for this file live in [`.agents/testing.md`](../../.agents/testing.md).
 > Use case IDs (`SDUC-…`) resolve in [`USE_CASES.md`](./USE_CASES.md).
 
@@ -667,3 +677,43 @@ observed defect. Evidence and repeatable journeys live in
 | SDTEST-1940 | *to write* — native async session recovery and account draft cleanup | SDUC-152, SDUC-154, SDUC-228 | **Red / P1** | Manual X11 pass reproduced delayed-detail disappearance and lingering expired session on v0.9.10, then verified the rebuilt app retains the latest detail, returns to welcome on polling 401, and re-login opens an empty creation draft. Automated rendered/click coverage remains missing. See feature-followup-qa-2026-09-30.md. |
 | SDTEST-1943 | `workspace/tunnel_starts.rs::stop_retry_and_account_shutdown_retire_pending_tunnel_results` | SDUC-052, SDUC-152 | Green | Cancellation reaches pending workers; delayed completions cannot remove a newer retry; account shutdown and owner drop retire all attempts. |
 | SDTEST-1944 | *to write* — native tunnel setup cancellation and delayed reverse cleanup | SDUC-049, SDUC-050, SDUC-052 | **Red / P1** | Private X11 manual coverage in forward-qa-2026-09-30.md; rendered click automation is not part of CI. |
+
+## Terminal link activation — 2026-10-14
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1950 | *to write* — native modified link click and matching release delivery | SDUC-021 | **Red / P1** | Native replay should Ctrl/Cmd-click every row of a wrapped URL in tmux, assert the complete browser destination, and check that releasing the modifier before mouse-up does not send an unmatched remote release. Ordinary tmux clicks must remain delivered. Pure routing and URL reconstruction have automated coverage; live input automation is unavailable in this session. |
+
+
+## Agents workspace parity — 2026-10-15
+
+Core contracts SDTEST-2200..2205 (library), 2230..2234 (protocol),
+2260..2272 (review), 2330..2334 (browser), 2360..2368 (local Codex),
+2400..2406 (goals/tasks), 2440..2456 (delivery) and 2473..2475
+(mapped checkout admission) are inventoried in
+[tests-core.md](tests-core.md). See the [implementation audit](agent-parity-audit-2026-10-15.md)
+for provider limits and the remaining native acceptance journeys.
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2273 | `agent_console_view/review.rs::sdtest_2273_diff_anchors_keep_deleted_new_context_and_no_newline_lines_distinct` | SDUC-552 | Green | Passed in the final UI run (216 passed; three unrelated baseline lifecycle failures). Diff old/new anchors distinguish deletions, additions, context, hunk boundaries and no-newline metadata. |
+| SDTEST-2470 | `agent_console_view/composer.rs::sdtest_2470_queue_edit_preserves_images_effort_and_expanded_text_once` | SDUC-551 | Green | Passed in the final UI run (216 passed; three unrelated baseline lifecycle failures). Queued edit restores image paths and reasoning effort without duplicating expanded text context. |
+| SDTEST-2471 | `agent_console_view/composer.rs::sdtest_2471_queue_edit_rejects_missing_or_reclassified_images` | SDUC-551 | Green | Passed in the final UI run (216 passed; three unrelated baseline lifecycle failures). Missing or reclassified images leave queued input unavailable for destructive restoration. |
+| SDTEST-2472 | `agent_console_view/composer.rs::sdtest_2472_queue_edit_detects_input_or_context_changes_before_removal` | SDUC-551 | Green | Passed in the final UI run (216 passed; three unrelated baseline lifecycle failures). Queued edit snapshot rejects changed options, context or prompt before removing the original item. |
+| SDTEST-2480 | *to write* — native conversation recovery, split panes and composer focus | SDUC-550, SDUC-551 | **Red / P1** | Restart with drafts, restored history and context boundaries; local/SSH target switches must update Files/preview/source authority. Test short and split panes, keyboard navigation, user scrolled away from latest, and queue editing with image-load failures. Workspace tab-layout durability remains an unimplemented feature, not a passing recovery claim. |
+| SDTEST-2481 | *to write* — native review and delivery confirmation journeys | SDUC-552, SDUC-556 | **Red / P0** | Confirm review/delivery dialogs show the correct session, branch, commit, destination and actor; changing context or launching a run retires the old action. Exercise diff comments and safe stage/unstage/commit only in a throwaway local checkout. Native push/PR acceptance requires a separately authorized throwaway remote; none was mutated in this implementation session. |
+| SDTEST-2482 | *to write* — native local Codex live questions, approvals and steering | SDUC-551, SDUC-554 | **Red / P1** | Real installed CLI/app-server compatibility, question entry, exact plan/patch/approval display, rejection preserving the draft, queue versus Send now, and priority Stop. Fake-pipe tests do not substitute for a native rendered interaction. |
+| SDTEST-2483 | *to write* — native browser snapshots and local task lifecycle | SDUC-553, SDUC-555 | **Red / P1** | Installed Chromium capture/DOM/screenshot annotations and local Codex image delivery; missing-browser failures; native goals/recurring task create/edit/enable/pause/restart and write-access confirmation. Browser login/forms/live clicks, cloud execution and voice are unimplemented and cannot be marked covered by these snapshot/local-task checks. |
+
+### Live input acknowledgment regressions (2026-10-15)
+
+| ID | Use case | Test | Status |
+|---|---|---|---|
+| SDTEST-2486 | SDUC-554 | `agent_console_view::live_input::tests::sdtest_2486_live_acknowledgment_is_scoped_to_run_and_submitted_text` — unrelated run/text cannot consume a submitted draft | Green — final UI run passed this test |
+| SDTEST-2487 | SDUC-554 | `sdtest_2487_live_input_reservation_preserves_first_submission` — rapid second submission cannot replace the outstanding input | Green — final UI run passed this test |
+| SDTEST-2488 | SDUC-554 | Live acceptance matches delivered context without consuming newer draft edits | Green — final UI run passed this test |
+| SDTEST-2489 | SDUC-554 | Exact question acceptance/rejection IDs preserve unrelated text and permit retry after cancellation | Green — final UI run passed this test |
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2300 | `workspace/agent_tools.rs::remote_preview_keeps_hostile_paths_quoted_and_enforces_root` | SDUC-551 | Green | Bounded SSH preview command rejects ambiguous/relative roots, shell-quotes hostile paths and refuses symlink leaves. Passed in the full 2026-10-15 UI run. |

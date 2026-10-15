@@ -1,5 +1,9 @@
 # SDTEST inventory — `shelldeck-terminal`
 
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1954 | `session.rs::tmux_actions_use_the_control_channel_without_foreground_input_or_fallback` | SDUC-500 | Green | A split reaches the typed control receiver while the SSH foreground-input channel remains empty; a closed controller returns failure without typing a fallback. |
+
 > Rules for this file live in [`.agents/testing.md`](../../.agents/testing.md).
 > Use case IDs (`SDUC-…`) resolve in [`USE_CASES.md`](./USE_CASES.md).
 
@@ -127,6 +131,11 @@ cross-platform coverage.
 | SDTEST-900 | `url.rs::trims_trailing_punctuation_from_detected_web_url` | SDUC-021 | Green |
 | SDTEST-901 | `url.rs::detects_file_path_with_line_and_column` | SDUC-021 | Green |
 | SDTEST-902 | `url.rs::parses_path_that_contains_colons_and_line_suffix` | SDUC-021 | Green |
+| SDTEST-1945 | `url.rs::hard_wrapped_login_query_opens_the_complete_url_from_every_row` | SDUC-021 | Green | Synthetic OAuth query redrawn across full-width rows; every segment retains the full destination and its own hitbox. |
+| SDTEST-1946 | `url.rs::query_wrap_recovery_stops_at_whitespace_blank_rows_and_another_url` | SDUC-021 | Green | Whitespace, short rows, blank rows and a second link preserve URL boundaries. |
+| SDTEST-1947 | `url.rs::unicode_and_wide_cells_keep_link_hitboxes_aligned` | SDUC-021 | Green | Accented text, wide characters/spacers and Unicode URL characters keep pointer and underline columns aligned. |
+| SDTEST-1948 | `url.rs::soft_wrapped_urls_use_the_scrolled_viewport_coordinates` | SDUC-021 | Green | Real VTE replay with soft wrapping and scrollback preserves a complete queryless URL at visible coordinates. |
+| SDTEST-1949 | `url.rs::link_activation_precedes_mouse_reporting_without_stealing_ordinary_clicks` | SDUC-021 | Green | Ctrl/Cmd link activation wins in every mouse reporting mode; ordinary clicks and modified non-link clicks retain selection or remote mouse delivery. |
 
 ### Gaps
 

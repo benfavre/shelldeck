@@ -1,4 +1,5 @@
 use crate::i18n::rel_time;
+pub(crate) use agents::resolve_local_agent_program;
 use crate::icons::{ai_provider_badge, ai_provider_icon, lucide_icon, lucide_path};
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
 use adabraka_ui::components::icon_button::IconButton;
@@ -112,6 +113,8 @@ pub type AiDockOpenHandler = Box<dyn Fn(&mut App)>;
 mod account;
 mod activity;
 mod agents;
+mod agent_tools;
+mod agent_codex;
 mod ai;
 mod ai_routing;
 mod bext;
@@ -1726,28 +1729,6 @@ fn uuid_from_key(site_id: &str, name: &str) -> Uuid {
     name.hash(&mut lo);
     site_id.hash(&mut lo);
     Uuid::from_u128(((hi.finish() as u128) << 64) | lo.finish() as u128)
-}
-
-fn resize_edge(pos: Point<Pixels>, border: Pixels, size: Size<Pixels>) -> Option<ResizeEdge> {
-    if pos.y < border && pos.x < border {
-        Some(ResizeEdge::TopLeft)
-    } else if pos.y < border && pos.x > size.width - border {
-        Some(ResizeEdge::TopRight)
-    } else if pos.y < border {
-        Some(ResizeEdge::Top)
-    } else if pos.y > size.height - border && pos.x < border {
-        Some(ResizeEdge::BottomLeft)
-    } else if pos.y > size.height - border && pos.x > size.width - border {
-        Some(ResizeEdge::BottomRight)
-    } else if pos.y > size.height - border {
-        Some(ResizeEdge::Bottom)
-    } else if pos.x < border {
-        Some(ResizeEdge::Left)
-    } else if pos.x > size.width - border {
-        Some(ResizeEdge::Right)
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]

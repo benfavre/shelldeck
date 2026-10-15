@@ -8,9 +8,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agent_runtime::{
-    AgentAccessMode, AgentProvider, AgentRunRequest, AgentStreamEvent, AgentTarget,
+    AgentAccessMode, AgentApprovalRequest, AgentArtifact, AgentPlanUpdate, AgentProvider,
+    AgentQuestionRequest, AgentRunMetadata, AgentRunRequest, AgentSource, AgentStreamEvent,
+    AgentSubagentUpdate, AgentTarget, AgentUsageUpdate,
 };
 use crate::{Result, ShellDeckError};
+
+#[path = "agent_session_storage.rs"]
+pub mod storage;
 
 pub const DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS: usize = 4;
 pub const MAX_CONCURRENT_AGENT_SESSIONS: usize = 8;
@@ -21,6 +26,8 @@ pub const MAX_AGENT_TRACE_EVENTS_PER_SESSION: usize = 512;
 pub const MAX_AGENT_MESSAGE_BYTES: usize = 128 * 1024;
 pub const MAX_AGENT_TRACE_STRING_BYTES: usize = 8 * 1024;
 pub const MAX_AGENT_TRACE_CORRELATION_BYTES: usize = 256;
+pub const MAX_AGENT_TURNS_PER_SESSION: usize = 256;
+pub const MAX_AGENT_BOUNDARIES_PER_SESSION: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentExecutionContext {
@@ -67,6 +74,27 @@ impl AgentExecutionContext {
             .map(|model| model.trim().to_string())
             .filter(|model| !model.is_empty());
         self.run_request("validate execution context").validate()?;
+        if self.workdir.contains(['\0', '\r', '\n'])
+            || self
+                .model
+                .as_ref()
+                .is_some_and(|model| model.chars().any(char::is_control))
+        {
+            return Err(ShellDeckError::Config(
+                "invalid control character in agent context".into(),
+            ));
+        }
+        if let AgentTarget::Ssh {
+            connection_id,
+            connection_label,
+        } = &mut self.target
+        {
+            if connection_id.is_nil() || connection_label.chars().any(char::is_control) {
+                return Err(ShellDeckError::Config("invalid SSH agent target".into()));
+            }
+            *connection_label =
+                truncate_utf8(connection_label.trim(), MAX_AGENT_SESSION_NAME_BYTES);
+        }
         Ok(self)
     }
 }
@@ -116,6 +144,8 @@ pub struct AgentMessage {
     pub id: Uuid,
     #[serde(default)]
     pub sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<Uuid>,
     pub role: AgentMessageRole,
     /// Original author survives later provider changes in the same session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -194,16 +224,70 @@ pub struct AgentTraceEvent {
     pub id: Uuid,
     #[serde(default)]
     pub sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<Uuid>,
     pub at_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
     pub detail: AgentTraceKind,
 }
 
+/// A turn is the application run, never a provider's opaque conversation id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTurn {
+    pub id: Uuid,
+    pub context: AgentExecutionContext,
+    pub started_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<i64>,
+    pub status: AgentSessionStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentHistoryBoundaryReason {
+    ContextChanged,
+    ApplicationRestart,
+    ConversationNotResumed,
+    ForkedConversation,
+}
+
+impl AgentHistoryBoundaryReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ContextChanged => {
+                "Execution context changed; previous messages are reference history"
+            }
+            Self::ApplicationRestart => {
+                "Application restarted; a new provider conversation will start"
+            }
+            Self::ConversationNotResumed => {
+                "New provider conversation; previous messages were not sent"
+            }
+            Self::ForkedConversation => {
+                "Conversation copied; previous messages are reference history"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentHistoryBoundary {
+    pub id: Uuid,
+    pub sequence: u64,
+    pub at_ms: i64,
+    pub reason: AgentHistoryBoundaryReason,
+    pub context: AgentExecutionContext,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSession {
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub archived: bool,
     pub context: AgentExecutionContext,
     pub status: AgentSessionStatus,
     pub created_at_ms: i64,
@@ -220,6 +304,27 @@ pub struct AgentSession {
     pub messages: Vec<AgentMessage>,
     #[serde(default)]
     pub trace: Vec<AgentTraceEvent>,
+    #[serde(default)]
+    pub turns: Vec<AgentTurn>,
+    #[serde(default)]
+    pub boundaries: Vec<AgentHistoryBoundary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<AgentPlanUpdate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<AgentUsageUpdate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<AgentRunMetadata>,
+    /// Requests carry live routing authority and cannot survive restart.
+    #[serde(skip)]
+    pub question: Option<AgentQuestionRequest>,
+    #[serde(skip)]
+    pub approval: Option<AgentApprovalRequest>,
+    #[serde(default)]
+    pub sources: Vec<AgentSource>,
+    #[serde(default)]
+    pub artifacts: Vec<AgentArtifact>,
+    #[serde(default)]
+    pub subagents: Vec<AgentSubagentUpdate>,
     #[serde(default = "initial_sequence")]
     next_sequence: u64,
     /// A provider conversation id is scoped to this live application process.
@@ -228,6 +333,8 @@ pub struct AgentSession {
     provider_session_id: Option<String>,
     #[serde(skip)]
     provider_session_context: Option<AgentExecutionContext>,
+    #[serde(skip)]
+    current_turn_id: Option<Uuid>,
 }
 
 impl AgentSession {
@@ -241,6 +348,8 @@ impl AgentSession {
         Ok(Self {
             id: Uuid::new_v4(),
             name,
+            pinned: false,
+            archived: false,
             context,
             status: AgentSessionStatus::Idle,
             created_at_ms: now_ms,
@@ -251,9 +360,20 @@ impl AgentSession {
             attention: AgentSessionAttention::None,
             messages: Vec::new(),
             trace: Vec::new(),
+            turns: Vec::new(),
+            boundaries: Vec::new(),
+            plan: None,
+            usage: None,
+            metadata: None,
+            question: None,
+            approval: None,
+            sources: Vec::new(),
+            artifacts: Vec::new(),
+            subagents: Vec::new(),
             next_sequence: initial_sequence(),
             provider_session_id: None,
             provider_session_context: None,
+            current_turn_id: None,
         })
     }
 
@@ -282,6 +402,9 @@ impl AgentSession {
         self.context = context;
         self.provider_session_id = None;
         self.provider_session_context = None;
+        if !self.messages.is_empty() || !self.trace.is_empty() {
+            self.push_boundary(AgentHistoryBoundaryReason::ContextChanged, now_ms);
+        }
         self.updated_at_ms = now_ms;
         Ok(true)
     }
@@ -306,6 +429,38 @@ impl AgentSession {
         let prompt = prompt.into();
         let request = self.run_request(prompt.clone());
         request.validate()?;
+        if self.archived {
+            return Err(ShellDeckError::Config(
+                "restore the archived agent session before running it".into(),
+            ));
+        }
+        if request.resume_session.is_none()
+            && !self.messages.is_empty()
+            && self.messages.last().is_some_and(|message| {
+                self.boundaries
+                    .last()
+                    .is_none_or(|boundary| message.sequence > boundary.sequence)
+            })
+        {
+            self.push_boundary(AgentHistoryBoundaryReason::ConversationNotResumed, now_ms);
+        }
+        self.current_turn_id = Some(request.id);
+        self.plan = None;
+        self.usage = None;
+        self.question = None;
+        self.approval = None;
+        self.subagents.clear();
+        push_bounded(
+            &mut self.turns,
+            AgentTurn {
+                id: request.id,
+                context: self.context.clone(),
+                started_at_ms: now_ms,
+                finished_at_ms: None,
+                status: AgentSessionStatus::Starting,
+            },
+            MAX_AGENT_TURNS_PER_SESSION,
+        );
         self.status = AgentSessionStatus::Starting;
         self.started_at_ms = Some(now_ms);
         self.updated_at_ms = now_ms;
@@ -320,6 +475,9 @@ impl AgentSession {
             AgentSessionStatus::Starting | AgentSessionStatus::Running
         ) {
             self.status = AgentSessionStatus::Stopping;
+            if let Some(turn) = self.current_turn_mut() {
+                turn.status = AgentSessionStatus::Stopping;
+            }
             self.updated_at_ms = now_ms;
             true
         } else {
@@ -327,9 +485,70 @@ impl AgentSession {
         }
     }
 
+    /// Reconcile a catalog-admitted checkout path before this exact run starts.
+    /// This narrow admission operation cannot change provider, target, access,
+    /// or model, and cannot alter an already running or different turn.
+    pub fn admit_starting_workdir(
+        &mut self,
+        request: &mut AgentRunRequest,
+        admitted_workdir: &str,
+        now_ms: i64,
+    ) -> Result<bool> {
+        if self.status != AgentSessionStatus::Starting
+            || self.current_turn_id != Some(request.id)
+            || !self.turns.last().is_some_and(|turn| {
+                turn.id == request.id
+                    && turn.status == AgentSessionStatus::Starting
+                    && turn.context == self.context
+            })
+            || AgentExecutionContext::from_request(request) != self.context
+        {
+            return Err(ShellDeckError::Config(
+                "agent checkout admission does not match the starting run".into(),
+            ));
+        }
+        let mut admitted = request.clone();
+        admitted.workdir = admitted_workdir.trim().to_string();
+        admitted.validate()?;
+        let context = AgentExecutionContext::from_request(&admitted);
+        let changed = context.workdir != self.context.workdir;
+        if changed {
+            admitted.resume_session = None;
+            self.provider_session_id = None;
+            self.provider_session_context = None;
+            self.context.workdir = context.workdir.clone();
+            self.turns
+                .last_mut()
+                .expect("starting turn checked above")
+                .context
+                .workdir = context.workdir;
+            self.push_boundary(AgentHistoryBoundaryReason::ContextChanged, now_ms);
+            self.updated_at_ms = now_ms;
+        }
+        *request = admitted;
+        Ok(changed)
+    }
+
     pub fn apply_stream_event(&mut self, event: AgentStreamEvent, now_ms: i64, visible: bool) {
         let mut user_visible = true;
         match event {
+            AgentStreamEvent::UserInputAccepted { text } => self.push_message(
+                AgentMessageRole::User,
+                sanitize_retained_output(&text, MAX_AGENT_MESSAGE_BYTES),
+                now_ms,
+            ),
+            AgentStreamEvent::UserInputAcknowledged { .. }
+            | AgentStreamEvent::UserInputRejected { .. }
+            | AgentStreamEvent::QuestionAnswerRejected { .. } => user_visible = false,
+            AgentStreamEvent::InteractionResolved { id } => {
+                if self.question.as_ref().is_some_and(|q| q.id == id) {
+                    self.question = None;
+                }
+                if self.approval.as_ref().is_some_and(|q| q.id == id) {
+                    self.approval = None;
+                }
+                user_visible = false;
+            }
             AgentStreamEvent::Text(text) => self.push_message(
                 AgentMessageRole::Agent,
                 sanitize_retained_output(&text, MAX_AGENT_MESSAGE_BYTES),
@@ -346,6 +565,9 @@ impl AgentSession {
             }
             AgentStreamEvent::Ready => {
                 self.status = AgentSessionStatus::Running;
+                if let Some(turn) = self.current_turn_mut() {
+                    turn.status = AgentSessionStatus::Running;
+                }
                 user_visible = false;
             }
             AgentStreamEvent::Trace(update) => {
@@ -376,6 +598,59 @@ impl AgentSession {
                 );
                 self.attention = AgentSessionAttention::NeedsAttention;
             }
+            AgentStreamEvent::Plan(plan) => self.plan = Some(plan.bounded()),
+            AgentStreamEvent::Usage(usage) => {
+                self.usage = Some(usage.bounded());
+                user_visible = false;
+            }
+            AgentStreamEvent::Metadata(metadata) => {
+                self.metadata = Some(metadata.bounded());
+                user_visible = false;
+            }
+            AgentStreamEvent::Question(question) => {
+                self.question = Some(question.bounded());
+                self.attention = AgentSessionAttention::NeedsAttention;
+            }
+            AgentStreamEvent::Approval(approval) => {
+                self.approval = Some(approval.bounded());
+                self.attention = AgentSessionAttention::NeedsAttention;
+            }
+            AgentStreamEvent::Source(source) => {
+                let source = source.bounded();
+                if let Some(existing) = self
+                    .sources
+                    .iter_mut()
+                    .find(|existing| existing.id == source.id)
+                {
+                    *existing = source;
+                } else {
+                    push_bounded(&mut self.sources, source, 128);
+                }
+            }
+            AgentStreamEvent::Artifact(artifact) => {
+                let artifact = artifact.bounded();
+                if let Some(existing) = self
+                    .artifacts
+                    .iter_mut()
+                    .find(|existing| existing.id == artifact.id)
+                {
+                    *existing = artifact;
+                } else {
+                    push_bounded(&mut self.artifacts, artifact, 128);
+                }
+            }
+            AgentStreamEvent::Subagent(subagent) => {
+                let subagent = subagent.bounded();
+                if let Some(existing) = self
+                    .subagents
+                    .iter_mut()
+                    .find(|existing| existing.id == subagent.id)
+                {
+                    *existing = subagent;
+                } else {
+                    push_bounded(&mut self.subagents, subagent, 64);
+                }
+            }
         }
         self.updated_at_ms = now_ms;
         if user_visible && !visible {
@@ -400,6 +675,12 @@ impl AgentSession {
         self.status = status;
         self.updated_at_ms = now_ms;
         self.finished_at_ms = Some(now_ms);
+        self.question = None;
+        self.approval = None;
+        if let Some(turn) = self.current_turn_mut() {
+            turn.status = status;
+            turn.finished_at_ms = Some(now_ms);
+        }
         if !visible {
             self.unread_count = self.unread_count.saturating_add(1);
             if status == AgentSessionStatus::Failed {
@@ -432,6 +713,7 @@ impl AgentSession {
             AgentMessage {
                 id: Uuid::new_v4(),
                 sequence,
+                turn_id: self.current_turn_id,
                 role,
                 provider: (role == AgentMessageRole::Agent).then_some(self.context.provider),
                 text: truncate_utf8(&text, MAX_AGENT_MESSAGE_BYTES),
@@ -442,11 +724,9 @@ impl AgentSession {
     }
 
     fn push_text_delta(&mut self, delta: String, now_ms: i64) {
-        if let Some(message) = self
-            .messages
-            .last_mut()
-            .filter(|message| message.role == AgentMessageRole::Agent)
-        {
+        if let Some(message) = self.messages.last_mut().filter(|message| {
+            message.role == AgentMessageRole::Agent && message.turn_id == self.current_turn_id
+        }) {
             let remaining = MAX_AGENT_MESSAGE_BYTES.saturating_sub(message.text.len());
             if remaining > 0 {
                 message.text.push_str(&truncate_utf8(&delta, remaining));
@@ -462,15 +742,14 @@ impl AgentSession {
             .correlation_id
             .map(|id| truncate_utf8(&id, MAX_AGENT_TRACE_CORRELATION_BYTES));
         if let Some(existing) = correlation_id.as_deref().and_then(|id| {
-            self.trace
-                .iter_mut()
-                .rev()
-                .find(|event| event.correlation_id.as_deref() == Some(id))
+            self.trace.iter_mut().rev().find(|event| {
+                event.turn_id == self.current_turn_id && event.correlation_id.as_deref() == Some(id)
+            })
         }) {
             existing.detail = detail;
             return false;
         }
-        if matches!(&detail, AgentTraceKind::Activity { label } if self.trace.last().is_some_and(|last| matches!(&last.detail, AgentTraceKind::Activity { label: previous } if previous == label)))
+        if matches!(&detail, AgentTraceKind::Activity { label } if self.trace.last().is_some_and(|last| last.turn_id == self.current_turn_id && matches!(&last.detail, AgentTraceKind::Activity { label: previous } if previous == label)))
         {
             return false;
         }
@@ -480,6 +759,7 @@ impl AgentSession {
             AgentTraceEvent {
                 id: Uuid::new_v4(),
                 sequence,
+                turn_id: self.current_turn_id,
                 at_ms: now_ms,
                 correlation_id,
                 detail,
@@ -497,12 +777,10 @@ impl AgentSession {
         _now_ms: i64,
     ) {
         let correlation_id = truncate_utf8(correlation_id, MAX_AGENT_TRACE_CORRELATION_BYTES);
-        let Some(event) = self
-            .trace
-            .iter_mut()
-            .rev()
-            .find(|event| event.correlation_id.as_deref() == Some(correlation_id.as_str()))
-        else {
+        let Some(event) = self.trace.iter_mut().rev().find(|event| {
+            event.turn_id == self.current_turn_id
+                && event.correlation_id.as_deref() == Some(correlation_id.as_str())
+        }) else {
             return;
         };
         set_trace_status(&mut event.detail, status);
@@ -521,11 +799,77 @@ impl AgentSession {
             .map(|message| message.sequence)
             .into_iter()
             .chain(self.trace.last().map(|trace| trace.sequence))
+            .chain(self.boundaries.last().map(|boundary| boundary.sequence))
             .max()
             .unwrap_or(0);
         let sequence = self.next_sequence.max(retained_max.saturating_add(1));
         self.next_sequence = sequence.saturating_add(1);
         sequence
+    }
+
+    pub fn current_turn_id(&self) -> Option<Uuid> {
+        self.current_turn_id
+    }
+
+    fn current_turn_mut(&mut self) -> Option<&mut AgentTurn> {
+        let id = self.current_turn_id?;
+        self.turns.iter_mut().rev().find(|turn| turn.id == id)
+    }
+
+    fn push_boundary(&mut self, reason: AgentHistoryBoundaryReason, now_ms: i64) {
+        let sequence = self.allocate_sequence();
+        push_bounded(
+            &mut self.boundaries,
+            AgentHistoryBoundary {
+                id: Uuid::new_v4(),
+                sequence,
+                at_ms: now_ms,
+                reason,
+                context: self.context.clone(),
+            },
+            MAX_AGENT_BOUNDARIES_PER_SESSION,
+        );
+    }
+
+    /// Export reference history without live provider credentials or handles.
+    pub fn export_json(&self) -> Result<String> {
+        serde_json::to_string_pretty(self)
+            .map_err(|error| ShellDeckError::Serialization(error.to_string()))
+    }
+
+    pub fn export_markdown(&self) -> String {
+        let mut output = format!(
+            "# {}\n\nProvider: {:?} · Target: {} · Directory: {}\n\n",
+            self.name,
+            self.context.provider,
+            self.context.target.label(),
+            self.context.workdir
+        );
+        let mut entries = self
+            .messages
+            .iter()
+            .map(|message| (message.sequence, Some(message), None))
+            .chain(
+                self.boundaries
+                    .iter()
+                    .map(|boundary| (boundary.sequence, None, Some(boundary))),
+            )
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.0);
+        for (_, message, boundary) in entries {
+            if let Some(boundary) = boundary {
+                output.push_str(&format!("> {}\n\n", boundary.reason.label()));
+            }
+            if let Some(message) = message {
+                let role = match message.role {
+                    AgentMessageRole::User => "You",
+                    AgentMessageRole::Agent => "Agent",
+                    AgentMessageRole::Error => "Error",
+                };
+                output.push_str(&format!("## {role}\n\n{}\n\n", message.text));
+            }
+        }
+        output
     }
 }
 
@@ -566,6 +910,157 @@ impl AgentSessionCollection {
         &self.sessions
     }
 
+    /// Stable library ordering: pinned first, then most recently active.
+    pub fn library_sessions(&self, include_archived: bool) -> Vec<&AgentSession> {
+        let mut sessions = self
+            .sessions
+            .iter()
+            .filter(|session| include_archived || !session.archived)
+            .collect::<Vec<_>>();
+        sessions.sort_by_key(|session| (!session.pinned, std::cmp::Reverse(session.updated_at_ms)));
+        sessions
+    }
+
+    pub fn search(&self, query: &str, include_archived: bool) -> Vec<&AgentSession> {
+        let terms = query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>();
+        self.library_sessions(include_archived)
+            .into_iter()
+            .filter(|session| {
+                let haystack = format!(
+                    "{}\n{}\n{}\n{:?}\n{}",
+                    session.name,
+                    session.context.workdir,
+                    session.context.target.label(),
+                    session.context.provider,
+                    session
+                        .messages
+                        .iter()
+                        .map(|message| message.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+                .to_lowercase();
+                terms.iter().all(|term| haystack.contains(term))
+            })
+            .collect()
+    }
+
+    pub fn rename(&mut self, id: Uuid, name: impl Into<String>, now_ms: i64) -> Result<()> {
+        self.get_mut(id)
+            .ok_or_else(|| ShellDeckError::NotFound("agent session".into()))?
+            .rename(name, now_ms)
+    }
+
+    pub fn set_pinned(&mut self, id: Uuid, pinned: bool, now_ms: i64) -> Result<()> {
+        let session = self
+            .get_mut(id)
+            .ok_or_else(|| ShellDeckError::NotFound("agent session".into()))?;
+        session.pinned = pinned;
+        session.updated_at_ms = now_ms;
+        Ok(())
+    }
+
+    pub fn archive(&mut self, id: Uuid, archived: bool, now_ms: i64) -> Result<()> {
+        let session = self
+            .get_mut(id)
+            .ok_or_else(|| ShellDeckError::NotFound("agent session".into()))?;
+        if archived && session.status.is_active() {
+            return Err(ShellDeckError::Config(
+                "stop the agent session before archiving it".into(),
+            ));
+        }
+        session.archived = archived;
+        session.updated_at_ms = now_ms;
+        if archived && self.selected_id == Some(id) {
+            self.selected_id = self
+                .library_sessions(false)
+                .first()
+                .map(|session| session.id);
+        }
+        Ok(())
+    }
+
+    /// Copy bounded transcript for reference. A copy never inherits execution
+    /// authority, active processes, unread state, or provider resume tokens.
+    pub fn duplicate(&mut self, id: Uuid, name: impl Into<String>, now_ms: i64) -> Result<Uuid> {
+        if self.sessions.len() >= MAX_AGENT_SESSIONS {
+            return Err(ShellDeckError::Config(format!(
+                "at most {MAX_AGENT_SESSIONS} agent sessions may be retained"
+            )));
+        }
+        let source = self
+            .get(id)
+            .ok_or_else(|| ShellDeckError::NotFound("agent session".into()))?;
+        let mut copy = AgentSession::new(name, source.context.clone(), now_ms)?;
+        let mut turn_ids = std::collections::HashMap::new();
+        copy.turns = source
+            .turns
+            .iter()
+            .rev()
+            .take(MAX_AGENT_TURNS_PER_SESSION)
+            .rev()
+            .map(|turn| {
+                let mut turn = turn.clone();
+                let new_id = Uuid::new_v4();
+                turn_ids.insert(turn.id, new_id);
+                turn.id = new_id;
+                if turn.status.is_active() {
+                    turn.status = AgentSessionStatus::Cancelled;
+                    turn.finished_at_ms = Some(now_ms);
+                }
+                turn
+            })
+            .collect();
+        copy.messages = source
+            .messages
+            .iter()
+            .rev()
+            .take(MAX_AGENT_MESSAGES_PER_SESSION)
+            .rev()
+            .map(|message| {
+                let mut message = message.clone();
+                message.id = Uuid::new_v4();
+                message.turn_id = message.turn_id.and_then(|id| turn_ids.get(&id).copied());
+                message.text = truncate_utf8(&message.text, MAX_AGENT_MESSAGE_BYTES);
+                message
+            })
+            .collect();
+        copy.trace = source
+            .trace
+            .iter()
+            .rev()
+            .take(MAX_AGENT_TRACE_EVENTS_PER_SESSION)
+            .rev()
+            .map(|trace| {
+                let mut trace = trace.clone();
+                trace.id = Uuid::new_v4();
+                trace.turn_id = trace.turn_id.and_then(|id| turn_ids.get(&id).copied());
+                trace.detail = bounded_trace(trace.detail);
+                trace
+            })
+            .collect();
+        copy.boundaries = source
+            .boundaries
+            .iter()
+            .rev()
+            .take(MAX_AGENT_BOUNDARIES_PER_SESSION.saturating_sub(1))
+            .rev()
+            .map(|boundary| {
+                let mut boundary = boundary.clone();
+                boundary.id = Uuid::new_v4();
+                boundary
+            })
+            .collect();
+        copy.push_boundary(AgentHistoryBoundaryReason::ForkedConversation, now_ms);
+        let new_id = copy.id;
+        self.sessions.push(copy);
+        self.select(new_id)?;
+        Ok(new_id)
+    }
+
     pub fn selected_id(&self) -> Option<Uuid> {
         self.selected_id
     }
@@ -581,6 +1076,27 @@ impl AgentSessionCollection {
 
     pub fn get_mut(&mut self, id: Uuid) -> Option<&mut AgentSession> {
         self.sessions.iter_mut().find(|session| session.id == id)
+    }
+
+    /// Merge a disk library after asynchronous startup without replacing work
+    /// the user has already started in this process. Current identities win.
+    pub fn merge_restored(&mut self, restored: AgentSessionCollection) {
+        let current = self
+            .sessions
+            .iter()
+            .map(|session| session.id)
+            .collect::<std::collections::HashSet<_>>();
+        for session in restored.sessions {
+            if self.sessions.len() >= MAX_AGENT_SESSIONS {
+                break;
+            }
+            if !current.contains(&session.id) {
+                self.sessions.push(session);
+            }
+        }
+        if self.selected_id.is_none() {
+            self.selected_id = restored.selected_id.filter(|id| self.get(*id).is_some());
+        }
     }
 
     pub fn active_count(&self) -> usize {
@@ -724,15 +1240,46 @@ impl AgentSessionCollection {
     /// that work is still running.
     pub fn recover_interrupted(&mut self, now_ms: i64) {
         for session in &mut self.sessions {
+            session.provider_session_id = None;
+            session.provider_session_context = None;
+            session.current_turn_id = None;
+            session.question = None;
+            session.approval = None;
+            for subagent in &mut session.subagents {
+                if matches!(
+                    subagent.status,
+                    AgentTraceStatus::Pending | AgentTraceStatus::Running
+                ) {
+                    subagent.status = AgentTraceStatus::Cancelled;
+                }
+            }
             if session.status.is_active() {
                 session.status = AgentSessionStatus::Failed;
                 session.updated_at_ms = now_ms;
                 session.finished_at_ms = Some(now_ms);
                 session.attention = AgentSessionAttention::NeedsAttention;
-                session.provider_session_id = None;
-                session.provider_session_context = None;
+                session.unread_count = session.unread_count.saturating_add(1);
+                for turn in &mut session.turns {
+                    if turn.status.is_active() {
+                        turn.status = AgentSessionStatus::Failed;
+                        turn.finished_at_ms = Some(now_ms);
+                    }
+                }
+                session.push_message(AgentMessageRole::Error, "ShellDeck restarted while this run was active. The run is interrupted; check its target before retrying.".into(), now_ms);
+            }
+            if !session.messages.is_empty()
+                && session.boundaries.last().is_none_or(|boundary| {
+                    boundary.reason != AgentHistoryBoundaryReason::ApplicationRestart
+                        || session
+                            .messages
+                            .last()
+                            .is_some_and(|message| message.sequence > boundary.sequence)
+                })
+            {
+                session.push_boundary(AgentHistoryBoundaryReason::ApplicationRestart, now_ms);
             }
         }
+        self.surface_visible = false;
     }
 }
 
@@ -748,6 +1295,11 @@ fn normalized_name(name: String) -> Result<String> {
             "agent session name is too long".to_string(),
         ));
     }
+    if name.chars().any(char::is_control) {
+        return Err(ShellDeckError::Config(
+            "agent session name must be a single line".into(),
+        ));
+    }
     Ok(name.to_string())
 }
 
@@ -756,8 +1308,8 @@ const fn initial_sequence() -> u64 {
 }
 
 fn push_bounded<T>(items: &mut Vec<T>, item: T, limit: usize) {
-    if items.len() == limit {
-        items.remove(0);
+    if items.len() >= limit {
+        items.drain(..=items.len() - limit);
     }
     items.push(item);
 }
@@ -926,6 +1478,247 @@ mod tests {
             workdir: TEST_WORKDIR.to_string(),
             model: None,
         }
+    }
+
+    // SDTEST-2473 — SDUC-550, SDUC-551
+    #[test]
+    fn sdtest_2473_checkout_admission_reconciles_exact_starting_turn_and_drops_resume() {
+        let context = AgentExecutionContext {
+            target: AgentTarget::Ssh {
+                connection_id: Uuid::new_v4(),
+                connection_label: "remote checkout".into(),
+            },
+            workdir: "/home/desktop/repository".into(),
+            model: Some("selected-model".into()),
+            ..context(AgentProvider::Claude)
+        };
+        let mut session = AgentSession::new("Mapped checkout", context.clone(), 1).unwrap();
+        let first = session.begin_run("first turn", 2).unwrap();
+        session.apply_stream_event(
+            AgentStreamEvent::Session("old-path-session".into()),
+            3,
+            true,
+        );
+        session
+            .finish(AgentSessionStatus::Completed, 4, true)
+            .unwrap();
+        let mut request = session.begin_run("second turn", 5).unwrap();
+        assert_eq!(request.resume_session.as_deref(), Some("old-path-session"));
+        let before = request.clone();
+        assert!(session
+            .admit_starting_workdir(&mut request, "/srv/remote/repository", 6)
+            .unwrap());
+
+        let admitted = AgentExecutionContext {
+            workdir: "/srv/remote/repository".into(),
+            ..context
+        };
+        assert_eq!(session.context, admitted);
+        assert_eq!(session.turns.last().unwrap().context, admitted);
+        assert_eq!(session.turns.last().unwrap().id, request.id);
+        assert_eq!(session.turns[0].id, first.id);
+        assert_eq!(session.turns[0].context.workdir, "/home/desktop/repository");
+        assert_eq!(
+            request,
+            AgentRunRequest {
+                workdir: admitted.workdir,
+                resume_session: None,
+                ..before
+            }
+        );
+        assert_eq!(session.provider_session_id(), None);
+        assert_eq!(session.run_request("follow-up").resume_session, None);
+        assert_eq!(
+            session.boundaries.last().unwrap().reason,
+            AgentHistoryBoundaryReason::ContextChanged
+        );
+    }
+
+    // SDTEST-2474 — SDUC-550, SDUC-551
+    #[test]
+    fn sdtest_2474_checkout_admission_rejects_stale_runs_authority_changes_and_invalid_paths() {
+        let mut session = AgentSession::new(
+            "Admission fence",
+            AgentExecutionContext {
+                target: AgentTarget::Ssh {
+                    connection_id: Uuid::new_v4(),
+                    connection_label: "host".into(),
+                },
+                workdir: "/original".into(),
+                ..context(AgentProvider::Claude)
+            },
+            1,
+        )
+        .unwrap();
+        let request = session.begin_run("inspect", 2).unwrap();
+        let mut candidates = Vec::new();
+        let mut changed = request.clone();
+        changed.id = Uuid::new_v4();
+        candidates.push(changed);
+        let mut changed = request.clone();
+        changed.access = AgentAccessMode::FullAccess;
+        candidates.push(changed);
+        let mut changed = request.clone();
+        changed.provider = AgentProvider::Codex;
+        candidates.push(changed);
+        let mut changed = request.clone();
+        changed.target = AgentTarget::Local;
+        candidates.push(changed);
+        let mut changed = request.clone();
+        changed.model = Some("different-model".into());
+        candidates.push(changed);
+        let before = session.clone();
+        for mut candidate in candidates {
+            let candidate_before = candidate.clone();
+            assert!(session
+                .admit_starting_workdir(&mut candidate, "/admitted", 3)
+                .is_err());
+            assert_eq!(session, before);
+            assert_eq!(candidate, candidate_before);
+        }
+        let mut candidate = request.clone();
+        assert!(session
+            .admit_starting_workdir(&mut candidate, "relative/path", 3)
+            .is_err());
+        assert_eq!(session, before);
+        session.apply_stream_event(AgentStreamEvent::Ready, 4, true);
+        let running = session.clone();
+        assert!(session
+            .admit_starting_workdir(&mut candidate, "/admitted", 5)
+            .is_err());
+        assert_eq!(session, running);
+    }
+
+    // SDTEST-2475 — SDUC-550, SDUC-551
+    #[test]
+    fn sdtest_2475_unchanged_checkout_admission_keeps_matching_resume_authority() {
+        let mut session =
+            AgentSession::new("Unchanged checkout", context(AgentProvider::Claude), 1).unwrap();
+        session.begin_run("first", 2).unwrap();
+        session.apply_stream_event(
+            AgentStreamEvent::Session("matching-session".into()),
+            3,
+            true,
+        );
+        session
+            .finish(AgentSessionStatus::Completed, 4, true)
+            .unwrap();
+        let mut request = session.begin_run("continue", 5).unwrap();
+        let before = session.clone();
+        assert!(!session
+            .admit_starting_workdir(&mut request, TEST_WORKDIR, 6)
+            .unwrap());
+        assert_eq!(session, before);
+        assert_eq!(request.resume_session.as_deref(), Some("matching-session"));
+    }
+
+    // SDTEST-2204 — SDUC-550
+    #[test]
+    fn sdtest_2204_library_search_archive_and_fork_preserve_history_without_live_authority() {
+        let mut sessions = AgentSessionCollection::default();
+        let original = sessions
+            .create("Parser investigation", context(AgentProvider::Claude), 1)
+            .unwrap();
+        let request = sessions
+            .begin_run(original, "Investigate café rendering", 2)
+            .unwrap();
+        sessions
+            .apply_stream_event(
+                original,
+                AgentStreamEvent::Session("do-not-copy-this".into()),
+                3,
+            )
+            .unwrap();
+        sessions
+            .apply_stream_event(
+                original,
+                AgentStreamEvent::Text("Check fallback shaping".into()),
+                4,
+            )
+            .unwrap();
+        assert!(sessions.archive(original, true, 5).is_err());
+        let copy = sessions
+            .duplicate(original, "Independent investigation", 6)
+            .unwrap();
+        let fork = sessions.get(copy).unwrap();
+        assert_eq!(fork.status, AgentSessionStatus::Idle);
+        assert_eq!(fork.provider_session_id(), None);
+        assert_eq!(fork.messages[1].text, "Check fallback shaping");
+        assert_ne!(
+            fork.messages[0].id,
+            sessions.get(original).unwrap().messages[0].id
+        );
+        assert_ne!(fork.messages[0].turn_id, Some(request.id));
+        assert!(!fork.export_json().unwrap().contains("do-not-copy-this"));
+        assert!(fork.export_markdown().contains("reference history"));
+        assert!(fork.turns.iter().all(|turn| !turn.status.is_active()));
+        sessions.set_pinned(copy, true, 7).unwrap();
+        sessions.rename(copy, "Pinned follow-up", 8).unwrap();
+        assert_eq!(sessions.search("café fallback", false).len(), 2);
+        assert_eq!(sessions.library_sessions(false)[0].id, copy);
+        sessions.archive(copy, true, 9).unwrap();
+        assert_eq!(sessions.search("café fallback", false).len(), 1);
+        assert_eq!(sessions.search("café fallback", true).len(), 2);
+        assert_ne!(sessions.selected_id(), Some(copy));
+        sessions.archive(copy, false, 10).unwrap();
+        assert_eq!(sessions.library_sessions(false)[0].name, "Pinned follow-up");
+    }
+
+    // SDTEST-2205 — SDUC-550
+    #[test]
+    fn sdtest_2205_context_switches_never_resume_or_replay_history_and_tool_ids_are_turn_scoped() {
+        let mut session = AgentSession::new("Scope", context(AgentProvider::Claude), 1).unwrap();
+        let first = session.begin_run("Inspect local secret", 2).unwrap();
+        session.apply_stream_event(
+            AgentStreamEvent::Session("local-only-conversation".into()),
+            3,
+            true,
+        );
+        let trace = || {
+            AgentStreamEvent::Trace(AgentTraceUpdate {
+                correlation_id: Some("reused-tool-id".into()),
+                detail: AgentTraceKind::Activity {
+                    label: "Inspecting".into(),
+                },
+            })
+        };
+        session.apply_stream_event(trace(), 4, true);
+        session.apply_stream_event(AgentStreamEvent::TextDelta("Local answer".into()), 5, true);
+        session
+            .finish(AgentSessionStatus::Completed, 6, true)
+            .unwrap();
+        let same = session.run_request("continue");
+        assert_eq!(
+            same.resume_session.as_deref(),
+            Some("local-only-conversation")
+        );
+        let mut remote = context(AgentProvider::Claude);
+        remote.target = AgentTarget::Ssh {
+            connection_id: Uuid::new_v4(),
+            connection_label: "Different host".into(),
+        };
+        remote.workdir = "/srv/remote".into();
+        session.set_context(remote, 7).unwrap();
+        let second = session.begin_run("Inspect remote", 8).unwrap();
+        assert_eq!(second.resume_session, None);
+        assert_eq!(second.prompt, "Inspect remote");
+        assert!(!second.prompt.contains("secret"));
+        session.apply_stream_event(trace(), 9, true);
+        session.apply_stream_event(
+            AgentStreamEvent::TextDelta("Remote answer".into()),
+            10,
+            true,
+        );
+        assert_eq!(session.messages.len(), 4);
+        assert_eq!(session.messages[1].text, "Local answer");
+        assert_eq!(session.messages[3].text, "Remote answer");
+        assert_eq!(session.trace.len(), 2);
+        assert_eq!(session.trace[0].turn_id, Some(first.id));
+        assert_eq!(session.trace[1].turn_id, Some(second.id));
+        assert_eq!(
+            session.boundaries[0].reason,
+            AgentHistoryBoundaryReason::ContextChanged
+        );
     }
 
     // SDTEST-1941 — earlier replies retain their author across provider changes

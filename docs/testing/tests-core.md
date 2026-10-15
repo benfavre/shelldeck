@@ -604,3 +604,86 @@ Existing: **0 tests**.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-1941 | `agent_session.rs::provider_switch_preserves_reply_authorship_and_legacy_history` | SDUC-499 | Green | Claude deltas form one authored reply, a later Codex run retains its own author, and durable reload preserves both. Legacy message JSON without provider metadata remains readable with unchanged content. Native SSH reproduction previously relabeled the Claude reply as Codex after switching providers. |
+
+
+## Agents workspace parity — 2026-10-15
+
+Contracts and scope are recorded in [the implementation audit](agent-parity-audit-2026-10-15.md).
+These are offline parsers, state/storage workflows and injected process-executor
+workflows. They do not create a live PR, push a branch or grant production authority.
+Green reflects the recorded focused run; Yellow identifies existing tests awaiting
+execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md.
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2200 | `agent_session_storage.rs::sdtest_2200_private_restart_recovery_preserves_history_draft_and_preferences` | SDUC-550 | Green | Private restart recovery keeps conversation, draft and preferences; provider resume IDs are excluded. |
+| SDTEST-2201 | `agent_session_storage.rs::sdtest_2201_legacy_history_migrates_and_invalid_context_cannot_become_execution_authority` | SDUC-550 | Green | Legacy history migrates; invalid execution contexts cannot become authority. |
+| SDTEST-2202 | `agent_session_storage.rs::sdtest_2202_corrupt_future_and_oversized_files_fail_without_overwriting_history` | SDUC-550 | Green | Corrupt, future and oversized files fail without replacing their bytes. |
+| SDTEST-2203 | `agent_session_storage.rs::sdtest_2203_loaded_transcripts_and_preferences_are_bounded_before_rendering` | SDUC-550 | Green | Loaded messages, drafts and presentation preferences are bounded before rendering. |
+| SDTEST-2204 | `agent_session.rs::sdtest_2204_library_search_archive_and_fork_preserve_history_without_live_authority` | SDUC-550 | Green | Search, rename/pin/archive, fork and export retain history without copying live authority. |
+| SDTEST-2205 | `agent_session.rs::sdtest_2205_context_switches_never_resume_or_replay_history_and_tool_ids_are_turn_scoped` | SDUC-550 | Green | Context changes create explicit boundaries; history is not replayed and tool IDs remain turn-scoped. |
+| SDTEST-2230 | `agent_runtime_stream.rs::sdtest_2230_claude_partial_blocks_do_not_repeat_completed_snapshots` | SDUC-551 | Green | Partial Claude content forms one response rather than repeated completed blocks. |
+| SDTEST-2231 | `agent_runtime_stream.rs::sdtest_2231_codex_snapshots_stream_once_and_update_plans_usage` | SDUC-551 | Green | Codex item snapshots stream once and retain structured plans/usage. |
+| SDTEST-2232 | `agent_runtime_stream.rs::sdtest_2232_streamed_credentials_are_redacted_across_chunk_boundaries` | SDUC-551 | Green | Credential redaction spans stream chunk boundaries. |
+| SDTEST-2233 | `agent_runtime_protocol.rs::sdtest_2233_acp_approval_requires_an_exact_offered_choice_and_cancels_readonly` | SDUC-551 | Green | ACP approvals accept only the exact offered option; read-only requests cancel. |
+| SDTEST-2234 | `agent_runtime_protocol.rs::sdtest_2234_input_options_keep_target_paths_and_resume_flags_separate` | SDUC-551 | Green | Input paths, image/model/effort options and resume arguments remain separate argv/data. |
+| SDTEST-2260 | `agent_review.rs::sdtest_2260_status_preserves_literal_names_and_rename_direction` | SDUC-552 | Green | NUL-delimited filenames and rename destination/source ordering remain literal. |
+| SDTEST-2261 | `agent_review.rs::sdtest_2261_numstat_distinguishes_binary_unknown_zero_and_renames` | SDUC-552 | Green | Binary unknown, zero and rename counts remain distinct. |
+| SDTEST-2262 | `agent_review.rs::sdtest_2262_observation_covers_actual_sections_and_binary_counts` | SDUC-552 | Green | Actual staged, unstaged, untracked and binary sections are observed. |
+| SDTEST-2263 | `agent_review.rs::sdtest_2263_confirmed_stage_uses_reviewed_bytes_private_index_and_locks` | SDUC-552 | Green | Confirmed staging uses reviewed bytes with a private index and Git locks. |
+| SDTEST-2264 | `agent_review.rs::sdtest_2264_stale_content_index_head_and_wrong_confirmation_refuse_before_writes` | SDUC-552 | Green | Changed files/index/HEAD and wrong confirmation refuse before writes. |
+| SDTEST-2265 | `agent_review.rs::sdtest_2265_dirty_baseline_undo_requires_exact_evidence_and_preserves_baseline` | SDUC-552 | Green | Dirty-baseline undo needs exact ownership evidence and preserves baseline work. |
+| SDTEST-2266 | `agent_review.rs::sdtest_2266_unproven_or_later_user_edits_are_never_discarded` | SDUC-552 | Green | Unproven ownership and later user edits cannot be discarded. |
+| SDTEST-2267 | `agent_review.rs::sdtest_2267_commit_uses_reviewed_tree_and_atomic_expected_ref_without_hooks` | SDUC-552 | Green | Commit uses the reviewed tree and expected-reference compare-and-swap without hooks. |
+| SDTEST-2268 | `agent_review.rs::sdtest_2268_existing_git_lock_is_never_stolen_or_removed` | SDUC-552 | Green | Existing Git locks are neither stolen nor removed. |
+| SDTEST-2269 | `agent_review.rs::sdtest_2269_snapshot_budget_and_conflicts_disable_unsafe_mutations` | SDUC-552 | Green | Snapshot budgets and conflicts disable unsafe mutations. |
+| SDTEST-2270 | `agent_review.rs::sdtest_2270_symlink_ancestor_never_reads_or_mutates_outside_checkout` | SDUC-552 | Green | Unix symlink ancestors never read or mutate outside the checkout; platform compilation remains required. |
+| SDTEST-2271 | `agent_review.rs::sdtest_2271_unstage_prepares_only_exact_named_paths_on_private_index` | SDUC-552 | Green | Unstage prepares only the named reviewed paths in the private index. |
+| SDTEST-2272 | `agent_review.rs::sdtest_2272_commit_compare_and_swap_failure_leaves_reviewed_index_untouched` | SDUC-552 | Green | Failed commit compare-and-swap leaves the reviewed index untouched. |
+| SDTEST-2330 | `agent_browser.rs::sdtest_2330_browser_rejects_unsafe_urls_before_execution` | SDUC-553 | Green | Unsafe URLs are refused before any browser process. |
+| SDTEST-2331 | `agent_browser.rs::sdtest_2331_browser_captures_in_private_profile_without_shell` | SDUC-553 | Green | Capture uses a private profile and explicit argv rather than a shell. |
+| SDTEST-2332 | `agent_browser.rs::sdtest_2332_browser_rejects_oversized_dom_and_invalid_image` | SDUC-553 | Green | Oversized DOM and invalid/oversized PNG output refuse. |
+| SDTEST-2333 | `agent_browser.rs::sdtest_2333_browser_history_keeps_back_forward_and_replaces_branch` | SDUC-553 | Green | Back/forward URL history and branch replacement remain deterministic. |
+| SDTEST-2334 | `agent_browser.rs::sdtest_2334_browser_context_encodes_untrusted_dom_and_bounds_unicode` | SDUC-553 | Green | DOM is attached as untrusted bounded data without cutting Unicode. |
+| SDTEST-2360 | `agent_codex/tests.rs::sdtest_2360_codex_fake_pipe_steers_answers_questions_and_approves_only_exact_one_shot_requests` | SDUC-554 | Green | Fake JSON pipes exercise steering, questions and exact one-shot approvals. |
+| SDTEST-2361 | `agent_codex/tests.rs::sdtest_2361_codex_read_only_and_unsupported_permission_requests_never_grant_authority` | SDUC-554 | Green | Read-only and unsupported requests do not grant authority. |
+| SDTEST-2362 | `agent_codex/tests.rs::sdtest_2362_codex_resume_stream_mapping_redacts_split_secrets_and_deduplicates_final_snapshots` | SDUC-554 | Green | Resume/stream mapping redacts split secrets and deduplicates final snapshots. |
+| SDTEST-2363 | `agent_codex/tests.rs::sdtest_2363_codex_interrupt_and_server_resolution_reject_stale_interactions` | SDUC-554 | Green | Interrupt and server resolution reject stale interaction scope. |
+| SDTEST-2364 | `agent_codex/tests.rs::sdtest_2364_codex_mismatched_sandbox_or_remote_target_fails_before_turn_submission` | SDUC-554 | Green | Wrong sandbox or remote target refuses before submitting the turn. |
+| SDTEST-2365 | `agent_codex/tests.rs::sdtest_2365_codex_expired_interaction_is_cancelled_without_reusable_grants` | SDUC-554 | Green | Expired interaction cancels without a reusable grant. |
+| SDTEST-2366 | `agent_codex/tests.rs::sdtest_2366_codex_priority_stop_bypasses_a_full_command_queue` | SDUC-554 | Green | Priority Stop bypasses a full normal command queue. |
+| SDTEST-2367 | `agent_codex/tests.rs::sdtest_2367_codex_rejected_steering_preserves_drafts_and_priority_stop_finishes` | SDUC-554 | Green | Rejected steering preserves drafts and priority Stop still finishes. |
+| SDTEST-2368 | `agent_codex/tests.rs::sdtest_2368_codex_file_approval_requires_complete_unredacted_proposed_patch` | SDUC-554 | Green | File approval requires a complete, exact, unredacted proposed patch. |
+| SDTEST-2400 | `agent_workflows.rs::sdtest_2400_goal_completion_requires_exact_final_marker_and_clean_run` | SDUC-555 | Green | Only exact scoped final completion plus a clean run satisfies goal verification. |
+| SDTEST-2401 | `agent_workflows.rs::sdtest_2401_goal_budget_and_context_prevent_unbounded_continuation` | SDUC-555 | Green | Context drift and turn/time budgets stop continuation. |
+| SDTEST-2402 | `agent_workflows.rs::sdtest_2402_schedules_coalesce_and_revalidate_every_dispatch` | SDUC-555 | Green | Recurring tasks require opt-in, coalesce missed runs and revalidate every dispatch. |
+| SDTEST-2403 | `agent_workflows.rs::sdtest_2403_readiness_fake_executor_keeps_credentials_out_of_result` | SDUC-555 | Green | Readiness uses bounded explicit argv and does not return credential diagnostics. |
+| SDTEST-2404 | `agent_workflows.rs::sdtest_2404_workflow_storage_preserves_intent_and_recovers_interrupted_goal` | SDUC-555 | Green | Persisted opt-in survives; interrupted goals recover paused, without provider resume IDs. |
+| SDTEST-2405 | `agent_workflows.rs::sdtest_2405_readiness_drops_nonversion_output_and_marks_failed_auth` | SDUC-555 | Green | Non-version and failed-auth output becomes safe readiness state rather than raw diagnostics. |
+| SDTEST-2406 | `agent_workflows.rs::sdtest_2406_automatic_goal_continuation_requires_user_start_and_stops_at_boundaries` | SDUC-555 | Green | Automatic read-only continuation needs opt-in plus user Start and stops at interaction/context/budget boundaries. |
+| SDTEST-2440 | `agent_delivery.rs::sdtest_2440_local_delivery_status_does_not_contact_github_or_write` | SDUC-556 | Green | Local status reads neither GitHub nor a mutation command. |
+| SDTEST-2441 | `agent_delivery.rs::sdtest_2441_push_preview_is_read_only_and_confirmation_uses_exact_commit_destination` | SDUC-556 | Green | Preview is read-only; confirmed push targets immutable SHA/destination and preserves dirty files/index. |
+| SDTEST-2442 | `agent_delivery.rs::sdtest_2442_stale_branch_head_origin_index_and_working_file_each_refuse_effect` | SDUC-556 | Green | Changed branch, HEAD, origin, index or user file independently refuses before any effect. |
+| SDTEST-2443 | `agent_delivery.rs::sdtest_2443_repository_actor_policy_refuses_untrusted_and_changed_accounts` | SDUC-556 | Green | ShellDeck actor policy and a changed authenticated account refuse; generic repositories keep their own actor. |
+| SDTEST-2444 | `agent_delivery.rs::sdtest_2444_pr_body_preserves_newlines_and_explicit_head_repo_and_author_are_verified` | SDUC-556 | Green | Multiline body is preserved through --body-file; explicit head/repo/base and created author are verified; temp body cleans up. |
+| SDTEST-2445 | `agent_delivery.rs::sdtest_2445_duplicate_pr_and_unpublished_head_are_refused_before_create` | SDUC-556 | Green | Unpublished commits and a PR appearing after preview prevent duplicate creation. |
+| SDTEST-2446 | `agent_delivery.rs::sdtest_2446_tampered_body_and_replayed_confirmation_cannot_create_or_push_twice` | SDUC-556 | Green | Tampered prepared body refuses; replayed confirmation cannot execute twice. |
+| SDTEST-2447 | `agent_delivery.rs::sdtest_2447_checks_readiness_and_untrusted_links_are_parsed_without_effects` | SDUC-556 | Green | Checks/readiness/head drift parse without writes and unsafe check links are withheld. |
+| SDTEST-2448 | `agent_delivery.rs::sdtest_2448_created_pr_author_mismatch_is_reported_after_one_effect_without_retry` | SDUC-556 | Green | Created-author mismatch is reported after one effect, without automatic retry. |
+| SDTEST-2449 | `agent_delivery.rs::sdtest_2449_changes_during_authentication_are_caught_before_effect` | SDUC-556 | Green | User edits during authentication are detected before any effect and retained. |
+| SDTEST-2450 | `agent_delivery.rs::sdtest_2450_origin_parser_rejects_credentials_encoded_paths_and_remote_helpers` | SDUC-556 | Green | Canonical origin parser refuses credentials, encoded paths, foreign hosts and custom helpers. |
+| SDTEST-2451 | `agent_delivery.rs::sdtest_2451_index_change_before_preview_invalidates_original_snapshot` | SDUC-556 | Green | An index change before preview invalidates the original snapshot, including binary staging cases. |
+| SDTEST-2452 | `agent_delivery.rs::sdtest_2452_wrong_or_expired_confirmation_never_publishes` | SDUC-556 | Green | Mismatched and expired confirmations never publish. |
+| SDTEST-2453 | `agent_delivery.rs::sdtest_2453_retargeted_session_workdir_refuses_previous_repository_delivery` | SDUC-556 | Green | Unix workdir symlink retarget refuses delivery from the previous checkout. |
+| SDTEST-2454 | `agent_delivery.rs::sdtest_2454_remote_branch_moving_after_preview_refuses_pull_request_creation` | SDUC-556 | Green | A remote branch moving after preview prevents PR creation. |
+| SDTEST-2455 | `agent_delivery.rs::sdtest_2455_incomplete_unborn_detached_and_unsafe_origins_are_not_delivery_candidates` | SDUC-556 | Green | Incomplete/unborn/detached snapshots and unsafe origins refuse delivery. |
+| SDTEST-2456 | `agent_delivery.rs::sdtest_2456_distinct_push_urls_and_changed_url_rewrites_never_redirect_delivery` | SDUC-556 | Green | Different push destinations and changed URL rewrites cannot redirect delivery. Passed in the final 473-test core run. |
+| SDTEST-2473 | `agent_session.rs::sdtest_2473_checkout_admission_reconciles_exact_starting_turn_and_drops_resume` | SDUC-550, SDUC-551 | Green | Mapped SSH checkout admission updates only the exact starting session/latest turn/request, retires incompatible resume authority and preserves earlier turns. Passed in the final 473-test core run. |
+| SDTEST-2474 | `agent_session.rs::sdtest_2474_checkout_admission_rejects_stale_runs_authority_changes_and_invalid_paths` | SDUC-550, SDUC-551 | Green | Wrong/stale run, changed provider/target/access/model, relative workdir and already-running admission are refused atomically. Passed in the final 473-test core run. |
+| SDTEST-2475 | `agent_session.rs::sdtest_2475_unchanged_checkout_admission_keeps_matching_resume_authority` | SDUC-550, SDUC-551 | Green | An unchanged checkout preserves the matching opaque resume and exact model authority. Passed in the final 473-test core run. |
+| SDTEST-2490 | `agent_codex/model_discovery.rs::sdtest_2490_model_discovery_paginates_advertised_models_without_inference` | SDUC-551 | Green | Injected app-server wire pins initialize/list-only discovery, cursor pagination/deduplication, exact model IDs and advertised effort mapping. Passed in the final 473-test core run, including Max/Ultra and model-specific image/effort refusal assertions. |
+| SDTEST-2491 | `agent_codex/model_discovery.rs::sdtest_2491_model_discovery_rejects_malformed_responses_and_never_grants_tools` | SDUC-551 | Green | Malformed or mismatched replies refuse; an unexpected server tool-approval request receives an unsupported-method response without granting authority. Passed in the 473-test central snapshot. |
+| SDTEST-2492 | `agent_codex/model_discovery.rs::sdtest_2492_model_discovery_bounds_pagination_and_timeout` | SDUC-551 | Green | Repeated cursors, deadline expiry, hidden entries and oversized model identifiers cannot become selectable discovery authority. Passed in the 473-test central snapshot. |
+| SDTEST-2493 | `agent_codex/model_discovery.rs::sdtest_2493_model_discovery_caps_catalog_and_preserves_legacy_modality_defaults` | SDUC-551 | Green | Catalog retention caps at 128 models; absent legacy modality metadata follows the documented text/image compatibility rule. Passed in the 473-test central snapshot. |
+
+| SDTEST-2494 | `agent_review.rs::sdtest_2494_large_tracked_assets_remain_complete_and_detect_intervening_edits` | SDUC-552 | Green | Default budgets admit large tracked native assets while an intervening asset edit still refuses a prepared index mutation. Passed in the final 474-test core run. |

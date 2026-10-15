@@ -11,11 +11,12 @@ use shelldeck_terminal::grid::{
     UnderlineStyle,
 };
 use shelldeck_terminal::session::{SessionState, TerminalSession};
-use shelldeck_terminal::url::{detect_urls, UrlMatch};
+use shelldeck_terminal::url::{detect_grid_urls, left_click_action, LeftClickAction, UrlMatch};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use shelldeck_core::config::themes::TerminalTheme;
+use shelldeck_core::tmux::TmuxAction;
 
 use crate::glyph_cache::GlyphCache;
 use crate::monolith::{animated_monolith, MonolithMotion};
@@ -82,6 +83,7 @@ pub enum TerminalEvent {
     TabSelected(Uuid),
     TabClosed(Uuid),
     NewTabRequested,
+    TmuxUnavailable,
     /// Duplicate a connection-backed tab: the workspace should open a new SSH
     /// session for the given connection.
     DuplicateTabRequested(Uuid),
@@ -252,6 +254,8 @@ pub struct TerminalView {
     /// the focused grid changes (dirty) or the focused session changes, not on
     /// every repaint (e.g. cursor-blink frames keep the cached result).
     detected_urls: Vec<UrlMatch>,
+    /// Consume the matching release locally, even if the modifier was released first.
+    url_click_active: bool,
     /// Session id the cached `detected_urls` was computed for.
     last_url_session: Option<Uuid>,
     /// Index of the URL currently hovered by the mouse.
@@ -401,6 +405,7 @@ impl TerminalView {
             search_case_sensitive: false,
             search_regex: false,
             detected_urls: Vec::new(),
+            url_click_active: false,
             last_url_session: None,
             _hovered_url: None,
             context_menu: None,
@@ -2403,8 +2408,60 @@ impl TerminalView {
                 .bg(ShellDeckColors::border()),
         );
 
-        // Middle group: split
-        if self.layout.is_split() {
+        // Managed server tabs keep their complete layout inside tmux.
+        if self
+            .active_session()
+            .is_some_and(|session| session.is_tmux_managed())
+        {
+            for (id, label, hint, action) in [
+                (
+                    "tb-tmux-split-h",
+                    lbl_split_h.to_string(),
+                    t!("terminal.tmux.split_h").to_string(),
+                    TmuxAction::SplitHorizontal,
+                ),
+                (
+                    "tb-tmux-split-v",
+                    lbl_split_v.to_string(),
+                    t!("terminal.tmux.split_v").to_string(),
+                    TmuxAction::SplitVertical,
+                ),
+            ] {
+                toolbar = toolbar.child(toolbar_btn(id, &label, hint).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.tmux_action(action, cx);
+                        this.focus_handle.focus(window);
+                    },
+                )));
+            }
+            for (id, icon, hint, action) in [
+                (
+                    "tb-tmux-next",
+                    "arrow-right",
+                    t!("terminal.tmux.next").to_string(),
+                    TmuxAction::NextPane,
+                ),
+                (
+                    "tb-tmux-layout",
+                    "refresh-cw",
+                    t!("terminal.tmux.layout").to_string(),
+                    TmuxAction::NextLayout,
+                ),
+                (
+                    "tb-tmux-zoom",
+                    "maximize-2",
+                    t!("terminal.tmux.zoom").to_string(),
+                    TmuxAction::ToggleZoom,
+                ),
+            ] {
+                toolbar = toolbar.child(toolbar_icon(id, icon, hint).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.tmux_action(action, cx);
+                        this.focus_handle.focus(window);
+                    },
+                )));
+            }
+        } else if self.layout.is_split() {
             toolbar = toolbar
                 .child(
                     toolbar_btn(
@@ -2882,111 +2939,124 @@ impl TerminalView {
 
         // Left mouse down: selection or terminal mouse mode
         let h_down = handle.clone();
-        let mouse_down_handler =
-            move |event: &MouseDownEvent, window: &mut Window, cx: &mut App| {
-                focus.focus(window);
-                if mouse_mode != MouseMode::None {
-                    if let Some(view) = h_down.upgrade() {
-                        view.update(cx, |this, _cx| {
-                            if let Some((col, row)) = this.pixel_to_cell(event.position) {
-                                let bytes = Self::encode_mouse(mouse_encoding, 0, col, row, true);
-                                if let Some(s) = this.active_session() {
-                                    s.write_input(&bytes);
-                                }
+        let mouse_down_handler = move |event: &MouseDownEvent,
+                                       window: &mut Window,
+                                       cx: &mut App| {
+            focus.focus(window);
+            let url = h_down.upgrade().and_then(|view| {
+                view.update(cx, |this, _| {
+                    this.url_click_active = false;
+                    this.pixel_to_cell_zero(event.position)
+                        .and_then(|(col, row)| {
+                            this.detected_urls
+                                .iter()
+                                .find(|url| url.contains(col, row))
+                                .map(|url| url.url.clone())
+                        })
+                })
+            });
+            let action = left_click_action(
+                mouse_mode,
+                event.modifiers.control || event.modifiers.secondary(),
+                url.is_some(),
+            );
+            // Local link activation takes priority over tmux/TUI mouse reporting.
+            if action == LeftClickAction::OpenUrl {
+                if let Some(view) = h_down.upgrade() {
+                    view.update(cx, |this, _| this.url_click_active = true);
+                }
+                if let Some(url) = url {
+                    let _ = open::that_detached(url);
+                }
+                return;
+            }
+            if action == LeftClickAction::ReportMouse {
+                if let Some(view) = h_down.upgrade() {
+                    view.update(cx, |this, _cx| {
+                        if let Some((col, row)) = this.pixel_to_cell(event.position) {
+                            let bytes = Self::encode_mouse(mouse_encoding, 0, col, row, true);
+                            if let Some(s) = this.active_session() {
+                                s.write_input(&bytes);
                             }
+                        }
+                    });
+                }
+            } else {
+                // Check for scrollbar click first
+                if let Some(view) = h_down.upgrade() {
+                    let is_scrollbar = view.read(cx).is_in_scrollbar_area(event.position, window);
+                    if is_scrollbar {
+                        view.update(cx, |this, cx| {
+                            this.scrollbar_dragging = true;
+                            this.scrollbar_scroll_to_y(event.position.y, window);
+                            cx.notify();
                         });
-                    }
-                } else {
-                    // Check for scrollbar click first
-                    if let Some(view) = h_down.upgrade() {
-                        let is_scrollbar =
-                            view.read(cx).is_in_scrollbar_area(event.position, window);
-                        if is_scrollbar {
-                            view.update(cx, |this, cx| {
-                                this.scrollbar_dragging = true;
-                                this.scrollbar_scroll_to_y(event.position.y, window);
-                                cx.notify();
-                            });
-                            return;
-                        }
-                    }
-
-                    // Check for Ctrl+Click on URLs
-                    let ctrl_held = event.modifiers.control || event.modifiers.secondary();
-                    if ctrl_held {
-                        if let Some(view) = h_down.upgrade() {
-                            view.update(cx, |this, _cx| {
-                                if let Some((col, row)) = this.pixel_to_cell_zero(event.position) {
-                                    // Find URL at this position
-                                    if let Some(url_match) = this.detected_urls.iter().find(|u| {
-                                        u.row == row && col >= u.col && col < u.col + u.len
-                                    }) {
-                                        let url = url_match.url.clone();
-                                        let _ = open::that(&url);
-                                    }
-                                }
-                            });
-                        }
                         return;
                     }
-
-                    // Selection mode: handle single/double/triple click
-                    if let Some(view) = h_down.upgrade() {
-                        view.update(cx, |this, cx| {
-                            // Reset blink on click so cursor stays visible
-                            this.reset_cursor_blink(cx);
-                            // Dismiss context menu on any click
-                            if this.context_menu.is_some() {
-                                this.context_menu = None;
-                                cx.notify();
-                                return;
-                            }
-                            if let Some((col, row)) = this.pixel_to_cell_zero(event.position) {
-                                let now = std::time::Instant::now();
-                                let multi_click_threshold = std::time::Duration::from_millis(400);
-
-                                // Detect multi-click
-                                let is_multi = this
-                                    .last_click_time
-                                    .is_some_and(|t| now.duration_since(t) < multi_click_threshold)
-                                    && this.last_click_pos == Some((col, row));
-
-                                if is_multi {
-                                    this.click_count = (this.click_count % 3) + 1;
-                                } else {
-                                    this.click_count = 1;
-                                }
-                                this.last_click_time = Some(now);
-                                this.last_click_pos = Some((col, row));
-
-                                if let Some(session) = this.active_session() {
-                                    let mut grid = session.grid.lock();
-                                    let alt_held = event.modifiers.alt;
-                                    match this.click_count {
-                                        1 => {
-                                            grid.clear_selection();
-                                            if alt_held {
-                                                grid.start_block_selection(col, row);
-                                            } else {
-                                                grid.start_selection(col, row);
-                                            }
-                                        }
-                                        2 => grid.start_word_selection(col, row),
-                                        3 => grid.start_line_selection(col, row),
-                                        _ => {}
-                                    }
-                                }
-                                this.selecting = true;
-                                cx.notify();
-                            }
-                        });
-                    }
                 }
-            };
+
+                // Selection mode: handle single/double/triple click
+                if let Some(view) = h_down.upgrade() {
+                    view.update(cx, |this, cx| {
+                        // Reset blink on click so cursor stays visible
+                        this.reset_cursor_blink(cx);
+                        // Dismiss context menu on any click
+                        if this.context_menu.is_some() {
+                            this.context_menu = None;
+                            cx.notify();
+                            return;
+                        }
+                        if let Some((col, row)) = this.pixel_to_cell_zero(event.position) {
+                            let now = std::time::Instant::now();
+                            let multi_click_threshold = std::time::Duration::from_millis(400);
+
+                            // Detect multi-click
+                            let is_multi = this
+                                .last_click_time
+                                .is_some_and(|t| now.duration_since(t) < multi_click_threshold)
+                                && this.last_click_pos == Some((col, row));
+
+                            if is_multi {
+                                this.click_count = (this.click_count % 3) + 1;
+                            } else {
+                                this.click_count = 1;
+                            }
+                            this.last_click_time = Some(now);
+                            this.last_click_pos = Some((col, row));
+
+                            if let Some(session) = this.active_session() {
+                                let mut grid = session.grid.lock();
+                                let alt_held = event.modifiers.alt;
+                                match this.click_count {
+                                    1 => {
+                                        grid.clear_selection();
+                                        if alt_held {
+                                            grid.start_block_selection(col, row);
+                                        } else {
+                                            grid.start_selection(col, row);
+                                        }
+                                    }
+                                    2 => grid.start_word_selection(col, row),
+                                    3 => grid.start_line_selection(col, row),
+                                    _ => {}
+                                }
+                            }
+                            this.selecting = true;
+                            cx.notify();
+                        }
+                    });
+                }
+            }
+        };
 
         // Left mouse up
         let h_up = handle.clone();
         let mouse_up_handler = move |event: &MouseUpEvent, _window: &mut Window, cx: &mut App| {
+            if let Some(view) = h_up.upgrade() {
+                if view.update(cx, |this, _| std::mem::take(&mut this.url_click_active)) {
+                    return;
+                }
+            }
             if mouse_mode != MouseMode::None {
                 if let Some(view) = h_up.upgrade() {
                     view.update(cx, |this, _cx| {
@@ -3016,6 +3086,12 @@ impl TerminalView {
         let h_move = handle.clone();
         let mouse_move_handler =
             move |event: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
+                if h_move
+                    .upgrade()
+                    .is_some_and(|view| view.read(cx).url_click_active)
+                {
+                    return;
+                }
                 if mouse_mode != MouseMode::None {
                     let should_report = match mouse_mode {
                         MouseMode::AnyMotion => true,
@@ -3142,9 +3218,7 @@ impl TerminalView {
                                     |(col, row)| {
                                         this.detected_urls
                                             .iter()
-                                            .find(|u| {
-                                                u.row == row && col >= u.col && col < u.col + u.len
-                                            })
+                                            .find(|u| u.contains(col, row))
                                             .map(|u| u.url.clone())
                                     },
                                 );
@@ -3410,7 +3484,11 @@ impl TerminalView {
                 move |_: &ToggleSplitFocus, _window: &mut Window, cx: &mut App| {
                     if let Some(view) = h.upgrade() {
                         view.update(cx, |this, cx| {
-                            this.toggle_split_focus();
+                            if this.active_session().is_some_and(|s| s.is_tmux_managed()) {
+                                this.tmux_action(TmuxAction::NextPane, cx);
+                            } else {
+                                this.toggle_split_focus();
+                            }
                             cx.notify();
                         });
                     }
@@ -4616,6 +4694,17 @@ impl TerminalView {
             return;
         }
 
+        if self.active_session().is_some_and(|s| s.is_tmux_managed()) {
+            self.tmux_action(
+                match direction {
+                    SplitDirection::Horizontal => TmuxAction::SplitHorizontal,
+                    SplitDirection::Vertical => TmuxAction::SplitVertical,
+                },
+                cx,
+            );
+            return;
+        }
+
         // SSH tabs ask the workspace to open another session for the connection;
         // it then calls `set_split_session` to install it as a new pane.
         let connection_id = self
@@ -4633,6 +4722,15 @@ impl TerminalView {
 
         // Local terminal: spawn directly.
         self.spawn_local_split(direction, cx);
+    }
+
+    fn tmux_action(&self, action: TmuxAction, cx: &mut Context<Self>) {
+        if !self
+            .active_session()
+            .is_some_and(|session| session.request_tmux_action(action))
+        {
+            cx.emit(TerminalEvent::TmuxUnavailable);
+        }
     }
 
     /// Spawn a local terminal and add it as a new pane splitting the focused one.
@@ -5294,8 +5392,7 @@ impl Render for TerminalView {
                     let (mouse_mode, mouse_encoding, mut cursor) = {
                         let g = grid_arc.lock();
                         if urls_stale {
-                            let visible = g.visible_rows();
-                            self.detected_urls = detect_urls(&visible);
+                            self.detected_urls = detect_grid_urls(&g);
                             self.last_url_session = focused_session;
                         }
                         (g.mouse_mode, g.mouse_encoding, g.cursor.clone())

@@ -1,5 +1,6 @@
 use super::*;
 use crate::monolith::{animated_monolith, MonolithMotion};
+use crate::window_chrome::resize_edge;
 
 /// Courbe du voile de transition, rapportée à la durée *de cette*
 /// transition : le palier n'est plus constant depuis que le retour dans un
@@ -550,47 +551,8 @@ impl Render for Workspace {
         // Edge resize handling (when not maximized and not already resizing)
         if !is_maximized && !sidebar_resizing && !output_resizing {
             // Window-edge resize hit-testing works in real screen pixels.
-            let border = gpui::px(5.0);
             root = root
-                .child(
-                    canvas(
-                        |_bounds, window, _cx| {
-                            window.insert_hitbox(
-                                Bounds::new(
-                                    point(gpui::px(0.0), gpui::px(0.0)),
-                                    window.window_bounds().get_bounds().size,
-                                ),
-                                HitboxBehavior::Normal,
-                            )
-                        },
-                        move |_bounds, hitbox, window, _cx| {
-                            let mouse = window.mouse_position();
-                            let size = window.window_bounds().get_bounds().size;
-                            let Some(edge) = resize_edge(mouse, border, size) else {
-                                return;
-                            };
-                            window.set_cursor_style(
-                                match edge {
-                                    ResizeEdge::Top | ResizeEdge::Bottom => {
-                                        CursorStyle::ResizeUpDown
-                                    }
-                                    ResizeEdge::Left | ResizeEdge::Right => {
-                                        CursorStyle::ResizeLeftRight
-                                    }
-                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => {
-                                        CursorStyle::ResizeUpLeftDownRight
-                                    }
-                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => {
-                                        CursorStyle::ResizeUpRightDownLeft
-                                    }
-                                },
-                                &hitbox,
-                            );
-                        },
-                    )
-                    .size_full()
-                    .absolute(),
-                )
+                .child(crate::window_chrome::resize_cursor_layer())
                 .on_mouse_move(|_e, window, _cx| {
                     window.refresh();
                 })

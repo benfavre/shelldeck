@@ -36,19 +36,19 @@ requests, and automation into one role-aware control plane.
 - **GPU-Accelerated Rendering** -- Native performance via [GPUI](https://gpui.rs) framework
 - **SSH Connection Manager** -- Auto-imports from `~/.ssh/config`, supports jump hosts, key auth, and password auth via OS keychain
 - **Terminal Emulator** -- Full VTE escape sequence support (SGR, CSI, OSC), scrollback, alt screen buffer, BCE
-- **Nested Pane Layouts** -- tmux-like recursive split tree (N panes, mixed horizontal/vertical) with drag-to-resize dividers and click/keyboard focus
+- **Persistent Server Panes** -- tmux-backed splits, focus, layout cycling and pane zoom on managed SSH tabs; pane layouts survive reconnects. Local terminals retain native split layouts.
 - **Port Forwarding** -- Local, remote, and SOCKS proxy tunnels with visual status
 - **Script Editor** -- Write, save, and execute scripts on remote hosts with variable templating
 - **Server Sync** -- Side-by-side file browser, nginx/database discovery, rsync/mysqldump/pg_dump sync wizard
 - **Command Palette** -- Fuzzy-filtered command search (`Ctrl+Shift+P`)
 - **Session Persistence** -- Restore workspace layout and sessions across restarts
 - **Search** -- In-terminal text search with match highlighting
-- **URL Detection** -- Clickable URLs detected in terminal output
+- **URL Detection** -- Ctrl-click terminal links (Cmd-click on macOS), including wrapped login URLs inside tmux
 - **Themes** -- 13 built-in app themes (Dracula, Nord, Tokyo Night, Gruvbox, Catppuccin, …) plus terminal color themes, with live preview via the titlebar switcher and command palette
 - **Cloud Sync** -- Pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal into your connection store
 - **Role-Aware Workspaces** -- Dedicated User, Support, and Dev surfaces gated by the signed-in Manage account
 - **Support & Requests** -- Triage support tickets and manage tenant/site requests with comments, attachments, GitHub sync, and AI Operations dispatch
-- **Contextual AI** -- Native AI Dock plus Monique and the shared platform cockpit for assisted operations
+- **Contextual AI** -- Detachable AI assistant window, monitor/edge docking where desktop placement is supported, plus Monique and the shared platform cockpit
 - **Auto-Update** -- Checks for and installs new releases automatically
 - **Context Menu** -- Right-click for copy, paste, search, and URL actions
 - **Git Integration** -- Branch indicator and status in the UI

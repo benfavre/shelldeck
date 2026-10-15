@@ -142,6 +142,14 @@ leave existing palette entries intact.
 Selecting a screen region detects `http(s)://` URLs (trimming trailing
 punctuation) and file paths with optional `:line[:col]` suffixes,
 including paths that contain colons.
+Ctrl-click (Cmd-click on macOS) opens a detected link locally even when tmux
+or a TUI has enabled mouse reporting. The matching mouse release is consumed
+locally; ordinary terminal clicks still reach tmux. Wrapped URLs share their
+complete destination across every visible segment. Soft-wrap metadata is
+honored in scrollback; full-width HTTP(S) query URLs explicitly redrawn with
+hard newlines may continue through unindented URL tokens, stopping at whitespace,
+blank lines, another URL, or a row that does not reach the right edge. Pointer
+hitboxes use terminal columns, including Unicode and wide cells.
 
 ### SDUC-022 — Local PTY spawn on all platforms
 
@@ -244,6 +252,8 @@ window size honoured, readable via `SshChannel::read`, writable via
 
 `SshSession::exec` runs a command remotely, captures stdout, stderr,
 and exit code, and returns a `success()` bit matching the exit code.
+Output EOF does not end collection: the exit status may follow before
+the server closes the channel.
 
 ### SDUC-046 — Streaming execution
 
@@ -2017,15 +2027,18 @@ growing the surrounding screen or typing off-screen.
 
 For an authenticated account, the system-tray menu can create, hide, show and
 focus one Assistant Dock without making the main ShellDeck window visible. A
-logged-out invocation reveals the mandatory login surface instead. The 480 px Dock is anchored to the
-right edge for the display height, has no native titlebar, and
-cannot be moved, resized or minimized. Its exposed top-left and bottom-left
-corners use the same theme radius as the floating main window; both right
-corners remain square so the Dock stays visually fused to the screen edge.
-Its 56 px activity rail is a full-height sibling of the 424 px conversation
-column. The single 44 px conversation header is therefore confined to the
-left column and contains only the thread title and hide action; reopening
-ShellDeck remains available once, in the rail's bottom toolbox.
+logged-out invocation reveals the mandatory login surface instead. On desktops
+that allow window positioning, the first invocation slides a 480 px panel in
+from the right edge of the primary monitor's usable work area (excluding
+system bars). A draggable titlebar can detach it into a shorter, fully rounded,
+resizable window with minimize/maximize/hide controls. The attached panel
+rounds only the two exposed corners; docking to the left mirrors the frame.
+Left/right controls dock on the current monitor, and a monitor menu chooses
+either edge of any connected display. Native desktop edge tiling also updates
+the frame. Dragging a detached window between monitors remains native.
+The full-height 56 px activity rail and conversation column sit below the
+shared window titlebar, which is available in Chat, History, Tasks and Clippy.
+The conversation header names the thread without duplicating close controls.
 Repeated invocations reuse the existing
 Dock rather than creating duplicates. Closing the Dock hides it and keeps an
 in-flight request alive. Reopening it re-prepares the same Global context
@@ -2044,9 +2057,16 @@ window handles and owns global-shortcut routing, so repeated invocations do
 not depend on scanning or constructing the main application surface.
 The enabled-by-default global shortcut toggles that same single Dock from any
 application: Ctrl+Shift+Space on Windows/Linux and Cmd+Shift+Space on macOS.
-The Dock opens on the display containing the pointer, moves to that display on
-the next invocation if necessary, and hides on Escape or when its window loses
-focus.
+After hiding, subsequent invocations retain its current position and docking
+state instead of moving it to the pointer's monitor. Escape and the close
+control animate it out, preserving in-flight requests; reopening during that
+animation cancels the pending hide. Attached panels also hide on focus loss;
+floating windows stay open when focus moves to another app.
+Wayland owns top-level placement and does not report a primary monitor. There,
+the assistant opens as a normal floating window, with native dragging, resizing
+and compositor edge snapping; explicit placement controls are disabled with
+an explanation. It does not claim an exact initial monitor or edge placement
+that the compositor cannot provide. Reduced-motion preferences skip sliding.
 On Wayland, both startup shortcuts are submitted together through one XDG
 Global Shortcuts portal session; accepted `Activated` signals route through
 the same runtime IDs as native backends. Portal absence, user refusal, or an
@@ -3184,7 +3204,37 @@ the Automonique host may execute only after the exact separately configured
 review, provider-session, Git, CI, or pull-request adapter resolves the action;
 an unavailable adapter refuses before any effect.
 
+### SDUC-500 — Managed SSH splits and pane controls belong to tmux
+
+When automatic tmux attachment is enabled, the SSH terminal starts tmux
+directly and binds a typed control channel to that client's PTY. Split H/V
+and their shortcuts create server panes in the active pane's directory,
+without another SSH connection or a native panel split. Next-pane focus,
+layout cycling and pane zoom operate on that same client. Every action
+re-resolves its current tmux session/window, including after user navigation.
+Commands execute on a separate channel of the existing SSH connection and
+never enter the foreground program's input. Missing/detached clients and
+control failures are shown as errors without falling back to another client,
+typing commands or creating a local panel. No pane-killing control is added.
+Existing local and plain SSH terminals retain their native split behavior.
+Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
+
 ## Change log
+
+- **2026-10-14**: Amended SDUC-434: primary-display opening, sliding visibility,
+  detachable window chrome, monitor/edge selection and native snapping.
+  SDTEST-1956..1959 cover placement, completed-tile detection, hide/reopen races
+  and XRandR primary-monitor inventory. SDTEST-1960 tracks native/matrix QA.
+
+- **2026-10-14**: Added SDUC-500 for tmux-native server pane management.
+  SDTEST-1951..1955 cover startup framing, typed identity validation, scoped
+  commands, independent control/input channels and exit status after EOF.
+  Live fixture coverage is recorded in `tmux-pane-qa-2026-10-14.md`.
+
+- **2026-10-14**: Amended SDUC-021 for Ctrl/Cmd-click precedence over tmux
+  mouse reporting, full wrapped login URLs, scrollback wrap metadata, and
+  Unicode cell coordinates. SDTEST-1945..1949 cover detection and click routing;
+  SDTEST-1950 tracks native mouse-release/browser delivery coverage.
 
 - **2026-09-30**: Amended SDUC-049/052 for saved local bind addresses, pending
   setup cancellation, retry ownership and bounded worker cleanup. Added
@@ -4119,3 +4169,117 @@ an unavailable adapter refuses before any effect.
   Contract correction SDUC-102: cloud is authoritative on tags,
   local additions ARE overwritten (initial inventory said
   "preserves" — aspirational, reality tested and locked).
+
+
+## 32. Agents workspace continuity, interaction, review and delivery — 2026-10-15
+
+### SDUC-550 — Durable conversation library and explicit context boundaries
+
+Agents saves bounded conversations, drafts and presentation preferences in its
+private `agents/sessions.json` file, restores interrupted runs as interrupted,
+and excludes live provider resume identifiers from disk. A damaged, oversized,
+or newer-format file is retained rather than replaced by an empty library.
+Rename, pin, archive/restore, transcript search, duplication and Markdown/JSON
+export operate on the retained conversation. A duplicated or context-switched
+conversation never acquires the old provider's live execution authority.
+Visible context boundaries identify provider/target/access/workdir/model changes;
+old visible messages are not silently replayed into a new context. This contract
+does not persist executable processes, queued attachments, or workspace tab layouts.
+
+### SDUC-551 — Provider-aware composer, activity and adjacent workspace tools
+
+The composer remains usable during a run and can queue follow-up turns with
+captured context. Queued items can be edited, reordered or removed; failed image
+restoration or changed inputs retain the original queued item. File/text context
+is bounded and explicitly attached as data. Local Codex supports image intake,
+clipboard/screenshot capture, preview and annotation; unsupported providers and
+SSH image delivery refuse rather than dropping input. Local file mentions are
+scoped to the selected workdir. Explicit local Codex `model/list` discovery
+provides searchable advertised models and their supported reasoning levels;
+named known models validate captured image and effort support before launch.
+Discovery is bounded and creates no inference turn. A catalog recommendation
+does not resolve an omitted model; Codex retains its configured automatic
+selection. Model overrides remain available as free text for other providers,
+SSH, unknown custom models and failed discovery. Catalog presence is not proof
+of inference entitlement. Message copy, quote and
+edit-to-draft actions preserve the transcript.
+
+The transcript renders typed plans, usage, source/artifact links, activity,
+questions and advertised approval choices. Claude partial blocks and Codex item
+snapshots avoid duplicate visible text, and streaming credentials are redacted
+across chunk boundaries. Adjacent panels expose files, actual Git review, retained
+terminals, local instructions, sources, browser snapshots and the session library.
+The displayed target is also the inspector's context; asynchronous results are
+fenced to their original session and context. This is not cross-provider model
+or tool discovery,
+voice input, persistent workspace layouts or a universal live provider protocol.
+
+### SDUC-552 — Actual local Git review with confirmed file operations
+
+Local review reads bounded NUL-delimited Git status, staged/unstaged/untracked
+content and exact file/index/HEAD observations rather than treating provider
+traces as authoritative diffs. Renames, conflicts, binary unknown counts and
+line anchors remain distinct. Turn cards describe observed before/after changes;
+they do not claim agent ownership from timing alone. Safe stage/unstage and
+commit operations require a concrete preview, user confirmation, current fences
+and Git locks, preserving unrelated work. Undo additionally requires exact
+agent edit evidence, so current CLI traces generally leave it unavailable.
+Line feedback is appended to the corresponding conversation draft for explicit
+submission. SSH Git review, hunk staging and a provider-independent ownership
+proof are outside this contract.
+
+### SDUC-553 — Explicit isolated browser snapshots and visual feedback
+
+An explicit HTTP(S) visit uses installed Chrome/Chromium with a fresh private
+profile to capture bounded rendered DOM and a PNG under a deadline. Invalid URLs,
+credentials, oversized output and invalid images refuse. Back/forward/reload
+navigate URL history; desktop/mobile captures, DOM filtering, screenshot preview,
+annotation and attaching feedback/DOM are supported. Screenshot delivery is
+capability-gated to local Codex. The preview is a snapshot: it does not retain
+login cookies, accept live page clicks/forms, expose console/network panels, or
+provide a continuous agent browser-control session.
+
+### SDUC-554 — Live local Codex interaction and exact one-shot decisions
+
+Local Codex uses the installed app-server protocol for turn streaming, steering,
+questions, interruption and approvals. Server-provided choices retain exact
+request/run scope, expire and are resolved once. Read-only or unsupported
+permission requests never grant authority; file approvals require an exact,
+complete proposed patch. Context/sandbox mismatches refuse before turn creation,
+and Stop uses a priority path even when the normal input queue is full. Rejected
+steering leaves the draft available. SSH Codex and other providers do not inherit
+this live local transport; unsupported interactions remain unavailable.
+
+### SDUC-555 — Bounded local goals, recurring tasks and CLI readiness
+
+Goals persist their objective, verification criteria, budgets and progress;
+completion requires the exact scoped final verification marker and a clean run.
+Every turn rechecks target/access/context and current Dev authority. Explicitly
+opted-in read-only continuation begins only with the user's Start action and
+pauses for questions, approvals, errors, drift or budget limits. Write-access
+runs still require their own concrete confirmation. Recurring tasks save paused,
+require explicit enabling and coalesce missed runs while the desktop app is open.
+A task run is bounded to ten minutes; this is not a cloud scheduler. Restart
+pauses interrupted goals instead of resuming hidden execution. CLI readiness
+checks use bounded argv, discard raw auth diagnostics and expose only installation,
+version and authentication readiness.
+
+### SDUC-556 — Explicit local Git push and GitHub PR delivery
+
+Delivery shows the reviewed branch/commit, origin, upstream divergence and dirty
+file count. GitHub PR/check/readiness data is fetched only on request through the
+local `gh` CLI. Push and create-PR flows prepare an exact preview and require a
+separate confirmation before any network write. The PR form captures title,
+multiline body and base; a private prepared `--body-file` preserves newlines.
+
+Delivery revalidates workdir/canonical location, repository, branch, HEAD, full
+snapshot/index and effective remote configuration. Push uses the captured commit
+SHA and destination without force. PR creation uses explicit head/repository,
+requires the published head to match, rechecks duplicate absence and verifies the
+created PR's author, branch, commit and base. The ShellDeck repository enforces its
+trusted-actor policy; other repositories display their own authenticated actor.
+Expired, mismatched and replayed confirmations refuse. Dirty files and the index
+are never staged, checked out or committed by delivery. Branch creation uses the
+existing workspace launcher. SSH delivery, distinct fetch/push repositories,
+multiple origin destinations, noncanonical GitHub origins and incomplete review
+snapshots are not supported. No live push or PR mutation is part of the test suite.

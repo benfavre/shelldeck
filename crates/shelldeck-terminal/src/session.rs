@@ -47,9 +47,27 @@ pub struct TerminalSession {
     output_notifier: Arc<Mutex<Option<mpsc::UnboundedSender<()>>>>,
     shell_flavor: ShellFlavor,
     initial_cwd: Option<std::path::PathBuf>,
+    tmux_control: Option<mpsc::UnboundedSender<shelldeck_core::tmux::TmuxAction>>,
 }
 
 impl TerminalSession {
+    pub fn set_tmux_control(
+        &mut self,
+        tx: mpsc::UnboundedSender<shelldeck_core::tmux::TmuxAction>,
+    ) {
+        self.tmux_control = Some(tx);
+    }
+
+    pub fn is_tmux_managed(&self) -> bool {
+        self.tmux_control.is_some()
+    }
+
+    pub fn request_tmux_action(&self, action: shelldeck_core::tmux::TmuxAction) -> bool {
+        self.tmux_control
+            .as_ref()
+            .is_some_and(|tx| tx.send(action).is_ok())
+    }
+
     /// Install a channel the reader thread pings on every output chunk, letting
     /// the UI wake and repaint only when there is actually new data.
     pub fn set_output_notifier(&self, tx: mpsc::UnboundedSender<()>) {
@@ -200,6 +218,7 @@ impl TerminalSession {
             output_notifier,
             shell_flavor,
             initial_cwd: Some(canonical_cwd.to_path_buf()),
+            tmux_control: None,
         })
     }
 
@@ -271,6 +290,7 @@ impl TerminalSession {
             output_notifier,
             shell_flavor: ShellFlavor::Posix,
             initial_cwd: None,
+            tmux_control: None,
         };
 
         Ok((session, data_tx, input_rx))
@@ -328,6 +348,28 @@ impl TerminalSession {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    // SDTEST-1954 — SDUC-500: controls cannot be typed into Claude/Codex.
+    #[test]
+    fn tmux_actions_use_the_control_channel_without_foreground_input_or_fallback() {
+        use shelldeck_core::tmux::TmuxAction;
+        let (mut session, _output, mut input) =
+            TerminalSession::spawn_ssh("server".into(), 24, 80).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        session.set_tmux_control(tx);
+        assert!(session.request_tmux_action(TmuxAction::SplitVertical));
+        assert_eq!(rx.try_recv().unwrap(), TmuxAction::SplitVertical);
+        assert!(matches!(
+            input.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        drop(rx);
+        assert!(!session.request_tmux_action(TmuxAction::SplitHorizontal));
+        assert!(matches!(
+            input.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
 
     /// Everything currently on screen, as plain text.
     fn screen_text(session: &TerminalSession) -> String {

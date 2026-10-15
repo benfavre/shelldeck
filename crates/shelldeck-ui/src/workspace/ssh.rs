@@ -22,6 +22,7 @@ enum SshSessionEnd {
 enum SshLifecycleEvent {
     Connected,
     ConnectFailed(String),
+    TmuxFailed(String),
     Ended(SshSessionEnd),
 }
 
@@ -59,6 +60,15 @@ impl Workspace {
 
     /// Initiate an SSH connection to `connection`.
     pub(super) fn connect_ssh(&mut self, connection: Connection, cx: &mut Context<Self>) {
+        self.connect_ssh_at(connection, None, cx);
+    }
+
+    pub(super) fn connect_ssh_at(
+        &mut self,
+        connection: Connection,
+        workdir: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.enter_dev_mode(cx) {
             return;
         }
@@ -66,7 +76,7 @@ impl Workspace {
         let conn_id = connection.id;
 
         let (rows, cols) = self.terminal.read(cx).grid_size();
-        let attach_tmux = self.app_config.general.auto_attach_tmux;
+        let attach_tmux = workdir.is_none() && self.app_config.general.auto_attach_tmux;
 
         let (mut session, data_tx, input_rx) =
             match TerminalSession::spawn_ssh(title.clone(), rows, cols) {
@@ -77,6 +87,11 @@ impl Workspace {
                 }
             };
         let session_id = session.id;
+
+        let (tmux_tx, mut tmux_rx) = tokio::sync::mpsc::unbounded_channel();
+        if attach_tmux {
+            session.set_tmux_control(tmux_tx);
+        }
 
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
         session.set_resize_fn(Box::new(move |rows, cols| {
@@ -135,7 +150,14 @@ impl Workspace {
                     };
                     tracing::info!("SSH connected to {}", conn.display_name());
 
-                    let channel = match ssh_session.open_shell(rows as u32, cols as u32).await {
+                    let opened = if attach_tmux {
+                        ssh_session.open_tmux_shell(rows as u32, cols as u32).await
+                            .map(|(channel, client, initial)| (channel, Some(client), initial))
+                    } else {
+                        ssh_session.open_shell(rows as u32, cols as u32).await
+                            .map(|channel| (channel, None, Vec::new()))
+                    };
+                    let (channel, tmux_client, initial_output) = match opened {
                         Ok(ch) => ch,
                         Err(e) => {
                             let msg = t!(
@@ -154,22 +176,26 @@ impl Workspace {
 
                     let _ = lifecycle_tx.send(SshLifecycleEvent::Connected);
 
+                    if !initial_output.is_empty() {
+                        let _ = data_tx.send(initial_output);
+                    }
+
                     let (mut channel_reader, channel_writer) = channel.split();
+
+                    if let Some(workdir) = workdir {
+                        let directory = if workdir == "~" { "\"$HOME\"".to_string() }
+                            else { shelldeck_core::util::shell_escape(&workdir) };
+                        let command = format!("cd -- {directory}\r");
+                        if channel_writer.write_all(command.as_bytes()).await.is_err() {
+                            let _ = lifecycle_tx.send(SshLifecycleEvent::Ended(SshSessionEnd::UnexpectedDisconnect));
+                            return;
+                        }
+                    }
 
                     let mut input_rx = input_rx;
                     let mut resize_rx = resize_rx;
                     let write_task = tokio::spawn(async move {
                         let mut resize_open = true;
-                        // Auto-attach (or create) a tmux session at session start
-                        // when enabled. Runs exactly once before the input loop.
-                        if attach_tmux
-                            && channel_writer
-                                .write_all(b"tmux new-session -A -s main\n")
-                                .await
-                                .is_err()
-                        {
-                            return SshSessionEnd::UnexpectedDisconnect;
-                        }
                         loop {
                             tokio::select! {
                                 data = input_rx.recv() => {
@@ -212,6 +238,18 @@ impl Workspace {
                         }
                     });
 
+                    let control_events = lifecycle_tx.clone();
+                    let controls = async move {
+                        if let Some(client) = tmux_client {
+                            while let Some(action) = tmux_rx.recv().await {
+                                if let Err(error) = client.apply(&ssh_session, action).await {
+                                    let _ = control_events.send(SshLifecycleEvent::TmuxFailed(error.to_string()));
+                                }
+                            }
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    };
                     let end = tokio::select! {
                         // Closing a tab makes both sides unwind; prefer the
                         // explicit input-channel close over a secondary read
@@ -219,6 +257,7 @@ impl Workspace {
                         biased;
                         result = write_task => result.unwrap_or(SshSessionEnd::UnexpectedDisconnect),
                         result = read_task => result.unwrap_or(SshSessionEnd::UnexpectedDisconnect),
+                        _ = controls => SshSessionEnd::UserClosed,
                     };
 
                     tracing::info!(
@@ -272,6 +311,13 @@ impl Workspace {
                                 cx,
                             );
                             ws.show_toast(msg, ToastLevel::Error, cx);
+                        }
+                        SshLifecycleEvent::TmuxFailed(error) => {
+                            ws.show_toast(
+                                t!("toast.ssh.tmux_control_failed", error = error).to_string(),
+                                ToastLevel::Error,
+                                cx,
+                            );
                         }
                         SshLifecycleEvent::Ended(end) => {
                             let connection_lost =

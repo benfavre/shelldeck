@@ -83,6 +83,15 @@ impl SshSession {
 
     /// Open an interactive shell channel with PTY.
     pub async fn open_shell(&self, rows: u32, cols: u32) -> crate::Result<SshChannel> {
+        let channel = self.open_pty_channel(rows, cols).await?;
+        channel
+            .request_shell(false)
+            .await
+            .map_err(|e| SshError::Channel(format!("Shell request failed: {}", e)))?;
+        Ok(SshChannel { channel })
+    }
+
+    async fn open_pty_channel(&self, rows: u32, cols: u32) -> crate::Result<Channel<client::Msg>> {
         let handle = self.handle.lock().await;
         let channel = handle
             .channel_open_session()
@@ -103,13 +112,40 @@ impl SshSession {
             .await
             .map_err(|e| SshError::Channel(format!("PTY request failed: {}", e)))?;
 
-        // Request shell
-        channel
-            .request_shell(false)
-            .await
-            .map_err(|e| SshError::Channel(format!("Shell request failed: {}", e)))?;
+        Ok(channel)
+    }
 
-        Ok(SshChannel { channel })
+    /// Start tmux directly, without typing a shell command into the terminal.
+    /// Returns the exact attached client's PTY and any TUI output after its header.
+    pub async fn open_tmux_shell(
+        &self,
+        rows: u32,
+        cols: u32,
+    ) -> crate::Result<(SshChannel, crate::tmux::TmuxClient, Vec<u8>)> {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut channel = self.open_pty_channel(rows, cols).await?;
+            let mut handshake = crate::tmux::TmuxHandshake::new();
+            channel
+                .exec(true, handshake.startup_command())
+                .await
+                .map_err(|e| SshError::Channel(e.to_string()))?;
+            while let Some(message) = channel.wait().await {
+                match message {
+                    ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                        if let Some((client, initial)) = handshake.feed(&data)? {
+                            return Ok((SshChannel { channel }, client, initial));
+                        }
+                    }
+                    ChannelMsg::Eof | ChannelMsg::Close | ChannelMsg::ExitStatus { .. } => break,
+                    _ => {}
+                }
+            }
+            Err(SshError::Channel(
+                "tmux could not start; check that tmux is installed on the server".into(),
+            ))
+        })
+        .await
+        .map_err(|_| SshError::Channel("tmux startup timed out".into()))?
     }
 
     /// Open ShellDeck's fixed, typed workspace subsystem on a raw PTY.
@@ -180,7 +216,9 @@ impl SshSession {
                 Some(ChannelMsg::ExitStatus { exit_status }) => {
                     exit_code = Some(exit_status);
                 }
-                Some(ChannelMsg::Eof) | None => break,
+                // EOF ends the output stream; the command's exit status may
+                // still follow before the server closes the channel.
+                Some(ChannelMsg::Close) | None => break,
                 _ => {}
             }
         }
@@ -529,6 +567,7 @@ mod in_memory_ssh_tests {
             stdout: Vec<u8>,
             stderr: Vec<u8>,
             exit_code: u32,
+            eof_before_status: bool,
         },
         WaitForCancellation,
     }
@@ -626,12 +665,19 @@ mod in_memory_ssh_tests {
                 stdout,
                 stderr,
                 exit_code,
+                eof_before_status,
             } = &self.exec_behavior
             {
                 session.data(channel, stdout.clone())?;
                 session.extended_data(channel, 1, stderr.clone())?;
+                if *eof_before_status {
+                    session.eof(channel)?;
+                }
                 session.exit_status_request(channel, *exit_code)?;
-                session.eof(channel)?;
+                if !eof_before_status {
+                    session.eof(channel)?;
+                }
+                session.close(channel)?;
             }
 
             Ok(())
@@ -802,6 +848,7 @@ mod in_memory_ssh_tests {
             stdout: b"standard output\n".to_vec(),
             stderr: b"standard error\n".to_vec(),
             exit_code: 23,
+            eof_before_status: false,
         })
         .await;
 
@@ -820,6 +867,34 @@ mod in_memory_ssh_tests {
         assert!(!result.success());
 
         server_task.abort();
+    }
+
+    // SDTEST-1955 — SDUC-045, SDUC-500: OpenSSH may send EOF before exit status.
+    #[tokio::test]
+    async fn exec_retains_success_and_failure_status_after_output_eof() {
+        for exit_code in [0, 23] {
+            let (session, mut events, server_task) = start_session(ExecBehavior::Complete {
+                stdout: b"command output\n".to_vec(),
+                stderr: b"command diagnostic\n".to_vec(),
+                exit_code,
+                eof_before_status: true,
+            })
+            .await;
+
+            let result = timeout(Duration::from_secs(2), session.exec("command"))
+                .await
+                .expect("exec must finish after channel close")
+                .expect("exec failed");
+            assert_eq!(
+                next_event(&mut events).await,
+                ServerEvent::Exec(b"command".to_vec())
+            );
+            assert_eq!(result.stdout, b"command output\n");
+            assert_eq!(result.stderr, b"command diagnostic\n");
+            assert_eq!(result.exit_code, Some(exit_code));
+            assert_eq!(result.success(), exit_code == 0);
+            server_task.abort();
+        }
     }
 
     // SDTEST-524

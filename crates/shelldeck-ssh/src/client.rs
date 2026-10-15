@@ -628,6 +628,7 @@ mod proxy_jump_transport_tests {
             session.data(channel, TARGET_MARKER.to_vec())?;
             session.exit_status_request(channel, 0)?;
             session.eof(channel)?;
+            session.close(channel)?;
             Ok(())
         }
     }

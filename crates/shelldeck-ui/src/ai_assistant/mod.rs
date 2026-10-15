@@ -297,6 +297,7 @@ pub struct AiAssistantView {
     /// forcing a sliver of it into a narrow window.
     compact_history_open: bool,
     host: AiHost,
+    dock_corners: (bool, bool),
     backend_menu_open: bool,
     notice: Option<String>,
     account_label: Option<String>,
@@ -390,6 +391,7 @@ impl AiAssistantView {
             history_open: true,
             compact_history_open: false,
             host: AiHost::default(),
+            dock_corners: (true, false),
             backend_menu_open: false,
             notice: None,
             account_label: None,
@@ -458,6 +460,13 @@ impl AiAssistantView {
     pub fn set_host(&mut self, host: AiHost, cx: &mut Context<Self>) {
         self.host = host;
         cx.notify();
+    }
+
+    pub fn set_dock_corners(&mut self, left: bool, right: bool, cx: &mut Context<Self>) {
+        if self.dock_corners != (left, right) {
+            self.dock_corners = (left, right);
+            cx.notify();
+        }
     }
 
     pub fn set_tasks(&mut self, tasks: Vec<AiTask>, cx: &mut Context<Self>) {
@@ -546,7 +555,7 @@ impl AiAssistantView {
 
     pub fn set_context(&mut self, context: AiContext, cx: &mut Context<Self>) {
         // Re-preparing a host over the *same* context must not kill an
-        // in-flight request. The Dock removes its window on focus loss while
+        // in-flight request. The attached Dock hides on focus loss while
         // the controller (and any pending completion) survives; reopening runs
         // `prepare()` → `set_context()`, and unconditionally invalidating here
         // meant the reply landed on a dead gate — the user saw their own
@@ -1444,6 +1453,10 @@ impl AiAssistantView {
             .bg(ShellDeckColors::bg_sidebar())
             .border_l_1()
             .border_color(ShellDeckColors::border());
+
+        if self.dock_corners.1 {
+            rail = rail.rounded_br(use_theme().tokens.radius_xl);
+        }
 
         // "Nouveau" — outlined, not a filled tile: it is an action.
         rail = rail
@@ -2806,23 +2819,9 @@ impl Render for AiAssistantView {
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(AiAssistantEvent::Close))),
                 );
         } else {
-            // The prototype leaves only the thread title and hide action in
-            // the Dock header. "Ouvrir ShellDeck" lives once in the rail's
-            // bottom toolbox; duplicating it here shifts the rail down and
-            // breaks the two-column hierarchy.
-            conversation_header = conversation_header
-                // GPUI does not propagate rounded clipping through opaque
-                // children, so the surface touching the window corner owns it.
-                .rounded_tl(use_theme().tokens.radius_xl)
-                .bg(ShellDeckColors::bg_primary())
-                .child(
-                    Button::new("ai-dock-hide", "")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .tooltip(t!("ai.dock.hide").to_string())
-                        .icon(IconSource::from("x"))
-                        .on_click(|_, window, _| window.remove_window()),
-                );
+            // Native lifecycle/drag controls belong to AiDockView's titlebar,
+            // shared by Chat, History, Tasks and Clippy. This row names the thread.
+            conversation_header = conversation_header.bg(ShellDeckColors::bg_primary());
         }
 
         let has_messages = self
@@ -2984,7 +2983,9 @@ impl Render for AiAssistantView {
         // Maximized windows are square, so no radius there — a rounded notch on
         // a square window is the same defect in the other direction.
         if self.host == AiHost::Dock {
-            composer = composer.rounded_bl(use_theme().tokens.radius_xl);
+            if self.dock_corners.0 {
+                composer = composer.rounded_bl(use_theme().tokens.radius_xl);
+            }
         } else if !window.is_maximized() {
             composer = composer.rounded_br(use_theme().tokens.radius_xl);
             if !sheet_supports_history_column {
