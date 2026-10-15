@@ -125,8 +125,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $linker = (Get-Command link.exe -CommandType Application).Source
-          if (-not $linker -or $linker -notmatch '[\\/]MSVC[\\/]') {
+          $linker = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
+          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) {
             throw "The MSVC linker was not selected: $linker"
           }
           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV

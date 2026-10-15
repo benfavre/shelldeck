@@ -15,6 +15,8 @@ were not used for these checks.
   This X11 input fixture is separate from the production Wayland path.
 - [Inspected native window screenshot](native-browser-preview.png) shows the
   retained form value, actual submit result and changed native dropdown.
+- A further [native Enter-key check](native-browser-enter.png) typed `qa` and
+  submitted the focused single-input form exactly once (`Submitted 1: qa`).
 - The packaged helper smoke exercised real OSR frames, Unicode/emoji input,
   page dialogs, upload, downloaded bytes, related popup `window.opener` messaging,
   before-unload cancellation/confirmation, exact HiDPI resizing and profile
