@@ -1,6 +1,6 @@
 //! Native GPUI element for CEF's live off-screen view and popup surfaces.
 use super::*;
-use geometry::{event_modifiers, utf16_slice, viewport_point, virtual_key};
+use geometry::{event_modifiers, key_sequence, utf16_slice, viewport_point};
 
 pub(super) enum ButtonEvent<'a> {
     Press(&'a MouseDownEvent),
@@ -420,27 +420,9 @@ impl NativeBrowserView {
         // event propagates. Keep printable text flowing to that single path;
         // consume navigation/shortcuts so they cannot reach the app's editor.
         let native_text = !released && stroke.keystroke_text_candidate();
-        self.send(
-            Command::Key {
-                browser_id,
-                event: KeyEvent {
-                    kind: if released {
-                        KeyEventKind::KeyUp
-                    } else {
-                        KeyEventKind::RawKeyDown
-                    },
-                    windows_key_code: virtual_key(&stroke.key),
-                    native_key_code: 0,
-                    modifiers: event_modifiers(stroke.modifiers),
-                    // Printable text is sent exclusively by EntityInputHandler. Sending
-                    // CHAR here as well would duplicate Unicode text and IME commits.
-                    character: None,
-                    unmodified_character: None,
-                    is_system_key: stroke.modifiers.alt,
-                },
-            },
-            cx,
-        );
+        for event in key_sequence(&stroke, released) {
+            self.send(Command::Key { browser_id, event }, cx);
+        }
         if !native_text {
             cx.stop_propagation();
         }

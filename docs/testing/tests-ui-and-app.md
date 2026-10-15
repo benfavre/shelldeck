@@ -740,7 +740,7 @@ for provider limits and the remaining native acceptance journeys.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-2570 | `native_browser/geometry.rs` | SDUC-557 | Green | Browser-local pointer coordinates and captured drags across viewport bounds; passed in the 235-test UI suite. |
+| SDTEST-2570 | `native_browser/geometry.rs` | SDUC-557 | Green | Browser-local pointer coordinates and captured drags across viewport bounds; passed in the 236-test UI suite. |
 | SDTEST-2571 | `native_browser/geometry.rs` | SDUC-557 | Green | UTF-16 selection never splits a surrogate pair. |
 | SDTEST-2572 | `native_browser/geometry.rs` | SDUC-557 | Green | Virtual keys and modifier translation retain browser shortcuts. |
 | SDTEST-2573 | `native_browser.rs` | SDUC-557 | Green | Raw BGRA frames and screenshot PNG channel conversion remain distinct. |
@@ -750,5 +750,5 @@ for provider limits and the remaining native acceptance journeys.
 | SDTEST-2588 | `shelldeck-update/src/installer.rs` | SDUC-557 | Green | Publishing a versioned engine preserves active versions and rolls back on unsuccessful main replacement. |
 | SDTEST-2589 | `shelldeck-update/src/installer.rs` | SDUC-557 | Green | Incomplete engine payload refuses before touching installed files. |
 | SDTEST-2591 | Native GPUI browser fixture | SDUC-557 | Yellow | Native Wayland live viewport/DOM audit passed. Isolated native window click/type, form submit, address-focused Ctrl+T/Ctrl+W, tab state retention and native dropdown selection passed; screenshot inspected. |
-
-| SDTEST-2605 | `workspace/native_lifecycle.rs` | SDUC-491 | Green | Git 2.34 worktree-list fallback accepts only the precise unsupported-z diagnostic and preserves quoted/newline path authority. Full UI suite now passes all 235 tests, including the three previously failing lifecycle cases. |
+| SDTEST-2605 | `workspace/native_lifecycle.rs` | SDUC-491 | Green | Git 2.34 worktree-list fallback accepts only the precise unsupported-z diagnostic and preserves quoted/newline path authority. Full UI suite now passes all 236 tests, including the three previously failing lifecycle cases. |
+| SDTEST-2606 | `native_browser/geometry.rs` | SDUC-557 | Green | Human Enter produces the Chromium CHAR action for form submission and newlines; printable IME text and modified shortcuts remain single events. |

@@ -16,6 +16,8 @@ use std::{
 };
 
 mod callbacks;
+#[cfg(any(target_os = "macos", test))]
+mod keys;
 #[cfg(target_os = "macos")]
 mod mac;
 mod output;
@@ -339,6 +341,8 @@ impl Runtime {
                 host.send_mouse_wheel_event(Some(&MouseEvent { x, y, modifiers }), delta_x, delta_y)
             }
             Command::Key { event, .. } => {
+                #[cfg(target_os = "macos")]
+                let event = keys::macos_event(event);
                 let type_ = match event.kind {
                     KeyEventKind::RawKeyDown => KeyEventType::RAWKEYDOWN,
                     KeyEventKind::KeyUp => KeyEventType::KEYUP,

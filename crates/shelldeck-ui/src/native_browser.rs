@@ -15,8 +15,8 @@ use adabraka_ui::overlays::context_menu::{ContextMenu, ContextMenuItem};
 use adabraka_ui::prelude::*;
 use gpui::*;
 use shelldeck_browser::{
-    BrowserClient, BrowserFrame, BrowserId, BrowserState, Command, Event, ImeEvent, KeyEvent,
-    KeyEventKind, PaintKind, Rect, Utf16Range,
+    BrowserClient, BrowserFrame, BrowserId, BrowserState, Command, Event, ImeEvent, PaintKind,
+    Rect, Utf16Range,
 };
 use std::ops::Range;
 use std::sync::Arc;

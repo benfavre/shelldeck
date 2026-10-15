@@ -50,6 +50,9 @@ jobs:
 
   # ─── Build on each platform ───
   build:
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     name: Build (${{ matrix.platform }})
     needs: prepare
     strategy:
@@ -57,14 +60,17 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
+            shell: bash
             target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
             archive_ext: tar.gz
           - os: macos-15
+            shell: bash
             target: aarch64-apple-darwin
             platform: macos-aarch64
             archive_ext: zip
           - os: windows-latest
+            shell: pwsh
             target: x86_64-pc-windows-msvc
             platform: windows-x86_64
             archive_ext: zip
@@ -185,7 +191,6 @@ jobs:
         run: bash scripts/build-release.sh
 
       - name: Verify packaged browser native entry point
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         run: python3 scripts/test-browser-helper-launch.py target/release/browser
 
       # ─── Native Installers ───

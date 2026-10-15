@@ -233,16 +233,22 @@ jobs:
         run: cargo test -p shelldeck-core -- --ignored config::keychain::tests::live_
 
   browser-runtime:
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     name: Native Chromium (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
+            shell: bash
             platform: linux-x86_64
           - os: macos-15
+            shell: bash
             platform: macos-aarch64
           - os: windows-latest
+            shell: pwsh
             platform: windows-x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -290,20 +296,16 @@ jobs:
           }
           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
       - name: Verify browser protocol, capability boundaries and exact native screenshots
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         env:
           PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
         run: cargo test --locked -p shelldeck-browser --lib
       - name: Build native sandboxed CEF helper
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         env:
           PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
         run: cargo build --locked -p shelldeck-browser --features runtime
       - name: Stage complete native browser payload
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         run: python3 scripts/bundle-browser-runtime.py --profile debug
       - name: Launch staged native stdio entry point
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         run: python3 scripts/test-browser-helper-launch.py target/debug/browser
       - name: Verify Linux browser archive contracts
         if: runner.os == 'Linux'

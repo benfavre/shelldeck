@@ -1,5 +1,7 @@
 //! Coordinate and input conversion, independent of the GPUI renderer.
-use gpui::{Bounds, Modifiers, Pixels, Point};
+use gpui::{Bounds, Keystroke, Modifiers, Pixels, Point};
+use shelldeck_browser::{KeyEvent, KeyEventKind};
+use smallvec::SmallVec;
 
 /// CEF receives device-independent viewport coordinates. Window scale belongs
 /// in Resize, not in each pointer coordinate (which would double it on HiDPI).
@@ -80,6 +82,45 @@ pub(super) fn virtual_key(key: &str) -> i32 {
     }
 }
 
+/// Chromium requires a character event for Return's default action (implicit
+/// form submission, contenteditable/textarea newline) on every platform. GPUI
+/// consumes that control key, so it cannot arrive through the text handler.
+/// Ordinary printable text continues through IME commit only, once.
+pub(super) fn key_sequence(stroke: &Keystroke, released: bool) -> SmallVec<[KeyEvent; 2]> {
+    let mut events = SmallVec::new();
+    let modifiers = event_modifiers(stroke.modifiers);
+    events.push(KeyEvent {
+        kind: if released {
+            KeyEventKind::KeyUp
+        } else {
+            KeyEventKind::RawKeyDown
+        },
+        windows_key_code: virtual_key(&stroke.key),
+        native_key_code: 0,
+        modifiers,
+        character: None,
+        unmodified_character: None,
+        is_system_key: stroke.modifiers.alt,
+    });
+    if !released
+        && matches!(stroke.key.as_str(), "enter" | "return")
+        && !stroke.modifiers.control
+        && !stroke.modifiers.alt
+        && !stroke.modifiers.platform
+    {
+        events.push(KeyEvent {
+            kind: KeyEventKind::Char,
+            windows_key_code: 13,
+            native_key_code: 0,
+            modifiers,
+            character: Some(13),
+            unmodified_character: Some(13),
+            is_system_key: false,
+        });
+    }
+    events
+}
+
 pub(super) fn utf16_slice(text: &str, range: std::ops::Range<usize>) -> Option<String> {
     let units = text.encode_utf16().collect::<Vec<_>>();
     let selected = units.get(range)?;
@@ -142,5 +183,99 @@ mod tests {
             }),
             6
         );
+    }
+
+    // SDTEST-2606 / SDUC-557: Return's default browser action requires exactly
+    // RawDown -> CHAR(13) -> Up; printable text and modified shortcuts must not
+    // acquire an extra CHAR beside the native input handler's text commit.
+    #[test]
+    fn sdtest_2606_human_enter_submits_without_duplicate_text_or_shortcut_chars() {
+        for shift in [false, true] {
+            let stroke = Keystroke {
+                key: "enter".into(),
+                key_char: Some("\r".into()),
+                modifiers: Modifiers {
+                    shift,
+                    ..Default::default()
+                },
+            };
+            let mut events = key_sequence(&stroke, false);
+            events.extend(key_sequence(&stroke, true));
+            assert!(matches!(
+                events.as_slice(),
+                [
+                    KeyEvent {
+                        kind: KeyEventKind::RawKeyDown,
+                        ..
+                    },
+                    KeyEvent {
+                        kind: KeyEventKind::Char,
+                        character: Some(13),
+                        ..
+                    },
+                    KeyEvent {
+                        kind: KeyEventKind::KeyUp,
+                        ..
+                    }
+                ]
+            ));
+            assert_eq!(
+                events[1].modifiers,
+                if shift {
+                    shelldeck_browser::modifiers::SHIFT
+                } else {
+                    0
+                }
+            );
+        }
+        for modifiers in [
+            Modifiers {
+                control: true,
+                ..Default::default()
+            },
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            },
+        ] {
+            let events = key_sequence(
+                &Keystroke {
+                    key: "enter".into(),
+                    key_char: Some("\r".into()),
+                    modifiers,
+                },
+                false,
+            );
+            assert!(matches!(
+                events.as_slice(),
+                [KeyEvent {
+                    kind: KeyEventKind::RawKeyDown,
+                    character: None,
+                    ..
+                }]
+            ));
+        }
+        for text in ["a", "é", "😀"] {
+            let events = key_sequence(
+                &Keystroke {
+                    key: text.into(),
+                    key_char: Some(text.into()),
+                    modifiers: Modifiers::default(),
+                },
+                false,
+            );
+            assert!(matches!(
+                events.as_slice(),
+                [KeyEvent {
+                    kind: KeyEventKind::RawKeyDown,
+                    character: None,
+                    ..
+                }]
+            ));
+        }
     }
 }

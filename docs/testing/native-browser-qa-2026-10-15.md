@@ -22,7 +22,7 @@ were not used for these checks.
 - The real MCP stdio smoke exercised native screenshots and accessibility,
   read-only refusal, click/type/key/scroll, Enter form submission, popup tab IDs,
   foreign-tab refusal and both control and complete grant revocation.
-- The local combined suite passed 477 core, 235 UI, 13 browser and 15 updater tests
+- The local combined suite passed 477 core, 236 UI, 13 browser and 15 updater tests
   (six opt-in core live tests excluded). Three pre-existing lifecycle failures
   were traced to Git 2.34's lack of `worktree list -z`; strict compatibility
   handling now preserves the same authority checks and passes those cases.

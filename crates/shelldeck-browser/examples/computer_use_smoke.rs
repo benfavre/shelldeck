@@ -5,7 +5,7 @@ use base64::Engine;
 use serde_json::{json, Value};
 use shelldeck_browser::{
     mcp::{self, BrowserMcpConfig, BrowserPermission},
-    BrowserClient, BrowserId, BrowserLaunch, Command, Event,
+    BrowserClient, BrowserId, BrowserLaunch, Command, Event, KeyEvent, KeyEventKind,
 };
 use std::{
     error::Error,
@@ -360,6 +360,39 @@ fn main() -> Result<()> {
         json!({"browser_id":id.to_string(),"key":"Enter"}),
     )?;
     dom(&client, id, "window.submitted", json!(1))?;
+    // Match the human GPUI path: raw printable key + one IME commit + release.
+    // In particular, macOS normalization must never turn RawKeyDown into Char.
+    evaluate(
+        &client,
+        id,
+        "document.querySelector('#field').value='';document.querySelector('#field').focus();true",
+    )?;
+    for kind in [KeyEventKind::RawKeyDown, KeyEventKind::KeyUp] {
+        client.send(Command::Key {
+            browser_id: id,
+            event: KeyEvent {
+                kind,
+                windows_key_code: 65,
+                native_key_code: 0,
+                modifiers: 0,
+                character: None,
+                unmodified_character: None,
+                is_system_key: false,
+            },
+        })?;
+        if matches!(kind, KeyEventKind::RawKeyDown) {
+            client.send(Command::Text {
+                browser_id: id,
+                text: "a".into(),
+            })?;
+        }
+    }
+    let settled = client.devtools(id,"Runtime.evaluate",json!({"expression":"new Promise(resolve=>setTimeout(()=>resolve(document.querySelector('#field').value),150))","returnByValue":true,"awaitPromise":true}),TIMEOUT)?;
+    assert_eq!(
+        settled["result"]["value"], "a",
+        "Human raw-key/IME sequence must insert exactly once"
+    );
+
     click(&mut controller, id, 120, 150)?;
     dom(&client, id, "window.clicked", json!(1))?;
     controller.allowed_tool(
