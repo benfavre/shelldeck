@@ -188,6 +188,14 @@ impl FileEditorView {
 
         let menu_items = context_menu_items();
         for (i, item) in menu_items.iter().enumerate() {
+            if self.active_tab().is_some_and(EditorTab::is_read_only)
+                && !matches!(
+                    item.action,
+                    ContextMenuAction::Copy | ContextMenuAction::SelectAll
+                )
+            {
+                continue;
+            }
             let h = handle.clone();
             let action = item.action;
 
@@ -232,6 +240,14 @@ impl FileEditorView {
         action: ContextMenuAction,
         cx: &mut Context<Self>,
     ) {
+        if self.active_tab().is_some_and(EditorTab::is_read_only)
+            && !matches!(
+                action,
+                ContextMenuAction::Copy | ContextMenuAction::SelectAll
+            )
+        {
+            return;
+        }
         match action {
             ContextMenuAction::Undo => {
                 if let Some(tab) = self.active_tab_mut() {
@@ -352,6 +368,7 @@ impl FileEditorView {
             .border_color(ShellDeckColors::border())
             .px(px(10.0))
             .gap(px(16.0))
+            .overflow_hidden()
             .text_size(px(11.0))
             .text_color(ShellDeckColors::text_muted());
 
@@ -377,12 +394,41 @@ impl FileEditorView {
 
             bar = bar
                 .child(t!("file_editor.status.line_col", line = line, col = col).to_string())
-                .child(div().flex_grow())
+                .when(tab.and_then(|tab| tab.external.as_ref()).is_none(), |bar| {
+                    bar.child(div().flex_grow())
+                })
                 .child(tab_info)
                 .child(type_name)
                 .child(t!("file_editor.status.lines", count = total_lines).to_string());
         } else {
             bar = bar.child(type_name).child(div().flex_grow());
+        }
+
+        if let Some(tab) = tab {
+            if tab.is_read_only() {
+                bar = bar.child(t!("file_editor.embedded.read_only").to_string());
+            }
+            if let Some(document) = &tab.external {
+                if document.pending_save.is_some() {
+                    bar = bar.child(t!("file_editor.embedded.saving").to_string());
+                } else if let Some(error) = &document.save_error {
+                    bar = bar.child(div().text_color(ShellDeckColors::error()).child(
+                        t!("file_editor.embedded.save_error", error = error.as_str()).to_string(),
+                    ));
+                }
+                bar = bar.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(format!(
+                            "{} · {}",
+                            document.provenance, document.display_path
+                        )),
+                );
+            }
         }
 
         bar

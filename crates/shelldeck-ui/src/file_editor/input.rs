@@ -15,6 +15,19 @@ impl FileEditorView {
         let ctrl = ks.modifiers.control || ks.modifiers.secondary();
         let alt = ks.modifiers.alt;
 
+        // The embedding surface owns project discovery. These shortcuts must
+        // never bubble into a global picker or expose the native local tree.
+        if self.embedded
+            && ctrl
+            && (matches!(ks.key.as_str(), "o" | "n" | "b") || (shift && ks.key == "f"))
+        {
+            cx.stop_propagation();
+            return;
+        }
+        if self.embedded && ctrl && matches!(ks.key.as_str(), "s" | "w") {
+            cx.stop_propagation();
+        }
+
         // ---- Unsaved warning mode: capture keystrokes ----
         if self.pending_close_tab.is_some() {
             // Only allow Escape to cancel, or specific keys handled by the warning bar buttons
@@ -216,6 +229,9 @@ impl FileEditorView {
                     return;
                 }
                 "h" => {
+                    if self.active_tab().is_some_and(|tab| tab.is_read_only()) {
+                        return;
+                    }
                     // Toggle replace bar (opens search too if not visible)
                     self.replace_visible = !self.replace_visible;
                     if self.replace_visible {
@@ -649,6 +665,9 @@ impl FileEditorView {
                 true
             }
             "h" if ctrl => {
+                if self.active_tab().is_some_and(|tab| tab.is_read_only()) {
+                    return true;
+                }
                 // Ctrl+H toggles replace bar
                 self.replace_visible = !self.replace_visible;
                 if !self.replace_visible {

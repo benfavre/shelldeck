@@ -1146,16 +1146,13 @@ async fn exact_complete_worktree(
     if target_identity.is_none() || file_identity(target).ok() != target_identity {
         return Ok(false);
     }
-    let list = git_output(source, ["worktree", "list", "--porcelain", "-z"], cancelled).await?;
-    if !list.status.success() {
-        return Err(git_repo_failure());
-    }
+    let list = git_worktree_list(source, cancelled).await?;
     let expected_branch = format!("refs/heads/{branch}");
     let mut registered = false;
     let mut path = None;
     let mut observed_branch = None;
     let mut unsafe_record = false;
-    for field in list.stdout.split(|byte| *byte == 0) {
+    for field in list.split(|byte| *byte == 0) {
         let field = String::from_utf8_lossy(field);
         if field.is_empty() {
             if path.as_deref() == Some(authority.path())
@@ -1377,14 +1374,11 @@ async fn worktree_registered(
     branch: &str,
     cancelled: &AtomicBool,
 ) -> Result<bool, WorkspaceCreateFailure> {
-    let output = git_output(source, ["worktree", "list", "--porcelain", "-z"], cancelled).await?;
-    if !output.status.success() {
-        return Err(git_repo_failure());
-    }
+    let output = git_worktree_list(source, cancelled).await?;
     let expected_branch = format!("refs/heads/{branch}");
     let mut path = None;
     let mut observed_branch = None;
-    for field in output.stdout.split(|byte| *byte == 0) {
+    for field in output.split(|byte| *byte == 0) {
         let field = String::from_utf8_lossy(field);
         if field.is_empty() {
             if path.as_deref() == Some(target)
@@ -1511,6 +1505,15 @@ async fn git_output_owned(
     args: Vec<std::ffi::OsString>,
     cancelled: &AtomicBool,
 ) -> Result<ChildOutput, WorkspaceCreateFailure> {
+    git_output_owned_with_locale(root, args, cancelled, false).await
+}
+
+async fn git_output_owned_with_locale(
+    root: &Path,
+    args: Vec<std::ffi::OsString>,
+    cancelled: &AtomicBool,
+    c_locale: bool,
+) -> Result<ChildOutput, WorkspaceCreateFailure> {
     let authority = AuthorizedLocalRoot::capture(root)
         .map_err(|_| authorization_failure("workspaces.launcher.target_authority_changed"))?;
     let mut command = std::process::Command::new("git");
@@ -1522,12 +1525,154 @@ async fn git_output_owned(
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_COMMON_DIR")
         .env_remove("GIT_INDEX_FILE");
+    if c_locale {
+        // Only the worktree-format capability probe needs stable diagnostics.
+        // Other Git commands retain the user's configured locale.
+        command.env("LC_ALL", "C");
+    }
     shelldeck_core::agent_runtime::configure_local_process(&mut command);
     let output = run_command(Command::from(command), cancelled).await;
     authority
         .revalidate()
         .map_err(|_| authorization_failure("workspaces.launcher.target_authority_changed"))?;
     output
+}
+
+/// Older Git versions lack `worktree list -z`. Keep the same NUL-delimited
+/// identity checks by decoding its C-quoted porcelain paths at this boundary.
+/// Any error other than that precise unsupported option remains a refusal.
+async fn git_worktree_list(
+    source: &Path,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, WorkspaceCreateFailure> {
+    let output = git_output_owned_with_locale(
+        source,
+        [
+            "-c",
+            "core.quotePath=false",
+            "worktree",
+            "list",
+            "--porcelain",
+            "-z",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect(),
+        cancelled,
+        true,
+    )
+    .await?;
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    if !unsupported_nul_worktree_option(output.status.code(), &output.stdout, &output.stderr) {
+        return Err(git_repo_failure());
+    }
+    let legacy = git_output_owned_with_locale(
+        source,
+        [
+            "-c",
+            "core.quotePath=false",
+            "worktree",
+            "list",
+            "--porcelain",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect(),
+        cancelled,
+        true,
+    )
+    .await?;
+    if !legacy.status.success() {
+        return Err(git_repo_failure());
+    }
+    normalize_legacy_worktree_list(&legacy.stdout).ok_or_else(git_repo_failure)
+}
+
+fn unsupported_nul_worktree_option(status: Option<i32>, stdout: &[u8], stderr: &str) -> bool {
+    status == Some(129)
+        && stdout.is_empty()
+        && stderr.lines().next().is_some_and(|line| {
+            matches!(
+                line.trim(),
+                "error: unknown switch `z'"
+                    | "error: unknown option `z'"
+                    | "error: unknown option `-z'"
+            )
+        })
+}
+
+fn normalize_legacy_worktree_list(output: &[u8]) -> Option<Vec<u8>> {
+    if output.contains(&0) || !output.ends_with(b"\n") {
+        return None;
+    }
+    let mut normalized = Vec::with_capacity(output.len());
+    for line in output.split(|byte| *byte == b'\n') {
+        if let Some(path) = line.strip_prefix(b"worktree ") {
+            let path = decode_git_quoted_path(path)?;
+            // Existing workspace authorities require canonical UTF-8 paths.
+            // Never admit a lossy substitute as an owned checkout identity.
+            std::str::from_utf8(&path).ok()?;
+            normalized.extend_from_slice(b"worktree ");
+            normalized.extend_from_slice(&path);
+        } else {
+            normalized.extend_from_slice(line);
+        }
+        normalized.push(0);
+    }
+    Some(normalized)
+}
+
+fn decode_git_quoted_path(path: &[u8]) -> Option<Vec<u8>> {
+    if !path.starts_with(b"\"") {
+        return (!path.is_empty()).then(|| path.to_vec());
+    }
+    if path.len() < 2 || !path.ends_with(b"\"") {
+        return None;
+    }
+    let encoded = &path[1..path.len() - 1];
+    let mut result = Vec::with_capacity(encoded.len());
+    let mut index = 0;
+    while index < encoded.len() {
+        let byte = encoded[index];
+        index += 1;
+        if byte == b'"' {
+            return None;
+        }
+        if byte != b'\\' {
+            result.push(byte);
+            continue;
+        }
+        let escaped = *encoded.get(index)?;
+        index += 1;
+        let decoded = match escaped {
+            b'a' => 7,
+            b'b' => 8,
+            b't' => 9,
+            b'n' => 10,
+            b'v' => 11,
+            b'f' => 12,
+            b'r' => 13,
+            b'"' => b'"',
+            b'\\' => b'\\',
+            b'0'..=b'3' => {
+                let middle = *encoded.get(index)?;
+                let last = *encoded.get(index + 1)?;
+                if !(b'0'..=b'7').contains(&middle) || !(b'0'..=b'7').contains(&last) {
+                    return None;
+                }
+                index += 2;
+                (escaped - b'0') * 64 + (middle - b'0') * 8 + last - b'0'
+            }
+            _ => return None,
+        };
+        if decoded == 0 {
+            return None;
+        }
+        result.push(decoded);
+    }
+    Some(result)
 }
 
 fn ensure_private_root(root: &Path) -> Result<AuthorizedLocalRoot, WorkspaceCreateFailure> {
@@ -2208,6 +2353,64 @@ mod tests {
             },
             mode: WorkspaceLaunchMode::GitWorktree,
         }
+    }
+
+    // SDTEST-2605 — SDUC-491: old Git porcelain must not turn an escaped path
+    // newline into a forged ownership/branch record or accept unrelated errors.
+    #[test]
+    fn sdtest_2605_legacy_git_worktree_porcelain_preserves_quoted_path_authority() {
+        let legacy =
+            br#"worktree "/tmp/source folder\nbranch refs/heads/fix/spoof\tquote\"\\\303\251"
+HEAD aabbcc
+branch refs/heads/fix/actual
+
+"#;
+        let normalized = normalize_legacy_worktree_list(legacy).unwrap();
+        let fields = normalized.split(|byte| *byte == 0).collect::<Vec<_>>();
+        assert_eq!(
+            fields[0],
+            "worktree /tmp/source folder\nbranch refs/heads/fix/spoof\tquote\"\\é".as_bytes()
+        );
+        assert_eq!(
+            fields
+                .iter()
+                .filter(|field| field.starts_with(b"branch "))
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![b"branch refs/heads/fix/actual".as_slice()]
+        );
+        assert_eq!(
+            normalize_legacy_worktree_list(b"worktree /tmp/plain path\n\n").unwrap(),
+            b"worktree /tmp/plain path\0\0\0"
+        );
+        for malformed in [
+            b"\"/tmp/\\q\"".as_slice(),
+            b"\"/tmp/\\000\"",
+            b"\"/tmp/unterminated",
+        ] {
+            assert!(decode_git_quoted_path(malformed).is_none());
+        }
+        assert!(normalize_legacy_worktree_list(b"worktree /tmp/truncated").is_none());
+        assert!(unsupported_nul_worktree_option(
+            Some(129),
+            b"",
+            "error: unknown switch `z'\nusage: git worktree"
+        ));
+        assert!(!unsupported_nul_worktree_option(
+            Some(129),
+            b"",
+            "error: unknown switch `q'"
+        ));
+        assert!(!unsupported_nul_worktree_option(
+            Some(128),
+            b"",
+            "error: unknown switch `z'"
+        ));
+        assert!(!unsupported_nul_worktree_option(
+            Some(129),
+            b"partial data",
+            "error: unknown switch `z'"
+        ));
     }
 
     fn ssh_request(workspace: CatalogWorkspaceId) -> WorkspaceExecutionRequest {

@@ -48,6 +48,7 @@ requests, and automation into one role-aware control plane.
 - **Cloud Sync** -- Pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal into your connection store
 - **Role-Aware Workspaces** -- Dedicated User, Support, and Dev surfaces gated by the signed-in Manage account
 - **Support & Requests** -- Triage support tickets and manage tenant/site requests with comments, attachments, GitHub sync, and AI Operations dispatch
+- **Agent Workspace** -- Retained conversations, native local/SSH file editor, Git review, and an embedded Chromium browser with scoped computer-use tools ([browser architecture](docs/native-browser.md))
 - **Contextual AI** -- Detachable AI assistant window, monitor/edge docking where desktop placement is supported, plus Monique and the shared platform cockpit
 - **Auto-Update** -- Checks for and installs new releases automatically
 - **Context Menu** -- Right-click for copy, paste, search, and URL actions
@@ -68,6 +69,20 @@ powershell -c "irm https://shelldeck.bext.dev/install.ps1 | iex"
 ```
 
 ShellDeck auto-updates itself once installed. To build from source instead, see below.
+
+### Open Agents directly
+
+```bash
+shelldeck --agents
+```
+
+This opens the Agents interface in the production application, using the same
+account and conversation library. Existing login and Dev access checks remain
+in force. Linux desktop launchers offer **Open Agents**, and Windows installers
+add **ShellDeck Agents** to the Start Menu. On macOS use
+`open -na ShellDeck --args --agents`. Launch ShellDeck normally to return to the
+full interface. See [launching Agents](docs/agents-launch.md) for single-instance
+behavior, AppImage usage and development commands.
 
 ## Requirements
 
@@ -101,6 +116,9 @@ cargo build
 
 # Run
 cargo run
+
+# Open the production Agents interface directly
+cargo run -p shelldeck -- --agents
 
 # Run in release mode
 cargo run --release

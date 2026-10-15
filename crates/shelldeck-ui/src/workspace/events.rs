@@ -46,7 +46,7 @@ impl Workspace {
                         cx,
                     );
                 }
-                self.active_view = ActiveView::Terminal;
+                self.set_active_view(ActiveView::Terminal, cx);
                 cx.notify();
             }
             SidebarEvent::ConnectionConnect(id) => {
@@ -65,7 +65,7 @@ impl Workspace {
                         cx,
                     );
                 }
-                self.active_view = ActiveView::Terminal;
+                self.set_active_view(ActiveView::Terminal, cx);
                 cx.notify();
             }
             SidebarEvent::AddConnection => {
@@ -181,7 +181,7 @@ impl Workspace {
         match event {
             TerminalEvent::NewTabRequested => {
                 tracing::info!("New terminal tab created");
-                self.active_view = ActiveView::Terminal;
+                self.set_active_view(ActiveView::Terminal, cx);
                 self.add_activity_entry(
                     ActivityEntry::new(
                         ActivityKind::Terminal,
@@ -222,7 +222,7 @@ impl Workspace {
                 {
                     tracing::info!("Duplicating connection tab: {}", conn.display_name());
                     self.connect_ssh(conn, cx);
-                    self.active_view = ActiveView::Terminal;
+                    self.set_active_view(ActiveView::Terminal, cx);
                     self.sync_terminal_tab_count(cx);
                     cx.notify();
                 } else {
@@ -547,6 +547,9 @@ impl Workspace {
                 let editor_cfg = self.app_config.editor.clone();
                 self.file_editor.update(cx, |ed, cx| {
                     ed.apply_editor_config(&editor_cfg, cx);
+                });
+                self.agent_console.update(cx, |view, cx| {
+                    view.apply_agent_editor_config(&editor_cfg, cx)
                 });
                 // Apply auto-update preference
                 let auto_update = self.app_config.general.auto_update;

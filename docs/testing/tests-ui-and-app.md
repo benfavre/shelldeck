@@ -516,8 +516,8 @@ parallel `cargo test`.
 | SDTEST-1903 | `agent_console_view::tests::sdtest_1903_target_switch_defaults_and_validation_are_target_aware` | SDUC-475, SDUC-499 | Green | Local→SSH replaces only the inherited local default with the exact remote-home sentinel, SSH→Local restores the native default, explicit worktree paths survive, and validation accepts only target-appropriate absolute paths. |
 | SDTEST-1905 | `workspace::agents::tests::sdtest_1905_remote_launch_maps_an_inherited_local_checkout_path` | SDUC-475 | Green | A stale Local→SSH run maps the longest matching local checkout authority to the one unambiguous same-project SSH checkout on the selected connection, preserving a validated relative suffix; unrelated and explicit remote paths are untouched. |
 | SDTEST-1907 | `workspace::agents::tests::sdtest_1907_automonique_never_falls_back_from_ssh_to_local_acp` | SDUC-475, SDUC-480 | Green | Automonique ACP admits the local target with its provider-owned model, rejects an SSH target instead of executing locally on the wrong host, and rejects a CLI model override that the ACP contract cannot honor. |
-| SDTEST-1908 | `workspace::agents::tests::sdtest_1908_remote_home_probe_accepts_one_absolute_path_only` | SDUC-475 | Green | The remote-files adapter accepts one UTF-8 absolute home (including spaces and CRLF transport) and rejects relative, multiline, NUL-bearing, or non-UTF-8 probe output before using it in a listing command. |
-| SDTEST-1909 | `workspace::agents::tests::sdtest_1909_agent_file_open_stays_inside_the_selected_local_session_root` | SDUC-499 | Green | Local inspector opens require the exact local session plus a canonical regular file beneath its canonical working root; unrelated paths, stale session IDs, and symlink escapes are refused. |
+| SDTEST-1908 | Retired 2026-10-15 — remote home shell probe replaced by canonical-root JSON helper | SDUC-475 | Retired | Superseded by SDTEST-2510..2515. |
+| SDTEST-1909 | `agent_console_view/editor.rs::sdtest_1909_agent_file_open_stays_inside_the_selected_local_session_root` | SDUC-499, SDUC-551 | Green | Uses production local snapshot loader; canonical scope, regular-file reads and symlink escape refusal. |
 | SDTEST-1708 | `workspace::user_home::tests::sdtest_1708_welcome_height_breakpoint_tracks_ui_scale` | SDUC-441 | Green | The welcome screen centers its authentication task and pins the publisher at normal heights, then switches to one scrollable column below 560 logical pixels; the same boundary holds at 1× and 2× App Font Size. |
 | SDTEST-1710 | *to write* — the wrapped welcome promise stays centered with the authentication task | SDUC-152, SDUC-441 | **Red / P2** | GPUI integration: in French and English, at wide and compact widths, every wrapped tagline line remains centered beneath the title and above the two centered actions. |
 | SDTEST-1212 | *to write* — Workspace surfaces re-layout at non-default App Font Size | SDUC-441 | **Red / P2** | GPUI integration: at 10px and 22px the User home, welcome screen and account/site/mode titlebar dropdowns scale proportionally while the client inset, shadow geometry and window-resize border stay in device pixels. Needs a `TestAppContext` harness we do not have yet. |
@@ -716,4 +716,92 @@ for provider limits and the remaining native acceptance journeys.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-2300 | `workspace/agent_tools.rs::remote_preview_keeps_hostile_paths_quoted_and_enforces_root` | SDUC-551 | Green | Bounded SSH preview command rejects ambiguous/relative roots, shell-quotes hostile paths and refuses symlink leaves. Passed in the full 2026-10-15 UI run. |
+| SDTEST-2300 | Retired 2026-10-15 — shell text preview replaced by bounded stdin JSON filesystem helper | SDUC-551 | Retired | Superseded by SDTEST-2510..2518; remote documents now use the native middle-pane editor. |
+
+
+## Agent file explorer and embedded editor — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2495 | `file_editor/buffer.rs` | SDUC-475, SDUC-551 | Green | Storage-level read-only mode refuses every mutation entry point while preserving selection/copy. Passed in the isolated UI suite. |
+| SDTEST-2496 | `file_editor/view/tab.rs` | SDUC-475, SDUC-551 | Green | Async save completion cannot erase newer edits or close a changed buffer. |
+| SDTEST-2497 | `file_editor/view/tab.rs` | SDUC-475, SDUC-551 | Green | Stale/replayed acknowledgments and failed saves preserve dirty text and allow retry. |
+| SDTEST-2498 | `file_editor/file_browser.rs` | SDUC-475, SDUC-551 | Green | Hidden-file controls, build/Git exclusions and bounded traversal. |
+| SDTEST-2500 | `agent_console_view/explorer.rs` | SDUC-551 | Green | Remote parent navigation respects component-boundary roots. |
+| SDTEST-2501 | `agent_console_view/explorer.rs` | SDUC-551 | Green | Breadcrumb paths never climb above the canonical remote root. |
+| SDTEST-2502 | `agent_console_view/explorer.rs` | SDUC-551 | Green | Dotfile filtering excludes traversal/internal Git entries. |
+| SDTEST-2503 | `agent_console_view/explorer.rs` | SDUC-551 | Green | Highlight only the active editor file, never directories or prefix matches. |
+| SDTEST-2520 | `agent_console_view/editor.rs::local_editor_save_preserves_external_changes_and_scopes_the_target` | SDUC-551 | Green | Local explicit save refuses changed content and mismatched roots; accepted save replaces exact intended file. |
+| SDTEST-2521 | Native middle-pane editor journeys | SDUC-551 | Yellow | Native isolated edit→Conversation→Editor→Save and two-tab activation passed; 1280px/700px captures inspected. Session-switch and real SSH-host journeys remain pending. See agent-editor-qa-2026-10-15.md. |
+| SDTEST-2522 | `agent_console_view/editor.rs::remote_source_file_urls_keep_posix_paths_on_every_desktop` | SDUC-551 | Green | Remote file URI decoding is independent of desktop path semantics; other host/scheme/NUL URLs refuse. |
+
+
+## Live native browser and engine updates — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2570 | `native_browser/geometry.rs` | SDUC-557 | Green | Browser-local pointer coordinates and captured drags across viewport bounds; passed in the 236-test UI suite. |
+| SDTEST-2571 | `native_browser/geometry.rs` | SDUC-557 | Green | UTF-16 selection never splits a surrogate pair. |
+| SDTEST-2572 | `native_browser/geometry.rs` | SDUC-557 | Green | Virtual keys and modifier translation retain browser shortcuts. |
+| SDTEST-2573 | `native_browser.rs` | SDUC-557 | Green | Raw BGRA frames and screenshot PNG channel conversion remain distinct. |
+| SDTEST-2574 | `native_browser.rs` | SDUC-557 | Green | Profile components cannot introduce path traversal. |
+| SDTEST-2575 | `native_browser.rs` | SDUC-557 | Green | Popup screenshot composition respects HiDPI scaling and clipping. |
+| SDTEST-2587 | `agent_console_view/live_browser.rs` | SDUC-557 | Green | Profiles separate session identities and full execution contexts. |
+| SDTEST-2588 | `shelldeck-update/src/installer.rs` | SDUC-557 | Green | Publishing a versioned engine preserves active versions and rolls back on unsuccessful main replacement. |
+| SDTEST-2589 | `shelldeck-update/src/installer.rs` | SDUC-557 | Green | Incomplete engine payload refuses before touching installed files. |
+| SDTEST-2591 | Native GPUI browser fixture | SDUC-557 | Yellow | Native Wayland live viewport/DOM audit passed. Isolated native window click/type, form submit, address-focused Ctrl+T/Ctrl+W, tab state retention, native dropdown selection and exactly-once Enter submission passed; screenshots inspected. |
+| SDTEST-2605 | `workspace/native_lifecycle.rs` | SDUC-491 | Green | Git 2.34 worktree-list fallback accepts only the precise unsupported-z diagnostic and preserves quoted/newline path authority. Full UI suite now passes all 236 tests, including the three previously failing lifecycle cases. |
+| SDTEST-2606 | `native_browser/geometry.rs` | SDUC-557 | Green | Human Enter produces the Chromium CHAR action for form submission and newlines; printable IME text and modified shortcuts remain single events. |
+
+
+## Production Agents launch packaging — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2630 | `scripts/test-agents-packaging.py::test_sdtest_2630_appimage_launches_agents_with_matching_browser_payload` | SDUC-558, SDUC-557 | Green | Offline temporary AppDir with fake AppImage tools executes AppRun against a harmless argv fixture: `--agents` and a spaced argument arrive intact. The default/protocol entry and Agents action coexist; matching browser resources/symlinks survive while stale versions are excluded. |
+| SDTEST-2631 | `scripts/test-agents-packaging.py::test_sdtest_2631_appimage_refuses_missing_browser_and_failed_dependencies` | SDUC-558, SDUC-557 | Green | A missing browser resource refuses before tool execution; dependency-deployment failure, silent helper-loader failure and a foreign libcef resolution refuse before an AppImage artifact can be reported. Explicit helper scanning keeps one canonical versioned engine. No real application, browser or download is used. |
+| SDTEST-2632 | `scripts/test-agents-packaging.py::test_sdtest_2632_installers_keep_production_agents_arguments_separate` | SDUC-558 | Green | Node renders the real worker install scripts; the generated Linux desktop heredoc preserves default URL handling and quoted executable paths containing spaces. Windows shortcut TargetPath/Arguments remain separate; real NSIS compiles a small offline payload. Requires Node TypeScript stripping and NSIS (explicit skip otherwise). Native Windows shortcut activation and macOS Launch Services remain platform acceptance work. |
+| SDTEST-2633 | `shelldeck/cli.rs::sdtest_2633_launch_intents_preserve_agents_and_reject_ambiguous_targets` | SDUC-558 | Green | CLI parsing keeps Agents as a nonempty handoff intent, accepts repeat/equivalent Agents flags/routes and Finder process metadata, preserves unrelated deep links, and refuses unknown/ambiguous targets before application I/O. Help/version remain side-effect-free launch commands. Passed in the isolated application/UI suite. |
+| SDTEST-2639 | `workspace/tray.rs::sdtest_2639_agent_only_work_requires_first_close_warning_without_changing_opt_out_or_confirmation` | SDUC-558 | Green | A running agent with no terminal, tunnel or script requires the first close warning. An already-confirmed close, explicit confirmation opt-out and an idle workspace still close; existing resource categories retain the warning. Passed in the isolated application/UI suite. |
+
+Linux validation also ran `bash -n` on both installer build scripts and
+`desktop-file-validate` on the packaged desktop entry. These checks do not
+publish a release or certify native Windows/macOS activation.
+
+
+The `agents-packaging` Linux CI job installs Python 3.12, Node 24, NSIS and
+`desktop-file-utils`, then runs SDTEST-2630..2632 and SDTEST-2644, browser archive/permission contracts, and shell/desktop syntax
+checks. Its explicit tool preflight prevents SDTEST-2632 from silently skipping;
+no Cargo compilation or Chromium download is needed for that job.
+
+
+## Production Agents presentation — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2636 | `workspace/presentation.rs::sdtest_2636_agents_launch_waits_for_auth_and_clamps_staff_capabilities` | SDUC-558 | Green | A signed-out Agents request stays pending behind welcome; customer and Support capabilities resolve to the normal available mode after login. Only a Dev-authorized account activates Agents. Passed in the isolated 240-test UI suite. |
+| SDTEST-2637 | `workspace/presentation.rs::sdtest_2637_agents_presentation_restores_saved_mode_without_persisting_dev` | SDUC-558 | Green | Agents temporarily resolves Dev for an authorized account across each saved mode; returning to the normal presentation restores that saved mode, and role loss retires the dedicated request. Passed in the isolated 240-test UI suite. |
+| SDTEST-2638 | `workspace/presentation.rs::sdtest_2638_agents_poll_visibility_follows_auth_mode_settings_and_selection` | SDUC-558 | Green | Agent foreground visibility requires current Dev authorization, effective Dev mode, a selected Agents host and closed Settings. Hidden User/Support/Settings surfaces do not count as visible. Passed in the isolated 240-test UI suite. |
+
+The dedicated presentation retains the same account titlebar, Settings, status
+bar and live AgentConsole entity while hiding the full application's outer
+sidebar and application menu row. Normal launches and the titlebar's **Open full
+ShellDeck** action restore the regular shell. Mode choices retire the transient
+request; opening a different native Dev surface reveals that destination in the
+full shell. Pending signed-out requests do not auto-open a login modal.
+
+
+## Production Agents command line
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2640 | `scripts/test-agents-cli.py` | SDUC-558 | Green | The actual Linux executable handles help, version and invalid/ambiguous arguments with no display, instance discovery or profile writes. Disposable XDG homes remain empty. Passed against the final production executable. |
+| SDTEST-2641 | `scripts/test-agents-cli.py` | SDUC-558 | Green | Actual secondary executable forwards the exact Agents URI or bare normal-launch intent to a private primary fixture and exits before GUI/config initialization. Discovery identity and profile contents remain unchanged. Blocked startup returns nonzero before GUI/config initialization. Passed against the final production executable. |
+
+
+## Public browser runtime permissions — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2642 | `scripts/test-browser-packaging.py::test_sdtest_2642_public_runtime_modes_preserve_executables_and_framework_links` | SDUC-557, SDUC-558 | Green | Runs the actual bundler with private-mode Linux/macOS fixture inputs. Published directory/data modes are 0755/0644, executable helpers retain executable roles, macOS framework symlinks remain links, and source modes stay unchanged. Unix-mode contract explicitly skips on Windows, where inherited installation ACLs apply. Runs in the lightweight Linux packaging CI job; no CEF download, native process or profile is involved. |
+| SDTEST-2644 | `scripts/test-agents-packaging.py::test_sdtest_2644_appimage_includes_matching_dynamic_nss_modules` | SDUC-557, SDUC-558 | Green | Packages the exact NSS distribution discovered through Chromium's linked libnss3, including its dynamically loaded softokn/freebl/root/database modules. A missing source module or a bundler silently omitting modules refuses before compression. Offline fixture paths contain spaces. The Linux release job additionally enables the real packaged CEF fixture before compression. |

@@ -25,6 +25,12 @@ fi
 
 VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
 echo "==> Building NSIS installer for ShellDeck $VERSION"
+if [ ! -f "target/release/browser/$VERSION/shelldeck-browser.exe" ] || \
+   [ ! -f "target/release/browser/$VERSION/shelldeck-browser.dll" ] || \
+   [ ! -f "target/release/browser/$VERSION/libcef.dll" ]; then
+    echo "ERROR: Missing native browser runtime; run scripts/build-release.sh first" >&2
+    exit 1
+fi
 
 mkdir -p dist
 

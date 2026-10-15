@@ -97,6 +97,9 @@ impl FileEditorView {
     // -----------------------------------------------------------------------
 
     pub(crate) fn replace_next(&mut self, cx: &mut Context<Self>) {
+        if self.active_tab().is_some_and(EditorTab::is_read_only) {
+            return;
+        }
         if self.search_matches.is_empty() {
             return;
         }
@@ -137,6 +140,9 @@ impl FileEditorView {
     }
 
     pub(crate) fn replace_all(&mut self, cx: &mut Context<Self>) {
+        if self.active_tab().is_some_and(EditorTab::is_read_only) {
+            return;
+        }
         if self.search_matches.is_empty() {
             return;
         }

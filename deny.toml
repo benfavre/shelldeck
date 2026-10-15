@@ -55,6 +55,14 @@ allow = [
     "Zlib",
 ]
 
+# CEF's build-time archive downloader uses this Rust bzip2 implementation.
+# Reviewed against the published LICENSE and SPDX bzip2-1.0.6 text; retain
+# copyright/origin notices and do not extend this exception to other crates.
+[[licenses.exceptions]]
+name = "libbz2-rs-sys"
+version = "=0.2.5"
+allow = ["bzip2-1.0.6"]
+
 [licenses.private]
 ignore = true
 

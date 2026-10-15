@@ -25,7 +25,7 @@ impl Workspace {
                         .with_action(ActivityAction::ConnectConnection),
                         cx,
                     );
-                    self.active_view = ActiveView::Terminal;
+                    self.set_active_view(ActiveView::Terminal, cx);
                     cx.notify();
                 } else {
                     self.show_toast(

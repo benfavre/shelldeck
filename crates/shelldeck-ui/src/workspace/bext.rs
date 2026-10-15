@@ -47,7 +47,7 @@ impl Workspace {
             .map(|c| c.alias.clone())
             .filter(|a| !a.is_empty())
             .unwrap_or_else(|| "default".to_string());
-        self.active_view = ActiveView::BextCloud;
+        self.set_active_view(ActiveView::BextCloud, cx);
         let base = "http://127.0.0.1".to_string();
         self.bext_view.update(cx, |v, cx| {
             v.open_instance(base.clone(), app_id.clone(), cx);

@@ -132,7 +132,7 @@ impl AgentConsoleView {
         {
             if let Some(text) = &attachment.text {
                 expanded.push_str("\n\n");
-                expanded.push_str(&t!("agents.composer.context_data").to_string());
+                expanded.push_str(t!("agents.composer.context_data").as_ref());
                 expanded.push('\n');
                 expanded.push_str(&serde_json::json!({"file": attachment.name, "content": shelldeck_core::agent_runtime::bounded_agent_context_text(text)}).to_string());
             }
@@ -163,6 +163,7 @@ impl AgentConsoleView {
             return Err(t!("agents.composer.image_unsupported").to_string());
         }
         Ok(AgentInputOptions {
+            mcp_servers: Vec::new(),
             image_paths,
             reasoning_effort: self
                 .provider
@@ -1112,6 +1113,7 @@ mod tests {
             options: AgentInputOptions {
                 image_paths: vec![PathBuf::from("selected-image.png")],
                 reasoning_effort: Some(AgentReasoningEffort::High),
+                ..Default::default()
             },
             source_draft: None,
         }

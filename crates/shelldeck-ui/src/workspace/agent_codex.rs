@@ -15,7 +15,7 @@ impl Workspace {
             });
             return;
         };
-        let options = self
+        let mut options = self
             .agent_console
             .update(cx, |view, _| view.take_run_options(run_id));
         if !std::path::Path::new(&request.workdir).is_dir() {
@@ -33,6 +33,13 @@ impl Workspace {
             return;
         }
         if let Err(error) = self.bind_agent_run_to_workspace(&request, cx) {
+            self.agent_console
+                .update(cx, |view, cx| view.reject_run_for(run_id, error, cx));
+            return;
+        }
+        if let Err(error) = self.agent_console.update(cx, |view, cx| {
+            view.attach_browser_tools(&request, &mut options, cx)
+        }) {
             self.agent_console
                 .update(cx, |view, cx| view.reject_run_for(run_id, error, cx));
             return;

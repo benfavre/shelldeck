@@ -78,7 +78,7 @@ impl Workspace {
             }
             SitesEvent::AddToSync(site_id) => {
                 let _ = site_id;
-                self.set_active_view(ActiveView::ServerSync);
+                self.set_active_view(ActiveView::ServerSync, cx);
                 cx.notify();
             }
             SitesEvent::CheckSiteStatus(site_id) => {

@@ -27,6 +27,25 @@ pub struct ExecResult {
     pub exit_code: Option<u32>,
 }
 
+/// A cancelled bounded request still needs to release its remote process. A
+/// dropped channel read half alone does not send SSH channel EOF or Close.
+struct BoundedExecCloseGuard(Option<Arc<ChannelWriteHalf<client::Msg>>>);
+
+impl Drop for BoundedExecCloseGuard {
+    fn drop(&mut self) {
+        if let (Some(writer), Ok(runtime)) = (self.0.take(), tokio::runtime::Handle::try_current())
+        {
+            runtime.spawn(async move {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    let _ = writer.eof().await;
+                    let _ = writer.close().await;
+                })
+                .await;
+            });
+        }
+    }
+}
+
 impl ExecResult {
     /// Get stdout as a UTF-8 string, lossy.
     pub fn stdout_string(&self) -> String {
@@ -228,6 +247,107 @@ impl SshSession {
             stderr,
             exit_code,
         })
+    }
+
+    /// Send bounded stdin while collecting bounded stdout/stderr on a non-PTY
+    /// channel. Input and output progress concurrently so an untrusted remote
+    /// cannot deadlock a large request merely by writing before reading.
+    /// The caller owns the complete operation timeout.
+    pub(crate) async fn exec_with_input_bounded(
+        &self,
+        command: &str,
+        input: &[u8],
+        input_limit: usize,
+        output_limit: usize,
+        error_limit: usize,
+    ) -> crate::Result<ExecResult> {
+        if input.len() > input_limit {
+            return Err(SshError::Channel(
+                "SSH request exceeds its input limit".into(),
+            ));
+        }
+        let channel = {
+            let handle = self.handle.lock().await;
+            handle
+                .channel_open_session()
+                .await
+                .map_err(|error| SshError::Channel(error.to_string()))?
+        };
+        let (mut reader, writer) = channel.split();
+        let writer = Arc::new(writer);
+        let mut close_guard = BoundedExecCloseGuard(Some(writer.clone()));
+        let result = async {
+            writer
+                .exec(true, command)
+                .await
+                .map_err(|error| SshError::Channel(error.to_string()))?;
+            let send = async {
+                writer
+                    .data(std::io::Cursor::new(input))
+                    .await
+                    .map_err(|error| SshError::Channel(error.to_string()))?;
+                writer
+                    .eof()
+                    .await
+                    .map_err(|error| SshError::Channel(error.to_string()))
+            };
+            let receive = async {
+                let mut result = ExecResult {
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    exit_code: None,
+                };
+                while let Some(message) = reader.wait().await {
+                    match message {
+                        ChannelMsg::Data { data } => {
+                            if data.len() > output_limit.saturating_sub(result.stdout.len()) {
+                                return Err(SshError::Channel(
+                                    "SSH response exceeds its output limit".into(),
+                                ));
+                            }
+                            result.stdout.extend_from_slice(&data);
+                        }
+                        ChannelMsg::ExtendedData { data, .. } => {
+                            if data.len() > error_limit.saturating_sub(result.stderr.len()) {
+                                return Err(SshError::Channel(
+                                    "SSH response exceeds its diagnostic limit".into(),
+                                ));
+                            }
+                            result.stderr.extend_from_slice(&data);
+                        }
+                        ChannelMsg::ExitStatus { exit_status } => {
+                            result.exit_code = Some(exit_status);
+                        }
+                        ChannelMsg::Close => break,
+                        _ => {}
+                    }
+                }
+                Ok(result)
+            };
+            tokio::pin!(send);
+            tokio::pin!(receive);
+            tokio::select! {
+                received = &mut receive => received,
+                sent = &mut send => {
+                    // A missing helper can exit before consuming stdin. Keep
+                    // its exit status so the caller can report missing Python
+                    // instead of an incidental "channel closed" write error.
+                    match receive.await {
+                        Ok(response) if response.exit_code.is_some() => Ok(response),
+                        received => {
+                            sent?;
+                            received
+                        }
+                    }
+                }
+            }
+        }
+        .await;
+        // Close on an overflow/error as well as normal completion; do not leave
+        // an untrusted producer streaming into an unread channel.
+        let _ = writer.close().await;
+        close_guard.0 = None;
+        result
     }
 
     /// Execute a command with streaming output.
@@ -587,7 +707,9 @@ mod in_memory_ssh_tests {
             cols: u32,
             rows: u32,
         },
+        Data(Vec<u8>),
         ChannelEof,
+        ChannelClose,
     }
 
     struct InMemoryServer {
@@ -703,6 +825,25 @@ mod in_memory_ssh_tests {
             _session: &mut Session,
         ) -> Result<(), Self::Error> {
             let _ = self.events.send(ServerEvent::ChannelEof);
+            Ok(())
+        }
+
+        async fn data(
+            &mut self,
+            _channel: ChannelId,
+            data: &[u8],
+            _session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let _ = self.events.send(ServerEvent::Data(data.to_vec()));
+            Ok(())
+        }
+
+        async fn channel_close(
+            &mut self,
+            _channel: ChannelId,
+            _session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let _ = self.events.send(ServerEvent::ChannelClose);
             Ok(())
         }
     }
@@ -924,6 +1065,108 @@ mod in_memory_ssh_tests {
         assert_eq!(exit_code, None);
         assert_eq!(next_event(&mut events).await, ServerEvent::ChannelEof);
 
+        server_task.abort();
+    }
+
+    // SDTEST-2516 — bounded file transport retains an early missing-helper exit.
+    #[tokio::test]
+    async fn sdtest_2516_bounded_exec_retains_output_and_early_exit_status() {
+        for exit_code in [0, 127] {
+            let (session, mut events, server_task) = start_session(ExecBehavior::Complete {
+                stdout: b"response".to_vec(),
+                stderr: b"diagnostic".to_vec(),
+                exit_code,
+                eof_before_status: true,
+            })
+            .await;
+            let response = timeout(
+                Duration::from_secs(2),
+                session.exec_with_input_bounded("fixed helper", b"stdin payload", 32, 32, 32),
+            )
+            .await
+            .expect("bounded exec timed out")
+            .expect("bounded exec failed");
+            assert_eq!(response.stdout, b"response");
+            assert_eq!(response.stderr, b"diagnostic");
+            assert_eq!(response.exit_code, Some(exit_code));
+            assert_eq!(
+                next_event(&mut events).await,
+                ServerEvent::Exec(b"fixed helper".to_vec())
+            );
+            server_task.abort();
+        }
+    }
+
+    // SDTEST-2517 — reject output/diagnostic overflows instead of buffering them.
+    #[tokio::test]
+    async fn sdtest_2517_bounded_exec_refuses_input_output_and_diagnostic_overflows() {
+        for (stdout, stderr, expected) in [
+            (vec![b'x'; 33], Vec::new(), "output limit"),
+            (Vec::new(), vec![b'x'; 33], "diagnostic limit"),
+        ] {
+            let (session, _, server_task) = start_session(ExecBehavior::Complete {
+                stdout,
+                stderr,
+                exit_code: 0,
+                eof_before_status: false,
+            })
+            .await;
+            let error = timeout(
+                Duration::from_secs(2),
+                session.exec_with_input_bounded("fixed helper", b"payload", 32, 32, 32),
+            )
+            .await
+            .expect("overflow must terminate promptly")
+            .err()
+            .expect("overflow must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+            server_task.abort();
+        }
+        let (session, mut events, server_task) =
+            start_session(ExecBehavior::WaitForCancellation).await;
+        let error = session
+            .exec_with_input_bounded("must not execute", b"too large", 1, 32, 32)
+            .await
+            .err()
+            .expect("oversize input must fail");
+        assert!(error.to_string().contains("input limit"));
+        assert!(
+            events.try_recv().is_err(),
+            "no remote exec before input validation"
+        );
+        server_task.abort();
+    }
+
+    // SDTEST-2518 — cancelling a timed-out file request closes its SSH channel.
+    #[tokio::test]
+    async fn sdtest_2518_bounded_exec_cancellation_sends_eof_and_close() {
+        let (session, mut events, server_task) =
+            start_session(ExecBehavior::WaitForCancellation).await;
+        let task = tokio::spawn(async move {
+            session
+                .exec_with_input_bounded("fixed helper", b"payload", 32, 32, 32)
+                .await
+        });
+        assert_eq!(
+            next_event(&mut events).await,
+            ServerEvent::Exec(b"fixed helper".to_vec())
+        );
+        assert_eq!(
+            next_event(&mut events).await,
+            ServerEvent::Data(b"payload".to_vec())
+        );
+        assert_eq!(next_event(&mut events).await, ServerEvent::ChannelEof);
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if next_event(&mut events).await == ServerEvent::ChannelClose {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("cancelled helper must receive channel close");
         server_task.abort();
     }
 }

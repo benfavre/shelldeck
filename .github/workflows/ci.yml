@@ -16,6 +16,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  agents-packaging:
+    name: Agents launcher and packaging contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install small launcher tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nsis desktop-file-utils
+      - name: Verify production Agents packages without building the application
+        run: |
+          # Require the optional local tools here so SDTEST-2632 cannot skip in CI.
+          node --experimental-strip-types --input-type=module -e ''
+          command -v makensis
+          python3 scripts/test-agents-packaging.py
+          python3 scripts/test-browser-packaging.py
+          bash -n packaging/linux/build-appimage.sh
+          bash -n packaging/windows/build-nsis.sh
+          desktop-file-validate packaging/linux/shelldeck.desktop
+
   check:
     name: Check & Test
     runs-on: ubuntu-latest
@@ -80,6 +109,13 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace
+
+      - name: Verify production Agents CLI without GUI or profile side effects
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
+        run: |
+          cargo build --locked -p shelldeck --bin shelldeck
+          python3 scripts/test-agents-cli.py target/debug/shelldeck
 
       - name: cargo clippy
         # `--no-deps` skips lints from vendored path deps under `patches/`
@@ -231,3 +267,107 @@ jobs:
         # there is no shared store to isolate. Each test still writes under a
         # pid+nanos host name and deletes it.
         run: cargo test -p shelldeck-core -- --ignored config::keychain::tests::live_
+
+  browser-runtime:
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    name: Native Chromium (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            shell: bash
+            platform: linux-x86_64
+          - os: macos-15
+            shell: bash
+            platform: macos-aarch64
+          - os: windows-latest
+            shell: pwsh
+            platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-03-06
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Configure isolated CEF build cache
+        shell: bash
+        run: echo "CEF_PATH=${RUNNER_TEMP}/shelldeck-cef" >> "$GITHUB_ENV"
+      - name: Cache Cargo and pinned Chromium runtime
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/shelldeck-cef
+          key: ${{ runner.os }}-browser-native-${{ hashFiles('Cargo.lock', 'crates/shelldeck-browser/Cargo.toml') }}
+      - name: Install Linux Chromium dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config libgtk-3-0 libnss3 libnspr4 \
+            libatk-bridge2.0-0 libatspi2.0-0 libcups2 libdrm2 libgbm1 libxcomposite1 \
+            libxdamage1 libxrandr2 libasound2 libxss1 libx11-xcb1 libxcursor1 libxtst6 xvfb
+      - name: Install macOS CEF build tools
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
+      - name: Configure Windows native compiler
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Pin Windows native linker for Bash build scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
+          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) {
+            throw "The MSVC linker was not selected: $linker"
+          }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
+      - name: Verify browser protocol, capability boundaries and exact native screenshots
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
+        run: cargo test --locked -p shelldeck-browser --lib
+      - name: Build native sandboxed CEF helper
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
+        run: cargo build --locked -p shelldeck-browser --features runtime
+      - name: Stage complete native browser payload
+        run: python3 scripts/bundle-browser-runtime.py --profile debug
+      - name: Launch staged native stdio entry point
+        run: python3 scripts/test-browser-helper-launch.py target/debug/browser
+      - name: Verify Linux browser archive contracts
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-browser-packaging.py
+      - name: Exercise native Linux Chromium rendering and profile persistence
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          browser_helper="$(python3 -c 'import json,pathlib; root=pathlib.Path("target/debug/browser"); meta=next(root.glob("*/runtime.json")); print(meta.parent/json.loads(meta.read_text())["executable"])')"
+          xvfb-run -a python3 scripts/test-browser-runtime.py "$browser_helper"
+      - name: Exercise native MCP computer use and popup permissions
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
+        run: |
+          browser_helper="$(python3 -c 'import json,pathlib; root=pathlib.Path("target/debug/browser"); meta=root/"runtime.json"; meta=meta if meta.is_file() else next(root.glob("*/runtime.json")); print((meta.parent/json.loads(meta.read_text())["executable"]).resolve())')"
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            xvfb-run -a cargo run --locked -p shelldeck-browser --example computer_use_smoke -- "$browser_helper"
+          else
+            cargo run --locked -p shelldeck-browser --example computer_use_smoke -- "$browser_helper"
+          fi
+      - name: Exercise native Windows MCP computer use and popup permissions
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $browserHelper = python3 -c 'import json,pathlib; root=pathlib.Path("target/debug/browser"); meta=next(root.glob("*/runtime.json")); print((meta.parent/json.loads(meta.read_text())["executable"]).resolve())'
+          cargo run --locked -p shelldeck-browser --example computer_use_smoke -- $browserHelper
+          if ($LASTEXITCODE -ne 0) { throw "Native MCP browser interaction failed" }

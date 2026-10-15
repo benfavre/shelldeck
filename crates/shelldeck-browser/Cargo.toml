@@ -1,0 +1,31 @@
+[package]
+name = "shelldeck-browser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+runtime = ["dep:cef", "dep:objc2", "dep:objc2-app-kit"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+uuid.workspace = true
+url.workspace = true
+base64.workspace = true
+image.workspace = true
+cef = { version = "=154.5.0", default-features = false, features = ["sandbox"], optional = true }
+
+[[bin]]
+name = "shelldeck-browser"
+path = "src/main.rs"
+required-features = ["runtime"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.3", optional = true }
+objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = ["NSApplication", "NSResponder", "NSRunningApplication", "NSEvent"] }

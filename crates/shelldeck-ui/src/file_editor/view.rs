@@ -135,6 +135,11 @@ fn context_menu_items() -> Vec<ContextMenuItem> {
 #[derive(Debug, Clone)]
 pub enum FileEditorEvent {
     TabsChanged,
+    SaveExternal {
+        document_id: String,
+        request_id: Uuid,
+        text: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +149,9 @@ pub struct FileEditorView {
     pub tabs: Vec<EditorTab>,
     pub active_tab_index: usize,
     pub focus_handle: FocusHandle,
+    /// The host owns document discovery and storage. Native file opening,
+    /// untitled documents and filesystem-wide search are disabled in this mode.
+    pub(crate) embedded: bool,
     pub(crate) glyph_cache: Option<Arc<GlyphCache>>,
     pub(crate) cursor_blink_on: bool,
     pub(crate) cursor_blink_task: Option<Task<()>>,
@@ -231,6 +239,7 @@ impl FileEditorView {
             tabs: Vec::new(),
             active_tab_index: 0,
             focus_handle: cx.focus_handle(),
+            embedded: false,
             glyph_cache: None,
             cursor_blink_on: true,
             cursor_blink_task: None,
@@ -283,6 +292,150 @@ impl FileEditorView {
         view
     }
 
+    pub fn new_embedded(cx: &mut Context<Self>) -> Self {
+        let mut view = Self::new(cx);
+        view.embedded = true;
+        view.file_browser_visible = false;
+        view.tabs.clear();
+        view
+    }
+
+    pub fn contains_external_document(&self, document_id: &str) -> bool {
+        self.tabs
+            .iter()
+            .any(|tab| tab.external_document_id() == Some(document_id))
+    }
+
+    /// Lets the host reject stale completions before updating its storage
+    /// baseline, including after a tab was discarded and reopened.
+    pub fn has_external_save(&self, document_id: &str, request_id: Uuid) -> bool {
+        self.tabs
+            .iter()
+            .find(|tab| tab.external_document_id() == Some(document_id))
+            .and_then(|tab| tab.external.as_ref())
+            .and_then(|document| document.pending_save.as_ref())
+            .is_some_and(|save| save.request_id == request_id)
+    }
+
+    pub fn activate_external_document(
+        &mut self,
+        document_id: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.external_document_id() == Some(document_id))
+        else {
+            return false;
+        };
+        self.active_tab_index = index;
+        self.clear_document_search();
+        cx.emit(FileEditorEvent::TabsChanged);
+        cx.notify();
+        true
+    }
+
+    /// Reopening an existing identity activates its retained buffer, including
+    /// cursor, scroll, undo history and unsaved edits, without replacing it.
+    pub fn open_external_document(
+        &mut self,
+        document: ExternalEditorDocument,
+        cx: &mut Context<Self>,
+    ) -> Uuid {
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.external_document_id() == Some(document.document_id.as_str()))
+        {
+            self.active_tab_index = index;
+            if let Some(buffer) = self.tabs[index].buffer_mut() {
+                buffer.set_read_only(document.read_only);
+            }
+        } else {
+            let mut tab = EditorTab::from_external(document);
+            if let Some(buffer) = tab.buffer_mut() {
+                buffer.set_tab_size(self.editor_tab_size);
+            }
+            self.tabs.push(tab);
+            self.active_tab_index = self.tabs.len() - 1;
+        }
+        self.clear_document_search();
+        cx.emit(FileEditorEvent::TabsChanged);
+        cx.notify();
+        self.tabs[self.active_tab_index].id
+    }
+
+    pub fn set_external_document_read_only(
+        &mut self,
+        document_id: &str,
+        read_only: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.external_document_id() == Some(document_id))
+        {
+            if let Some(buffer) = tab.buffer_mut() {
+                buffer.set_read_only(read_only);
+            }
+            if read_only {
+                self.replace_visible = false;
+                self.search_focus_replace = false;
+            }
+            cx.notify();
+        }
+    }
+
+    pub fn complete_external_save(
+        &mut self,
+        document_id: &str,
+        request_id: Uuid,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.external_document_id() == Some(document_id))
+        else {
+            return;
+        };
+        if self.tabs[index]
+            .external
+            .as_ref()
+            .and_then(|document| document.pending_save.as_ref())
+            .is_none_or(|save| save.request_id != request_id)
+        {
+            return;
+        }
+        if self.tabs[index].complete_external_save(request_id, result) {
+            self.force_close_tab(index, cx);
+        } else {
+            cx.emit(FileEditorEvent::TabsChanged);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn clear_document_search(&mut self) {
+        self.search_matches.clear();
+        self.search_current_idx = None;
+        self.context_menu_visible = false;
+        if self.tabs.is_empty() {
+            self.search_visible = false;
+            self.replace_visible = false;
+            self.goto_line_visible = false;
+        }
+        if self.active_tab().is_some_and(EditorTab::is_read_only) {
+            self.replace_visible = false;
+            self.search_focus_replace = false;
+        }
+        if self.search_visible {
+            self.perform_search();
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Tab management
     // -----------------------------------------------------------------------
@@ -296,6 +449,22 @@ impl FileEditorView {
     }
 
     pub fn open_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.embedded {
+            return;
+        }
+        self.open_native_file(path, cx);
+    }
+
+    /// The host must validate the canonical path and file-size limit before
+    /// opening a local preview. Text always uses externally owned snapshots.
+    pub fn open_embedded_preview(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if FileKind::from_filename(&path.to_string_lossy()) == FileKind::Text {
+            return;
+        }
+        self.open_native_file(path, cx);
+    }
+
+    fn open_native_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         // Check if already open
         for (i, tab) in self.tabs.iter().enumerate() {
             if tab.path.as_ref() == Some(&path) {
@@ -342,6 +511,7 @@ impl FileEditorView {
         // Replace empty untitled tab instead of adding alongside it
         let replace_empty = self.tabs.len() == 1
             && self.tabs[0].path.is_none()
+            && self.tabs[0].external.is_none()
             && !self.tabs[0].is_dirty()
             && self.tabs[0].buffer().is_none_or(|b| b.len_chars() == 0);
         if replace_empty {
@@ -356,7 +526,44 @@ impl FileEditorView {
     }
 
     pub fn save_file(&mut self, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+        self.save_tab(self.active_tab_index, false, cx);
+    }
+
+    fn save_tab(&mut self, index: usize, close_after_save: bool, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get_mut(index) {
+            if tab.is_read_only() {
+                return;
+            }
+            if let Some(document) = &mut tab.external {
+                if let Some(pending) = &mut document.pending_save {
+                    pending.close_after_save |= close_after_save;
+                    return;
+                }
+                if let TabContent::Text { buffer, .. } = &mut tab.content {
+                    buffer.flush_transaction();
+                    let text = buffer.text();
+                    let request_id = Uuid::new_v4();
+                    document.pending_save = Some(PendingExternalSave {
+                        request_id,
+                        text: text.clone(),
+                        close_after_save,
+                    });
+                    document.save_error = None;
+                    cx.emit(FileEditorEvent::SaveExternal {
+                        document_id: document.document_id.clone(),
+                        request_id,
+                        text,
+                    });
+                    cx.notify();
+                }
+                return;
+            }
+        }
+        // Embedded editors never perform writes through a native local path.
+        if self.embedded {
+            return;
+        }
+        if let Some(tab) = self.tabs.get_mut(index) {
             if let (Some(ref path), TabContent::Text { buffer, .. }) = (&tab.path, &mut tab.content)
             {
                 let content = buffer.text();
@@ -376,7 +583,7 @@ impl FileEditorView {
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         // Check for unsaved changes
         if let Some(tab) = self.tabs.get(index) {
-            if tab.is_dirty() && self.pending_close_tab.is_none() {
+            if tab.is_dirty() {
                 self.pending_close_tab = Some(index);
                 cx.notify();
                 return;
@@ -386,21 +593,49 @@ impl FileEditorView {
     }
 
     pub fn force_close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.pending_close_tab = None;
-        if self.tabs.len() <= 1 {
+        if index >= self.tabs.len() {
+            return;
+        }
+        self.pending_close_tab = self.pending_close_tab.and_then(|pending| {
+            if pending == index {
+                None
+            } else if pending > index {
+                Some(pending - 1)
+            } else {
+                Some(pending)
+            }
+        });
+        if self.tabs.len() <= 1 && !self.embedded {
             self.tabs[0] = EditorTab::new_empty();
             self.active_tab_index = 0;
         } else {
             self.tabs.remove(index);
+            if index < self.active_tab_index {
+                self.active_tab_index -= 1;
+            }
             if self.active_tab_index >= self.tabs.len() {
-                self.active_tab_index = self.tabs.len() - 1;
+                self.active_tab_index = self.tabs.len().saturating_sub(1);
             }
         }
+        self.clear_document_search();
         cx.emit(FileEditorEvent::TabsChanged);
         cx.notify();
     }
 
     pub fn save_and_close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self
+            .tabs
+            .get(index)
+            .is_some_and(|tab| tab.external.is_some())
+        {
+            self.pending_close_tab = None;
+            self.save_tab(index, true, cx);
+            cx.notify();
+            return;
+        }
+        if self.embedded {
+            return;
+        }
         // Save first (only for text tabs)
         if let Some(tab) = self.tabs.get_mut(index) {
             if let (Some(ref path), TabContent::Text { buffer, .. }) = (&tab.path, &mut tab.content)
@@ -674,6 +909,8 @@ impl Render for FileEditorView {
             .flex()
             .flex_col()
             .size_full()
+            .min_w(px(0.0))
+            .overflow_hidden()
             .track_focus(&self.focus_handle)
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 if let Some(view) = handle.upgrade() {
@@ -685,6 +922,22 @@ impl Render for FileEditorView {
 
         // Tab bar
         container = container.child(self.render_tab_bar(cx));
+        if let Some(error) = self
+            .active_tab()
+            .and_then(|tab| tab.external.as_ref())
+            .and_then(|document| document.save_error.as_ref())
+        {
+            container = container.child(
+                div().flex_shrink_0().min_w(px(0.0)).p(px(8.0)).child(
+                    adabraka_ui::components::alert::Alert::error()
+                        .description(
+                            t!("file_editor.embedded.save_error", error = error.as_str())
+                                .to_string(),
+                        )
+                        .p(px(8.0)),
+                ),
+            );
+        }
 
         // Search/replace/goto-line bars (text tabs only)
         let active_is_text = self.active_tab().is_none_or(|t| t.is_text());
@@ -823,7 +1076,7 @@ impl Render for FileEditorView {
             });
 
         // File browser panel
-        if self.file_browser_visible {
+        if self.file_browser_visible && !self.embedded {
             let h_browser = cx.entity().downgrade();
             let browser_width = self.file_browser_width;
 
@@ -956,7 +1209,18 @@ impl Render for FileEditorView {
 
         // Editor canvas / non-text content
         let is_text_tab = self.active_tab().is_none_or(|t| t.is_text());
-        if is_text_tab {
+        if self.tabs.is_empty() {
+            editor_area = editor_area.child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(13.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("file_editor.embedded.empty").to_string()),
+            );
+        } else if is_text_tab {
             let canvas_area = self.render_editor_canvas(window, cx);
             editor_area = editor_area.child(canvas_area);
             // Minimap
@@ -1020,7 +1284,7 @@ impl Render for FileEditorView {
         }
 
         // Find-in-files overlay
-        if self.fif_visible {
+        if self.fif_visible && !self.embedded {
             container = container.child(self.render_find_in_files(cx));
         }
 

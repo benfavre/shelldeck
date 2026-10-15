@@ -1821,7 +1821,7 @@ impl Workspace {
                             );
                             return;
                         };
-                        self.active_view = ActiveView::Scripts;
+                        self.set_active_view(ActiveView::Scripts, cx);
                         self.ai_sheet = None;
                         self.scripts.update(cx, |view, cx| {
                             view.apply_generated_body(script_id, result, cx);
@@ -1839,7 +1839,7 @@ impl Workspace {
                             return;
                         };
                         let body = shelldeck_core::ai::clean_generated_script_body(&result);
-                        self.active_view = ActiveView::Scripts;
+                        self.set_active_view(ActiveView::Scripts, cx);
                         self.ai_sheet = None;
                         self.scripts.update(cx, |view, cx| {
                             view.apply_generated_body(script_id, body, cx);
@@ -2350,7 +2350,7 @@ impl Workspace {
             }
             AiSurface::Script => {
                 if let Ok(script_id) = Uuid::parse_str(&task.target_id) {
-                    self.active_view = ActiveView::Scripts;
+                    self.set_active_view(ActiveView::Scripts, cx);
                     self.scripts.update(cx, |view, cx| {
                         view.selected_script = Some(script_id);
                         cx.notify();
@@ -2359,7 +2359,7 @@ impl Workspace {
             }
             AiSurface::Terminal => {
                 if let Ok(session_id) = Uuid::parse_str(&task.target_id) {
-                    self.active_view = ActiveView::Terminal;
+                    self.set_active_view(ActiveView::Terminal, cx);
                     self.terminal.update(cx, |view, cx| {
                         view.select_tab(session_id);
                         cx.notify();
@@ -2367,12 +2367,12 @@ impl Workspace {
                 }
             }
             AiSurface::Monique => {
-                self.active_view = ActiveView::MoniqueConsole;
+                self.set_active_view(ActiveView::MoniqueConsole, cx);
             }
             AiSurface::Naming => {
                 if task.target_kind.as_deref() == Some("naming_terminal") {
                     if let Ok(session_id) = Uuid::parse_str(&task.target_id) {
-                        self.active_view = ActiveView::Terminal;
+                        self.set_active_view(ActiveView::Terminal, cx);
                         self.terminal.update(cx, |view, cx| {
                             view.select_tab(session_id);
                             cx.notify();

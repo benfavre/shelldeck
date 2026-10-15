@@ -56,6 +56,12 @@ Section "Install"
     ; Main binary
     File "target\release\shelldeck.exe"
 
+    ; Versioned Chromium payload: never overwrite a helper/DLL in use by an
+    ; existing session. The new main binary discovers this matching version.
+    SetOutPath "$INSTDIR\browser\${VERSION}"
+    File /r "target\release\browser\${VERSION}\*"
+    SetOutPath "$INSTDIR"
+
     ; Icon (if available)
     !if /FileExists "packaging\icons\shelldeck.ico"
         File /oname=shelldeck.ico "packaging\icons\shelldeck.ico"
@@ -68,6 +74,8 @@ Section "Install"
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"
     CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" \
         "" "$INSTDIR\shelldeck.ico"
+    CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME} Agents.lnk" "$INSTDIR\${APP_EXE}" \
+        "--agents" "$INSTDIR\shelldeck.ico"
     CreateShortcut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
     ; Desktop shortcut
@@ -118,10 +126,12 @@ Section "Uninstall"
     Delete "$INSTDIR\${APP_EXE}"
     Delete "$INSTDIR\shelldeck.ico"
     Delete "$INSTDIR\Uninstall.exe"
+    RMDir /r "$INSTDIR\browser"
     RMDir "$INSTDIR"
 
     ; Remove shortcuts
     Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
+    Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME} Agents.lnk"
     Delete "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk"
     RMDir "$SMPROGRAMS\${APP_NAME}"
     Delete "$DESKTOP\${APP_NAME}.lnk"

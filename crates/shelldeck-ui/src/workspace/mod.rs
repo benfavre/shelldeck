@@ -1,5 +1,4 @@
 use crate::i18n::rel_time;
-pub(crate) use agents::resolve_local_agent_program;
 use crate::icons::{ai_provider_badge, ai_provider_icon, lucide_icon, lucide_path};
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
 use adabraka_ui::components::icon_button::IconButton;
@@ -13,6 +12,7 @@ use adabraka_ui::prelude::{
     install_theme, scrollable_vertical, use_theme, AnimatedCollapsible, Badge, BadgeVariant,
     Button, ButtonSize, ButtonVariant, Select, SelectOption,
 };
+pub(crate) use agents::resolve_local_agent_program;
 use gpui::prelude::*;
 use gpui::*;
 // Shadows `gpui::px` from the glob above so every length this module styles
@@ -112,9 +112,9 @@ pub type AiDockOpenHandler = Box<dyn Fn(&mut App)>;
 // 2,000 lines. See `.agents/workspace-architecture.md`.
 mod account;
 mod activity;
-mod agents;
-mod agent_tools;
 mod agent_codex;
+mod agent_tools;
+mod agents;
 mod ai;
 mod ai_routing;
 mod bext;
@@ -138,6 +138,8 @@ mod overlays;
 mod palette;
 mod panels;
 mod polling;
+mod presentation;
+pub use presentation::WorkspacePresentation;
 mod render;
 mod request_views;
 mod requests;
@@ -476,6 +478,9 @@ pub struct Workspace {
     template_browser: Option<Entity<TemplateBrowser>>,
     variable_prompt: Option<Entity<VariablePrompt>>,
     active_view: ActiveView,
+    presentation: WorkspacePresentation,
+    agents_focus_pending: bool,
+    native_title: Option<(gpui::WindowId, bool)>,
     /// Settings is a global personal surface, available from every app mode.
     /// Keeping this separate from `active_view` preserves the hidden Dev view
     /// (including live terminal tabs) while Settings is open.
@@ -991,6 +996,15 @@ impl Workspace {
         });
         let agent_console = cx.new(|cx| {
             let mut view = AgentConsoleView::new(cx);
+            view.apply_agent_editor_config(&config.editor, cx);
+            view.set_browser_account(
+                &config.cloud_sync.base_url,
+                config
+                    .account
+                    .as_ref()
+                    .map(|account| account.email.as_str()),
+                cx,
+            );
             view.set_connections(
                 connections
                     .iter()
@@ -1437,6 +1451,9 @@ impl Workspace {
             template_browser: None,
             variable_prompt: None,
             active_view: ActiveView::Dashboard,
+            presentation: WorkspacePresentation::Main,
+            agents_focus_pending: false,
+            native_title: None,
             settings_open: false,
             menu_bar,
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),

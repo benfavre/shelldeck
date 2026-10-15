@@ -318,7 +318,7 @@ impl AutoUpdater {
                     // Install phase also runs on the Tokio runtime (uses tokio::process)
                     let install_result = http_runtime()
                         .spawn(async move {
-                            installer::install(&archive_path).await?;
+                            installer::install(&archive_path, &version).await?;
                             Ok::<String, anyhow::Error>(version)
                         })
                         .await

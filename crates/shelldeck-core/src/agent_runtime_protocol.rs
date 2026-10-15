@@ -298,6 +298,7 @@ impl AgentReasoningEffort {
 pub struct AgentInputOptions {
     pub reasoning_effort: Option<AgentReasoningEffort>,
     pub image_paths: Vec<PathBuf>,
+    pub mcp_servers: Vec<crate::agent_browser_tools::AgentMcpServerLaunch>,
 }
 
 impl AgentCommandSpec {
@@ -305,7 +306,24 @@ impl AgentCommandSpec {
         request: &AgentRunRequest,
         options: &AgentInputOptions,
     ) -> Result<Self> {
+        crate::agent_browser_tools::validate_browser_mcp(request, options)?;
         let mut spec = Self::for_request(request)?;
+        // The native Codex transport attaches MCP configuration in its private
+        // thread/start JSON. Claude's CLI accepts a run-owned private file.
+        if request.provider == AgentProvider::Claude {
+            for server in &options.mcp_servers {
+                let path = server
+                    .claude_config_path
+                    .as_ref()
+                    .expect("validated private MCP config");
+                spec.args.extend([
+                    "--mcp-config".into(),
+                    path.to_string_lossy().into_owned(),
+                    "--allowedTools".into(),
+                    format!("mcp__{}__*", server.name),
+                ]);
+            }
+        }
         if options.reasoning_effort.is_some() && !request.provider.capabilities().reasoning_effort {
             return Err(ShellDeckError::Config(
                 "Selected agent transport does not support reasoning effort".into(),
@@ -574,6 +592,7 @@ mod tests {
         let options = AgentInputOptions {
             reasoning_effort: Some(AgentReasoningEffort::High),
             image_paths: vec![PathBuf::from("/work/screen shot.png")],
+            ..Default::default()
         };
         let spec = AgentCommandSpec::for_request_with_options(&request, &options).unwrap();
         assert_eq!(&spec.args[..2], &["exec", "resume"]);

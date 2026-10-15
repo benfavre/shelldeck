@@ -337,13 +337,13 @@ impl Workspace {
             if !self.enter_dev_mode(cx) {
                 return;
             }
-            self.set_active_view(ActiveView::Scripts);
+            self.set_active_view(ActiveView::Scripts, cx);
             self.show_template_browser(cx);
         } else if action.as_any().is::<NewScript>() {
             if !self.enter_dev_mode(cx) {
                 return;
             }
-            self.set_active_view(ActiveView::Scripts);
+            self.set_active_view(ActiveView::Scripts, cx);
             self.show_script_form(cx);
         } else if action.as_any().is::<OpenServerSync>() {
             self.activate_dev_section(SidebarSection::ServerSync, cx);

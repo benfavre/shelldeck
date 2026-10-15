@@ -10,6 +10,77 @@ pub struct Selection {
     pub head: usize,   // char offset
 }
 
+#[cfg(test)]
+mod embedded_read_only_tests {
+    use super::RopeBuffer;
+
+    // SDTEST-2495 · SDUC-475
+    #[::core::prelude::v1::test]
+    fn sdtest_2495_read_only_buffer_blocks_every_edit_route_and_keeps_selection() {
+        let edits: &[fn(&mut RopeBuffer)] = &[
+            |b| b.insert_char('x'),
+            |b| b.insert_str("pasted"),
+            |b| b.insert_str_multi("dragged"),
+            RopeBuffer::backspace_multi,
+            RopeBuffer::insert_newline,
+            RopeBuffer::insert_tab,
+            RopeBuffer::dedent,
+            RopeBuffer::delete_word_left,
+            RopeBuffer::delete_word_right,
+            RopeBuffer::backspace,
+            RopeBuffer::delete,
+            RopeBuffer::delete_line,
+            RopeBuffer::duplicate_line,
+            RopeBuffer::move_line_up,
+            RopeBuffer::move_line_down,
+            RopeBuffer::undo,
+            RopeBuffer::redo,
+            |b| {
+                b.delete_selection();
+            },
+            |b| {
+                b.try_auto_pair('(');
+            },
+            |b| {
+                b.try_backspace_pair();
+            },
+            |b| {
+                b.indent_selection();
+            },
+            |b| {
+                b.dedent_selection();
+            },
+            |b| b.toggle_line_comment("// "),
+        ];
+        for (index, edit) in edits.iter().enumerate() {
+            let mut buffer = RopeBuffer::new("    first()\n    second()\n    third()\n");
+            buffer.insert_str("one");
+            buffer.flush_transaction();
+            buffer.insert_str("two");
+            buffer.flush_transaction();
+            buffer.undo(); // Retain both undo and redo history.
+            buffer.set_cursor_from_position(1, 4, false);
+            buffer.add_cursor_below();
+            buffer.select_all();
+            buffer.set_dirty(false);
+            buffer.take_pending_edits();
+            let before = buffer.text();
+            let selection = buffer.selected_text();
+            buffer.set_read_only(true);
+            edit(&mut buffer);
+            assert_eq!(buffer.text(), before, "edit route {index}");
+            assert_eq!(buffer.selected_text(), selection, "selection route {index}");
+            assert!(!buffer.is_dirty(), "dirty route {index}");
+            assert!(
+                buffer.take_pending_edits().is_empty(),
+                "parser edits route {index}"
+            );
+            buffer.move_to_end(false);
+            assert_eq!(buffer.cursor(), buffer.len_chars());
+        }
+    }
+}
+
 impl Selection {
     pub fn range(&self) -> Range<usize> {
         let start = self.anchor.min(self.head);
@@ -65,6 +136,7 @@ pub struct RopeBuffer {
     current_transaction: Option<Transaction>,
     last_edit_time: Instant,
     dirty: bool,
+    read_only: bool,
     /// Accumulated input edits for tree-sitter since last query.
     pending_edits: Vec<InputEditInfo>,
     /// Header line numbers of currently-folded (collapsed) regions. Empty in the
@@ -86,6 +158,7 @@ impl RopeBuffer {
             current_transaction: None,
             last_edit_time: Instant::now(),
             dirty: false,
+            read_only: false,
             pending_edits: Vec::new(),
             folded: HashSet::new(),
         }
@@ -121,6 +194,16 @@ impl RopeBuffer {
 
     pub fn set_dirty(&mut self, dirty: bool) {
         self.dirty = dirty;
+    }
+
+    /// Enforced at the text storage boundary, including undo/redo and all
+    /// programmatic editing paths, so new UI input routes cannot bypass it.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     pub fn set_tab_size(&mut self, size: usize) {
@@ -248,6 +331,9 @@ impl RopeBuffer {
     /// Insert a string at every cursor (used in multi-cursor mode). Positions
     /// shift as earlier inserts land; cursors end up after their inserted text.
     pub fn insert_str_multi(&mut self, text: &str) {
+        if self.read_only {
+            return;
+        }
         if self.extra_cursors.is_empty() {
             self.insert_str(text);
             return;
@@ -274,6 +360,9 @@ impl RopeBuffer {
 
     /// Backspace at every cursor (delete one char before each).
     pub fn backspace_multi(&mut self) {
+        if self.read_only {
+            return;
+        }
         if self.extra_cursors.is_empty() {
             return;
         }
@@ -476,6 +565,9 @@ impl RopeBuffer {
     }
 
     pub fn undo(&mut self) {
+        if self.read_only {
+            return;
+        }
         self.finalize_transaction();
         if let Some(txn) = self.undo_stack.pop() {
             let cursor_before = txn.cursor_before;
@@ -502,6 +594,9 @@ impl RopeBuffer {
     }
 
     pub fn redo(&mut self) {
+        if self.read_only {
+            return;
+        }
         self.finalize_transaction();
         if let Some(txn) = self.redo_stack.pop() {
             let cursor_after = txn.cursor_after;
@@ -588,6 +683,9 @@ impl RopeBuffer {
     // -----------------------------------------------------------------------
 
     pub fn delete_selection(&mut self) -> Option<String> {
+        if self.read_only {
+            return None;
+        }
         let sel = self.selection.take()?;
         let range = sel.range();
         if range.is_empty() {
@@ -650,6 +748,9 @@ impl RopeBuffer {
     // -----------------------------------------------------------------------
 
     pub fn insert_char(&mut self, ch: char) {
+        if self.read_only {
+            return;
+        }
         self.start_or_extend_transaction(false);
         self.delete_selection();
 
@@ -664,6 +765,9 @@ impl RopeBuffer {
     }
 
     pub fn insert_str(&mut self, text: &str) {
+        if self.read_only {
+            return;
+        }
         if text.is_empty() {
             return;
         }
@@ -684,6 +788,9 @@ impl RopeBuffer {
     }
 
     pub fn insert_newline(&mut self) {
+        if self.read_only {
+            return;
+        }
         self.start_or_extend_transaction(true); // break coalescing
         self.delete_selection();
 
@@ -735,6 +842,9 @@ impl RopeBuffer {
     }
 
     pub fn insert_tab(&mut self) {
+        if self.read_only {
+            return;
+        }
         let spaces = " ".repeat(self.tab_size);
         self.start_or_extend_transaction(false);
         self.delete_selection();
@@ -750,6 +860,9 @@ impl RopeBuffer {
 
     /// Remove up to tab_size leading spaces from the current line.
     pub fn dedent(&mut self) {
+        if self.read_only {
+            return;
+        }
         let (line, _) = self.cursor_line_col();
         let line_start = self.rope.line_to_char(line);
         let line_text = self.line_text(line);
@@ -799,6 +912,9 @@ impl RopeBuffer {
     }
 
     pub fn delete_word_left(&mut self) {
+        if self.read_only {
+            return;
+        }
         if self.delete_selection().is_some() {
             return;
         }
@@ -847,6 +963,9 @@ impl RopeBuffer {
     }
 
     pub fn delete_word_right(&mut self) {
+        if self.read_only {
+            return;
+        }
         if self.delete_selection().is_some() {
             return;
         }
@@ -901,6 +1020,9 @@ impl RopeBuffer {
     }
 
     pub fn backspace(&mut self) {
+        if self.read_only {
+            return;
+        }
         if self.delete_selection().is_some() {
             return;
         }
@@ -924,6 +1046,9 @@ impl RopeBuffer {
     }
 
     pub fn delete(&mut self) {
+        if self.read_only {
+            return;
+        }
         if self.delete_selection().is_some() {
             return;
         }
@@ -946,6 +1071,9 @@ impl RopeBuffer {
     }
 
     pub fn delete_line(&mut self) {
+        if self.read_only {
+            return;
+        }
         let (line, _) = self.cursor_line_col();
         let line_start = self.rope.line_to_char(line);
         let line_end = if line + 1 < self.rope.len_lines() {
@@ -973,6 +1101,9 @@ impl RopeBuffer {
     }
 
     pub fn duplicate_line(&mut self) {
+        if self.read_only {
+            return;
+        }
         let (line, _) = self.cursor_line_col();
         let line_text = self.line_text(line);
         let line_end = if line + 1 < self.rope.len_lines() {
@@ -1356,6 +1487,9 @@ impl RopeBuffer {
     /// Try to handle auto-pairing for the given char.
     /// Returns true if the char was handled (either paired or skipped over).
     pub fn try_auto_pair(&mut self, ch: char) -> bool {
+        if self.read_only {
+            return false;
+        }
         // If typing a closing char and it matches what's under the cursor, skip over it
         if Self::is_closing_pair(ch) {
             if let Some(under) = self.char_at(self.cursor) {
@@ -1400,6 +1534,9 @@ impl RopeBuffer {
     /// Try pair-aware backspace. Returns true if handled.
     /// Deletes both chars if cursor is between an empty pair like `(|)`.
     pub fn try_backspace_pair(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
         if self.selection.is_some() || self.cursor == 0 {
             return false;
         }
@@ -1430,6 +1567,9 @@ impl RopeBuffer {
     // -----------------------------------------------------------------------
 
     pub fn move_line_up(&mut self) {
+        if self.read_only {
+            return;
+        }
         let (line, col) = self.cursor_line_col();
         if line == 0 {
             return;
@@ -1473,6 +1613,9 @@ impl RopeBuffer {
     }
 
     pub fn move_line_down(&mut self) {
+        if self.read_only {
+            return;
+        }
         let (line, col) = self.cursor_line_col();
         if line >= self.rope.len_lines().saturating_sub(1) {
             return;
@@ -1525,6 +1668,9 @@ impl RopeBuffer {
 
     /// Indent all lines in the current selection. Returns true if handled.
     pub fn indent_selection(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
         let sel = match &self.selection {
             Some(s) => *s,
             None => return false,
@@ -1576,6 +1722,9 @@ impl RopeBuffer {
 
     /// Dedent all lines in the current selection. Returns true if handled.
     pub fn dedent_selection(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
         let sel = match &self.selection {
             Some(s) => *s,
             None => return false,
@@ -1692,6 +1841,9 @@ impl RopeBuffer {
 
     /// Toggle comment prefix on selected lines (or current line if no selection).
     pub fn toggle_line_comment(&mut self, prefix: &str) {
+        if self.read_only {
+            return;
+        }
         let (start_line, end_line) = if let Some(sel) = &self.selection {
             let range = sel.range();
             let (sl, _) = self.char_to_line_col(range.start);

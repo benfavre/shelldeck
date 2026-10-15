@@ -362,6 +362,9 @@ Existing: **0 tests**.
 | SDTEST-1321 | `single_instance.rs::primary_then_secondary_forwards_payload` | SDUC-407 | Green | First = primary, second forwards + bows out, primary receives the link. |
 | SDTEST-1322 | `single_instance.rs::stale_discovery_file_is_taken_over` | SDUC-407 | Green | Dead primary → next launch takes over instead of stranding. |
 | SDTEST-1323 | `single_instance.rs::wrong_token_handoff_is_rejected` | SDUC-407 | Green | Token guard drops a rogue local hand-off. |
+| SDTEST-2634 | `deep_link.rs::sdtest_2634_agents_intent_accepts_only_its_route_without_panicking_on_unicode` | SDUC-558 | Green | Standalone Agents accepts its exact route, casing and optional query/fragment; extra route segments, wrong schemes and malformed Unicode prefixes cannot become an Agents intent or panic. Passed in the isolated 480-test core suite. |
+| SDTEST-2635 | `single_instance.rs::sdtest_2635_agents_initial_and_secondary_intents_reach_one_primary_exactly_once` | SDUC-558 | Green | Initial/secondary Agents launches and a subsequent bare launch deliver once to the same authenticated IPC primary; the bare request remains empty so it can restore the full presentation without replacing discovery identity or creating another host. Passed in the isolated 480-test core suite. |
+| SDTEST-2643 | `single_instance.rs::sdtest_2643_concurrent_cold_launches_keep_one_primary_and_deliver_every_intent` | SDUC-558 | Green | Eight simultaneous real cold acquisitions honor the persistent startup-lock inode, produce one bounded primary listener and deliver every distinct intent exactly once. Lock/publication failures return explicit failure rather than another host or a successful handoff. Passed in the isolated 480-test core suite on Linux; macOS/Windows run it in their native core CI gates. |
 
 ---
 
@@ -687,3 +690,12 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2493 | `agent_codex/model_discovery.rs::sdtest_2493_model_discovery_caps_catalog_and_preserves_legacy_modality_defaults` | SDUC-551 | Green | Catalog retention caps at 128 models; absent legacy modality metadata follows the documented text/image compatibility rule. Passed in the 473-test central snapshot. |
 
 | SDTEST-2494 | `agent_review.rs::sdtest_2494_large_tracked_assets_remain_complete_and_detect_intervening_edits` | SDUC-552 | Green | Default budgets admit large tracked native assets while an intervening asset edit still refuses a prepared index mutation. Passed in the final 474-test core run. |
+
+
+## Native browser provider attachment — 2026-10-15
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2585 | `agent_browser_tools.rs` | SDUC-557 | Green | Claude private-file flags, redacted debug, native Codex override and ACP stdio transport keep capability values out of CLI arguments. |
+| SDTEST-2586 | `agent_browser_tools.rs` | SDUC-557 | Green | Remote/unsupported targets, unsafe server names and relative helper paths refuse. |
+| SDTEST-2590 | `agent_codex/tests.rs` | SDUC-557 | Green | Fake app-server pipe verifies scoped MCP config on both new and resumed threads before the turn is submitted. No inference. |

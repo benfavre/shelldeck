@@ -1,5 +1,25 @@
 use super::*;
 
+fn window_close_requires_warning(
+    confirm_before_close: bool,
+    pending_close_confirm: bool,
+    active_terminals: usize,
+    active_tunnels: usize,
+    active_scripts: usize,
+    active_agents: usize,
+) -> bool {
+    confirm_before_close
+        && !pending_close_confirm
+        && [
+            active_terminals,
+            active_tunnels,
+            active_scripts,
+            active_agents,
+        ]
+        .into_iter()
+        .any(|count| count > 0)
+}
+
 impl Workspace {
     /// Wire the tray state publisher after tray init. `main.rs` calls
     /// this once at startup with a closure that translates
@@ -234,11 +254,6 @@ impl Workspace {
         self.handle_sidebar_event(&SidebarEvent::ConnectionConnect(id), cx);
     }
 
-    /// Decide whether a window-close request should proceed.
-    ///
-    /// When `confirm_before_close` is enabled and there are active terminal
-    /// sessions or running tunnels, the first close attempt is intercepted: we
-    /// warn the user and require a second close to confirm (matching the
     /// Should the close button hide the window to the tray instead of
     /// quitting? True only when the user opted in via Settings **and**
     /// the tray is actually up (no publisher = no tray, so hiding
@@ -248,37 +263,63 @@ impl Workspace {
         self.app_config.tray.close_to_tray && self.tray_state_publisher.is_some()
     }
 
-    /// app's existing two-step "click again to confirm" pattern). Returns
-    /// `true` to allow the window to close, `false` to cancel.
+    /// Require a second close attempt before ending active terminals,
+    /// tunnels, scripts or agent runs when close confirmation is enabled.
+    /// Returns `true` to allow shutdown, `false` when the warning was shown.
     pub fn confirm_window_close(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.app_config.general.confirm_before_close {
-            return true;
-        }
-
         let active_terminals = self.terminal.read(cx).tab_count();
         let active_tunnels = self.active_tunnels.len();
         let active_scripts = self.active_scripts.len();
-        let has_activity = active_terminals > 0 || active_tunnels > 0 || active_scripts > 0;
-
-        if !has_activity {
-            return true;
-        }
-
-        if self.pending_close_confirm {
-            // Second attempt — allow the close to proceed.
+        let active_agents = self.active_agent_runs.len();
+        if !window_close_requires_warning(
+            self.app_config.general.confirm_before_close,
+            self.pending_close_confirm,
+            active_terminals,
+            active_tunnels,
+            active_scripts,
+            active_agents,
+        ) {
             return true;
         }
 
         self.pending_close_confirm = true;
         // Push directly so this confirmation is shown even when general
         // notifications are disabled — the user must see why close was blocked.
-        let warning = format!(
-            "{} active session(s)/tunnel(s) running — close the window again to confirm exit",
-            active_terminals + active_tunnels + active_scripts
-        );
+        let warning = t!(
+            "toast.window.close_active_work",
+            terminals = active_terminals.to_string(),
+            tunnels = active_tunnels.to_string(),
+            scripts = active_scripts.to_string(),
+            agents = active_agents.to_string(),
+        )
+        .to_string();
         self.toasts.update(cx, |toasts, cx| {
             toasts.push(warning, ToastLevel::Warning, cx);
         });
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_close_requires_warning;
+
+    // SDTEST-2639 — SDUC-558
+    #[test]
+    fn sdtest_2639_agent_only_work_requires_first_close_warning_without_changing_opt_out_or_confirmation(
+    ) {
+        assert!(window_close_requires_warning(true, false, 0, 0, 0, 1));
+        assert!(!window_close_requires_warning(true, true, 0, 0, 0, 1));
+        assert!(!window_close_requires_warning(false, false, 0, 0, 0, 1));
+        assert!(!window_close_requires_warning(true, false, 0, 0, 0, 0));
+
+        // Existing resource categories still receive the same warning.
+        for [terminals, tunnels, scripts, agents] in
+            [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [1, 2, 3, 4]]
+        {
+            assert!(window_close_requires_warning(
+                true, false, terminals, tunnels, scripts, agents
+            ));
+        }
     }
 }

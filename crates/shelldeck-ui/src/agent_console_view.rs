@@ -41,10 +41,18 @@ use crate::theme::ShellDeckColors;
 
 #[path = "agent_console_view/composer.rs"]
 mod composer;
+#[path = "agent_console_view/editor.rs"]
+mod editor;
+pub use editor::save_local_document;
+pub use editor::{AgentFileOrigin, AgentFileSaveRequest};
+#[path = "agent_console_view/explorer.rs"]
+mod explorer;
 #[path = "agent_console_view/inspector.rs"]
 mod inspector;
 #[path = "agent_console_view/library.rs"]
 mod library;
+#[path = "agent_console_view/live_browser.rs"]
+mod live_browser;
 #[path = "agent_console_view/live_input.rs"]
 mod live_input;
 #[path = "agent_console_view/model.rs"]
@@ -62,9 +70,6 @@ use composer::AgentComposerUi;
 use library::AgentLibraryUi;
 use review::AgentReviewUi;
 use tools::AgentToolsUi;
-#[path = "agent_console_view/browser.rs"]
-mod browser;
-use browser::AgentBrowserUi;
 #[path = "agent_console_view/workflows.rs"]
 mod workflows;
 use workflows::AgentWorkflowsUi;
@@ -111,6 +116,7 @@ struct InspectorDiff {
 
 #[derive(Debug, Clone)]
 pub enum AgentConsoleEvent {
+    SaveFile(AgentFileSaveRequest),
     Run(AgentRunRequest),
     Stop(Uuid),
     CloseSession(Uuid),
@@ -137,6 +143,7 @@ pub enum AgentConsoleEvent {
         option_id: Option<String>,
     },
     OpenRemoteFile {
+        context: AgentExecutionContext,
         session_id: Uuid,
         request_id: Uuid,
         connection_id: Uuid,
@@ -146,11 +153,7 @@ pub enum AgentConsoleEvent {
         session_id: Uuid,
         path: PathBuf,
     },
-    BrowseRemoteDirectory {
-        session_id: Uuid,
-        connection_id: Uuid,
-        path: String,
-    },
+    BrowseRemoteDirectory(AgentRemoteDirectoryRequest),
 }
 
 impl EventEmitter<AgentConsoleEvent> for AgentConsoleView {}
@@ -167,6 +170,24 @@ pub struct AgentRemoteFileEntry {
     pub path: String,
     pub name: String,
     pub is_dir: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentRemoteDirectoryRequest {
+    pub session_id: Uuid,
+    pub connection_id: Uuid,
+    pub request_id: Uuid,
+    pub context: AgentExecutionContext,
+    pub root: String,
+    pub path: String,
+}
+
+pub struct AgentRemoteDirectoryListing {
+    pub request: AgentRemoteDirectoryRequest,
+    pub root: String,
+    pub truncated: bool,
+    pub resolved_path: String,
+    pub result: Result<Vec<AgentRemoteFileEntry>, String>,
 }
 
 /// Project/worktree data supplied by the workspace catalog. Sessions are
@@ -275,7 +296,11 @@ pub struct AgentConsoleView {
     context_expanded: bool,
     inspector_tab: AgentInspectorTab,
     focused_trace: Option<Uuid>,
+    surface_focus_requested: bool,
     inspector_local_browser: FileBrowserPanel,
+    inspector_remote_request: Uuid,
+    inspector_remote_root: Option<String>,
+    inspector_remote_truncated: bool,
     inspector_remote_path: Option<String>,
     inspector_remote_pending_path: Option<String>,
     inspector_remote_session: Option<Uuid>,
@@ -288,7 +313,9 @@ pub struct AgentConsoleView {
     composer_ui: AgentComposerUi,
     review: AgentReviewUi,
     tools: AgentToolsUi,
-    browser: AgentBrowserUi,
+    editors: editor::AgentEditorsUi,
+    live_browsers: live_browser::AgentLiveBrowsersUi,
+    explorer: explorer::AgentExplorerUi,
     workflows: AgentWorkflowsUi,
     delivery: AgentDeliveryUi,
 }
@@ -385,7 +412,11 @@ impl AgentConsoleView {
             context_expanded: false,
             inspector_tab: AgentInspectorTab::Files,
             focused_trace: None,
+            surface_focus_requested: false,
             inspector_local_browser,
+            inspector_remote_request: Uuid::new_v4(),
+            inspector_remote_root: None,
+            inspector_remote_truncated: false,
             inspector_remote_path: None,
             inspector_remote_pending_path: None,
             inspector_remote_session: None,
@@ -398,12 +429,21 @@ impl AgentConsoleView {
             composer_ui: AgentComposerUi::new(cx),
             review: AgentReviewUi::new(),
             tools: AgentToolsUi::new(cx),
-            browser: AgentBrowserUi::new(cx),
+            editors: editor::AgentEditorsUi::default(),
+            live_browsers: live_browser::AgentLiveBrowsersUi::default(),
+            explorer: explorer::AgentExplorerUi::default(),
             workflows: AgentWorkflowsUi::new(cx),
             delivery: AgentDeliveryUi::new(cx),
         };
         view.restore_library(cx);
         view
+    }
+
+    /// Activate the retained middle pane when the production window is shown.
+    /// Focus is applied during rendering, once that pane belongs to a window.
+    pub fn request_surface_focus(&mut self, cx: &mut Context<Self>) {
+        self.surface_focus_requested = true;
+        cx.notify();
     }
 
     fn build_provider_select(
@@ -567,16 +607,29 @@ impl AgentConsoleView {
 
     pub fn set_remote_directory_listing(
         &mut self,
-        session_id: Uuid,
-        connection_id: Uuid,
-        requested_path: String,
-        resolved_path: String,
-        result: Result<Vec<AgentRemoteFileEntry>, String>,
+        listing: AgentRemoteDirectoryListing,
         cx: &mut Context<Self>,
     ) {
+        let AgentRemoteDirectoryListing {
+            request:
+                AgentRemoteDirectoryRequest {
+                    session_id,
+                    connection_id,
+                    request_id,
+                    context,
+                    path: requested_path,
+                    ..
+                },
+            root,
+            truncated,
+            resolved_path,
+            result,
+        } = listing;
         let selected_matches = self.sessions.selected_id() == Some(session_id)
             && matches!(self.displayed_context(cx).target,AgentTarget::Ssh{connection_id:selected,..}if selected==connection_id);
         if !selected_matches
+            || self.inspector_remote_request != request_id
+            || self.displayed_context(cx) != context
             || self.inspector_remote_connection != Some(connection_id)
             || self.inspector_remote_session != Some(session_id)
             || self.inspector_remote_pending_path.as_deref() != Some(requested_path.as_str())
@@ -587,6 +640,8 @@ impl AgentConsoleView {
         self.inspector_remote_pending_path = None;
         match result {
             Ok(entries) => {
+                self.inspector_remote_root = Some(root);
+                self.inspector_remote_truncated = truncated;
                 self.inspector_remote_path = Some(resolved_path);
                 self.inspector_remote_entries = entries;
                 self.inspector_remote_error = None;
@@ -606,17 +661,26 @@ impl AgentConsoleView {
         path: String,
         cx: &mut Context<Self>,
     ) {
+        self.inspector_remote_request = Uuid::new_v4();
         self.inspector_remote_session = Some(session_id);
         self.inspector_remote_connection = Some(connection_id);
         self.inspector_remote_path = Some(path.clone());
         self.inspector_remote_pending_path = Some(path.clone());
         self.inspector_remote_loading = true;
         self.inspector_remote_error = None;
-        cx.emit(AgentConsoleEvent::BrowseRemoteDirectory {
-            session_id,
-            connection_id,
-            path,
-        });
+        cx.emit(AgentConsoleEvent::BrowseRemoteDirectory(
+            AgentRemoteDirectoryRequest {
+                request_id: self.inspector_remote_request,
+                context: self.displayed_context(cx),
+                root: self
+                    .inspector_remote_root
+                    .clone()
+                    .unwrap_or_else(|| self.displayed_context(cx).workdir),
+                session_id,
+                connection_id,
+                path,
+            },
+        ));
         cx.notify();
     }
 
@@ -759,6 +823,7 @@ impl AgentConsoleView {
     }
 
     pub fn reject_run_for(&mut self, run_id: Uuid, error: String, cx: &mut Context<Self>) {
+        self.retire_browser_run(run_id);
         self.pending_live_inputs.remove(&run_id);
         self.foreground_runs.remove(&run_id);
         self.workflow_finish_run(run_id, AgentSessionStatus::Failed, cx);
@@ -841,6 +906,7 @@ impl AgentConsoleView {
         error: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.retire_browser_run(run_id);
         self.pending_live_inputs.remove(&run_id);
         self.foreground_runs.remove(&run_id);
         let Some(session_id) = self.run_sessions.remove(&run_id) else {
@@ -911,6 +977,7 @@ impl AgentConsoleView {
                     self.inspector_local_browser.set_root(root);
                 }
                 self.inspector_remote_connection = None;
+                self.inspector_remote_root = None;
                 self.inspector_remote_path = None;
                 self.inspector_remote_pending_path = None;
                 self.inspector_remote_session = None;
@@ -924,6 +991,7 @@ impl AgentConsoleView {
                 {
                     self.inspector_remote_session = Some(session.id);
                     self.inspector_remote_connection = Some(*connection_id);
+                    self.inspector_remote_root = None;
                     self.inspector_remote_path = None;
                     self.inspector_remote_pending_path = None;
                     self.inspector_remote_entries.clear();
@@ -1196,20 +1264,8 @@ impl AgentConsoleView {
             return;
         };
         if session.request_stop(now_ms()) {
+            self.retire_browser_run(run_id);
             cx.emit(AgentConsoleEvent::Stop(run_id));
-            cx.notify();
-        }
-    }
-
-    fn close_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
-        if self.sessions.sessions().len() <= 1 {
-            return;
-        }
-        if self.sessions.remove(session_id).is_ok() {
-            self.session_ui.remove(&session_id);
-            self.context_locks.remove(&session_id);
-            self.apply_selected_context(cx);
-            cx.emit(AgentConsoleEvent::CloseSession(session_id));
             cx.notify();
         }
     }
@@ -1493,6 +1549,23 @@ impl AgentConsoleView {
 
 impl Render for AgentConsoleView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.surface_focus_requested
+            && self.pending_confirm.is_none()
+            && self.workflows.dialog.is_none()
+            && self.delivery.dialog.is_none()
+            && self.review.dialog.is_none()
+        {
+            self.surface_focus_requested = false;
+            if !self.focus_visible_browser(cx) && !self.focus_visible_editor(window, cx) {
+                if let Some(ui) = self
+                    .sessions
+                    .selected_id()
+                    .and_then(|id| self.session_ui.get(&id))
+                {
+                    ui.prompt.read(cx).focus_handle(cx).focus(window);
+                }
+            }
+        }
         let width = if self.tools.measured_width > 0.0 {
             self.tools.measured_width
         } else {
@@ -1500,6 +1573,7 @@ impl Render for AgentConsoleView {
         };
         let wide = width >= px(840.0).to_pixels(window.rem_size()).to_f64() as f32;
         let inspector_wide = width >= px(1180.0).to_pixels(window.rem_size()).to_f64() as f32;
+        self.tools.inspector_wide = inspector_wide;
         let mut session = self
             .sessions
             .selected()
@@ -1514,26 +1588,42 @@ impl Render for AgentConsoleView {
             self.inspector_remote_connection = None;
             self.inspector_remote_error = None;
             self.inspector_remote_loading = false;
-            self.tools.preview_request = Uuid::new_v4();
             self.tools.instructions_request = Uuid::new_v4();
-            self.tools.preview_context = None;
-            self.tools.preview_session = None;
             self.tools.loading = false;
             self.tools.error = None;
             self.tools.instructions.clear();
             if matches!(
                 self.tools.active,
-                Some(tools::AgentToolSurface::Preview | tools::AgentToolSurface::Instructions)
+                Some(tools::AgentToolSurface::Instructions)
             ) {
                 self.tools.active = None;
             }
             self.tools.inspector_context = Some(session.context.clone());
+            self.inspector_remote_root = None;
+            self.inspector_remote_truncated = false;
+            self.explorer.reset_context();
         }
 
         if matches!(session.context.target, AgentTarget::Local) {
             let root = PathBuf::from(&session.context.workdir);
             if self.inspector_local_browser.root() != root.as_path() {
                 self.inspector_local_browser.set_root(root);
+            }
+        }
+        if self.tools.panel_visible
+            && self.tools.active.is_none()
+            && self.inspector_tab == AgentInspectorTab::Files
+            && self.inspector_remote_root.is_none()
+            && !self.inspector_remote_loading
+            && self.inspector_remote_error.is_none()
+        {
+            if let AgentTarget::Ssh { connection_id, .. } = session.context.target {
+                self.request_remote_directory(
+                    session.id,
+                    connection_id,
+                    session.context.workdir.clone(),
+                    cx,
+                );
             }
         }
         let session_id = session.id;
@@ -1637,7 +1727,16 @@ impl Render for AgentConsoleView {
                 row.child(
                     Badge::new(target_label(&context.target)).variant(BadgeVariant::Secondary),
                 )
-                .child(Badge::new(access_label(context.access)).variant(BadgeVariant::Outline))
+                .child(
+                    Badge::new(
+                        t!(
+                            "agents.editor.agent_access",
+                            access = access_label(context.access)
+                        )
+                        .to_string(),
+                    )
+                    .variant(BadgeVariant::Outline),
+                )
                 .child(
                     div()
                         .max_w(px(300.0))
@@ -1867,7 +1966,16 @@ impl Render for AgentConsoleView {
                             .text_color(ShellDeckColors::text_muted())
                             .child(context.workdir.clone()),
                     )
-                    .child(Badge::new(access_label(context.access)).variant(BadgeVariant::Outline)),
+                    .child(
+                        Badge::new(
+                            t!(
+                                "agents.editor.agent_access",
+                                access = access_label(context.access)
+                            )
+                            .to_string(),
+                        )
+                        .variant(BadgeVariant::Outline),
+                    ),
             );
         }
         content = content.child(self.render_workspace_tools(cx));
@@ -1887,35 +1995,43 @@ impl Render for AgentConsoleView {
         let away = (self.scroll.max_offset().height.to_f64() + self.scroll.offset().y.to_f64())
             .abs()
             > 4.0;
-        content = content.child(output);
-        if away {
+        content = content.child(self.render_middle_switcher(cx));
+        if self.live_browser_visible(cx) {
+            content = content.child(self.render_live_browser(cx));
+        } else if self.agent_editor_visible(cx) {
+            content = content.child(self.render_middle_editor(cx));
+        } else {
+            content = content.child(output);
+            if away {
+                content = content.child(
+                    Button::new("agent-jump-latest", t!("agents.parity.latest").to_string())
+                        .variant(ButtonVariant::Secondary)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("arrow-down"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            pin_to_latest(&this.scroll);
+                            cx.notify();
+                        })),
+                );
+            }
             content = content.child(
-                Button::new("agent-jump-latest", t!("agents.parity.latest").to_string())
-                    .variant(ButtonVariant::Secondary)
-                    .size(ButtonSize::Sm)
-                    .icon(IconSource::from("arrow-down"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        pin_to_latest(&this.scroll);
-                        cx.notify();
-                    })),
+                div()
+                    .flex_shrink_0()
+                    .w_full()
+                    .px(if wide { px(18.0) } else { px(10.0) })
+                    .pt(px(7.0))
+                    .pb(px(11.0))
+                    .border_t_1()
+                    .border_color(ShellDeckColors::border())
+                    .child(div().w_full().max_w(px(940.0)).mx_auto().child(composer)),
             );
         }
-        content = content.child(
-            div()
-                .flex_shrink_0()
-                .w_full()
-                .px(if wide { px(18.0) } else { px(10.0) })
-                .pt(px(7.0))
-                .pb(px(11.0))
-                .border_t_1()
-                .border_color(ShellDeckColors::border())
-                .child(div().w_full().max_w(px(940.0)).mx_auto().child(composer)),
-        );
         let mut root = div()
             .id("agent-cockpit")
             .key_context("AgentConsole")
             .on_action(cx.listener(|this, _: &AgentNewChat, _, cx| this.new_session(cx)))
             .on_action(cx.listener(|this, _: &AgentFocusComposer, window, cx| {
+                this.show_agent_conversation(cx);
                 if let Some(id) = this.sessions.selected_id() {
                     if let Some(ui) = this.session_ui.get(&id) {
                         ui.prompt.read(cx).focus_handle(cx).focus(window);
@@ -1980,9 +2096,6 @@ impl Render for AgentConsoleView {
                         .child(panel),
                 );
             }
-        }
-        if let Some(overlay) = self.render_browser_overlay() {
-            root = root.child(overlay);
         }
         if let Some(dialog) = self.render_workflow_dialog() {
             root = root.child(dialog);
@@ -2122,19 +2235,6 @@ fn workdir_is_valid_for_target(workdir: &str, remote: bool) -> bool {
     } else {
         std::path::Path::new(workdir).is_absolute()
     }
-}
-
-fn remote_parent_path(path: &str) -> Option<String> {
-    if path == AGENT_REMOTE_HOME_WORKDIR || path == "/" {
-        return None;
-    }
-    let path = path.trim_end_matches('/');
-    let separator = path.rfind('/')?;
-    Some(if separator == 0 {
-        "/".to_string()
-    } else {
-        path[..separator].to_string()
-    })
 }
 
 fn inspector_files(session: &AgentSession) -> Vec<InspectorFile> {
@@ -2429,9 +2529,9 @@ fn bounded_utf8(mut value: String, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        context_for_worktree, inspector_files, remote_parent_path, session_name,
-        target_switch_workdir, terminal_session_status, trace_presentation,
-        workdir_is_valid_for_target, worktree_bound_session, AgentWorktreeOption,
+        context_for_worktree, inspector_files, session_name, target_switch_workdir,
+        terminal_session_status, trace_presentation, workdir_is_valid_for_target,
+        worktree_bound_session, AgentWorktreeOption,
     };
     use shelldeck_core::agent_runtime::{
         AgentAccessMode, AgentProvider, AgentTarget, AGENT_REMOTE_HOME_WORKDIR,
@@ -2660,11 +2760,5 @@ mod tests {
             false
         ));
         assert!(workdir_is_valid_for_target("/home/me/project", false));
-        assert_eq!(
-            remote_parent_path("/home/me/project/"),
-            Some("/home/me".to_string())
-        );
-        assert_eq!(remote_parent_path("/home"), Some("/".to_string()));
-        assert_eq!(remote_parent_path("/"), None);
     }
 }

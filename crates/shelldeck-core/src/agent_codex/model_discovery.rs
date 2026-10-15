@@ -309,6 +309,7 @@ mod tests {
         let mut input = AgentInputOptions {
             reasoning_effort: Some(AgentReasoningEffort::Max),
             image_paths: Vec::new(),
+            ..Default::default()
         };
         assert_eq!(catalog.models[0].validate_input(&input), Ok(()));
         input.reasoning_effort = Some(AgentReasoningEffort::Ultra);

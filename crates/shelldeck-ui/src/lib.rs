@@ -28,6 +28,7 @@ pub mod menu_bar;
 pub mod monique_view;
 pub(crate) mod monolith;
 pub(crate) mod motion;
+pub mod native_browser;
 pub mod onboarding_view;
 pub mod overlay;
 pub mod port_forward_form;
@@ -68,4 +69,5 @@ pub use command_palette_window::CommandPaletteWindowView;
 pub use i18n::{apply_ui_language, rel_time};
 pub use workspace::{
     PlatformAttentionNotification, TrayCounters, TrayNotification, Workspace, WorkspaceAiBindings,
+    WorkspacePresentation,
 };

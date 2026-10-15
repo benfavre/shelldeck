@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 pub(super) struct AgentDeliveryUi {
     sessions: HashMap<Uuid, DeliverySessionUi>,
-    dialog: Option<Entity<DeliveryDialog>>,
+    pub(super) dialog: Option<Entity<DeliveryDialog>>,
     pending: Option<PendingDelivery>,
 }
 

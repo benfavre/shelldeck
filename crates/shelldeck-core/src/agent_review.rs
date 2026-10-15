@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -1364,6 +1364,16 @@ fn read_image(
     limit: usize,
     index_mode: Option<u32>,
 ) -> ReviewResult<FileImage> {
+    read_image_from_file(root, relative, limit, index_mode, None)
+}
+
+fn read_image_from_file(
+    root: &Path,
+    relative: &str,
+    limit: usize,
+    index_mode: Option<u32>,
+    opened_file: Option<&mut File>,
+) -> ReviewResult<FileImage> {
     let path = match checked_path(root, relative) {
         Ok(path) => path,
         Err(ReviewError::Refused(reason)) => return Ok(FileImage::Refused(reason)),
@@ -1386,7 +1396,14 @@ fn read_image(
             "File exceeds the exact snapshot byte limit".into(),
         ));
     }
-    let mut file = File::open(&path)?;
+    let mut newly_opened;
+    let file = match opened_file {
+        Some(file) => file,
+        None => {
+            newly_opened = File::open(&path)?;
+            &mut newly_opened
+        }
+    };
     if !same_file_metadata(&metadata, &file.metadata()?)
         || fs::symlink_metadata(&path)?.file_type().is_symlink()
     {
@@ -1394,7 +1411,8 @@ fn read_image(
             "File identity changed while being read".into(),
         ));
     }
-    let (bytes, exceeded) = read_capped(&mut file, limit)?;
+    file.rewind()?;
+    let (bytes, exceeded) = read_capped(&mut *file, limit)?;
     if exceeded
         || !same_file_metadata(&metadata, &file.metadata()?)
         || !same_file_metadata(&metadata, &fs::symlink_metadata(&path)?)
@@ -1691,7 +1709,10 @@ fn restore_exact_file(
         FileImage::Missing => None,
         FileImage::Refused(_) => return refuse("Unknown after bytes cannot be undone"),
     };
-    if read_image(root, relative, limit, after_mode)? != *after {
+    // Windows byte-range locks also reject reads through another handle in
+    // this process. Revalidate through the handle that owns the exclusive
+    // lock, while still checking that its identity matches the current path.
+    if read_image_from_file(root, relative, limit, after_mode, locked_file.as_mut())? != *after {
         return refuse("File changed before undo; unrelated edits were preserved");
     }
     if let Some(file) = &locked_file {
@@ -1739,7 +1760,9 @@ fn restore_exact_file(
                 output.set_permissions(permissions)?;
             }
             output.sync_all()?;
-            if read_image(root, relative, limit, after_mode)? != *after {
+            if read_image_from_file(root, relative, limit, after_mode, locked_file.as_mut())?
+                != *after
+            {
                 return refuse("File changed while preparing undo; unrelated edits were preserved");
             }
             // Missing-file restoration uses hard_link's create-new semantics:

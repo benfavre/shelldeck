@@ -40,9 +40,12 @@ impl FileEditorView {
         let handle = cx.entity().downgrade();
 
         let mut tab_bar = div()
+            .id("editor-tab-bar")
             .flex()
             .items_center()
             .w_full()
+            .min_w(px(0.0))
+            .overflow_x_scroll()
             .h(px(TAB_BAR_HEIGHT))
             .bg(ShellDeckColors::bg_sidebar())
             .border_b_1()
@@ -60,6 +63,8 @@ impl FileEditorView {
                 .id(SharedString::from(format!("editor-tab-{}", i)))
                 .flex()
                 .items_center()
+                .flex_shrink_0()
+                .max_w(px(240.0))
                 .gap(px(4.0))
                 .px(px(10.0))
                 .py(px(4.0))
@@ -78,20 +83,29 @@ impl FileEditorView {
             }
 
             let idx = i;
-            tab_el = tab_el.on_click(move |_event, _window, cx| {
+            tab_el = tab_el.on_click(move |_event, window, cx| {
                 if let Some(view) = h1.upgrade() {
                     view.update(cx, |this, cx| {
                         this.active_tab_index = idx;
+                        this.focus_handle.focus(window);
+                        this.clear_document_search();
+                        cx.emit(FileEditorEvent::TabsChanged);
                         cx.notify();
                     });
                 }
             });
 
             let name = tab.display_name();
-            tab_el = tab_el.child(name);
+            tab_el = tab_el.child(
+                div()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(name),
+            );
 
             // Close button
-            if self.tabs.len() > 1 || tab.is_dirty() {
+            if self.embedded || self.tabs.len() > 1 || tab.is_dirty() {
                 let close_btn = div()
                     .id(SharedString::from(format!("close-tab-{}", i)))
                     .flex()
@@ -107,6 +121,7 @@ impl FileEditorView {
                             .text_color(ShellDeckColors::text_muted()),
                     )
                     .on_click(move |_event, _window, cx| {
+                        cx.stop_propagation();
                         if let Some(view) = h2.upgrade() {
                             view.update(cx, |this, cx| {
                                 // Find tab by id

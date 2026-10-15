@@ -1,10 +1,11 @@
 mod actions;
 mod ai_dock_placement;
+mod cli;
 mod companion_desktop;
 mod tray;
 
 use adabraka_ui::prelude::*;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use gpui::{AssetSource, SharedString, WindowDecorations};
 use shelldeck_core::ai::ClippyConfig;
 use shelldeck_core::config::app_config::{AppConfig, CompanionConfig};
@@ -1767,12 +1768,19 @@ fn dispatch_deep_link(
         show_ai_dock(root, window, cx);
         return;
     }
+    let needs_workspace = payload.is_empty() || link.is_some();
     if let Err(error) = window.update(cx, |_, window, cx| {
         window.show_window();
         window.activate_window();
-        if let (Some(link), Some(root)) = (link, root.upgrade()) {
+        if let Some(root) = root.upgrade().filter(|_| needs_workspace) {
             let ws = root.update(cx, |root, cx| root.ensure_workspace(window, cx));
-            ws.update(cx, |ws, cx| ws.open_deep_link(link, cx));
+            ws.update(cx, |ws, cx| {
+                if let Some(link) = link {
+                    ws.open_deep_link(link, cx);
+                } else {
+                    ws.show_main_presentation(cx);
+                }
+            });
         }
     }) {
         tracing::warn!(error = %error, "deep link could not activate the main window");
@@ -1825,6 +1833,19 @@ fn load_workspace_data() -> (Vec<Connection>, ConnectionStore) {
 }
 
 fn main() -> Result<()> {
+    let target = match cli::parse(std::env::args_os().skip(1)).map_err(anyhow::Error::msg)? {
+        cli::Command::Help => {
+            println!("{}", cli::HELP);
+            return Ok(());
+        }
+        cli::Command::Version => {
+            println!("ShellDeck {}", shelldeck_core::VERSION);
+            return Ok(());
+        }
+        cli::Command::Launch(target) => target,
+    };
+    let launch_agents = target.is_agents();
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -1840,19 +1861,27 @@ fn main() -> Result<()> {
     // and another instance is already running, forward the URL to it and
     // exit — never spawn a duplicate window. Otherwise we become the
     // primary and hold the listener for the app lifetime.
-    let deep_link_arg = std::env::args().skip(1).find(|a| DeepLink::looks_like(a));
+    let deep_link_arg = target.payload().map(str::to_owned);
     let primary = match single_instance::acquire(deep_link_arg.as_deref()) {
         Acquire::AlreadyRunning => {
             tracing::info!("another ShellDeck instance is running; forwarded request and exiting");
             return Ok(());
         }
         Acquire::Primary(p) => p,
+        Acquire::Failed(error) => {
+            return Err(error).context("Unable to initialize ShellDeck single-instance routing");
+        }
     };
     // Bridge forwarded deep links directly into an async receiver. The IPC
     // thread blocks in accept() and wakes GPUI only when a link actually
     // arrives.
     let (deep_link_tx, deep_link_rx) = tokio::sync::mpsc::unbounded_channel();
-    primary.listen_with(deep_link_arg, move |payload| {
+    let platform_url_tx = deep_link_tx.clone();
+    let platform_reopen_tx = deep_link_tx.clone();
+    // The Agents presentation is applied as the initial Workspace is created.
+    // Other URL intents keep their existing event-driven startup dispatch.
+    let initial_payload = if launch_agents { None } else { deep_link_arg };
+    primary.listen_with(initial_payload, move |payload| {
         deep_link_tx.send(payload).is_ok()
     });
 
@@ -1889,8 +1918,27 @@ fn main() -> Result<()> {
         Err(e) => tracing::warn!("autostart reconcile skipped: {e}"),
     }
 
+    // Launch Services delivers URLs as native events on macOS, rather than
+    // additional argv. Register before run so cold-start URLs are queued too.
+    // Both native callbacks use the same retained Workspace/auth dispatch as
+    // an authenticated secondary-process handoff.
+    let application = Application::new().with_assets(Assets);
+    application.on_open_urls(move |urls| {
+        for url in urls {
+            if DeepLink::parse(&url).is_some() && platform_url_tx.send(url).is_err() {
+                tracing::debug!("platform URL dropped during shutdown");
+                break;
+            }
+        }
+    });
+    application.on_reopen(move |_cx| {
+        if platform_reopen_tx.send(String::new()).is_err() {
+            tracing::debug!("application reopen dropped during shutdown");
+        }
+    });
+
     // Start GPUI application
-    Application::new().with_assets(Assets).run(move |cx| {
+    application.run(move |cx| {
         // Initialize adabraka-ui
         adabraka_ui::init(cx);
         // Lucide subset — see crates/shelldeck/assets/icons/lucide/README.md
@@ -1935,7 +1983,14 @@ fn main() -> Result<()> {
         // Open main window
         let mut window_options = WindowOptions {
             titlebar: Some(TitlebarOptions {
-                title: Some("ShellDeck".into()),
+                title: Some(
+                    if launch_agents {
+                        "ShellDeck Agents"
+                    } else {
+                        "ShellDeck"
+                    }
+                    .into(),
+                ),
                 appears_transparent: true,
                 traffic_light_position: None,
             }),
@@ -1975,12 +2030,12 @@ fn main() -> Result<()> {
             }
         };
         let tray_available = tray_handles.is_some();
-        window_options.show =
-            companion_main_window_visible(config.companion.start_hidden, tray_available);
+        window_options.show = launch_agents
+            || companion_main_window_visible(config.companion.start_hidden, tray_available);
         let start_hidden = !window_options.show;
         if start_hidden {
             tracing::info!("companion start: main window hidden in system tray");
-        } else if config.companion.start_hidden {
+        } else if config.companion.start_hidden && !launch_agents {
             tracing::warn!(
                 "companion start requested but tray is unavailable; showing main window"
             );
@@ -2008,7 +2063,12 @@ fn main() -> Result<()> {
             });
             if create_workspace_immediately {
                 root.update(cx, |root, cx| {
-                    root.ensure_workspace(window, cx);
+                    let workspace = root.ensure_workspace(window, cx);
+                    if launch_agents {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.open_deep_link(DeepLink::Agents, cx);
+                        });
+                    }
                 });
             }
             root.update(cx, |root, cx| {
