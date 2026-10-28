@@ -15,6 +15,8 @@ pub mod monique;
 pub mod platform;
 pub mod platform_attention;
 pub mod platform_review;
+mod platform_task_journal;
+pub mod platform_tasks;
 pub mod single_instance;
 pub mod ssh_config;
 pub mod store;

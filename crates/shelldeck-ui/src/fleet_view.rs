@@ -42,6 +42,8 @@ use crate::workspace::platform_attention::{
 
 #[path = "fleet_view/agents.rs"]
 mod agents;
+mod tasks;
+use shelldeck_core::config::platform_tasks::PlatformTaskCommand;
 
 /// Bound on the chronological activity rows drawn at once. The full count
 /// stays visible in the section badge so nothing is silently dropped.
@@ -50,6 +52,8 @@ const MAX_ATTENTION_ACTIVITY_ROWS: usize = 8;
 #[derive(Debug, Clone)]
 pub enum FleetViewEvent {
     Refresh,
+    TaskCommand(PlatformTaskCommand),
+    AcknowledgeTasks(PlatformReviewTarget),
     Attach(ResourceCoordinate),
     Detach(ResourceCoordinate),
     ClaimControl(ResourceCoordinate),
@@ -392,6 +396,7 @@ fn localized_external_review_coordinates(
 }
 
 pub struct FleetView {
+    tasks: tasks::TaskUi,
     snapshot: Option<PlatformSnapshot>,
     review: Option<PlatformReviewLoad>,
     review_capabilities: Option<PlatformReviewCapabilitiesLoad>,
@@ -427,6 +432,7 @@ impl FleetView {
         let review_custody = PlatformReviewCustodyStore::open_default().ok();
         let review_notes = PlatformReviewNoteStore::open_default().ok();
         Self {
+            tasks: tasks::TaskUi::default(),
             snapshot: None,
             review: None,
             review_capabilities: None,
@@ -725,6 +731,7 @@ impl FleetView {
         self.error = Some(message.into());
         self.refusal = None;
         self.cockpit.mark_offline();
+        self.invalidate_tasks();
         self.loading = false;
     }
 
@@ -1238,6 +1245,7 @@ impl FleetView {
     }
 
     pub fn reset(&mut self) {
+        self.tasks = tasks::TaskUi::default();
         self.snapshot = None;
         self.review = None;
         self.review_capabilities = None;
@@ -4045,7 +4053,15 @@ impl Render for FleetView {
             .snapshot
             .as_ref()
             .map_or(0, |snapshot| snapshot.sessions.len());
-        let content = if compact {
+        let content = if self.tasks.open {
+            div()
+                .flex_1()
+                .min_h(px(0.0))
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .child(self.render_tasks(cx))
+        } else if compact {
             let panel = match self.compact_section {
                 FleetCompactSection::Resources => div()
                     .flex_1()
@@ -4184,11 +4200,13 @@ impl Render for FleetView {
             .flex_col()
             .bg(ShellDeckColors::bg_primary())
             .child(self.render_header(compact, cx))
+            .child(self.render_task_toolbar(cx))
             .child(self.render_action_preview(compact, cx))
             .child(self.render_review_summary(cx))
             .child(self.render_platform_attention(cx))
             .children(notice)
             .child(content)
+            .children(self.task_confirmation())
     }
 }
 

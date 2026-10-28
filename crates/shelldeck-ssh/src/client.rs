@@ -737,6 +737,96 @@ mod proxy_jump_transport_tests {
         (handle, event_rx, forwarded_rx)
     }
 
+    struct KeyAuthServer {
+        expected: russh::keys::ssh_key::PublicKey,
+        verified: mpsc::UnboundedSender<()>,
+    }
+
+    impl server::Handler for KeyAuthServer {
+        type Error = anyhow::Error;
+
+        async fn auth_publickey(
+            &mut self,
+            user: &str,
+            key: &russh::keys::ssh_key::PublicKey,
+        ) -> Result<Auth, Self::Error> {
+            if user == "shelldeck-key-fixture" && key == &self.expected {
+                let _ = self.verified.send(());
+                Ok(Auth::Accept)
+            } else {
+                Ok(Auth::reject())
+            }
+        }
+    }
+
+    // SDTEST-2710 / SDUC-456
+    #[tokio::test]
+    async fn sdtest_2710_upstream_key_formats_authenticate_only_after_signature_and_user_match() {
+        use russh::keys::ssh_key::{EcdsaCurve, LineEnding};
+
+        for algorithm in [
+            Algorithm::Ed25519,
+            Algorithm::Rsa { hash: None },
+            Algorithm::Ecdsa {
+                curve: EcdsaCurve::NistP256,
+            },
+        ] {
+            let key = PrivateKey::random(&mut rand::rng(), algorithm).unwrap();
+            let encrypted = key.encrypt(&mut rand::rng(), "fixture-passphrase").unwrap();
+            let encoded = encrypted.to_openssh(LineEnding::LF).unwrap();
+            assert!(russh::keys::decode_secret_key(&encoded, Some("wrong-passphrase")).is_err());
+            let decoded =
+                russh::keys::decode_secret_key(&encoded, Some("fixture-passphrase")).unwrap();
+            assert_eq!(decoded.public_key(), key.public_key());
+
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("fixture-key");
+            key.write_openssh_file(&path, LineEnding::LF).unwrap();
+            let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+            let (verified, mut observed) = mpsc::unbounded_channel();
+            let expected = key.public_key().clone();
+            let server_task = tokio::spawn(async move {
+                let running = server::run_stream(
+                    Arc::new(in_memory_server_config()),
+                    server_stream,
+                    KeyAuthServer { expected, verified },
+                )
+                .await
+                .unwrap();
+                let _ = running.await;
+            });
+            let (event_tx, _events) = mpsc::unbounded_channel();
+            let (forwarded_tx, _forwarded) = mpsc::unbounded_channel();
+            let handler = ClientHandler::new_trusting_server_key_for_test(event_tx, forwarded_tx);
+            let mut handle = russh::client::connect_stream(
+                Arc::new(russh::client::Config::default()),
+                client_stream,
+                handler,
+            )
+            .await
+            .unwrap();
+            let client = SshClient::new();
+            timeout(Duration::from_secs(15), async {
+                assert!(client
+                    .auth_with_key(&mut handle, "wrong-user", &path)
+                    .await
+                    .is_err());
+                assert!(observed.try_recv().is_err());
+                client
+                    .auth_with_key(&mut handle, "shelldeck-key-fixture", &path)
+                    .await
+                    .unwrap();
+                observed
+                    .recv()
+                    .await
+                    .expect("server verified the authentication signature");
+            })
+            .await
+            .expect("in-memory key authentication timed out");
+            server_task.abort();
+        }
+    }
+
     // SDTEST-528
     #[tokio::test]
     async fn jump_channel_targets_the_inner_host_and_carries_its_session() {

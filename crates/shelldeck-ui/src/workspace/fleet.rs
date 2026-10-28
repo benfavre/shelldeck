@@ -1,4 +1,7 @@
 use super::*;
+use shelldeck_core::config::platform_tasks::{
+    PlatformTaskCommand, PlatformTaskCommandResult, PlatformTaskLoad,
+};
 
 use shelldeck_core::config::platform::{
     stable_client_id, ActionResult, Attachment, ControlClaimResult, PlatformAttentionLoad,
@@ -28,6 +31,7 @@ enum PlatformLoadResult {
         snapshot: PlatformSnapshot,
         review: Option<AttributedPlatformReview>,
         attention: Option<AttributedPlatformAttention>,
+        tasks: Option<AttributedPlatformTasks>,
     },
     Refresh {
         refresh: PlatformRefresh,
@@ -36,7 +40,32 @@ enum PlatformLoadResult {
         review: Option<AttributedPlatformReview>,
         review_action: Option<Box<AttributedPlatformReviewActionResult>>,
         attention: Option<AttributedPlatformAttention>,
+        tasks: Option<AttributedPlatformTasks>,
     },
+}
+
+struct AttributedPlatformTasks {
+    target: PlatformReviewTarget,
+    load: PlatformTaskLoad,
+}
+
+fn load_tasks(
+    connection: &PlatformConnection,
+    target: Option<&PlatformReviewTarget>,
+) -> Option<AttributedPlatformTasks> {
+    target.map(|target| AttributedPlatformTasks {
+        target: target.clone(),
+        load: connection
+            .tasks(target)
+            .unwrap_or_else(|error| PlatformTaskLoad::Unavailable(error.to_string())),
+    })
+}
+
+fn tasks_for_active_target(
+    active: Option<&PlatformReviewTarget>,
+    tasks: Option<AttributedPlatformTasks>,
+) -> Option<PlatformTaskLoad> {
+    tasks.and_then(|tasks| (Some(&tasks.target) == active).then_some(tasks.load))
 }
 
 struct AttributedPlatformReview {
@@ -307,6 +336,7 @@ impl Workspace {
                                 result: connection.reconcile_review_action(preview),
                             })
                         });
+                        let tasks = load_tasks(&connection, review_target.as_ref());
                         let review = load_review(&connection, review_target);
                         let attention =
                             load_attention(&connection, attention_target, review.as_ref());
@@ -317,9 +347,11 @@ impl Workspace {
                             review,
                             review_action,
                             attention,
+                            tasks,
                         })
                     } else {
                         let snapshot = connection.snapshot()?;
+                        let tasks = load_tasks(&connection, review_target.as_ref());
                         let review = load_review(&connection, review_target);
                         let attention =
                             load_attention(&connection, attention_target, review.as_ref());
@@ -327,6 +359,7 @@ impl Workspace {
                             snapshot,
                             review,
                             attention,
+                            tasks,
                         })
                     }
                 })
@@ -365,6 +398,7 @@ impl Workspace {
                         snapshot,
                         review,
                         attention,
+                        tasks,
                     }) => {
                         let review = review_for_active_context(
                             current_connection.as_ref(),
@@ -385,6 +419,10 @@ impl Workspace {
                                 .map(|(review, capabilities)| (Some(review), Some(capabilities)))
                                 .unwrap_or((None, None));
                             view.set_review(active_review_target.clone(), review, capabilities);
+                            view.set_tasks(
+                                active_review_target.clone(),
+                                tasks_for_active_target(active_review_target.as_ref(), tasks),
+                            );
                             cx.notify();
                         });
                         if let Some(attention) = attention {
@@ -418,6 +456,7 @@ impl Workspace {
                         review,
                         review_action,
                         attention,
+                        tasks,
                     }) => {
                         let review = review_for_active_context(
                             current_connection.as_ref(),
@@ -450,6 +489,10 @@ impl Workspace {
                                 .map(|(review, capabilities)| (Some(review), Some(capabilities)))
                                 .unwrap_or((None, None));
                             view.set_review(active_review_target.clone(), review, capabilities);
+                            view.set_tasks(
+                                active_review_target.clone(),
+                                tasks_for_active_target(active_review_target.as_ref(), tasks),
+                            );
                             if let Some(result) = review_action {
                                 view.set_review_action_result(result, cx);
                             }
@@ -545,8 +588,138 @@ impl Workspace {
         }
     }
 
+    fn acknowledge_platform_task_dispatches(
+        &mut self,
+        target: PlatformReviewTarget,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.fleet_view.read(cx).can_acknowledge_task_dispatches() {
+            return;
+        }
+        let Some(connection) = self.platform_connection() else {
+            return;
+        };
+        if self
+            .workspace_hub
+            .read(cx)
+            .active_platform_review_target()
+            .as_ref()
+            != Some(&target)
+        {
+            return;
+        }
+        let epoch = self.fleet_request_epoch;
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let captured = connection.clone();
+            let requested = target.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { captured.acknowledge_task_dispatches(&requested) })
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                if workspace.fleet_request_epoch != epoch
+                    || workspace.platform_connection().as_ref() != Some(&connection)
+                    || workspace
+                        .workspace_hub
+                        .read(cx)
+                        .active_platform_review_target()
+                        .as_ref()
+                        != Some(&target)
+                {
+                    return;
+                }
+                if let Err(error) = result {
+                    workspace.fleet_view.update(cx, |view, cx| {
+                        view.set_operation_error(error.to_string());
+                        cx.notify();
+                    });
+                }
+                workspace.refresh_fleet_view(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn execute_platform_task_command(
+        &mut self,
+        command: PlatformTaskCommand,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(connection) = self.platform_connection() else {
+            return;
+        };
+        let target = command.target();
+        if self
+            .workspace_hub
+            .read(cx)
+            .active_platform_review_target()
+            .as_ref()
+            != Some(&target)
+        {
+            return;
+        }
+        let admitted = self.fleet_view.update(cx, |view, cx| {
+            if !view.task_command_is_current(&command) {
+                return false;
+            }
+            let started = view.begin_operation();
+            cx.notify();
+            started
+        });
+        if !admitted {
+            return;
+        }
+        let epoch = self.fleet_request_epoch;
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let captured = connection.clone();
+            let submitted = command.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { captured.execute_task_command(&submitted) })
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                if workspace.fleet_request_epoch != epoch
+                    || !workspace.can_access_mode(AppMode::Dev)
+                {
+                    return;
+                }
+                let active = workspace
+                    .workspace_hub
+                    .read(cx)
+                    .active_platform_review_target();
+                if workspace.platform_connection().as_ref() != Some(&connection)
+                    || active.as_ref() != Some(&target)
+                {
+                    workspace.fleet_view.update(cx, |view, cx| {
+                        view.set_tasks(active, None);
+                        view.set_task_command_result(
+                            &command,
+                            PlatformTaskCommandResult::Unknown("execution context changed".into()),
+                        );
+                        cx.notify();
+                    });
+                    return;
+                }
+                workspace.fleet_view.update(cx, |view, cx| {
+                    view.set_task_command_result(&command, result);
+                    cx.notify();
+                });
+                workspace.refresh_fleet_view(cx);
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn handle_fleet_event(&mut self, event: FleetViewEvent, cx: &mut Context<Self>) {
         if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
+        if let FleetViewEvent::AcknowledgeTasks(target) = &event {
+            self.acknowledge_platform_task_dispatches(target.clone(), cx);
+            return;
+        }
+        if let FleetViewEvent::TaskCommand(command) = &event {
+            self.execute_platform_task_command(command.clone(), cx);
             return;
         }
         if matches!(event, FleetViewEvent::Refresh) {
@@ -588,7 +761,9 @@ impl Workspace {
                 .background_executor()
                 .spawn(async move {
                     match event {
-                        FleetViewEvent::Refresh => unreachable!(),
+                        FleetViewEvent::Refresh
+                        | FleetViewEvent::TaskCommand(_)
+                        | FleetViewEvent::AcknowledgeTasks(_) => unreachable!(),
                         FleetViewEvent::OpenAttention(_) => unreachable!(),
                         FleetViewEvent::Attach(session) => connection
                             .attach(session, client)

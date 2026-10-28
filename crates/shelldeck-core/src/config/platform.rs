@@ -600,6 +600,56 @@ impl fmt::Debug for PlatformConnection {
 }
 
 impl PlatformConnection {
+    pub fn tasks(
+        &self,
+        target: &super::platform_review::PlatformReviewTarget,
+    ) -> Result<super::platform_tasks::PlatformTaskLoad> {
+        let mut load = super::platform_tasks::load_tasks(&mut self.review_client()?, target)?;
+        if let super::platform_tasks::PlatformTaskLoad::Available(_, unresolved) = &mut load {
+            *unresolved = super::platform_task_journal::TaskDispatchJournal::for_connection(
+                &self.endpoint,
+                &self.token,
+            )
+            .unresolved(target)?;
+        }
+        Ok(load)
+    }
+
+    pub fn acknowledge_task_dispatches(
+        &self,
+        target: &super::platform_review::PlatformReviewTarget,
+    ) -> Result<()> {
+        super::platform_task_journal::TaskDispatchJournal::for_connection(
+            &self.endpoint,
+            &self.token,
+        )
+        .acknowledge(target)
+    }
+
+    pub fn execute_task_command(
+        &self,
+        command: &super::platform_tasks::PlatformTaskCommand,
+    ) -> super::platform_tasks::PlatformTaskCommandResult {
+        use super::platform_tasks::PlatformTaskCommandResult;
+        let journal = super::platform_task_journal::TaskDispatchJournal::for_connection(
+            &self.endpoint,
+            &self.token,
+        );
+        if let Err(error) = journal.begin(command) {
+            return PlatformTaskCommandResult::Refused(error.to_string());
+        }
+        let result = match self.review_client() {
+            Ok(mut client) => super::platform_tasks::execute_task_command(&mut client, command),
+            Err(error) => PlatformTaskCommandResult::Refused(error.to_string()),
+        };
+        if !matches!(result, PlatformTaskCommandResult::Unknown(_)) {
+            if let Err(error) = journal.finish(command) {
+                return PlatformTaskCommandResult::Unknown(error.to_string());
+            }
+        }
+        result
+    }
+
     pub fn new(dashboard_url: &str, token: &str) -> Result<Self> {
         let endpoint = platform_endpoint(dashboard_url)?;
         Self::new_at_endpoint(&endpoint, token)
@@ -1539,8 +1589,8 @@ mod tests {
 
     use automonique_protocol::platform::{
         CursorTopic, Freshness, PlatformEvent, PlatformRequest, PlatformResponse, ResourceId,
-        SessionHistoryEvidence, SessionHistoryRole, SessionHistoryText, SessionList, Snapshot,
-        Subscription,
+        SessionHistoryEvidence, SessionHistoryMessageText, SessionHistoryRole, SessionList,
+        Snapshot, Subscription,
     };
     use automonique_protocol::platform_api::{PlatformRequestMessage, PlatformResponseMessage};
     use automonique_protocol::primitives::{EpochMillis, Revision};
@@ -2328,7 +2378,7 @@ mod tests {
                 at: EpochMillis::from_millis(cursor as i64),
                 evidence: SessionHistoryEvidence::Authoritative,
                 role: SessionHistoryRole::Assistant,
-                text: SessionHistoryText::new(text).unwrap(),
+                text: SessionHistoryMessageText::new(text).unwrap(),
                 truncated: false,
             }],
         )

@@ -25,7 +25,7 @@ gpui = { package = "adabraka-gpui", version = "0.5" }
 adabraka-ui = { version = "0.3", features = ["markdown"] }
 
 # SSH
-russh = { version = "0.60.3" }
+russh = { version = "0.61.2" }
 ssh2-config = "0.2"
 
 # Terminal
@@ -85,8 +85,8 @@ sha2 = "0.10"
 base64 = "0.22"
 ed25519-dalek = "2"
 criterion = "0.5"
-automonique-platform-client = { git = "https://github.com/bext-stack/automonique", rev = "524073c3a55ec73d57e4b05abf5ba3eb0abd4cb7" }
-automonique-protocol = { git = "https://github.com/bext-stack/automonique", rev = "524073c3a55ec73d57e4b05abf5ba3eb0abd4cb7" }
+automonique-platform-client = { git = "https://github.com/bext-stack/automonique", rev = "149087a97a7263cda0100881a923969b9382ed10" }
+automonique-protocol = { git = "https://github.com/bext-stack/automonique", rev = "149087a97a7263cda0100881a923969b9382ed10" }
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
     "Win32_Security",
