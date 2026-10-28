@@ -245,6 +245,9 @@ jobs:
       - name: Test shelldeck-core
         run: cargo test -p shelldeck-core
 
+      - name: Verify SSH key formats and signed authentication
+        run: cargo test --locked -p shelldeck-ssh --lib sdtest_2710
+
       # `shelldeck-update` owns the binary-replacement paths, which differ per
       # platform and are the ones that can leave a user without an executable.
       # No GPUI, so it builds as cheaply as core here.
