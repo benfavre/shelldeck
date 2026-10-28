@@ -55,7 +55,15 @@ jobs:
 
       - name: Check dependency policy
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.ssh://git@github.com/bext-stack/automonique.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/bext-stack/automonique
+          GIT_SSH_COMMAND: ssh -F none -i /root/.ssh/id_rsa -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts
         with:
+          ssh-key: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.AUTOMONIQUE_READ_DEPLOY_KEY || '' }}
+          ssh-known-hosts: github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
           rust-version: nightly-2026-03-06
           command: check bans licenses sources
           arguments: --locked

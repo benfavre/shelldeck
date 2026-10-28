@@ -80,6 +80,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read private Automonique dependency
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: ./.github/actions/automonique-read-access
+        with:
+          private-key: ${{ secrets.AUTOMONIQUE_READ_DEPLOY_KEY }}
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -464,6 +470,12 @@ jobs:
           retention-days: 14
 
   # ─── Create GitHub Release ───
+
+      - name: Remove temporary dependency credential
+        if: always()
+        shell: bash
+        run: bash .github/actions/automonique-read-access/cleanup.sh
+
   release:
     name: Create GitHub Release
     needs: [prepare, build]

@@ -39,6 +39,7 @@ jobs:
           # Require the optional local tools here so SDTEST-2632 cannot skip in CI.
           node --experimental-strip-types --input-type=module -e ''
           command -v makensis
+          python3 scripts/test-automonique-dependency-access.py
           python3 scripts/test-agents-packaging.py
           python3 scripts/test-browser-packaging.py
           bash -n packaging/linux/build-appimage.sh
@@ -50,6 +51,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read private Automonique dependency
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: ./.github/actions/automonique-read-access
+        with:
+          private-key: ${{ secrets.AUTOMONIQUE_READ_DEPLOY_KEY }}
 
       - name: Install Linux dependencies
         run: |
@@ -126,6 +133,11 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
+      - name: Remove temporary dependency credential
+        if: always()
+        shell: bash
+        run: bash .github/actions/automonique-read-access/cleanup.sh
+
   platform-core-tests:
     name: Core tests (${{ matrix.platform }})
     strategy:
@@ -140,6 +152,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read private Automonique dependency
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: ./.github/actions/automonique-read-access
+        with:
+          private-key: ${{ secrets.AUTOMONIQUE_READ_DEPLOY_KEY }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -268,6 +286,11 @@ jobs:
         # pid+nanos host name and deletes it.
         run: cargo test -p shelldeck-core -- --ignored config::keychain::tests::live_
 
+      - name: Remove temporary dependency credential
+        if: always()
+        shell: bash
+        run: bash .github/actions/automonique-read-access/cleanup.sh
+
   browser-runtime:
     defaults:
       run:
@@ -290,6 +313,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read private Automonique dependency
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: ./.github/actions/automonique-read-access
+        with:
+          private-key: ${{ secrets.AUTOMONIQUE_READ_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-03-06
@@ -371,3 +400,8 @@ jobs:
           $browserHelper = python3 -c 'import json,pathlib; root=pathlib.Path("target/debug/browser"); meta=next(root.glob("*/runtime.json")); print((meta.parent/json.loads(meta.read_text())["executable"]).resolve())'
           cargo run --locked -p shelldeck-browser --example computer_use_smoke -- $browserHelper
           if ($LASTEXITCODE -ne 0) { throw "Native MCP browser interaction failed" }
+
+      - name: Remove temporary dependency credential
+        if: always()
+        shell: bash
+        run: bash .github/actions/automonique-read-access/cleanup.sh

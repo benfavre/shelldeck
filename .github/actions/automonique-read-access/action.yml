@@ -1,0 +1,14 @@
+name: Read the private Automonique dependency
+description: Configure one repository-scoped read-only SSH deploy key on a disposable runner.
+inputs:
+  private-key:
+    description: Read-only Automonique deploy key, supplied only by trusted repository workflows.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Configure bounded dependency access
+      shell: bash
+      env:
+        AUTOMONIQUE_DEPENDENCY_KEY: ${{ inputs.private-key }}
+      run: bash "$GITHUB_ACTION_PATH/setup.sh"

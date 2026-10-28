@@ -820,3 +820,11 @@ full shell. Pending signed-out requests do not auto-open a login modal.
 |---|---|---|---|---|
 | SDTEST-2704 | `fleet_view/tasks.rs` | SDUC-560 | Green | Task state rejects regressing revisions and foreign workspace snapshots; context reset retires pending work. |
 | SDTEST-2705 | `fleet_view/tasks.rs` | SDUC-560 | Green | Exact-revision controls distinguish pause requested and terminal states; observations do not prove or replay an ambiguous mutation. |
+
+## Private dependency release access — 2026-10-28
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2707 | `scripts/test-automonique-dependency-access.py` | SDUC-560 | Green | Runs production setup/cleanup with stubbed Git: owner-only key, pinned host, exact repository rewrite, Windows ACL command, no private value in logs or exported environment. |
+| SDTEST-2708 | `scripts/test-automonique-dependency-access.py` | SDUC-560 | Green | Failed read probe removes temporary credentials without exporting state; cleanup refuses unrelated files. |
+| SDTEST-2709 | `scripts/test-automonique-dependency-access.py` | SDUC-560 | Green | Public workflows exclude private Git caches, withhold keys from fork PRs, avoid pull_request_target, and always clean runner keys. |
