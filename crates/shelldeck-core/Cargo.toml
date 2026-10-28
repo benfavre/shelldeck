@@ -22,6 +22,7 @@ parking_lot = { workspace = true }
 fs2 = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 base64 = { workspace = true }
+sha2 = { workspace = true }
 url = { workspace = true }
 automonique-platform-client = { workspace = true }
 automonique-protocol = { workspace = true }
@@ -47,3 +48,6 @@ jcode-acp = []
 available-locales = ["fr", "en"]
 default-locale = "fr"
 load-path = "locales"
+
+[dev-dependencies]
+tempfile = { workspace = true }

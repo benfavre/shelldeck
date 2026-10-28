@@ -4386,3 +4386,28 @@ not attach or acquire control. Hidden local sessions keep unread output until
 they are selected again. Directory replacement removes vanished entries; account
 reset clears the shared directory and remote selection is retired when access is
 lost. No email-specific role override or second session store is introduced.
+
+### SDUC-560 — Durable verified task supervision
+
+Fleet and Agents share a task board for the exact mapped Platform v2 project and
+user workspace. Users draft objectives, artifact criteria, task dependencies,
+attempt/time limits and plan concurrency, then confirm the complete plan. The
+Automonique daemon owns admission, execution, recovery and verification. Current
+execution uses private per-attempt workspaces; it does not edit the project
+checkout. Artifact existence, content and hash checks verify only the named
+artifact property. Registered execution checks are not offered until supported.
+
+The board shows queued, starting, running, pause requested, paused, verification,
+verified and failure/cancellation states, dependencies, attempt counts and evidence
+bound to the exact attempt and artifact revision. A provider's success claim is
+not verification. Pause requests retain custody of an active attempt; Resume and
+Cancel remain explicit revision-bound controls. Account, workspace or stale
+revision changes invalidate actions and confirmations.
+
+Lost mutation responses remain unknown. A private account-scoped dispatch journal
+survives restart, blocks another mutation while unresolved, and never replays.
+Read-only refresh followed by explicit inspection acknowledgment permits a new
+operation without claiming that the earlier action succeeded. Unresolved records
+are retained; only settled old history can retire from the bounded journal.
+Coverage: SDTEST-2700..2706. No provider execution or deployment is required by
+these deterministic client tests.

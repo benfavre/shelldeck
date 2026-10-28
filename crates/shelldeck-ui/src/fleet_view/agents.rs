@@ -37,6 +37,19 @@ impl FleetView {
     }
 
     pub(crate) fn render_agent_session(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.tasks.open {
+            return div()
+                .relative()
+                .flex_1()
+                .min_w(px(0.0))
+                .min_h(px(0.0))
+                .flex()
+                .flex_col()
+                .child(self.render_task_toolbar(cx))
+                .child(self.render_tasks(cx))
+                .children(self.task_confirmation())
+                .into_any_element();
+        }
         let mut content = div()
             .flex_1()
             .min_w(px(0.0))
@@ -98,6 +111,7 @@ impl FleetView {
             .min_h(px(0.0))
             .flex()
             .flex_col()
+            .child(self.render_task_toolbar(cx))
             .child(self.render_action_preview(true, cx))
             .child(content)
             .into_any_element()

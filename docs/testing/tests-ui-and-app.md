@@ -813,3 +813,10 @@ full shell. Pending signed-out requests do not auto-open a login modal.
 | SDTEST-2645 | `agent_console_view/remote_sessions.rs::sdtest_2645_remote_search_includes_observation_only_and_stale_sessions_without_checkout_filters` | SDUC-559 | Green | Directory search includes stale, unknown and observation-only sessions without checkout requirements; Unicode summary and case-insensitive ID matching. Passed in the isolated 243-test UI suite. |
 | SDTEST-2646 | `agent_console_view/remote_sessions.rs::sdtest_2646_remote_selection_tracks_shared_directory_and_preserves_hidden_local_attention` | SDUC-559 | Green | Full-coordinate selection rejects a foreign authority, makes no attachment, retains unread local output while remote detail is active, and follows directory replacement and access loss. No real network/provider execution. Passed in the isolated 243-test UI suite. |
 | SDTEST-2647 | `workspace/fleet.rs::sdtest_2647_remote_directory_refresh_follows_agents_visibility_and_authentication` | SDUC-559 | Green | Agents, Fleet and Workspaces share refresh admission; missing authentication, User/Support modes, Settings and unrelated views suppress polling. Passed in the isolated 243-test UI suite. |
+
+## Durable task board state — 2026-10-28
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2704 | `fleet_view/tasks.rs` | SDUC-560 | Green | Task state rejects regressing revisions and foreign workspace snapshots; context reset retires pending work. |
+| SDTEST-2705 | `fleet_view/tasks.rs` | SDUC-560 | Green | Exact-revision controls distinguish pause requested and terminal states; observations do not prove or replay an ambiguous mutation. |

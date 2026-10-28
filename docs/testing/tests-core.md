@@ -699,3 +699,13 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2585 | `agent_browser_tools.rs` | SDUC-557 | Green | Claude private-file flags, redacted debug, native Codex override and ACP stdio transport keep capability values out of CLI arguments. |
 | SDTEST-2586 | `agent_browser_tools.rs` | SDUC-557 | Green | Remote/unsupported targets, unsafe server names and relative helper paths refuse. |
 | SDTEST-2590 | `agent_codex/tests.rs` | SDUC-557 | Green | Fake app-server pipe verifies scoped MCP config on both new and resumed threads before the turn is submitted. No inference. |
+
+## Durable task client supervision — 2026-10-28
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2700 | `config/platform_tasks.rs` | SDUC-560 | Green | Exact workspace request and foreign-response refusal. |
+| SDTEST-2701 | `config/platform_tasks.rs` | SDUC-560 | Green | Verification requires all current passed evidence; stale, missing, failed and duplicate evidence cannot verify. |
+| SDTEST-2702 | `config/platform_tasks.rs` | SDUC-560 | Green | Indeterminate responses remain unknown with one dispatch; failed/v1 negotiation sends no mutation. |
+| SDTEST-2703 | `config/platform_task_journal.rs` | SDUC-560 | Green | Restart retains unknown dispatch, wrong scope cannot acknowledge, and acknowledgment does not prepare replay. |
+| SDTEST-2706 | `config/platform_task_journal.rs` | SDUC-560 | Green | Bounded settled history can retire without losing unresolved operations; token namespaces stay separate. |

@@ -925,7 +925,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "automonique-platform-client"
 version = "0.1.0"
-source = "git+https://github.com/bext-stack/automonique?rev=524073c3a55ec73d57e4b05abf5ba3eb0abd4cb7#524073c3a55ec73d57e4b05abf5ba3eb0abd4cb7"
+source = "git+https://github.com/bext-stack/automonique?rev=149087a97a7263cda0100881a923969b9382ed10#149087a97a7263cda0100881a923969b9382ed10"
 dependencies = [
  "automonique-protocol",
  "base64 0.22.1",
@@ -936,7 +936,7 @@ dependencies = [
 [[package]]
 name = "automonique-protocol"
 version = "0.1.0"
-source = "git+https://github.com/bext-stack/automonique?rev=524073c3a55ec73d57e4b05abf5ba3eb0abd4cb7#524073c3a55ec73d57e4b05abf5ba3eb0abd4cb7"
+source = "git+https://github.com/bext-stack/automonique?rev=149087a97a7263cda0100881a923969b9382ed10#149087a97a7263cda0100881a923969b9382ed10"
 
 [[package]]
 name = "av-scenechange"
@@ -7536,7 +7536,9 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "ssh2-config",
+ "tempfile",
  "thiserror 2.0.18",
  "toml 0.8.23",
  "tracing",
