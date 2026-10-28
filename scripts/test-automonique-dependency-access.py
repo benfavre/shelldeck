@@ -16,7 +16,7 @@ DUMMY_KEY = 'TEST_ONLY_DEPENDENCY_KEY_NOT_A_CREDENTIAL'
 
 class DependencyAccessTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory(prefix='dependency access test ')
+        self.directory = tempfile.TemporaryDirectory(prefix="dependency access 'test ")
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.bin = self.root / 'bin'
@@ -67,6 +67,8 @@ with open(os.environ['TEST_CALLS'], 'a') as log:
                 self.assertEqual(stat.S_IMODE(key.stat().st_mode), 0o600)
                 self.assertEqual(key.read_text().strip(), DUMMY_KEY)
                 self.assertEqual(hosts.read_text(), (ACTION / 'github_known_hosts').read_text())
+                self.assertTrue(exported['GIT_SSH_COMMAND'].startswith("'"))
+                self.assertIn('GIT_SSH_COMMAND', exported['MSYS2_ENV_CONV_EXCL'].split(';'))
                 command = shlex.split(exported['GIT_SSH_COMMAND'])
                 self.assertEqual(command[command.index('-F') + 1], 'none')
                 self.assertEqual(command[command.index('-i') + 1], str(key))

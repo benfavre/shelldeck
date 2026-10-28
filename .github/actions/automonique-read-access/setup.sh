@@ -22,13 +22,21 @@ if [[ "${RUNNER_OS:-}" == Windows ]]; then
 fi
 cp "$GITHUB_ACTION_PATH/github_known_hosts" "$hosts_path"
 ssh_binary="$(command -v ssh)"
-printf -v ssh_command '%q -F none -i %q -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%q' "$ssh_binary" "$key_path" "$hosts_path"
+shell_quote() {
+    local value="${1//\'/\'\\\'\'}"
+    printf "'%s'" "$value"
+}
+ssh_command="$(shell_quote "$ssh_binary") -F none -i $(shell_quote "$key_path") -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o $(shell_quote "UserKnownHostsFile=$hosts_path")"
+# Git for Windows otherwise rewrites /usr/bin/ssh to an unquoted Program Files
+# path when this environment variable crosses the native process boundary.
+export MSYS2_ENV_CONV_EXCL="${MSYS2_ENV_CONV_EXCL:+$MSYS2_ENV_CONV_EXCL;}GIT_SSH_COMMAND"
 # This rewrite cannot redirect another dependency or change checkout credentials.
 git config --global url.ssh://git@github.com/bext-stack/automonique.insteadOf https://github.com/bext-stack/automonique
 GIT_SSH_COMMAND="$ssh_command" GIT_TERMINAL_PROMPT=0 git ls-remote ssh://git@github.com/bext-stack/automonique HEAD >/dev/null
 {
     printf 'CARGO_NET_GIT_FETCH_WITH_CLI=true\n'
     printf 'GIT_SSH_COMMAND=%s\n' "$ssh_command"
+    printf 'MSYS2_ENV_CONV_EXCL=%s\n' "$MSYS2_ENV_CONV_EXCL"
     printf 'AUTOMONIQUE_DEPENDENCY_KEY_PATH=%s\n' "$key_path"
     printf 'AUTOMONIQUE_DEPENDENCY_HOSTS_PATH=%s\n' "$hosts_path"
 } >> "$GITHUB_ENV"
