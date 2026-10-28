@@ -31,3 +31,9 @@ server state, then acknowledge the inspection before issuing a new operation.
 ShellDeck never silently retries. The private dispatch journal preserves unknown
 operations across restarts and is partitioned by connection/account credentials.
 Acknowledgment is not proof that the original operation succeeded.
+
+The release also updates SSH/TLS dependencies for RUSTSEC-2026-0387,
+RUSTSEC-2026-0385, RUSTSEC-2026-0382 and RUSTSEC-2026-0381. Russh 0.61.2
+removes the earlier prerelease crypto pin, allowing fixed crypto-bigint/ctutils
+versions; the TLS verifier and root bundle exclude the distrusted emSign chain.
+The Rust nightly and pathfinder SIMD pins remain unchanged.

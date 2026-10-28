@@ -22,4 +22,5 @@ base64 = "0.22"
 rustix = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 rand = { version = "0.10", features = ["thread_rng"] }

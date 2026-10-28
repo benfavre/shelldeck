@@ -64,7 +64,7 @@ impl TaskDispatchJournal {
         fs2::FileExt::lock_exclusive(&lock)?;
         let original = bounded_descriptor_read(&self.path, MAX_BYTES)?;
         let mut journal = match original.as_ref() {
-            Some(bytes) => serde_json::from_slice::<Journal>(&bytes).map_err(|_| {
+            Some(bytes) => serde_json::from_slice::<Journal>(bytes).map_err(|_| {
                 ShellDeckError::Config(
                     "task dispatch history is unreadable; preserved without replay".into(),
                 )

@@ -184,3 +184,9 @@ Existing: **0 tests.**
 | SDTEST-2516 | `session.rs` | SDUC-475, SDUC-551 | Green | In-memory SSH early exit keeps the unsupported-host status after EOF. |
 | SDTEST-2517 | `session.rs` | SDUC-475, SDUC-551 | Green | In-memory transport caps stdin, stdout and stderr. |
 | SDTEST-2518 | `session.rs` | SDUC-475, SDUC-551 | Green | Cancelling a bounded operation sends channel EOF/Close. |
+
+## SSH crypto dependency maintenance — 2026-10-28
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2710 | `client.rs::sdtest_2710_upstream_key_formats_authenticate_only_after_signature_and_user_match` | SDUC-456 | Green | Generated Ed25519, RSA and P-256 keys round-trip encrypted OpenSSH formats; wrong passphrase/user refuse, then production key authentication succeeds only after server signature verification over in-memory SSH. No real host, known-hosts file or keychain access. |

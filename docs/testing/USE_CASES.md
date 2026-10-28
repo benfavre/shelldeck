@@ -242,6 +242,12 @@ username fallback resolves the current user from `USER` → `LOGNAME` →
 `USERNAME` (Windows covered), keeping `"root"` only as the explicit last
 resort.
 
+The production key authentication path also verifies Ed25519, RSA and P-256
+OpenSSH key parsing and signed authentication. Encrypted key files reject a wrong
+passphrase, and a server accepting a key still rejects a mismatched username.
+SDTEST-2710 exercises those boundaries using generated fixtures and in-memory SSH
+without accessing the operator's keychain or known-hosts file.
+
 ### SDUC-044 — Open interactive shell channel
 
 `SshSession::open_shell(rows, cols)` returns a channel with initial
