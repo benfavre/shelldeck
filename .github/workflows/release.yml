@@ -87,15 +87,15 @@ jobs:
           targets: ${{ matrix.target }}
           components: rustfmt, clippy
 
+      # Public Actions caches must never retain private Automonique Git sources.
       - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-release-v1-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-registry-release-v1-
 
       - name: Install packaging Python
         uses: actions/setup-python@v5

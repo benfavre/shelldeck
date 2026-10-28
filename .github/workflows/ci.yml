@@ -77,17 +77,17 @@ jobs:
           toolchain: nightly-2026-03-06
           components: rustfmt, clippy
 
+      # Public Actions caches must never retain private Automonique Git sources.
       - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
-            ~/.cargo/git
           # The registry cache contains our applied lightweight crate patches.
           # Never restore a cache produced by a different patch/applicator
           # revision: a partially compatible source tree can make `patch`
           # apply only some hunks and fail before any tests run.
-          key: ${{ runner.os }}-cargo-check-${{ hashFiles('Cargo.lock', 'scripts/apply-crate-patches.sh', 'patches/diffs/*.patch') }}
+          key: ${{ runner.os }}-cargo-registry-check-v1-${{ hashFiles('Cargo.lock', 'scripts/apply-crate-patches.sh', 'patches/diffs/*.patch') }}
 
       - name: Apply crate patches
         run: ./scripts/apply-crate-patches.sh
@@ -146,15 +146,15 @@ jobs:
         with:
           toolchain: nightly-2026-03-06
 
+      # Public Actions caches must never retain private Automonique Git sources.
       - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
-            ~/.cargo/git
           # Keep patched registry sources coupled to the exact replay inputs.
           # Broad restore prefixes can resurrect an older partial SDPATCH.
-          key: ${{ runner.os }}-cargo-core-test-${{ hashFiles('Cargo.lock', 'scripts/apply-crate-patches.sh', 'patches/diffs/*.patch') }}
+          key: ${{ runner.os }}-cargo-registry-core-test-v1-${{ hashFiles('Cargo.lock', 'scripts/apply-crate-patches.sh', 'patches/diffs/*.patch') }}
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -299,14 +299,14 @@ jobs:
       - name: Configure isolated CEF build cache
         shell: bash
         run: echo "CEF_PATH=${RUNNER_TEMP}/shelldeck-cef" >> "$GITHUB_ENV"
+      # Cache only public registry/Chromium payloads, never private Git sources.
       - name: Cache Cargo and pinned Chromium runtime
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
-            ~/.cargo/git
             ${{ runner.temp }}/shelldeck-cef
-          key: ${{ runner.os }}-browser-native-${{ hashFiles('Cargo.lock', 'crates/shelldeck-browser/Cargo.toml') }}
+          key: ${{ runner.os }}-browser-native-public-v1-${{ hashFiles('Cargo.lock', 'crates/shelldeck-browser/Cargo.toml') }}
       - name: Install Linux Chromium dependencies
         if: runner.os == 'Linux'
         run: |
