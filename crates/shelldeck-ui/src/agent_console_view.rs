@@ -41,10 +41,14 @@ use crate::theme::ShellDeckColors;
 
 #[path = "agent_console_view/composer.rs"]
 mod composer;
+#[path = "agent_console_view/composer_controls.rs"]
+mod composer_controls;
 #[path = "agent_console_view/editor.rs"]
 mod editor;
 pub use editor::save_local_document;
 pub use editor::{AgentFileOrigin, AgentFileSaveRequest};
+#[path = "agent_console_view/connection_repair.rs"]
+mod connection_repair;
 #[path = "agent_console_view/explorer.rs"]
 mod explorer;
 #[path = "agent_console_view/inspector.rs"]
@@ -61,6 +65,8 @@ mod model;
 mod navigator;
 #[path = "agent_console_view/progress.rs"]
 mod progress;
+#[path = "agent_console_view/project_picker.rs"]
+mod project_picker;
 #[path = "agent_console_view/remote_sessions.rs"]
 mod remote_sessions;
 use live_input::PendingLiveInput;
@@ -118,6 +124,12 @@ struct InspectorDiff {
 
 #[derive(Debug, Clone)]
 pub enum AgentConsoleEvent {
+    NavigatorChanged,
+    ReconnectProject {
+        checkout_id: shelldeck_core::config::workspace_catalog::CatalogCheckoutId,
+        expected_connection: Uuid,
+        connection_id: Uuid,
+    },
     RefreshRemoteSessions,
     OpenPlatformSession(shelldeck_core::config::platform::ResourceCoordinate),
     SaveFile(AgentFileSaveRequest),
@@ -231,6 +243,8 @@ impl AgentSessionUi {
                 adabraka_ui::components::input_state::InputEvent::Change
             ) {
                 this.schedule_library_save(cx);
+                // Refresh Send readiness immediately while the draft is edited.
+                cx.notify();
             }
         });
         Self {
@@ -331,6 +345,62 @@ fn input_state(cx: &mut Context<AgentConsoleView>, initial: String) -> Entity<In
         state.content = initial.into();
         state
     })
+}
+
+fn selected_agent_target(
+    selected: Option<Uuid>,
+    connections: &[AgentConnectionOption],
+) -> AgentTarget {
+    match selected {
+        None => AgentTarget::Local,
+        Some(connection_id) => AgentTarget::Ssh {
+            connection_id,
+            connection_label: connections
+                .iter()
+                .find(|item| item.id == connection_id)
+                .map(|item| item.label.clone())
+                .unwrap_or_else(|| t!("agents.target.missing").to_string()),
+        },
+    }
+}
+
+fn validate_agent_target(
+    target: &AgentTarget,
+    connections: &[AgentConnectionOption],
+) -> Result<(), String> {
+    match target {
+        AgentTarget::Ssh { connection_id, .. }
+            if !connections.iter().any(|item| item.id == *connection_id) =>
+        {
+            Err(t!("agents.error.target_missing").to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn agent_target_options(
+    connections: &[AgentConnectionOption],
+    selected: Option<Uuid>,
+) -> (Vec<SelectOption<Option<Uuid>>>, Option<usize>) {
+    let mut options = vec![
+        SelectOption::new(None, t!("agents.target.local").to_string())
+            .with_icon("icons/lucide/cpu.svg"),
+    ];
+    options.extend(connections.iter().map(|connection| {
+        SelectOption::new(
+            Some(connection.id),
+            format!("{} — {}", connection.label, connection.host),
+        )
+        .with_icon("icons/lucide/server.svg")
+    }));
+    if let Some(id) = selected.filter(|id| !connections.iter().any(|item| item.id == *id)) {
+        options.push(
+            SelectOption::new(Some(id), format!("{} ({id})", t!("agents.target.missing")))
+                .with_icon("icons/lucide/server.svg"),
+        );
+    }
+    let index = options.iter().position(|option| option.value == selected);
+    (options, index)
 }
 
 impl AgentConsoleView {
@@ -475,15 +545,9 @@ impl AgentConsoleView {
                 .selected_index(selected_index)
                 .disabled(disabled)
                 .context_label(t!("agents.provider").to_string())
-                .on_change(move |provider, window, cx| {
+                .on_change(move |provider, _window, cx| {
                     parent.update(cx, |this, cx| {
-                        this.provider = *provider;
-                        if *provider == AgentProvider::Automonique {
-                            this.model_state.update(cx, |state, cx| {
-                                state.set_value("", window, cx);
-                            });
-                        }
-                        cx.notify();
+                        this.change_draft_provider(*provider, cx);
                     });
                 })
         })
@@ -521,8 +585,7 @@ impl AgentConsoleView {
                 .context_label(t!("agents.access.label").to_string())
                 .on_change(move |access, _window, cx| {
                     parent.update(cx, |this, cx| {
-                        this.access = *access;
-                        cx.notify();
+                        this.change_draft_access(*access, cx);
                     });
                 })
         })
@@ -535,20 +598,7 @@ impl AgentConsoleView {
         parent: Entity<Self>,
         cx: &mut Context<Self>,
     ) -> Entity<Select<Option<Uuid>>> {
-        let mut options = vec![
-            SelectOption::new(None, t!("agents.target.local").to_string())
-                .with_icon("icons/lucide/cpu.svg"),
-        ];
-        options.extend(connections.iter().map(|connection| {
-            SelectOption::new(
-                Some(connection.id),
-                format!("{} — {}", connection.label, connection.host),
-            )
-            .with_icon("icons/lucide/server.svg")
-        }));
-        let selected_index = selected
-            .and_then(|id| options.iter().position(|option| option.value == Some(id)))
-            .or(Some(0));
+        let (options, selected_index) = agent_target_options(connections, selected);
         cx.new(move |select_cx| {
             Select::new(select_cx)
                 .options(options)
@@ -559,6 +609,14 @@ impl AgentConsoleView {
                 .context_label(t!("agents.target.label").to_string())
                 .on_change(move |connection_id, window, cx| {
                     parent.update(cx, |this, cx| {
+                        if this.context_controls_locked() {
+                            return;
+                        }
+                        if connection_id
+                            .is_some_and(|id| !this.connections.iter().any(|item| item.id == id))
+                        {
+                            return;
+                        }
                         if let Some(next_workdir) = target_switch_workdir(
                             this.selected_connection,
                             *connection_id,
@@ -581,17 +639,10 @@ impl AgentConsoleView {
         connections: Vec<AgentConnectionOption>,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .selected_connection
-            .is_some_and(|id| !connections.iter().any(|connection| connection.id == id))
-        {
-            self.selected_connection = None;
-        }
+        // Discovery cannot grant a different execution target. A missing SSH
+        // UUID remains selected until the user explicitly chooses another target.
         self.connections = connections;
-        let locked = self
-            .sessions
-            .selected_id()
-            .is_some_and(|id| self.context_locks.contains(&id));
+        let locked = self.context_controls_locked();
         self.target_select = Self::build_target_select(
             &self.connections,
             self.selected_connection,
@@ -767,11 +818,21 @@ impl AgentConsoleView {
     }
 
     pub fn select_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) -> bool {
+        if self.sessions.get(session_id).is_none() {
+            return false;
+        }
+        let unchanged = self.sessions.selected_id() == Some(session_id);
+        self.close_navigator_overlay(cx);
+        if !unchanged {
+            self.retain_draft_context(cx);
+        }
         if self.sessions.select(session_id).is_err() {
             return false;
         }
         self.set_remote_session_active(false, cx);
-        self.apply_selected_context(cx);
+        if !unchanged {
+            self.apply_selected_context(cx);
+        }
         self.schedule_library_save(cx);
         pin_to_latest(&self.scroll);
         cx.notify();
@@ -784,11 +845,13 @@ impl AgentConsoleView {
         context: AgentExecutionContext,
         cx: &mut Context<Self>,
     ) -> Result<Uuid, String> {
+        self.retain_draft_context(cx);
         let session_id = self
             .sessions
             .create(name, context, now_ms())
             .map_err(|error| error.to_string())?;
         self.session_ui.insert(session_id, AgentSessionUi::new(cx));
+        self.close_navigator_overlay(cx);
         self.set_remote_session_active(false, cx);
         self.apply_selected_context(cx);
         self.schedule_library_save(cx);
@@ -1015,14 +1078,63 @@ impl AgentConsoleView {
         }
     }
 
+    fn context_controls_locked(&self) -> bool {
+        self.sessions.selected().is_some_and(|session| {
+            self.context_locks.contains(&session.id) || session.status.is_active()
+        })
+    }
+
+    /// Retain valid unsent selections when navigating away, using the same
+    /// context boundary that protects provider resume tokens at submission.
+    fn retain_draft_context(&mut self, cx: &mut Context<Self>) {
+        if self.context_controls_locked() {
+            return;
+        }
+        if let Ok(context) = self.context_from_controls(cx) {
+            if let Some(session) = self
+                .sessions
+                .selected_id()
+                .and_then(|id| self.sessions.get_mut(id))
+            {
+                let _ = session.set_context(context, now_ms());
+            }
+        }
+    }
+
+    fn change_draft_provider(&mut self, provider: AgentProvider, cx: &mut Context<Self>) {
+        if self.context_controls_locked() || self.provider == provider {
+            return;
+        }
+        self.provider = provider;
+        // A model identifier and reasoning choice belong to their provider.
+        self.model_state
+            .update(cx, |state, cx| state.replace_content(String::new(), cx));
+        if let Some(id) = self.sessions.selected_id() {
+            self.composer_ui.effort.remove(&id);
+        }
+        self.provider_select = Self::build_provider_select(provider, false, cx.entity(), cx);
+        cx.notify();
+    }
+
+    fn change_draft_access(&mut self, access: AgentAccessMode, cx: &mut Context<Self>) {
+        if self.context_controls_locked() {
+            return;
+        }
+        self.access = access;
+        self.access_select = Self::build_access_select(access, false, cx.entity(), cx);
+        cx.notify();
+    }
+
     fn context_from_controls(&self, cx: &Context<Self>) -> Result<AgentExecutionContext, String> {
         if let Some(session_id) = self.sessions.selected_id() {
             if self.context_locks.contains(&session_id) {
-                return self
+                let context = self
                     .sessions
                     .get(session_id)
                     .map(|session| session.context.clone())
-                    .ok_or_else(|| t!("agents.error.runtime_lost").to_string());
+                    .ok_or_else(|| t!("agents.error.runtime_lost").to_string())?;
+                validate_agent_target(&context.target, &self.connections)?;
+                return Ok(context);
             }
         }
         let workdir = self.workdir_state.read(cx).content().trim().to_string();
@@ -1036,20 +1148,8 @@ impl AgentConsoleView {
         if model.len() > MAX_AGENT_MODEL_BYTES {
             return Err(t!("agents.error.model_too_long").to_string());
         }
-        let target = match self.selected_connection {
-            None => AgentTarget::Local,
-            Some(connection_id) => {
-                let connection = self
-                    .connections
-                    .iter()
-                    .find(|connection| connection.id == connection_id)
-                    .ok_or_else(|| t!("agents.error.target_missing").to_string())?;
-                AgentTarget::Ssh {
-                    connection_id,
-                    connection_label: connection.label.clone(),
-                }
-            }
-        };
+        let target = selected_agent_target(self.selected_connection, &self.connections);
+        validate_agent_target(&target, &self.connections)?;
         let context = AgentExecutionContext {
             provider: self.provider,
             target,
@@ -1153,6 +1253,10 @@ impl AgentConsoleView {
     }
 
     fn start_pending(&mut self, pending: PendingRun, cx: &mut Context<Self>) {
+        if let Err(error) = validate_agent_target(&pending.context.target, &self.connections) {
+            self.apply_session_draft_error(pending.session_id, error, cx);
+            return;
+        }
         if let Err(error) = self.validate_discovered_model_input(&pending.context, &pending.options)
         {
             self.apply_session_draft_error(pending.session_id, error, cx);
@@ -1263,7 +1367,7 @@ impl AgentConsoleView {
             self.select_session(session_id, cx);
             return Some(session_id);
         }
-        let base = self.sessions.selected()?.context.clone();
+        let base = self.displayed_context(cx);
         let context = context_for_worktree(&base, worktree);
         self.create_session(worktree.label.clone(), context, cx)
             .ok()
@@ -1487,10 +1591,7 @@ impl AgentConsoleView {
     }
 
     fn render_context(&self, narrow: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let locked = self
-            .sessions
-            .selected_id()
-            .is_some_and(|id| self.context_locks.contains(&id));
+        let locked = self.context_controls_locked();
         let workdir_focused = self
             .workdir_state
             .read(cx)
@@ -1563,6 +1664,7 @@ impl AgentConsoleView {
 impl Render for AgentConsoleView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.remote_sessions.active && self.remote_sessions.available {
+            self.update_navigator_layout(true, cx);
             return self.render_remote_session(cx);
         }
         if self.surface_focus_requested
@@ -1589,6 +1691,7 @@ impl Render for AgentConsoleView {
         };
         let wide = width >= px(840.0).to_pixels(window.rem_size()).to_f64() as f32;
         let inspector_wide = width >= px(1180.0).to_pixels(window.rem_size()).to_f64() as f32;
+        self.update_navigator_layout(wide, cx);
         self.tools.inspector_wide = inspector_wide;
         let mut session = self
             .sessions
@@ -1675,114 +1778,110 @@ impl Render for AgentConsoleView {
                     .tooltip(t!("agents.session.new").to_string())
                     .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
             );
+        let workdir_label = std::path::Path::new(&context.workdir)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&context.workdir)
+            .to_owned();
         let metadata = div()
-            .h(if wide { px(42.0) } else { px(38.0) })
+            .h(px(46.0))
             .flex()
             .items_center()
+            .flex_shrink_0()
+            .min_w_0()
             .gap(px(8.0))
             .px(px(12.0))
-            .flex_shrink_0()
             .border_b_1()
             .border_color(ShellDeckColors::border())
+            .when(wide, |row| {
+                row.child(
+                    Button::new("agent-header-sessions", "")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Icon)
+                        .w(px(28.0))
+                        .h(px(28.0))
+                        .icon(IconSource::from("messages-square"))
+                        .tooltip(t!("agents.parity.toggle_sessions").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_navigator(cx);
+                        })),
+                )
+            })
             .child(lucide_icon(
                 provider_icon(context.provider),
                 14.0,
-                ShellDeckColors::primary(),
+                ShellDeckColors::text_muted(),
             ))
-            .when(!wide, |row| {
-                row.child(
-                    div()
-                        .max_w(px(260.0))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_size(px(11.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(session_name),
-                )
-            })
-            .when(wide, |row| {
-                row.child(
-                    div()
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(context.provider.display_name()),
-                )
-            })
-            .child(div().size(px(6.0)).rounded_full().bg(status_color(status)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .when(wide, |row| {
+                        row.child(
+                            div()
+                                .max_w(px(150.0))
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(11.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(workdir_label),
+                        )
+                        .child(div().text_color(ShellDeckColors::text_muted()).child("/"))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(session_name),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .size(px(6.0))
+                    .rounded_full()
+                    .bg(status_color(status)),
+            )
             .when_some(elapsed, |row, elapsed| {
                 row.child(
                     div()
-                        .font_family("JetBrains Mono")
-                        .text_size(px(9.0))
+                        .flex_shrink_0()
+                        .text_size(px(10.0))
                         .text_color(ShellDeckColors::text_muted())
                         .child(elapsed),
                 )
             })
             .when(attention != AgentSessionAttention::None, |row| {
                 row.child(
-                    div()
-                        .size(px(5.0))
-                        .rounded_full()
-                        .bg(attention_color(attention)),
-                )
-                .child(
                     Button::new("agent-acknowledge-attention", "")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Icon)
                         .icon(IconSource::from("check"))
-                        .w(px(24.0))
-                        .h(px(24.0))
+                        .w(px(28.0))
+                        .h(px(28.0))
                         .tooltip(t!("agents.attention.acknowledge").to_string())
                         .on_click(
                             cx.listener(|this, _, _, cx| this.acknowledge_selected_attention(cx)),
                         ),
                 )
             })
-            .child(div().flex_1())
-            .when(wide, |row| {
-                row.child(
-                    Badge::new(target_label(&context.target)).variant(BadgeVariant::Secondary),
-                )
-                .child(
-                    Badge::new(
-                        t!(
-                            "agents.editor.agent_access",
-                            access = access_label(context.access)
-                        )
-                        .to_string(),
-                    )
-                    .variant(BadgeVariant::Outline),
-                )
-                .child(
-                    div()
-                        .max_w(px(300.0))
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .font_family("JetBrains Mono")
-                        .text_size(px(9.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(context.workdir.clone()),
-                )
-            })
-            .when(!wide, |row| {
-                row.child(
-                    div()
-                        .text_size(px(9.5))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(context.provider.display_name()),
-                )
-            })
+            .child(self.render_quick_tools(cx))
             .child(
                 Button::new("agent-context-toggle", "")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Icon)
-                    .icon(IconSource::from(if context_expanded {
-                        "panel-right-close"
+                    .variant(if context_expanded {
+                        ButtonVariant::Secondary
                     } else {
-                        "settings"
-                    }))
+                        ButtonVariant::Ghost
+                    })
+                    .size(ButtonSize::Icon)
+                    .icon(IconSource::from("settings"))
                     .w(px(28.0))
                     .h(px(28.0))
                     .tooltip(t!("agents.context.title").to_string())
@@ -1841,7 +1940,7 @@ impl Render for AgentConsoleView {
         } else {
             let mut timeline_view = div()
                 .w_full()
-                .max_w(px(920.0))
+                .max_w(px(880.0))
                 .mx_auto()
                 .flex()
                 .flex_col()
@@ -1869,7 +1968,13 @@ impl Render for AgentConsoleView {
                                 .w_full()
                                 .min_w(px(0.0))
                                 .overflow_hidden()
-                                .py(px(5.0))
+                                .py(px(10.0))
+                                .when(message.role == AgentMessageRole::User, |message| {
+                                    message
+                                        .px(px(16.0))
+                                        .rounded(px(12.0))
+                                        .bg(ShellDeckColors::bg_surface())
+                                })
                                 .when(message.role == AgentMessageRole::Error, |message| {
                                     message
                                         .px(px(9.0))
@@ -1959,42 +2064,21 @@ impl Render for AgentConsoleView {
             content = content.child(header);
         }
         content = content.child(metadata);
-        if !wide {
+        if let Err(error) =
+            validate_agent_target(&self.displayed_context(cx).target, &self.connections)
+        {
             content = content.child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .px(px(12.0))
-                    .py(px(5.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .child(
-                        Badge::new(target_label(&context.target)).variant(BadgeVariant::Secondary),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(context.workdir.clone()),
-                    )
-                    .child(
-                        Badge::new(
-                            t!(
-                                "agents.editor.agent_access",
-                                access = access_label(context.access)
-                            )
-                            .to_string(),
-                        )
-                        .variant(BadgeVariant::Outline),
-                    ),
+                    .px(px(14.0))
+                    .py(px(8.0))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::error())
+                    .child(error),
             );
         }
-        content = content.child(self.render_workspace_tools(cx));
+        if self.tools.toolbar_expanded {
+            content = content.child(self.render_workspace_tools(cx));
+        }
         if let Some(error) = &self.library.error {
             content = content.child(
                 div()
@@ -2020,14 +2104,17 @@ impl Render for AgentConsoleView {
             content = content.child(output);
             if away {
                 content = content.child(
-                    Button::new("agent-jump-latest", t!("agents.parity.latest").to_string())
-                        .variant(ButtonVariant::Secondary)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("arrow-down"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            pin_to_latest(&this.scroll);
-                            cx.notify();
-                        })),
+                    div().flex().justify_center().flex_shrink_0().child(
+                        Button::new("agent-jump-latest", t!("agents.parity.latest").to_string())
+                            .variant(ButtonVariant::Secondary)
+                            .size(ButtonSize::Sm)
+                            .h(px(28.0))
+                            .icon(IconSource::from("arrow-down"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                pin_to_latest(&this.scroll);
+                                cx.notify();
+                            })),
+                    ),
                 );
             }
             content = content.child(
@@ -2037,9 +2124,7 @@ impl Render for AgentConsoleView {
                     .px(if wide { px(18.0) } else { px(10.0) })
                     .pt(px(7.0))
                     .pb(px(11.0))
-                    .border_t_1()
-                    .border_color(ShellDeckColors::border())
-                    .child(div().w_full().max_w(px(940.0)).mx_auto().child(composer)),
+                    .child(div().w_full().max_w(px(880.0)).mx_auto().child(composer)),
             );
         }
         let mut root = div()
@@ -2060,9 +2145,7 @@ impl Render for AgentConsoleView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &AgentToggleSessions, _, cx| {
-                this.tools.navigator_visible = !this.tools.navigator_visible;
-                this.schedule_library_save(cx);
-                cx.notify();
+                this.toggle_navigator(cx);
             }))
             .on_action(cx.listener(|this, _: &AgentJumpLatest, _, cx| {
                 pin_to_latest(&this.scroll);
@@ -2113,6 +2196,9 @@ impl Render for AgentConsoleView {
                 );
             }
         }
+        if !wide && self.tools.navigator_overlay {
+            root = root.child(self.render_navigator_overlay(cx));
+        }
         if let Some(dialog) = self.render_workflow_dialog() {
             root = root.child(dialog);
         }
@@ -2133,11 +2219,15 @@ impl Render for AgentConsoleView {
             canvas(
                 move |bounds, _, cx| {
                     let width = bounds.size.width.to_f64() as f32;
-                    let _ = measure.update(cx, |this, cx| {
-                        if (this.tools.measured_width - width).abs() > 1.0 {
-                            this.tools.measured_width = width;
-                            cx.notify();
-                        }
+                    // Layout is still being painted here. Invalidate afterward
+                    // so a resize schedules the responsive frame without input.
+                    cx.defer(move |cx| {
+                        let _ = measure.update(cx, |this, cx| {
+                            if (this.tools.measured_width - width).abs() > 1.0 {
+                                this.tools.measured_width = width;
+                                cx.notify();
+                            }
+                        });
                     });
                 },
                 |_, _, _, _| {},
@@ -2425,6 +2515,19 @@ fn access_label(access: AgentAccessMode) -> String {
     }
 }
 
+fn session_status_label(status: AgentSessionStatus) -> String {
+    t!(match status {
+        AgentSessionStatus::Idle => "agents.session_state.ready",
+        AgentSessionStatus::Starting => "agents.session_state.starting",
+        AgentSessionStatus::Running => "agents.session_state.running",
+        AgentSessionStatus::Stopping => "agents.session_state.stopping",
+        AgentSessionStatus::Completed => "agents.session_state.completed",
+        AgentSessionStatus::Failed => "agents.session_state.failed",
+        AgentSessionStatus::Cancelled => "agents.session_state.cancelled",
+    })
+    .to_string()
+}
+
 fn status_color(status: AgentSessionStatus) -> Hsla {
     match status {
         AgentSessionStatus::Idle | AgentSessionStatus::Cancelled => ShellDeckColors::text_muted(),
@@ -2544,6 +2647,92 @@ fn bounded_utf8(mut value: String, max_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    // SDTEST-2734 — disappeared SSH identities remain SSH across refresh,
+    // selection display and controls; only explicit selection can change target.
+    #[test]
+    fn missing_ssh_refresh_never_retargets_controls_or_display_to_local() {
+        use gpui::{AppContext, TestAppContext};
+        let mut app = TestAppContext::single();
+        let view = app.update(|cx| cx.new(super::AgentConsoleView::new));
+        view.update(&mut app, |view, cx| {
+            let id = uuid::Uuid::new_v4();
+            let connection = super::AgentConnectionOption { id, label: "Saved SSH".into(), host: "fixture.invalid".into() };
+            view.set_connections(vec![connection.clone()], cx);
+            view.selected_connection = Some(id);
+            view.workdir_state.update(cx, |state, cx| state.replace_content("/srv/project", cx));
+            let context = view.context_from_controls(cx).unwrap();
+            let selected = view.sessions.selected_id().unwrap();
+            view.sessions.get_mut(selected).unwrap().set_context(context, 1).unwrap();
+            view.set_connections(Vec::new(), cx);
+            assert_eq!(view.selected_connection, Some(id));
+            assert!(matches!(view.displayed_context(cx).target, AgentTarget::Ssh { connection_id, .. } if connection_id == id));
+            assert!(view.context_from_controls(cx).is_err());
+            let (options, index) = super::agent_target_options(&view.connections, view.selected_connection);
+            assert_eq!(options[index.unwrap()].value, Some(id));
+            let replacement = super::AgentConnectionOption { id: uuid::Uuid::new_v4(), ..connection };
+            view.set_connections(vec![replacement.clone()], cx);
+            assert_eq!(view.selected_connection, Some(id));
+            assert!(view.context_from_controls(cx).is_err());
+            view.selected_connection = Some(replacement.id); // explicit dropdown choice
+            assert!(matches!(view.context_from_controls(cx).unwrap().target, AgentTarget::Ssh { connection_id, .. } if connection_id == replacement.id));
+        });
+    }
+
+    // SDTEST-2735 — immutable bound context and pending confirmation cannot
+    // bypass target membership after the saved SSH identity disappears.
+    #[test]
+    fn missing_bound_ssh_blocks_pending_run_without_mutating_its_context() {
+        use gpui::{AppContext, TestAppContext};
+        let mut app = TestAppContext::single();
+        let view = app.update(|cx| cx.new(super::AgentConsoleView::new));
+        view.update(&mut app, |view, cx| {
+            let id = view.sessions.selected_id().unwrap();
+            let context = AgentExecutionContext {
+                provider: AgentProvider::Claude,
+                access: AgentAccessMode::ReadOnly,
+                target: AgentTarget::Ssh {
+                    connection_id: uuid::Uuid::new_v4(),
+                    connection_label: "Missing bound SSH".into(),
+                },
+                workdir: "/srv/bound".into(),
+                model: None,
+            };
+            view.sessions
+                .get_mut(id)
+                .unwrap()
+                .set_context(context.clone(), 1)
+                .unwrap();
+            view.context_locks.insert(id);
+            view.apply_selected_context(cx);
+            view.set_connections(Vec::new(), cx);
+            assert!(view.context_controls_locked());
+            assert_eq!(view.displayed_context(cx), context);
+            assert!(view.context_from_controls(cx).is_err());
+            view.start_pending(
+                super::PendingRun {
+                    session_id: id,
+                    context: context.clone(),
+                    prompt: "Never launch locally".into(),
+                    options: Default::default(),
+                    source_draft: None,
+                },
+                cx,
+            );
+            assert_eq!(view.sessions.get(id).unwrap().context, context);
+            assert!(!view.sessions.get(id).unwrap().status.is_active());
+            assert!(view.run_sessions.is_empty());
+            assert_eq!(
+                view.sessions
+                    .get(id)
+                    .unwrap()
+                    .messages
+                    .last()
+                    .map(|message| message.text.as_str()),
+                Some(crate::t!("agents.error.target_missing").as_ref())
+            );
+        });
+    }
+
     use super::{
         context_for_worktree, inspector_files, session_name, target_switch_workdir,
         terminal_session_status, trace_presentation, workdir_is_valid_for_target,

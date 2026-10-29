@@ -61,6 +61,7 @@ impl AgentConsoleView {
     }
 
     pub(crate) fn set_remote_session_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        self.close_navigator_overlay(cx);
         self.remote_sessions.active = active && self.remote_sessions.available;
         self.sessions.set_surface_visible(
             self.remote_sessions.surface_visible && !self.remote_sessions.active,
@@ -208,13 +209,18 @@ impl AgentConsoleView {
             .id("agent-remote-cockpit")
             .key_context("AgentConsole")
             .on_action(cx.listener(|this, _: &AgentNewChat, _, cx| this.new_session(cx)))
+            .on_action(
+                cx.listener(|this, _: &AgentToggleSessions, _, cx| this.toggle_navigator(cx)),
+            )
             .flex()
             .size_full()
             .min_w(px(0.0))
             .min_h(px(0.0))
             .bg(ShellDeckColors::bg_primary())
-            .text_color(ShellDeckColors::text_primary())
-            .child(self.render_navigator(cx));
+            .text_color(ShellDeckColors::text_primary());
+        if self.tools.navigator_visible {
+            root = root.child(self.render_navigator(cx));
+        }
         if let Some(source) = self.remote_sessions.source.clone() {
             root = root.child(source.update(cx, |view, cx| view.render_agent_session(cx)));
         }

@@ -68,8 +68,8 @@ pub fn parse_ssh_config_file(path: &Path) -> Result<Vec<Connection>> {
         let proxy_jump = extras.and_then(|e| e.proxy_jump.clone());
         let forward_agent = extras.map(|e| e.forward_agent).unwrap_or(false);
 
-        let conn = Connection {
-            id: Uuid::new_v4(),
+        let mut conn = Connection {
+            id: Uuid::nil(),
             alias,
             hostname,
             port,
@@ -86,11 +86,43 @@ pub fn parse_ssh_config_file(path: &Path) -> Result<Vec<Connection>> {
             site_label: None,
             status: ConnectionStatus::Disconnected,
         };
+        conn.id = ssh_config_connection_id(path, &conn)?;
 
         connections.push(conn);
     }
 
     Ok(connections)
+}
+
+// Stable across reparses, ordering, comments and restarts, but never silently
+// retarget a persisted checkout when an alias's SSH authority changes.
+fn ssh_config_connection_id(path: &Path, connection: &Connection) -> Result<Uuid> {
+    let source = std::fs::canonicalize(path).map_err(|error| {
+        ShellDeckError::SshConfigParse(format!("Failed to resolve {}: {error}", path.display()))
+    })?;
+    let mut identity = Vec::new();
+    for field in [
+        source.as_os_str().as_encoded_bytes(),
+        connection.alias.as_bytes(),
+        connection.hostname.as_bytes(),
+        connection.user.as_bytes(),
+        &connection.port.to_be_bytes(),
+        connection
+            .identity_file
+            .as_deref()
+            .map_or(&[][..], |path| path.as_os_str().as_encoded_bytes()),
+        connection
+            .proxy_jump
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes(),
+        &[u8::from(connection.forward_agent)],
+    ] {
+        identity.extend_from_slice(&(field.len() as u64).to_be_bytes());
+        identity.extend_from_slice(field);
+    }
+    let namespace = Uuid::new_v5(&Uuid::NAMESPACE_URL, b"shelldeck:ssh-config-authority:v1");
+    Ok(Uuid::new_v5(&namespace, &identity))
 }
 
 /// Returns true if the pattern is wildcard-only (e.g., "*", "?", "*.*")
@@ -255,6 +287,45 @@ fn parse_host_port(s: &str) -> Option<(String, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SDTEST-2722 — SDUC-040: a persisted SSH checkout survives reparsing;
+    // authority changes and other source files cannot impersonate its ID.
+    #[test]
+    fn sdtest_2722_ssh_ids_survive_reparse_without_rebinding_changed_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config");
+        let profile =
+            "Host project\n HostName 127.0.0.1\n User test\n Port 22381\n IdentityFile /qa/key\n";
+        std::fs::write(&path, profile).unwrap();
+        let first = parse_ssh_config_file(&path).unwrap().remove(0);
+        std::fs::write(
+            &path,
+            format!("# changed comment\nHost unrelated\n HostName 127.0.0.2\n{profile}"),
+        )
+        .unwrap();
+        let reloaded = parse_ssh_config_file(&path).unwrap();
+        assert_eq!(
+            reloaded
+                .iter()
+                .find(|item| item.alias == "project")
+                .unwrap()
+                .id,
+            first.id
+        );
+        for changed in [
+            profile.replace("127.0.0.1", "127.0.0.2"),
+            profile.replace("User test", "User other"),
+            profile.replace("22381", "22382"),
+            profile.replace("/qa/key", "/qa/other-key"),
+            format!("{profile} ProxyJump gateway\n"),
+        ] {
+            std::fs::write(&path, changed).unwrap();
+            assert_ne!(parse_ssh_config_file(&path).unwrap()[0].id, first.id);
+        }
+        let other = temp.path().join("other-config");
+        std::fs::write(&other, profile).unwrap();
+        assert_ne!(parse_ssh_config_file(&other).unwrap()[0].id, first.id);
+    }
 
     #[test]
     fn test_is_wildcard_only() {

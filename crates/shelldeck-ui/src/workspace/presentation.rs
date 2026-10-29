@@ -48,14 +48,28 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Restore the normal application shell without changing the saved app mode.
+    /// Restore the full shell on Agents without changing the saved app mode.
     pub fn show_main_presentation(&mut self, cx: &mut Context<Self>) {
         self.presentation = WorkspacePresentation::Main;
         self.agents_focus_pending = false;
+        self.settings_open = false;
         self.mode_transition = None;
         self.close_titlebar_menus();
+        self.select_agents_landing(cx);
         self.activate_current_mode(cx);
         cx.notify();
+    }
+
+    fn select_agents_landing(&mut self, cx: &mut Context<Self>) {
+        self.active_view = ActiveView::Agents;
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_active_section(SidebarSection::Agents);
+            cx.notify();
+        });
+        if self.can_access_mode(AppMode::Dev) && self.effective_mode() == AppMode::Dev {
+            self.agent_console
+                .update(cx, |view, cx| view.request_surface_focus(cx));
+        }
     }
 
     pub fn presentation(&self) -> WorkspacePresentation {
@@ -80,10 +94,8 @@ impl Workspace {
             );
         }
         if self.agents_presentation_active() && self.agents_focus_pending {
-            self.active_view = ActiveView::Agents;
             self.agents_focus_pending = false;
-            self.agent_console
-                .update(cx, |view, cx| view.request_surface_focus(cx));
+            self.select_agents_landing(cx);
         }
     }
 }

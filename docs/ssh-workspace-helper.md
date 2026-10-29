@@ -1,5 +1,9 @@
 # Trusted SSH workspace helper
 
+This optional managed subsystem is not required to open an existing SSH folder in
+ShellDeck. Ordinary SSH workspaces use standard PTY/exec channels and the account's
+folder permissions. This document covers the stricter managed integration API.
+
 ShellDeck opens an SSH workspace only through the fixed
 `shelldeck-workspace-v1` subsystem. It never interpolates the catalog path into
 a remote shell command and it does not treat SFTP canonicalization as retained

@@ -1,6 +1,67 @@
 use super::*;
 
 impl AgentConsoleView {
+    pub(crate) fn navigator_visible(&self) -> bool {
+        if self.tools.navigator_wide {
+            self.tools.navigator_visible
+        } else {
+            self.tools.navigator_overlay
+        }
+    }
+
+    pub(crate) fn toggle_navigator(&mut self, cx: &mut Context<Self>) {
+        if self.tools.navigator_wide {
+            self.tools.navigator_visible = !self.tools.navigator_visible;
+            self.schedule_library_save(cx);
+        } else {
+            self.tools.navigator_overlay = !self.tools.navigator_overlay;
+        }
+        cx.emit(AgentConsoleEvent::NavigatorChanged);
+        cx.notify();
+    }
+
+    pub(super) fn close_navigator_overlay(&mut self, cx: &mut Context<Self>) {
+        if self.tools.navigator_overlay {
+            self.tools.navigator_overlay = false;
+            cx.emit(AgentConsoleEvent::NavigatorChanged);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn update_navigator_layout(&mut self, wide: bool, cx: &mut Context<Self>) {
+        if self.tools.navigator_wide != wide {
+            self.tools.navigator_wide = wide;
+            self.tools.navigator_overlay = false;
+            cx.emit(AgentConsoleEvent::NavigatorChanged);
+        }
+    }
+
+    pub(super) fn render_navigator_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
+        // The same navigator floats above narrow content instead of squeezing
+        // the composer. The backdrop dismisses it without changing the session.
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .occlude()
+            .bg(ShellDeckColors::backdrop())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.close_navigator_overlay(cx);
+                }),
+            )
+            .child(
+                div()
+                    .h_full()
+                    .max_w_full()
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(self.render_navigator(cx)),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn render_navigator(&self, cx: &mut Context<Self>) -> AnyElement {
         let parent = cx.entity();
         let running_count = self.sessions.active_count();
@@ -35,7 +96,7 @@ impl AgentConsoleView {
                                 .min_w(px(0.0))
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .text_size(px(10.5))
+                                .text_size(px(12.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(project.label.clone()),
                         ),
@@ -66,7 +127,7 @@ impl AgentConsoleView {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.select_worktree_session(&worktree_option, cx);
                             }))
-                            .text_size(px(9.5))
+                            .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted())
                             .child(lucide_icon(
                                 "git-branch",
@@ -82,7 +143,7 @@ impl AgentConsoleView {
                                         .overflow_hidden()
                                         .text_ellipsis()
                                         .font_family("JetBrains Mono")
-                                        .text_size(px(8.5))
+                                        .text_size(px(10.0))
                                         .child(branch),
                                 )
                             })
@@ -273,7 +334,7 @@ impl AgentConsoleView {
                 .flex()
                 .items_center()
                 .gap(px(7.0))
-                .h(px(33.0))
+                .h(px(38.0))
                 .px(px(8.0))
                 .rounded(px(5.0))
                 .cursor_pointer()
@@ -308,7 +369,7 @@ impl AgentConsoleView {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .text_size(px(10.5))
+                        .text_size(px(12.0))
                         .font_weight(if selected {
                             FontWeight::SEMIBOLD
                         } else {
@@ -316,13 +377,13 @@ impl AgentConsoleView {
                         })
                         .child(session.name.clone()),
                 )
-                .when_some(session_elapsed(session), |row, elapsed| {
+                .when(session.status != AgentSessionStatus::Idle, |row| {
                     row.child(
                         div()
-                            .font_family("JetBrains Mono")
-                            .text_size(px(8.5))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(elapsed),
+                            .flex_shrink_0()
+                            .text_size(px(10.0))
+                            .text_color(status_color(session.status))
+                            .child(session_status_label(session.status)),
                     )
                 })
                 .when(session.unread_count > 0, |row| {
@@ -404,7 +465,7 @@ impl AgentConsoleView {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .text_size(px(10.5))
+                        .text_size(px(12.0))
                         .child(session.name.clone()),
                 )
                 .when(session.attention != AgentSessionAttention::None, |tab| {

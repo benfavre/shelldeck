@@ -14,6 +14,9 @@ pub(super) struct AgentToolsUi {
     pub active: Option<AgentToolSurface>,
     pub panel_visible: bool,
     pub navigator_visible: bool,
+    pub navigator_wide: bool,
+    pub navigator_overlay: bool,
+    pub toolbar_expanded: bool,
     pub panel_width: f32,
     pub measured_width: f32,
     pub inspector_wide: bool,
@@ -30,6 +33,9 @@ impl AgentToolsUi {
             active: None,
             panel_visible: false,
             navigator_visible: true,
+            navigator_wide: true,
+            navigator_overlay: false,
+            toolbar_expanded: false,
             panel_width: 360.0,
             measured_width: 0.0,
             inspector_wide: false,
@@ -68,14 +74,7 @@ impl AgentConsoleView {
         if session.status.is_active() || self.context_locks.contains(&session.id) {
             return session.context.clone();
         }
-        let target = self
-            .selected_connection
-            .and_then(|id| self.connections.iter().find(|c| c.id == id))
-            .map(|c| AgentTarget::Ssh {
-                connection_id: c.id,
-                connection_label: c.label.clone(),
-            })
-            .unwrap_or(AgentTarget::Local);
+        let target = selected_agent_target(self.selected_connection, &self.connections);
         AgentExecutionContext {
             provider: self.provider,
             target,
@@ -130,6 +129,88 @@ impl AgentConsoleView {
         cx.notify();
     }
 
+    fn activate_workspace_tool(&mut self, id: &str, cx: &mut Context<Self>) {
+        match id {
+            "files" => {
+                let close = self.tools.active.is_none()
+                    && self.inspector_tab == AgentInspectorTab::Files
+                    && self.tools.panel_visible;
+                self.tools.active = None;
+                self.inspector_tab = AgentInspectorTab::Files;
+                self.tools.panel_visible = !close;
+            }
+            "review" => {
+                self.tools.active = None;
+                self.inspector_tab = AgentInspectorTab::Changes;
+                self.tools.panel_visible = true;
+                self.refresh_review(cx);
+            }
+            "terminal" => cx.emit(AgentConsoleEvent::OpenTerminal {
+                context: self.displayed_context(cx),
+            }),
+            "browser" => self.show_live_browser(None, cx),
+            "library" => {
+                self.tools.active = Some(AgentToolSurface::Library);
+                self.tools.panel_visible = true;
+            }
+            "workflows" => {
+                self.tools.active = Some(AgentToolSurface::Workflows);
+                self.tools.panel_visible = true;
+            }
+            "delivery" => {
+                self.tools.active = Some(AgentToolSurface::Delivery);
+                self.tools.panel_visible = true;
+            }
+            "sources" => {
+                self.tools.active = Some(AgentToolSurface::Sources);
+                self.tools.panel_visible = true;
+            }
+            _ => self.show_project_instructions(cx),
+        }
+    }
+
+    /// Primary tools share the session header; the full toolbox remains one click away.
+    pub(super) fn render_quick_tools(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut row = div().flex().items_center().flex_shrink_0().gap(px(6.0));
+        for (id, icon, key) in [
+            ("files", "file-text", "agents.inspector.files"),
+            ("review", "git-branch", "agents.inspector.changes"),
+            ("terminal", "terminal", "agents.parity.terminal"),
+        ] {
+            row = row.child(
+                Button::new(SharedString::from(format!("agent-quick-{id}")), "")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Icon)
+                    .w(px(28.0))
+                    .h(px(28.0))
+                    .icon(IconSource::from(icon))
+                    .tooltip(t!(key).to_string())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.activate_workspace_tool(id, cx);
+                        cx.notify();
+                    })),
+            );
+        }
+        row.child(
+            Button::new("agent-more-tools", "")
+                .variant(if self.tools.toolbar_expanded {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .size(ButtonSize::Icon)
+                .w(px(28.0))
+                .h(px(28.0))
+                .icon(IconSource::from("ellipsis"))
+                .tooltip(t!("agents.parity.more_tools").to_string())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.tools.toolbar_expanded = !this.tools.toolbar_expanded;
+                    cx.notify();
+                })),
+        )
+        .into_any_element()
+    }
+
     pub(super) fn render_workspace_tools(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut row = div()
             .flex()
@@ -170,43 +251,7 @@ impl AgentConsoleView {
                 .icon(IconSource::from(icon))
                 .tooltip(t!(key).to_string())
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    match id {
-                        "files" => {
-                            let close = this.tools.active.is_none()
-                                && this.inspector_tab == AgentInspectorTab::Files
-                                && this.tools.panel_visible;
-                            this.tools.active = None;
-                            this.inspector_tab = AgentInspectorTab::Files;
-                            this.tools.panel_visible = !close;
-                        }
-                        "review" => {
-                            this.tools.active = None;
-                            this.inspector_tab = AgentInspectorTab::Changes;
-                            this.tools.panel_visible = true;
-                            this.refresh_review(cx);
-                        }
-                        "terminal" => cx.emit(AgentConsoleEvent::OpenTerminal {
-                            context: this.displayed_context(cx),
-                        }),
-                        "browser" => this.show_live_browser(None, cx),
-                        "library" => {
-                            this.tools.active = Some(AgentToolSurface::Library);
-                            this.tools.panel_visible = true;
-                        }
-                        "workflows" => {
-                            this.tools.active = Some(AgentToolSurface::Workflows);
-                            this.tools.panel_visible = true;
-                        }
-                        "delivery" => {
-                            this.tools.active = Some(AgentToolSurface::Delivery);
-                            this.tools.panel_visible = true;
-                        }
-                        "sources" => {
-                            this.tools.active = Some(AgentToolSurface::Sources);
-                            this.tools.panel_visible = true;
-                        }
-                        _ => this.show_project_instructions(cx),
-                    }
+                    this.activate_workspace_tool(id, cx);
                     cx.notify();
                 })),
             );

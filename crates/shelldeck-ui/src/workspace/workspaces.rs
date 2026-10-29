@@ -197,10 +197,43 @@ fn checkout_presentation(
     CatalogCheckoutPresentation {
         project: project.name().to_owned(),
         checkout: checkout.label().to_owned(),
-        repository: checkout.repository().slug.clone(),
+        repository: if checkout.repository().slug.starts_with("shelldeck-folder:") {
+            t!("workspaces.hub.folder").to_string()
+        } else {
+            checkout.repository().slug.clone()
+        },
         host,
         host_kind,
     }
+}
+
+// A display name is never proof that two local/SSH folders share a repository.
+// Anonymous folders receive distinct identities; only an explicitly supplied
+// repository identity can pair a new checkout with an existing project.
+fn onboarding_identity(
+    catalog: &ProjectCatalog,
+    project_name: &str,
+    repository: Option<String>,
+    checkout_id: CatalogCheckoutId,
+) -> (RepositoryIdentity, Option<CatalogProjectId>) {
+    let existing = repository.as_ref().and_then(|slug| {
+        catalog
+            .projects()
+            .find(|project| {
+                project.name() == project_name
+                    && project
+                        .checkouts()
+                        .any(|checkout| checkout.repository().slug == *slug)
+            })
+            .map(ProjectRecord::id)
+    });
+    (
+        RepositoryIdentity {
+            slug: repository.unwrap_or_else(|| format!("shelldeck-folder:{checkout_id}")),
+            canonical_url: None,
+        },
+        existing,
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -698,6 +731,13 @@ pub(super) struct WorkspaceHubView {
     connections: HashMap<Uuid, String>,
     executor: Arc<dyn WorkspaceLaunchExecutor>,
     onboarding_open: bool,
+    onboarding_advanced: bool,
+    remote_browse_epoch: u64,
+    remote_folder_picker: Option<remote_browse::RemoteFolderSelection>,
+    onboarding_browse_authority: Option<Connection>,
+    onboarding_connection_select: Option<Entity<Select<Uuid>>>,
+    launcher_advanced: bool,
+    overview_open: bool,
     onboarding_ssh: bool,
     onboarding_connection: Option<Uuid>,
     onboarding_project: Entity<InputState>,
@@ -722,6 +762,12 @@ pub(super) struct WorkspaceHubView {
 }
 
 pub(super) enum WorkspaceHubEvent {
+    PresentationChanged,
+    BrowseRemoteFolder {
+        request: u64,
+        connection_id: Uuid,
+        input: String,
+    },
     ActiveTerminal(Entity<TerminalView>),
     OpenPlatformAttention(shelldeck_core::config::platform_attention::PlatformAttentionActivation),
     /// Requests that the application attach/focus the runtime represented by
@@ -729,6 +775,7 @@ pub(super) enum WorkspaceHubEvent {
     /// retained surface itself; provider and browser runtimes cross this
     /// explicit orchestration boundary.
     OpenWorkspacePane(WorkspacePaneActivation),
+    OpenProjectAgents(CatalogCheckoutId),
     /// The project/checkout/workspace tree changed and consumers should pull
     /// a fresh snapshot through `catalog()`.
     CatalogChanged,
@@ -831,8 +878,54 @@ fn retained_surface_entity(
 
 impl WorkspaceHubView {
     pub(super) fn show_launcher(&mut self, cx: &mut Context<Self>) {
-        self.launcher_open = true;
+        self.cancel_remote_folder_picker(cx);
+        let has_checkout = self
+            .catalog
+            .projects()
+            .any(|project| project.checkouts().len() > 0);
+        self.launcher_open = has_checkout;
+        self.onboarding_open = !has_checkout;
         self.error = None;
+        self.presentation_changed(cx);
+    }
+
+    fn show_onboarding(&mut self, cx: &mut Context<Self>) {
+        self.cancel_remote_folder_picker(cx);
+        self.onboarding_open = true;
+        self.launcher_open = false;
+        self.error = None;
+        self.presentation_changed(cx);
+    }
+
+    fn toggle_overview(&mut self, cx: &mut Context<Self>) {
+        self.cancel_remote_folder_picker(cx);
+        self.overview_open = self.onboarding_open || self.launcher_open || !self.overview_open;
+        self.onboarding_open = false;
+        self.launcher_open = false;
+        self.error = None;
+        self.presentation_changed(cx);
+    }
+
+    fn dismiss_forms(&mut self, cx: &mut Context<Self>) {
+        self.cancel_remote_folder_picker(cx);
+        self.onboarding_open = false;
+        self.launcher_open = false;
+        self.error = None;
+        self.presentation_changed(cx);
+    }
+
+    fn retained_surface_visible(&self) -> bool {
+        !self.overview_open
+            && !self.onboarding_open
+            && !self.launcher_open
+            && self
+                .navigation
+                .active()
+                .is_some_and(|id| self.retained.contains_key(&id))
+    }
+
+    fn presentation_changed(&self, cx: &mut Context<Self>) {
+        cx.emit(WorkspaceHubEvent::PresentationChanged);
         cx.notify();
     }
 
@@ -880,6 +973,9 @@ impl WorkspaceHubView {
     /// tab. Selection alone is not visibility: unread accounting consumes
     /// this only while the Workspaces surface itself is on screen.
     pub(super) fn active_agent_session_id(&self) -> Option<Uuid> {
+        if !self.retained_surface_visible() {
+            return None;
+        }
         fn active_session(node: &shelldeck_core::workspace_navigation::PaneNode) -> Option<Uuid> {
             match node {
                 shelldeck_core::workspace_navigation::PaneNode::Leaf(leaf) => {
@@ -1315,14 +1411,22 @@ impl WorkspaceHubView {
         workspace: CatalogWorkspaceId,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.switch_to_checked(workspace, cx)
+        if !self.switch_to_checked(workspace, cx) {
+            return false;
+        }
+        self.overview_open = true;
+        self.presentation_changed(cx);
+        true
     }
 
     pub(super) fn platform_attention_surface_is_visible(
         &self,
         workspace: CatalogWorkspaceId,
     ) -> bool {
-        self.navigation.active() == Some(workspace)
+        self.overview_open
+            && !self.onboarding_open
+            && !self.launcher_open
+            && self.navigation.active() == Some(workspace)
     }
 
     pub(super) fn open_retained_provider_pane(
@@ -1408,7 +1512,7 @@ impl WorkspaceHubView {
         focus: shelldeck_core::workspace_navigation::WorkspaceFocus,
         cx: &App,
     ) -> bool {
-        if self.navigation.active() != Some(workspace) {
+        if !self.retained_surface_visible() || self.navigation.active() != Some(workspace) {
             return false;
         }
         let Some(platform_user_workspace_id) = self
@@ -1569,7 +1673,7 @@ impl WorkspaceHubView {
             retained_subscriptions.push(subscription);
             attention.insert(workspace.id(), AttentionBoard::new(workspace.id()));
         }
-        let onboarding_open = catalog.projects().len() == 0;
+        let onboarding_open = false;
         let onboarding_connection = connections.keys().next().copied();
         let retained_roots = catalog
             .projects()
@@ -1612,6 +1716,13 @@ impl WorkspaceHubView {
             connections,
             executor,
             onboarding_open,
+            onboarding_advanced: false,
+            remote_browse_epoch: 0,
+            remote_folder_picker: None,
+            onboarding_browse_authority: None,
+            onboarding_connection_select: None,
+            launcher_advanced: false,
+            overview_open: false,
             onboarding_ssh: false,
             onboarding_connection,
             onboarding_project: cx.new(InputState::new),
@@ -1710,6 +1821,10 @@ impl WorkspaceHubView {
                         surface.read(cx).terminal.clone(),
                     ));
                 }
+                self.overview_open = false;
+                self.onboarding_open = false;
+                self.launcher_open = false;
+                self.presentation_changed(cx);
                 self.observe_local_card(id, cx);
                 cx.notify();
                 true
@@ -1930,34 +2045,47 @@ impl WorkspaceHubView {
         }
     }
 
+    fn onboarding_path(&self, cx: &App) -> String {
+        let path = self.onboarding_root.read(cx).content();
+        if self.onboarding_ssh {
+            path.to_owned()
+        } else {
+            path.trim().to_owned()
+        }
+    }
+
     fn submit_onboarding(&mut self, cx: &mut Context<Self>) {
-        let project_name = self.onboarding_project.read(cx).content().trim().to_owned();
-        let checkout_name = self
-            .onboarding_checkout
-            .read(cx)
-            .content()
-            .trim()
-            .to_owned();
-        let repository = self
-            .onboarding_repository
-            .read(cx)
-            .content()
-            .trim()
-            .to_owned();
-        let root = self.onboarding_root.read(cx).content().trim().to_owned();
-        if [
-            project_name.as_str(),
-            checkout_name.as_str(),
-            repository.as_str(),
-            root.as_str(),
-        ]
-        .iter()
-        .any(|value| value.is_empty())
-        {
+        if self.remote_folder_picker.is_some() {
+            return;
+        }
+        let root = self.onboarding_path(cx);
+        if root.is_empty() {
             self.error = Some(t!("workspaces.onboarding.required").to_string());
             cx.notify();
             return;
         }
+        let folder_name = if self.onboarding_ssh {
+            root.trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or("")
+                .to_owned()
+        } else {
+            PathBuf::from(&root)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let project_name = non_empty(self.onboarding_project.read(cx).content())
+            .or_else(|| non_empty(&folder_name));
+        let Some(project_name) = project_name else {
+            self.error = Some(t!("workspaces.setup.name_required").to_string());
+            cx.notify();
+            return;
+        };
+        let checkout_name = non_empty(self.onboarding_checkout.read(cx).content())
+            .unwrap_or_else(|| project_name.clone());
+        let repository = non_empty(self.onboarding_repository.read(cx).content());
         let host = if self.onboarding_ssh {
             let Some(connection_id) = self
                 .onboarding_connection
@@ -1980,6 +2108,11 @@ impl WorkspaceHubView {
             }
         } else {
             let entered = PathBuf::from(root);
+            if !entered.is_absolute() {
+                self.error = Some(t!("workspaces.onboarding.required").to_string());
+                cx.notify();
+                return;
+            }
             let canonical = match std::fs::canonicalize(&entered) {
                 Ok(path) if path.is_dir() => path,
                 _ => {
@@ -1994,27 +2127,16 @@ impl WorkspaceHubView {
             }
         };
         let checkout_id = CatalogCheckoutId::new();
-        let checkout = ProjectCheckout::new(
-            checkout_id,
-            checkout_name,
-            host,
-            RepositoryIdentity {
-                slug: repository,
-                canonical_url: None,
-            },
-        );
-        let existing_project = self
-            .catalog
-            .projects()
-            .find(|project| project.name() == project_name)
-            .map(ProjectRecord::id);
+        let (repository, existing_project) =
+            onboarding_identity(&self.catalog, &project_name, repository, checkout_id);
+        let checkout = ProjectCheckout::new(checkout_id, checkout_name, host, repository);
         let result = mutate_and_save(&mut self.catalog, |catalog| {
             if let Some(project_id) = existing_project {
                 catalog
                     .add_checkout(project_id, checkout)
                     .map_err(|error| error.to_string())
             } else {
-                let mut project = ProjectRecord::new(CatalogProjectId::new(), project_name);
+                let mut project = ProjectRecord::new(CatalogProjectId::new(), project_name.clone());
                 project.add_checkout(checkout);
                 catalog
                     .insert_project(project)
@@ -2023,14 +2145,18 @@ impl WorkspaceHubView {
         });
         match result {
             Ok(()) => {
-                self.refresh_checkout_select(Some(checkout_id), cx);
-                self.onboarding_open = false;
-                self.error = None;
                 cx.emit(WorkspaceHubEvent::CatalogChanged);
+                self.open_project_agents(checkout_id, cx);
             }
             Err(error) => self.error = Some(error),
         }
         cx.notify();
+    }
+
+    fn open_project_agents(&mut self, checkout: CatalogCheckoutId, cx: &mut Context<Self>) {
+        self.refresh_checkout_select(Some(checkout), cx);
+        self.dismiss_forms(cx);
+        cx.emit(WorkspaceHubEvent::OpenProjectAgents(checkout));
     }
 
     fn refresh_checkout_select(
@@ -2083,11 +2209,6 @@ impl WorkspaceHubView {
             cx.notify();
             return;
         };
-        if self.launcher.name.is_empty() {
-            self.error = Some(t!("workspaces.launcher.error.name_required").to_string());
-            cx.notify();
-            return;
-        }
         let Some(project_id) = self
             .catalog
             .projects()
@@ -2122,6 +2243,9 @@ impl WorkspaceHubView {
                 return;
             }
         };
+        if self.launcher.name.is_empty() {
+            self.launcher.name = selected_checkout.label().to_owned();
+        }
         let mode = if matches!(selected_checkout.host(), CheckoutHost::Ssh { .. }) {
             WorkspaceLaunchMode::Ssh
         } else {
@@ -2228,6 +2352,7 @@ impl WorkspaceHubView {
         };
         self.pending_requests.insert(workspace, request.clone());
         self.launcher_open = false;
+        self.presentation_changed(cx);
 
         let executor = self.executor.clone();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
@@ -2548,7 +2673,7 @@ impl WorkspaceHubView {
     fn commit_prepared_ssh(
         &mut self,
         request: WorkspaceExecutionRequest,
-        prepared: native_lifecycle::PreparedSshTerminal,
+        mut prepared: native_lifecycle::PreparedSshTerminal,
         cx: &mut Context<Self>,
     ) {
         let workspace = request.workspace;
@@ -2599,6 +2724,8 @@ impl WorkspaceHubView {
             );
             return;
         }
+        // Only the successful catalog commit authorizes the remote interactive shell.
+        prepared.activate();
         if using_unclaimed_terminal {
             self.unclaimed_terminal.take();
         }
@@ -2743,6 +2870,25 @@ impl WorkspaceHubView {
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    fn dismiss_create(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        operation: CreationOperationId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.catalog.workspace(workspace).is_ok()
+            || self
+                .pending_requests
+                .get(&workspace)
+                .is_none_or(|request| request.operation != operation)
+            || !self.creation.dismiss(workspace, operation)
+        {
+            return;
+        }
+        self.pending_requests.remove(&workspace);
         cx.notify();
     }
 
@@ -3031,6 +3177,19 @@ fn completion_can_attach(
         )
 }
 
+#[path = "workspaces_connection_repair.rs"]
+mod connection_repair;
+#[path = "workspaces_project_removal.rs"]
+mod project_removal;
+
+#[path = "workspaces_remote.rs"]
+mod remote_browse;
+#[path = "workspaces_remote_picker.rs"]
+mod remote_picker;
+
+#[path = "workspaces_onboarding.rs"]
+mod onboarding;
+
 #[path = "workspaces_render.rs"]
 mod hub_render;
 fn checkout_options(
@@ -3158,20 +3317,28 @@ fn render_creation_state(state: &BackgroundWorkspaceCreateState) -> impl IntoEle
     };
     div()
         .flex()
-        .items_center()
+        .w_full()
+        .min_w_0()
+        .items_start()
         .gap(px(6.0))
-        .text_size(px(10.0))
+        .text_size(px(12.0))
         .text_color(ShellDeckColors::text_muted())
         .child(lucide_icon(
             "loader-circle",
             12.0,
             ShellDeckColors::primary(),
         ))
-        .child(if detail.is_empty() {
-            label
-        } else {
-            format!("{label} · {detail}")
-        })
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .whitespace_normal()
+                .child(if detail.is_empty() {
+                    label
+                } else {
+                    format!("{label} · {detail}")
+                }),
+        )
 }
 
 fn creation_retryable(state: &BackgroundWorkspaceCreateState) -> bool {

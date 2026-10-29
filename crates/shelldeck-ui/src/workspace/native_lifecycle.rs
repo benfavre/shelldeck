@@ -13,7 +13,6 @@ use shelldeck_core::workspace_navigation::{
 };
 use shelldeck_ssh::client::SshClient;
 use shelldeck_ssh::session::{SshChannel, SshChannelData};
-use shelldeck_ssh::workspace_helper::WorkspacePrepareRequest;
 use shelldeck_terminal::session::TerminalSession;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
@@ -81,10 +80,19 @@ pub(super) struct PreparedSshTerminal {
     pub session: TerminalSession,
     pub connection_id: uuid::Uuid,
     controller: tokio::sync::mpsc::UnboundedSender<SshControllerCommand>,
+    activation: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl PreparedSshTerminal {
+    /// Called only after the workspace catalog has committed successfully.
+    pub(super) fn activate(&mut self) {
+        if let Some(sender) = self.activation.get_mut().take() {
+            let _ = sender.send(());
+        }
+    }
+
     pub(super) fn shutdown(&self) {
+        self.activation.lock().take();
         let _ = self.controller.send(SshControllerCommand::Shutdown);
     }
 }
@@ -193,6 +201,10 @@ impl TryFrom<WorktreeJournal> for WorktreeEffect {
 }
 
 pub(super) trait WorkspaceLaunchExecutor: Send + Sync {
+    fn update_connections(&self, _connections: &[Connection]) -> Vec<uuid::Uuid> {
+        Vec::new()
+    }
+
     fn launch(
         &self,
         request: WorkspaceExecutionRequest,
@@ -249,7 +261,7 @@ pub(super) struct NativeWorkspaceExecutor {
     cancellations: Arc<parking_lot::Mutex<BTreeMap<CreationOperationId, Arc<LaunchCancellation>>>>,
     receipts: Arc<parking_lot::Mutex<BTreeMap<CreationOperationId, WorkspaceLaunchReceipt>>>,
     git: Arc<dyn GitWorktreeAdapter>,
-    connections: Arc<HashMap<uuid::Uuid, Connection>>,
+    connections: Arc<parking_lot::RwLock<HashMap<uuid::Uuid, Connection>>>,
 }
 
 pub(super) enum NativeLaunchOutcome {
@@ -346,12 +358,12 @@ impl NativeWorkspaceExecutor {
             cancellations: Arc::default(),
             receipts: Arc::default(),
             git: Arc::new(SystemGitWorktreeAdapter),
-            connections: Arc::new(
+            connections: Arc::new(parking_lot::RwLock::new(
                 connections
                     .into_iter()
                     .map(|connection| (connection.id, connection))
                     .collect(),
-            ),
+            )),
         }
     }
 
@@ -365,6 +377,25 @@ impl NativeWorkspaceExecutor {
 }
 
 impl WorkspaceLaunchExecutor for NativeWorkspaceExecutor {
+    fn update_connections(&self, connections: &[Connection]) -> Vec<uuid::Uuid> {
+        let mut current = self.connections.write();
+        let retired = current
+            .values()
+            .filter(|previous| {
+                !connections
+                    .iter()
+                    .any(|next| same_ssh_authority(previous, next))
+            })
+            .map(|connection| connection.id)
+            .collect();
+        *current = connections
+            .iter()
+            .cloned()
+            .map(|connection| (connection.id, connection))
+            .collect();
+        retired
+    }
+
     fn launch(
         &self,
         request: WorkspaceExecutionRequest,
@@ -393,14 +424,22 @@ impl WorkspaceLaunchExecutor for NativeWorkspaceExecutor {
                 remote_root,
             } = &request.host
             {
-                let connection = connections.get(connection_id).cloned().ok_or_else(|| {
-                    runtime_unavailable("workspaces.launcher.ssh_executor_unavailable")
-                })?;
+                let connection =
+                    connections
+                        .read()
+                        .get(connection_id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            runtime_unavailable("workspaces.launcher.ssh_executor_unavailable")
+                        })?;
+                for phase in phases.into_iter().take(2) {
+                    send_progress(&events, &request, phase)?;
+                }
                 let receipt = match prepare_ssh_workspace(
                     connection,
                     remote_root.clone(),
-                    request.operation,
-                    request.workspace,
+                    request.clone(),
+                    events.clone(),
                     cancellation.clone(),
                 )
                 .await
@@ -417,7 +456,7 @@ impl WorkspaceLaunchExecutor for NativeWorkspaceExecutor {
                     compensate_receipt(receipt).await?;
                     return Ok(());
                 }
-                for phase in phases {
+                for phase in phases.into_iter().skip(3) {
                     if cancellation.requested.load(Ordering::Acquire) {
                         compensate_receipt(receipt).await?;
                         return Ok(());
@@ -578,6 +617,17 @@ impl WorkspaceLaunchExecutor for NativeWorkspaceExecutor {
     }
 }
 
+pub(super) fn same_ssh_authority(a: &Connection, b: &Connection) -> bool {
+    a.id == b.id
+        && a.hostname == b.hostname
+        && a.port == b.port
+        && a.user == b.user
+        && a.identity_file == b.identity_file
+        && a.proxy_jump == b.proxy_jump
+        && a.forward_agent == b.forward_agent
+        && a.source == b.source
+}
+
 fn send_progress(
     events: &mpsc::UnboundedSender<WorkspaceCreateEvent>,
     request: &WorkspaceExecutionRequest,
@@ -599,21 +649,45 @@ fn send_progress(
 
 async fn wait_for_ssh_cancellation(cancellation: &AtomicBool) {
     while !cancellation.load(Ordering::Acquire) {
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        // Also polled by GPUI while it awaits the dedicated SSH worker.
+        async_io::Timer::after(Duration::from_millis(5)).await;
+    }
+}
+
+const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const SSH_FOLDER_TIMEOUT: Duration = Duration::from_secs(15);
+const SSH_DISCONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+
+// Works on both GPUI and the dedicated Tokio worker. Dropping a timed-out
+// operation retires its future; the owning worker then disconnects the session.
+async fn bounded_ssh_step<T>(
+    future: impl Future<Output = shelldeck_ssh::Result<T>>,
+    cancelled: &AtomicBool,
+    timeout: Duration,
+    stage: &'static str,
+) -> Result<T, &'static str> {
+    tokio::select! {
+        biased;
+        _ = wait_for_ssh_cancellation(cancelled) => Err("cancelled"),
+        _ = async_io::Timer::after(timeout) => Err("timeout"),
+        result = future => result.map_err(|error| match error {
+            shelldeck_ssh::SshError::Timeout => "timeout",
+            _ => stage,
+        }),
     }
 }
 
 async fn prepare_ssh_workspace(
     connection: Connection,
     remote_root: String,
-    operation: CreationOperationId,
-    workspace: CatalogWorkspaceId,
+    execution: WorkspaceExecutionRequest,
+    events: mpsc::UnboundedSender<WorkspaceCreateEvent>,
     cancellation: Arc<LaunchCancellation>,
 ) -> Result<WorkspaceLaunchReceipt, WorkspaceCreateFailure> {
     let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
     let thread_cancellation = cancellation.clone();
     std::thread::Builder::new()
-        .name(format!("workspace-ssh-{operation}"))
+        .name(format!("workspace-ssh-{}", execution.operation))
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -626,49 +700,44 @@ async fn prepare_ssh_workspace(
                 }
             };
             runtime.block_on(async move {
+                let cancelled = &thread_cancellation.requested;
                 let client = SshClient::new();
-                let session = tokio::select! {
-                    _ = wait_for_ssh_cancellation(&thread_cancellation.requested) => return,
-                    result = client.connect(&connection) => match result {
-                        Ok(session) => session,
-                        Err(_) => {
-                            let _ = prepared_tx.send(Err("connect"));
-                            return;
-                        }
-                    },
-                };
-                let mut helper = tokio::select! {
-                    _ = wait_for_ssh_cancellation(&thread_cancellation.requested) => {
-                        let _ = session.disconnect().await;
+                let session = match bounded_ssh_step(
+                    client.connect(&connection),
+                    cancelled,
+                    SSH_CONNECT_TIMEOUT,
+                    "connect",
+                )
+                .await
+                {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let _ = prepared_tx.send(Err(error));
                         return;
                     }
-                    result = session.open_workspace_helper(24, 80) => match result {
-                        Ok(helper) => helper,
-                        Err(_) => {
-                            let _ = prepared_tx.send(Err("helper"));
-                            let _ = session.disconnect().await;
-                            return;
-                        }
-                    },
                 };
-                let request = WorkspacePrepareRequest {
-                    operation: operation.as_uuid(),
-                    workspace: workspace.as_uuid(),
-                    remote_root,
-                };
-                let receipt = tokio::select! {
-                    _ = wait_for_ssh_cancellation(&thread_cancellation.requested) => {
-                        let _ = session.disconnect().await;
+                // All work after connection, including cleanup, has a deadline.
+                // Session drop/runtime shutdown still closes sockets if disconnect stalls.
+                let preparation = async {
+                    send_progress(&events, &execution, WorkspaceCreatePhase::PreparingCheckout)
+                        .map_err(|_| "receiver")?;
+                    bounded_ssh_step(
+                        session.prepare_folder_shell(&remote_root, 24, 80),
+                        cancelled,
+                        SSH_FOLDER_TIMEOUT,
+                        "folder",
+                    )
+                    .await
+                }
+                .await;
+                let folder = match preparation {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let _ = prepared_tx.send(Err(error));
+                        let _ = tokio::time::timeout(SSH_DISCONNECT_TIMEOUT, session.disconnect())
+                            .await;
                         return;
                     }
-                    result = helper.prepare(request) => match result {
-                        Ok(receipt) => receipt,
-                        Err(_) => {
-                            let _ = prepared_tx.send(Err("prepare"));
-                            let _ = session.disconnect().await;
-                            return;
-                        }
-                    },
                 };
                 let (controller, mut commands) = tokio::sync::mpsc::unbounded_channel();
                 let prepared = PreparedSshWorkspace {
@@ -677,23 +746,31 @@ async fn prepare_ssh_workspace(
                     controller,
                 };
                 if prepared_tx.send(Ok(prepared)).is_err() {
-                    let _ = helper.release(&receipt).await;
-                    let _ = session.disconnect().await;
+                    let _ = tokio::time::timeout(SSH_FOLDER_TIMEOUT, folder.release()).await;
+                    let _ =
+                        tokio::time::timeout(SSH_DISCONNECT_TIMEOUT, session.disconnect()).await;
                     return;
                 }
 
-                let mut helper = Some(helper);
+                let mut folder = Some(folder);
                 let mut resumed = false;
                 while let Some(command) = commands.recv().await {
                     match command {
                         SshControllerCommand::Resume(reply) => {
-                            let result = match helper.take() {
-                                Some(channel) => match channel.resume(&receipt).await {
+                            let result = match folder.take() {
+                                Some(channel) => match bounded_ssh_step(
+                                    channel.resume(),
+                                    cancelled,
+                                    SSH_FOLDER_TIMEOUT,
+                                    "resume",
+                                )
+                                .await
+                                {
                                     Ok(channel) => {
                                         resumed = true;
                                         Ok(channel)
                                     }
-                                    Err(_) => Err("resume"),
+                                    Err(error) => Err(error),
                                 },
                                 None => Err("state"),
                             };
@@ -704,9 +781,12 @@ async fn prepare_ssh_workspace(
                             }
                         }
                         SshControllerCommand::Release(reply) => {
-                            let result = match helper.take() {
+                            let result = match folder.take() {
                                 Some(channel) => {
-                                    channel.release(&receipt).await.map_err(|_| "release")
+                                    tokio::time::timeout(SSH_FOLDER_TIMEOUT, channel.release())
+                                        .await
+                                        .map_err(|_| "timeout")
+                                        .and_then(|result| result.map_err(|_| "release"))
                                 }
                                 None => Err("state"),
                             };
@@ -717,20 +797,30 @@ async fn prepare_ssh_workspace(
                     }
                 }
                 if !resumed {
-                    if let Some(channel) = helper {
-                        let _ = channel.release(&receipt).await;
+                    if let Some(channel) = folder {
+                        let _ = tokio::time::timeout(SSH_FOLDER_TIMEOUT, channel.release()).await;
                     }
                 }
-                let _ = session.disconnect().await;
+                let _ = tokio::time::timeout(SSH_DISCONNECT_TIMEOUT, session.disconnect()).await;
             });
         })
         .map_err(|_| runtime_unavailable("workspaces.launcher.ssh_executor_unavailable"))?;
 
+    await_prepared_ssh_workspace(prepared_rx, &cancellation.requested).await
+}
+
+// The caller runs on GPUI's executor, outside the SSH worker's Tokio runtime.
+async fn await_prepared_ssh_workspace(
+    prepared_rx: tokio::sync::oneshot::Receiver<Result<PreparedSshWorkspace, &'static str>>,
+    cancelled: &AtomicBool,
+) -> Result<WorkspaceLaunchReceipt, WorkspaceCreateFailure> {
     tokio::select! {
-        _ = wait_for_ssh_cancellation(&cancellation.requested) => Err(cancelled_failure()),
+        _ = wait_for_ssh_cancellation(cancelled) => Err(cancelled_failure()),
         result = prepared_rx => match result {
             Ok(Ok(prepared)) => Ok(WorkspaceLaunchReceipt::Ssh(prepared)),
-            _ if cancellation.requested.load(Ordering::Acquire) => Err(cancelled_failure()),
+            _ if cancelled.load(Ordering::Acquire) => Err(cancelled_failure()),
+            Ok(Err("timeout")) => Err(runtime_unavailable("workspaces.launcher.ssh_timeout")),
+            Ok(Err("folder")) => Err(runtime_unavailable("workspaces.launcher.ssh_folder_unavailable")),
             _ => Err(runtime_unavailable("workspaces.launcher.ssh_executor_unavailable")),
         }
     }
@@ -774,19 +864,7 @@ pub(super) async fn prepare_ssh_terminal(
     terminal.set_resize_fn(Box::new(move |rows, cols| {
         let _ = resize_tx.send((rows, cols));
     }));
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    controller
-        .send(SshControllerCommand::Resume(reply_tx))
-        .map_err(|_| runtime_unavailable("workspaces.launcher.ssh_executor_unavailable"))?;
-    let channel = match reply_rx.await {
-        Ok(Ok(channel)) => channel,
-        _ => {
-            let _ = controller.send(SshControllerCommand::Shutdown);
-            return Err(runtime_unavailable(
-                "workspaces.launcher.ssh_executor_unavailable",
-            ));
-        }
-    };
+    let (activation, activated) = tokio::sync::oneshot::channel();
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -804,6 +882,33 @@ pub(super) async fn prepare_ssh_terminal(
         .name(format!("workspace-terminal-{connection_id}"))
         .spawn(move || {
             runtime.block_on(async move {
+                if activated.await.is_err() {
+                    let _ = shutdown.send(SshControllerCommand::Shutdown);
+                    return;
+                }
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                let channel = if shutdown
+                    .send(SshControllerCommand::Resume(reply_tx))
+                    .is_ok()
+                {
+                    match tokio::time::timeout(
+                        SSH_FOLDER_TIMEOUT + Duration::from_secs(1),
+                        reply_rx,
+                    )
+                    .await
+                    {
+                        Ok(Ok(Ok(channel))) => Some(channel),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                let Some(channel) = channel else {
+                    let message = t!("workspaces.launcher.ssh_folder_unavailable");
+                    let _ = data_tx.send(format!("\r\n{message}\r\n").into_bytes());
+                    let _ = shutdown.send(SshControllerCommand::Shutdown);
+                    return;
+                };
                 let (mut reader, writer) = channel.split();
                 let write_task = tokio::spawn(async move {
                     let mut resize_open = true;
@@ -851,6 +956,7 @@ pub(super) async fn prepare_ssh_terminal(
         session: terminal,
         connection_id,
         controller,
+        activation: parking_lot::Mutex::new(Some(activation)),
     })
 }
 
@@ -2299,6 +2405,248 @@ mod tests {
     use super::*;
     use std::process::Command as StdCommand;
 
+    // SDTEST-2723 — SDUC-491: a silent SSH preparation cannot remain queued
+    // indefinitely, and cancellation/timeout actually retire the pending future.
+    #[test]
+    fn sdtest_2723_ssh_steps_bound_silence_and_cancel_without_tokio_runtime() {
+        struct PendingDrop(Arc<AtomicBool>);
+        impl Drop for PendingDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        futures_lite::future::block_on(async {
+            for cancelled in [false, true] {
+                let retired = Arc::new(AtomicBool::new(false));
+                let guard = PendingDrop(retired.clone());
+                let pending = async move {
+                    let _guard = guard;
+                    futures_lite::future::pending::<shelldeck_ssh::Result<()>>().await
+                };
+                let result = bounded_ssh_step(
+                    pending,
+                    &AtomicBool::new(cancelled),
+                    Duration::from_millis(10),
+                    "prepare",
+                )
+                .await;
+                assert_eq!(result, Err(if cancelled { "cancelled" } else { "timeout" }));
+                assert!(retired.load(Ordering::Acquire));
+            }
+            let result = bounded_ssh_step(
+                async { Err::<(), _>(shelldeck_ssh::SshError::SessionClosed) },
+                &AtomicBool::new(false),
+                Duration::from_secs(1),
+                "helper",
+            )
+            .await;
+            assert_eq!(result, Err("helper"));
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tx.send(Err("timeout")).ok().unwrap();
+            let failure = await_prepared_ssh_workspace(rx, &AtomicBool::new(false))
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(failure.message, t!("workspaces.launcher.ssh_timeout"));
+        });
+    }
+
+    // SDTEST-2731 — SDUC-491: ordinary SSH folder refusal reports a folder
+    // error, while timeout, cancellation and failed connection stay distinct.
+    #[test]
+    fn sdtest_2731_ordinary_ssh_folder_errors_do_not_require_server_installation() {
+        futures_lite::future::block_on(async {
+            assert_eq!(
+                bounded_ssh_step(
+                    async { Err::<(), _>(shelldeck_ssh::SshError::Timeout) },
+                    &AtomicBool::new(false),
+                    Duration::from_secs(1),
+                    "folder"
+                )
+                .await,
+                Err("timeout")
+            );
+            for (stage, key) in [
+                ("folder", "workspaces.launcher.ssh_folder_unavailable"),
+                ("timeout", "workspaces.launcher.ssh_timeout"),
+                ("connect", "workspaces.launcher.ssh_executor_unavailable"),
+            ] {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                tx.send(Err(stage)).ok().unwrap();
+                let failure = await_prepared_ssh_workspace(rx, &AtomicBool::new(false))
+                    .await
+                    .err()
+                    .unwrap();
+                assert_eq!(failure.message, t!(key));
+                assert!(failure.retryable);
+            }
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tx.send(Err("folder")).ok().unwrap();
+            let failure = await_prepared_ssh_workspace(rx, &AtomicBool::new(true))
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(failure.message, CANCELLED_MESSAGE);
+        });
+    }
+
+    // SDTEST-2732 — SDUC-491: preparing a local terminal bridge grants no
+    // remote shell authority. Only post-commit activation sends one Resume.
+    #[tokio::test]
+    async fn sdtest_2732_ssh_terminal_resumes_only_after_commit_activation() {
+        for action in ["drop", "shutdown", "activate"] {
+            let (controller, mut commands) = mpsc::unbounded_channel();
+            let mut prepared = prepare_ssh_terminal(PreparedSshWorkspace {
+                connection_id: uuid::Uuid::new_v4(),
+                title: "Commit gate fixture".into(),
+                controller,
+            })
+            .await
+            .ok()
+            .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), commands.recv())
+                    .await
+                    .is_err(),
+                "preparation must not resume before catalog commit"
+            );
+            match action {
+                "activate" => {
+                    prepared.activate();
+                    prepared.activate();
+                }
+                "shutdown" => {
+                    prepared.shutdown();
+                    prepared.activate();
+                }
+                _ => {}
+            }
+            drop(prepared);
+            let mut resumes = 0;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while let Some(command) = commands.recv().await {
+                    match command {
+                        SshControllerCommand::Resume(reply) => {
+                            resumes += 1;
+                            // No network: the fake controller refuses the resumed shell.
+                            let _ = reply.send(Err("resume"));
+                        }
+                        SshControllerCommand::Shutdown => {}
+                        SshControllerCommand::Release(_) => panic!("unexpected release"),
+                    }
+                }
+            })
+            .await
+            .expect("bridge must terminate and release controller custody");
+            assert_eq!(resumes, usize::from(action == "activate"));
+        }
+    }
+
+    // SDTEST-2724 — SDUC-491: refresh is authoritative even for a launch future
+    // created before refresh but not yet polled; removed profiles cannot connect.
+    #[test]
+    fn sdtest_2724_connection_refresh_retires_stale_executor_authority() {
+        let mut connection =
+            Connection::new_manual("Fixture".into(), "127.0.0.1".into(), "test".into());
+        connection.port = 0;
+        let executor = NativeWorkspaceExecutor::with_connections(vec![connection.clone()]);
+        let mut request = ssh_request(CatalogWorkspaceId::new());
+        request.host = AuthorizedLaunchHost::Ssh {
+            connection_id: connection.id,
+            remote_root: "/qa".into(),
+        };
+        let (events, mut received) = mpsc::unbounded_channel();
+        let pending = executor.launch(request, events);
+        let replacement =
+            Connection::new_manual("Replacement".into(), "127.0.0.1".into(), "test".into());
+        executor.update_connections(&[replacement.clone()]);
+        let failure = futures_lite::future::block_on(pending).err().unwrap();
+        assert_eq!(failure.kind, WorkspaceCreateFailureKind::RuntimeUnavailable);
+        assert_eq!(
+            received.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        );
+        assert!(executor.connections.read().contains_key(&replacement.id));
+        assert!(!executor.connections.read().contains_key(&connection.id));
+    }
+
+    // SDTEST-2726 — SDUC-491: refresh cancels only changed SSH authority,
+    // preserving in-flight work during cosmetic/status updates.
+    #[test]
+    fn sdtest_2726_connection_refresh_identifies_only_retired_authority() {
+        let connection =
+            Connection::new_manual("Fixture".into(), "127.0.0.1".into(), "test".into());
+        let executor = NativeWorkspaceExecutor::with_connections(vec![connection.clone()]);
+        let mut cosmetic = connection.clone();
+        cosmetic.alias = "New label".into();
+        cosmetic.status = shelldeck_core::models::ConnectionStatus::Connected;
+        cosmetic.tags.push("favorite".into());
+        assert!(executor.update_connections(&[cosmetic.clone()]).is_empty());
+        let mut retargeted = cosmetic.clone();
+        retargeted.user = "other-account".into();
+        assert_eq!(
+            executor.update_connections(&[retargeted.clone()]),
+            vec![connection.id]
+        );
+        assert!(executor.update_connections(&[retargeted]).is_empty());
+        assert_eq!(executor.update_connections(&[]), vec![connection.id]);
+        assert!(executor.update_connections(&[]).is_empty());
+    }
+
+    // SDTEST-2721 — GPUI polls the receipt wait without a Tokio reactor.
+    #[test]
+    fn sdtest_2721_ssh_preparation_wait_runs_without_tokio_runtime() {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        futures_lite::future::block_on(async {
+            // Delay every reply so the pending cancellation timer is polled.
+            let cancelled = AtomicBool::new(false);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let connection_id = uuid::Uuid::new_v4();
+            let (controller, _commands) = tokio::sync::mpsc::unbounded_channel();
+            let deliver = async {
+                async_io::Timer::after(Duration::from_millis(15)).await;
+                assert!(tx
+                    .send(Ok(PreparedSshWorkspace {
+                        connection_id,
+                        title: "Test".into(),
+                        controller,
+                    }))
+                    .is_ok());
+                futures_lite::future::pending().await
+            };
+            let result =
+                futures_lite::future::race(await_prepared_ssh_workspace(rx, &cancelled), deliver)
+                    .await;
+            assert!(matches!(result, Ok(WorkspaceLaunchReceipt::Ssh(prepared))
+                if prepared.connection_id == connection_id));
+
+            let (_tx, rx) = tokio::sync::oneshot::channel();
+            let cancel = async {
+                async_io::Timer::after(Duration::from_millis(15)).await;
+                cancelled.store(true, Ordering::Release);
+                futures_lite::future::pending().await
+            };
+            let result =
+                futures_lite::future::race(await_prepared_ssh_workspace(rx, &cancelled), cancel)
+                    .await;
+            assert!(matches!(result, Err(error) if error.message == CANCELLED_MESSAGE));
+
+            cancelled.store(false, Ordering::Release);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let disconnect = async {
+                async_io::Timer::after(Duration::from_millis(15)).await;
+                drop(tx);
+                futures_lite::future::pending().await
+            };
+            let result = futures_lite::future::race(
+                await_prepared_ssh_workspace(rx, &cancelled),
+                disconnect,
+            )
+            .await;
+            assert!(matches!(result, Err(error) if error.message != CANCELLED_MESSAGE));
+        });
+    }
+
     fn git(root: &Path, args: &[&str]) -> String {
         let output = StdCommand::new("git")
             .args(args)
@@ -2434,7 +2782,7 @@ branch refs/heads/fix/actual
 
     // SDTEST-1780 — SDUC-491
     #[tokio::test]
-    async fn sdtest_1780_ssh_launch_refuses_before_progress_without_trusted_beneath_helper() {
+    async fn sdtest_1780_ssh_launch_refuses_before_progress_without_saved_connection() {
         let executor = NativeWorkspaceExecutor::default();
         let request = ssh_request(CatalogWorkspaceId::new());
         let operation = request.operation;

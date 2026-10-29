@@ -1,9 +1,9 @@
-# Launch Agents directly
+# Launch Agents
 
-The installed ShellDeck application can open its Agents interface directly:
+The installed ShellDeck application opens Agents by default:
 
 ```bash
-shelldeck --agents
+shelldeck
 ```
 
 This uses the production `shelldeck` executable, the same account, settings,
@@ -12,14 +12,21 @@ The normal welcome, login and Dev capability checks still apply.
 
 If ShellDeck is already running, the launch request is handed to the existing
 application through its single-instance routing. It does not start a second
-agent runtime. Launching `shelldeck` normally returns to the full ShellDeck
+agent runtime. A normal launch or macOS reopen focuses Agents. Use the in-app
+full-application action or `shelldeck --main` to return to the full ShellDeck
 interface; retained agent conversations and running sessions keep their state.
+In Dev mode the full interface also lands on Agents, the second sidebar item
+after Connections. Restored terminals remain available in the Terminals section.
+Explicit deep links keep their requested destination. Normal cold launches still
+respect the configured start-hidden companion preference; `--agents` explicitly
+opens the visible Agents window. Neither choice changes saved account roles or
+app mode, and launching the view does not start a provider run.
 
 ## Installed launchers
 
 - **Linux:** choose **Open Agents** from the ShellDeck desktop launcher's actions
-  when supported by the desktop environment. The default action still opens
-  ShellDeck, and `shelldeck://` URL handling remains registered to the normal
+  when supported by the desktop environment. The default action also opens
+  Agents, and `shelldeck://` URL handling remains registered to the normal
   application. An AppImage also accepts `./ShellDeck-x86_64.AppImage --agents`.
 - **Windows:** choose **ShellDeck Agents** in the ShellDeck Start Menu folder.
   The NSIS installer and per-user PowerShell installer both create this shortcut
@@ -33,7 +40,7 @@ interface; retained agent conversations and running sessions keep their state.
 
   `-n` makes Launch Services pass the command-line arguments even when ShellDeck
   is already open. ShellDeck's own single-instance handoff routes the request
-  to its existing window. Run `open -na ShellDeck` to return to the full app.
+  to its existing window. Run `open -na ShellDeck --args --main` to return to the full app.
   A separate wrapper app or second bundle is not required.
 
 If the installer has just added ShellDeck to `PATH`, reopen the terminal first.

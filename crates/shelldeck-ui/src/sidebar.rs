@@ -213,9 +213,9 @@ impl SidebarSection {
     pub fn rail_activities() -> &'static [SidebarSection] {
         &[
             SidebarSection::Connections,
+            SidebarSection::Agents,
             SidebarSection::Workspaces,
             SidebarSection::Terminals,
-            SidebarSection::Agents,
             SidebarSection::Scripts,
             SidebarSection::PortForwards,
             SidebarSection::ServerSync,

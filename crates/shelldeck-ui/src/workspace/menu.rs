@@ -39,7 +39,7 @@ impl Workspace {
                 .account
                 .as_ref()
                 .is_some_and(|a| a.is_superadmin),
-            sidebar_visible: self.sidebar_visible,
+            sidebar_visible: self.contextual_sidebar_visible(cx),
             menu_bar_visible: self.app_config.general.menu_bar_visible,
             has_monique: self.has_monique(),
             has_fleet: self.platform_connection().is_some() || self.fleet_snapshot.is_some(),

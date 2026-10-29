@@ -2,6 +2,342 @@ use super::*;
 
 #[cfg(test)]
 mod tests {
+    // SDTEST-2733 — Add project saves its checkout then opens Agents, never a terminal.
+    #[test]
+    fn onboarding_opens_agents_with_saved_local_or_ssh_checkout_without_launching() {
+        let mut app = TestAppContext::single();
+        let catalog = ProjectCatalog::load().unwrap();
+        let prior_workspaces = catalog.workspaces().count();
+        let connection = shelldeck_core::models::Connection::new_manual(
+            "QA target".into(),
+            "invalid.example".into(),
+            "qa".into(),
+        );
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| {
+                WorkspaceHubView::new(Ok(catalog), &[connection.clone()], terminal.clone(), cx)
+            })
+        });
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = opened.clone();
+        let _subscription = app.update(|cx| {
+            cx.subscribe(&hub, move |hub, event, cx| {
+                if let super::WorkspaceHubEvent::OpenProjectAgents(checkout) = event {
+                    assert!(hub
+                        .read(cx)
+                        .catalog
+                        .projects()
+                        .any(|project| project.checkouts().any(|item| item.id() == *checkout)));
+                    observed.borrow_mut().push(*checkout);
+                }
+            })
+        });
+        let local = tempfile::tempdir().unwrap();
+        for ssh in [false, true] {
+            let expected = if ssh {
+                "/srv/client folder ".to_owned()
+            } else {
+                local.path().canonicalize().unwrap().display().to_string()
+            };
+            hub.update(&mut app, |hub, cx| {
+                hub.show_onboarding(cx);
+                hub.onboarding_ssh = ssh;
+                hub.onboarding_connection = ssh.then_some(connection.id);
+                hub.onboarding_root
+                    .update(cx, |input, cx| input.replace_content(expected.clone(), cx));
+                hub.submit_onboarding(cx);
+                assert!(hub.error.is_none(), "{:?}", hub.error);
+                assert!(!hub.onboarding_open && !hub.launcher_open);
+                assert!(hub.pending_requests.is_empty());
+                assert_eq!(hub.catalog.workspaces().count(), prior_workspaces);
+                assert_eq!(terminal.read(cx).tab_count(), 0);
+            });
+            let id = *opened.borrow().last().expect("Agents navigation emitted");
+            hub.read_with(&app, |hub, _| {
+                let groups = crate::workspace::agents::agent_project_groups(
+                    &hub.catalog,
+                    &[connection.clone()],
+                );
+                let option = groups
+                    .iter()
+                    .flat_map(|group| &group.worktrees)
+                    .find(|item| item.id == id.to_string())
+                    .unwrap();
+                assert_eq!(option.path, expected);
+                match &option.target {
+                    shelldeck_core::agent_runtime::AgentTarget::Local => assert!(!ssh),
+                    shelldeck_core::agent_runtime::AgentTarget::Ssh { connection_id, .. } => {
+                        assert!(ssh);
+                        assert_eq!(*connection_id, connection.id);
+                    }
+                }
+            });
+        }
+        assert_eq!(opened.borrow().len(), 2);
+    }
+
+    // SDTEST-2725 — removing a failed attempt cannot delete data or a newer operation.
+    #[test]
+    fn dismiss_failed_workspace_preserves_catalog_and_fences_late_events() {
+        let mut app = TestAppContext::single();
+        let (catalog, existing, _, checkout, ..) = fixture_catalog();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal.clone(), cx))
+        });
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("keep.txt"), "keep").unwrap();
+        hub.update(&mut app, |hub, cx| {
+            let snapshot = hub.catalog.clone();
+            let workspace = CatalogWorkspaceId::new();
+            let revision = hub.catalog.revision();
+            let operation = CreationOperationId::new();
+            let newer = CreationOperationId::new();
+            let project = hub.catalog.workspace(existing).unwrap().project_id();
+            hub.pending_requests.insert(
+                workspace,
+                WorkspaceExecutionRequest {
+                    workspace,
+                    project,
+                    source_checkout: checkout,
+                    checkout,
+                    created_checkout: None,
+                    operation,
+                    catalog_revision: revision,
+                    name: "Failed attempt".into(),
+                    intake: WorkspaceLaunchIntake::Manual,
+                    host: AuthorizedLaunchHost::LocalExisting {
+                        authority: crate::terminal_view::AuthorizedLocalRoot::capture(root.path())
+                            .unwrap(),
+                    },
+                    mode: WorkspaceLaunchMode::ExistingFolder,
+                },
+            );
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Start {
+                        workspace,
+                        operation,
+                    },
+                )
+                .unwrap();
+            hub.dismiss_create(workspace, operation, cx);
+            assert!(hub.pending_requests.contains_key(&workspace));
+            let failure = WorkspaceCreateFailure {
+                kind: WorkspaceCreateFailureKind::Filesystem,
+                message: "fixture".into(),
+                retryable: true,
+            };
+            hub.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Failed {
+                    workspace,
+                    operation,
+                    failure: failure.clone(),
+                },
+                cx,
+            );
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Retry {
+                        workspace,
+                        prior_operation: operation,
+                        operation: newer,
+                    },
+                )
+                .unwrap();
+            hub.pending_requests.get_mut(&workspace).unwrap().operation = newer;
+            hub.dismiss_create(workspace, operation, cx);
+            assert!(hub.pending_requests.contains_key(&workspace));
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::RequestCancel {
+                        workspace,
+                        operation: newer,
+                    },
+                )
+                .unwrap();
+            hub.dismiss_create(workspace, newer, cx);
+            assert!(hub.pending_requests.contains_key(&workspace));
+            hub.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Cancelled {
+                    workspace,
+                    operation: newer,
+                },
+                cx,
+            );
+            hub.dismiss_create(workspace, newer, cx);
+            assert!(!hub.pending_requests.contains_key(&workspace));
+            assert!(hub.creation.state(workspace).is_none());
+            hub.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Completed {
+                    workspace,
+                    operation: newer,
+                },
+                cx,
+            );
+            assert!(!hub.pending_requests.contains_key(&workspace));
+            assert!(hub
+                .creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Start {
+                        workspace,
+                        operation: newer
+                    }
+                )
+                .is_err());
+            let final_operation = CreationOperationId::new();
+            hub.pending_requests.insert(
+                workspace,
+                WorkspaceExecutionRequest {
+                    workspace,
+                    project,
+                    source_checkout: checkout,
+                    checkout,
+                    created_checkout: None,
+                    operation: final_operation,
+                    catalog_revision: revision,
+                    name: "Another failure".into(),
+                    intake: WorkspaceLaunchIntake::Manual,
+                    host: AuthorizedLaunchHost::LocalExisting {
+                        authority: crate::terminal_view::AuthorizedLocalRoot::capture(root.path())
+                            .unwrap(),
+                    },
+                    mode: WorkspaceLaunchMode::ExistingFolder,
+                },
+            );
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Start {
+                        workspace,
+                        operation: final_operation,
+                    },
+                )
+                .unwrap();
+            hub.apply_executor_event(
+                workspace,
+                WorkspaceCreateEvent::Failed {
+                    workspace,
+                    operation: final_operation,
+                    failure,
+                },
+                cx,
+            );
+            hub.dismiss_create(workspace, final_operation, cx);
+            assert!(!hub.pending_requests.contains_key(&workspace));
+            assert!(hub.creation.state(workspace).is_none());
+            assert_eq!(snapshot, hub.catalog);
+            assert_eq!(terminal.read(cx).tab_count(), 0);
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("keep.txt")).unwrap(),
+                "keep"
+            );
+        });
+    }
+
+    // SDTEST-2719 — stale picker admission and edited connection identity cannot reuse a remote path.
+    #[test]
+    fn remote_folder_selection_is_scoped_to_current_form_and_connection() {
+        let mut app = TestAppContext::single();
+        let (catalog, ..) = fixture_catalog();
+        let connection = shelldeck_core::models::Connection::new_manual(
+            "QA".into(),
+            "invalid.example".into(),
+            "qa".into(),
+        );
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[connection.clone()], terminal, cx))
+        });
+        hub.update(&mut app, |hub, cx| {
+            hub.show_onboarding(cx);
+            hub.onboarding_ssh = true;
+            hub.onboarding_connection = Some(connection.id);
+            hub.request_remote_folder_picker(cx);
+            let request = hub.remote_browse_epoch;
+            hub.dismiss_forms(cx);
+            hub.show_onboarding(cx);
+            hub.open_remote_folder_picker(request, connection.clone(), String::new(), cx);
+            assert!(hub.remote_folder_picker.is_none());
+
+            hub.onboarding_root
+                .update(cx, |input, cx| input.replace_content("/srv/project ", cx));
+            assert_eq!(hub.onboarding_path(cx), "/srv/project ");
+            hub.onboarding_browse_authority = Some(connection.clone());
+            let mut renamed = connection.clone();
+            renamed.alias = "A clearer label".into();
+            hub.refresh_browse_connections(&[renamed.clone()], cx);
+            assert_eq!(hub.onboarding_root.read(cx).content(), "/srv/project ");
+            renamed.hostname = "different.invalid".into();
+            hub.refresh_browse_connections(&[renamed], cx);
+            assert!(hub.onboarding_root.read(cx).content().is_empty());
+            assert!(hub.onboarding_browse_authority.is_none());
+        });
+    }
+
+    // SDTEST-2712 — same folder names cannot establish local/SSH repository mapping.
+    #[test]
+    fn inferred_folder_names_do_not_pair_unrelated_checkouts() {
+        let mut catalog = ProjectCatalog::default();
+        let first = CatalogCheckoutId::new();
+        let (first_repository, first_match) =
+            super::onboarding_identity(&catalog, "app", None, first);
+        assert!(first_match.is_none());
+        let mut project = ProjectRecord::new(CatalogProjectId::new(), "app");
+        project.add_checkout(ProjectCheckout::new(
+            first,
+            "app",
+            CheckoutHost::Local {
+                device_label: "Local".into(),
+                root: std::env::temp_dir().join("client-a/app"),
+            },
+            first_repository.clone(),
+        ));
+        catalog.insert_project(project).unwrap();
+        let (second_repository, second_match) =
+            super::onboarding_identity(&catalog, "app", None, CatalogCheckoutId::new());
+        assert!(second_match.is_none());
+        assert_ne!(first_repository, second_repository);
+
+        let shared_id = CatalogProjectId::new();
+        let mut explicit = ProjectRecord::new(shared_id, "app");
+        explicit.add_checkout(ProjectCheckout::new(
+            CatalogCheckoutId::new(),
+            "app",
+            CheckoutHost::Local {
+                device_label: "Local".into(),
+                root: std::env::temp_dir().join("shared/app"),
+            },
+            RepositoryIdentity {
+                slug: "team/app".into(),
+                canonical_url: None,
+            },
+        ));
+        catalog.insert_project(explicit).unwrap();
+        let (_, same) = super::onboarding_identity(
+            &catalog,
+            "app",
+            Some("team/app".into()),
+            CatalogCheckoutId::new(),
+        );
+        assert_eq!(same, Some(shared_id));
+        let (_, other) = super::onboarding_identity(
+            &catalog,
+            "app",
+            Some("other/app".into()),
+            CatalogCheckoutId::new(),
+        );
+        assert!(other.is_none());
+    }
+
     use super::{
         mutate_and_persist, reconcile_terminal_surface, terminal_surface,
         workspace_card_presentation,
@@ -142,6 +478,84 @@ mod tests {
                 )
                 .unwrap();
         }
+    }
+
+    // SDTEST-2713 — SDUC-490: hidden retained panes must not consume unread attention.
+    #[test]
+    fn overview_and_forms_hide_retained_attention_without_replacing_entities() {
+        let mut app = TestAppContext::single();
+        let (catalog, workspace, _, checkout, ..) = fixture_catalog();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub =
+            app.update(|cx| cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal, cx)));
+        let session_id = Uuid::new_v4();
+        hub.update(&mut app, |hub, cx| {
+            hub.switch_to(workspace, cx);
+            let pane = PaneId::from_uuid(Uuid::new_v4());
+            let tab = WorkspaceTabId::from_uuid(Uuid::new_v4());
+            let surface = WorkspaceSurfaceState {
+                root: Some(PaneNode::Leaf(PaneLeaf {
+                    id: pane,
+                    tabs: vec![WorkspaceTab {
+                        id: tab,
+                        title: "Retained agent".into(),
+                        content: WorkspaceTabContent::AgentSession(AgentSessionBinding {
+                            checkout_id: checkout,
+                            session_id,
+                        }),
+                    }],
+                    active_tab: Some(tab),
+                })),
+                focus: Some(WorkspaceFocus {
+                    pane_id: pane,
+                    tab_id: tab,
+                }),
+            };
+            hub.navigation
+                .reduce(
+                    &hub.catalog,
+                    WorkspaceNavigationAction::UpdateSurface {
+                        id: workspace,
+                        surface,
+                    },
+                )
+                .unwrap();
+            assert_eq!(hub.active_agent_session_id(), Some(session_id));
+        });
+        let retained_id = hub.read_with(&app, |hub, _| hub.retained[&workspace].entity_id());
+        let visible = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = visible.clone();
+        let _subscription = app.update(|cx| {
+            cx.subscribe(&hub, move |hub, event, cx| {
+                if matches!(event, super::WorkspaceHubEvent::PresentationChanged) {
+                    observed
+                        .borrow_mut()
+                        .push(hub.read(cx).active_agent_session_id());
+                }
+            })
+        });
+        hub.update(&mut app, |hub, cx| hub.show_launcher(cx));
+        hub.update(&mut app, |hub, cx| hub.show_onboarding(cx));
+        hub.update(&mut app, |hub, cx| {
+            hub.error = Some("Invalid folder".into());
+            hub.dismiss_forms(cx);
+            assert!(hub.error.is_none());
+        });
+        hub.update(&mut app, |hub, cx| {
+            hub.toggle_overview(cx);
+            assert!(hub.platform_attention_surface_is_visible(workspace));
+            assert_eq!(hub.navigation.active(), Some(workspace));
+        });
+        hub.update(&mut app, |hub, cx| {
+            hub.toggle_overview(cx);
+            assert!(!hub.platform_attention_surface_is_visible(workspace));
+            assert_eq!(hub.active_agent_session_id(), Some(session_id));
+            assert_eq!(hub.retained[&workspace].entity_id(), retained_id);
+        });
+        assert_eq!(
+            *visible.borrow(),
+            vec![None, None, Some(session_id), None, Some(session_id)]
+        );
     }
 
     // SDTEST-1736 — SDUC-490 — YELLOW: native terminal identity is proven;

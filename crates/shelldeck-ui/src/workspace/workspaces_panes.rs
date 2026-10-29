@@ -591,8 +591,15 @@ impl Render for RetainedWorkspaceSurface {
             .root
             .clone()
             .map(|root| self.render_node(&root, cx))
-            .unwrap_or_else(|| {
-                self.render_unattached_runtime("panel-top", String::new(), String::new())
+            .unwrap_or_else(|| match self.checkout.host() {
+                // A restart retains the project, not a running shell. Reuse the
+                // normal empty terminal controls with this checkout's required cwd.
+                CheckoutHost::Local { .. } => self.terminal.clone().into_any_element(),
+                CheckoutHost::Ssh { .. } => self.render_unattached_runtime(
+                    "server",
+                    t!("workspaces.hub.remote_closed").to_string(),
+                    t!("workspaces.hub.remote_reopen").to_string(),
+                ),
             });
         div()
             .id((

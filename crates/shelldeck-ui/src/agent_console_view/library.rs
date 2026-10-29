@@ -49,6 +49,10 @@ impl AgentLibraryUi {
 }
 
 impl AgentConsoleView {
+    pub(super) fn connection_repair_storage_ready(&self) -> bool {
+        !self.library.loading && self.library.writable
+    }
+
     pub(super) fn restore_library(&mut self, cx: &mut Context<Self>) {
         if self.library.loading {
             return;
@@ -134,6 +138,7 @@ impl AgentConsoleView {
                     }
                 }
                 cx.notify();
+                cx.emit(AgentConsoleEvent::NavigatorChanged);
             });
         }));
     }

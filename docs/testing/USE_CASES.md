@@ -907,6 +907,8 @@ at a short cadence; background runtime refreshes never erase an in-flight chat.
 
 ### SDUC-475 — Coding agents run on an explicit local or SSH target
 
+The focused cockpit uses one compact session header with primary Files/Changes/Terminal controls and an expandable secondary toolbox. Conversation is the uncluttered default middle pane; document/browser tabs appear only when needed and remain available while their surface is retained. The centered composer keeps execution target and permissions visible, and navigator rows show readable run states. Saved pane widths remain authoritative; new profiles start with a 280px navigator. Resizing updates the responsive layout immediately without requiring pointer or keyboard input; long target labels cannot displace permissions or Send/Stop.
+
 Files open in a retained middle-pane custom editor, with Conversation/Editor switching and explicit local/SSH Save. Remote navigation stays rooted to the session; file revisions protect against stale saves, and pending saves preserve newer edits. SDUC-551 details this editor and explorer contract.
 
 The session search has a usable text viewport, and inherited navigator/provider
@@ -970,6 +972,16 @@ absolute path as the remote default. An explicit catalog checkout root remains
 authoritative when one is available.
 
 ### SDUC-499 — Agent work remains independently identifiable and observable
+
+A disappeared saved SSH target remains visibly SSH, never silently becoming
+This machine. Run admission checks current connection availability, including
+queued or confirmed runs, and refuses missing targets until explicitly repaired.
+The project switcher stays available beside Reconnect SSH, so a missing profile
+does not trap navigation. Send is visibly disabled for empty drafts, loading
+attachments and missing targets; the draft remains editable. Answers to an
+existing live provider question keep their separate active-process route.
+Identical project/checkout names are displayed once in the composer chooser,
+and project and connection searches show explicit no-match feedback.
 
 Each new agent reply retains its original provider attribution across later
 provider changes and durable reload. Older history without author metadata
@@ -1508,6 +1520,12 @@ letters must not make a visible connection disappear (SDTEST-1025).
 
 `toggle_collapsed` flips the state; when collapsed, the sidebar
 renders only nav icons.
+On Agents, the top-left titlebar toggle, View menu and Ctrl/Cmd+B control the
+session navigator instead of the hidden outer panel. The focused Agents window
+also exposes this toggle. Local conversations in narrow windows use an overlay
+that dismisses on outside click or session selection; their wide-window navigator
+preference, session, draft and execution context remain intact. Other activities
+retain the existing rail-and-panel behavior.
 
 ### SDUC-309 — Effective app mode
 
@@ -2309,7 +2327,7 @@ resize hit-testing, and the sidebar width the terminal grid is offset by.
 
 ### SDUC-442 — An application menu row is available in every mode
 
-A File / Edit / View / Go / Terminal / Help row sits under the titlebar in
+A File / Edit / View / Go / Terminal / Help row sits inside the titlebar in
 User, Support and Dev, and on the pre-login welcome screen. Its contents follow
 the account: logged out it offers only sign-in, quit, interface zoom, command
 palette, documentation and menu recovery;
@@ -2317,7 +2335,10 @@ User mode omits every SSH, terminal and staff-console command; the staff
 consoles (Monique, Fleet) appear only when both the capability and the
 configuration are present. Commands route through the same handler the command
 palette and the keyboard shortcuts use. The row can be hidden from View → Menu
-Bar; the preference persists and the terminal grid resizes to match.
+Bar; the preference persists without changing the content height. In Dev mode,
+a sidebar toggle sits before the menus and follows the same Ctrl+B action.
+On narrow windows the menu titles scroll horizontally, leaving window controls
+available; dropdowns remain anchored and bounded to the viewport.
 
 ### SDUC-443 — The Dev sidebar is an activity rail plus a contextual panel
 
@@ -2895,6 +2916,28 @@ session authority never implies terminal, repository, or filesystem authority.
 
 ### SDUC-488 — Projects group portable local and SSH checkouts without credentials
 
+SSH project setup offers Connect & browse for the selected saved connection.
+A disposable authenticated session lists folders, including hidden folders, starts
+at remote HOME or the entered path, and supports Home, Up and direct path navigation.
+Only Use this folder copies a successfully listed canonical path into the draft;
+browsing never registers a checkout or starts a terminal. Switching server/mode,
+cancelling, leaving the surface, signing out or closing the app retires the browser.
+Stale results and changed saved host/authentication coordinates cannot reuse a path.
+Listings use the existing bounded Python/POSIX helper and SSH trust/authentication
+policy; errors remain visible and allow reconnecting. Imported SSH connection IDs
+remain stable across reparses of unchanged authority; changing the target or credentials
+never silently rebinds a catalog checkout. Unused projects can be explicitly removed
+from the catalog once no workspace or creation is active; local and remote files remain
+untouched. Failed and cancelled creation attempts can be removed independently, with
+old operation IDs fenced against late callbacks.
+
+Missing saved SSH connections can be explicitly repaired from Agents through
+Reconnect SSH. Selecting a current saved connection updates the chosen checkout
+and idle conversations matching its former SSH ID and exact folder, preserving
+transcripts and drafts while clearing provider resume state. Stale selections,
+active conversations and persisted workspace bindings refuse repair. No remote
+operation starts merely from reconnecting the saved metadata.
+
 The revisioned project catalog groups one repository's checkouts under explicit
 local-device or existing ShellDeck SSH-connection hosts. Local roots use the
 native path representation; SSH roots use a validated absolute POSIX path and
@@ -2908,6 +2951,23 @@ arbitrary path, so local and SSH workspaces share one model without widening
 host or filesystem authority.
 
 ### SDUC-489 — Manual and external-task intake share one workspace lifecycle
+
+The Workspaces entry starts with one Add project action. Folder-first setup can
+browse an existing local directory or select an authorized SSH connection and
+absolute remote path. Names default to the selected folder; checkout and repository
+labels are optional advanced fields. Inferred display names never pair local/SSH
+repositories: anonymous folders receive separate internal identities; grouping
+checkouts requires an explicitly matching repository identity. Explicit Open project saves the validated
+catalog entry and opens Agents with that exact checkout, target and folder selected.
+Clicking a project in the overview uses the same Agents destination, preserving an
+existing matching session or creating an idle conversation. Adding/opening a project
+never starts an SSH terminal or provider; New workspace remains the explicit workspace
+launcher. Browse/cancel do not register or launch anything. Only one setup form is shown; Git worktrees and linked
+issues/tasks remain under Advanced options. Empty overview has no reserved terminal
+pane, and active workspaces use two panes (or one at narrow widths), keeping retained
+entities alive when the project overview is shown. A restarted local workspace
+with no retained tabs exposes the standard terminal entry controls, still scoped
+to its required checkout folder; it does not claim that a shell survived restart.
 
 Workspace onboarding inherits the active primary text color so checkout labels
 remain readable in dark and light themes (SDTEST-1932, manual native validation).
@@ -2938,7 +2998,12 @@ integration coverage rather than an inference from snapshot equality.
 ### SDUC-491 — Background workspace creation has a typed cancellable lifecycle
 
 Create operations report monotonic phases and bounded step progress without
-blocking the UI. Cancellation, host/worktree/branch/catalog conflicts,
+blocking the UI. SSH preparation waits and cancellation also run on the native
+background executor without requiring a Tokio runtime on the caller thread.
+Connection and preparation phases are visible as they happen, have finite deadlines,
+and use the current saved connection list. Unavailable remote folders and refused SSH channels are recoverable
+failures with Retry and Remove actions.
+Cancellation, host/worktree/branch/catalog conflicts,
 classified failures, completion, and retry are distinct states. Every event is
 fenced by its operation ID and starting catalog revision. Phase transitions and
 step totals are monotonic, completion requires the finished final phase, and
@@ -2964,30 +3029,23 @@ compensate the effect. Catalog, retained UI, and terminal-tab publication occur
 only after the effect journal is durable; a prepared PTY remains detached and
 is dropped if the atomic catalog save fails. Resume finishes journal
 reconciliation and revalidates opened directory authority before the retained
-terminal becomes interactive. SSH creation is admitted only through the
-installed `shelldeck-workspace-v1` subsystem; a host without that helper stays
-unavailable. The general SSH layer's shell and arbitrary-command channels are
-never used as a workspace-path substitute. Adding a standard path-based SFTP
-client would not provide the missing
-authority: it cannot carry an opened directory descriptor across the protocol,
-and a remote canonicalize/lstat check followed by a pathname operation would
-retain the same substitution race as a local check-then-use implementation.
+terminal becomes interactive.
 
-The remote contract is a fixed, versioned SSH subsystem (not an interpolated
-command) with 8-KiB typed frames. sshd supplies one or more administrator-fixed
-catalog roots to the helper. It opens every root and relative component through
-retained no-follow directory descriptors and never accepts `.` or `..`.
-Prepare binds the operation and workspace IDs, directory device/inode,
-immutable HEAD OID, symbolic branch and clean status into a random opaque
-receipt. Resume on that same channel rechecks the descriptor, OID, branch and
-cleanliness immediately before descriptor-based `fchdir`, restores the PTY,
-and replaces the helper process with the fixed administrator-selected shell.
-Release must carry the same token and starts no process. Closing the channel
-before resume exits the only helper process; after resume sshd owns the
-shell/process group directly. Missing helper support, a dirty/detached/replaced
-checkout, a symlink component, or a stale token produces a bounded error code
-and no catalog or terminal publication. Installation and compatibility rules
-are in [`ssh-workspace-helper.md`](../ssh-workspace-helper.md).
+Existing SSH folders use standard SSH PTY/exec channels with no installed ShellDeck
+subsystem, Python or Git requirement. A fixed POSIX shell script receives the exact
+absolute folder as safely quoted data, enters it, and waits with that working directory
+held until the client explicitly resumes. Paths are not executed as code. Failed `cd`,
+channel refusal, timeout or cancellation cannot fall back to an unrelated home folder
+or publish a terminal. Catalog commit and current connection/operation checks still
+precede interactive shell startup. This ordinary SSH flow follows the account's normal
+folder permissions and symlink semantics; it does not claim the administrator-defined
+root or clean-Git enforcement of the optional managed helper.
+
+The lower-level `shelldeck-workspace-v1` subsystem remains available for managed
+integrations that require administrator-fixed roots, no-follow directory descriptors,
+Git state validation and typed receipts. Its protocol tests remain in the SSH crate;
+installation is not required for ordinary existing-folder workspaces. See
+[`ssh-workspace-helper.md`](../ssh-workspace-helper.md).
 
 ### SDUC-492 — Workspace review mutations remain previewed, scoped, and exactly once
 
@@ -3228,6 +3286,12 @@ Existing local and plain SSH terminals retain their native split behavior.
 Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
+
+- **2026-10-29** — SDUC-551: searchable project chooser, explicit agent/permissions/model controls, retained model search, reasoning labels and a shared context-intake menu. Draft choices survive project navigation. Native coverage remains tracked in SDTEST-2480.
+- **2026-10-29** — SDUC-558: the full Dev shell also lands on Agents after startup/session restoration and focused-to-full navigation; Agents is second in the sidebar after Connections.
+- **2026-10-29** — SDUC-475: compact session header, expandable toolbox, retained document/browser tabs, readable session states and centered composer with bounded execution-scope controls. SDTEST-1931/1932 track native viewport/theme coverage.
+- **2026-10-29** — SDUC-558: normal startup/reopen defaults to Agents; explicit `--main`, deep links, login/role gates and hidden-companion startup remain available. SDTEST-2633/2641 and SDTEST-1383 cover routing and visibility.
+- **2026-10-29** — SDUC-442: merged menus and Dev sidebar toggle into the titlebar; removed the separate menu-row reservation from terminal geometry.
 
 - **2026-10-15** — Added SDUC-559 for remote Platform sessions in the Agents
   sidebar, shared retained detail, authenticated refresh and hidden local-session
@@ -4208,6 +4272,15 @@ does not persist executable processes, queued attachments, or workspace tab layo
 
 ### SDUC-551 — Provider-aware composer, activity and adjacent workspace tools
 
+The project chooser above the message field searches catalog worktrees and recent
+session contexts, showing the local/SSH target and retaining each session's draft.
+Selecting the current project does not reset unsent choices. Agent and permission
+menus, model/reasoning selection, and a shared + context menu sit beside the input;
+all remain usable at narrow widths. Changing agent clears its incompatible model
+and reasoning choices. Valid unsent execution context is retained through the
+core context setter when navigating to another session, so resume tokens cannot
+cross authority boundaries. Running and checkout-bound contexts stay locked.
+
 The composer remains usable during a run and can queue follow-up turns with
 captured context. Queued items can be edited, reordered or removed; failed image
 restoration or changed inputs retain the original queued item. File/text context
@@ -4357,11 +4430,17 @@ inventory for native platform verification status.
 
 ### SDUC-558 — Production Agents launch and single-instance presentation
 
-`shelldeck --agents` opens the Agents presentation through the normal production
-entry point. An existing ShellDeck process accepts the handoff through the typed
-`shelldeck://agents` route; normal application launch returns to the full
-presentation. Conversation/session state stays in the existing Workspace rather
-than a second process or example fixture. Welcome/login and current Dev
+A normal `shelldeck` launch, `--agents`, or a macOS reopen opens the Agents
+presentation through the normal production entry point. An existing ShellDeck
+process accepts the handoff through the typed `shelldeck://agents` route;
+`--main` and the in-app full-application action restore the full presentation.
+In Dev mode, that full presentation also opens on Agents, positioned second in
+the activity sidebar after Connections. Session restoration keeps terminal tabs
+available without replacing the Agents landing view.
+Normal cold launches preserve the start-hidden companion preference and defer
+Workspace creation until needed; explicit `--agents` opens the window immediately.
+Explicit deep links keep their destination. Conversation/session state stays in
+the existing Workspace rather than a second process or example fixture. Welcome/login and current Dev
 capabilities remain authoritative before Agents is exposed or an agent runs.
 
 Linux desktop actions and Windows Start Menu shortcuts pass the flag to the same
@@ -4417,3 +4496,21 @@ operation without claiming that the earlier action succeeded. Unresolved records
 are retained; only settled old history can retire from the bounded journal.
 Coverage: SDTEST-2700..2706. No provider execution or deployment is required by
 these deterministic client tests.
+
+- **2026-10-29** — Refined SDUC-488/489 workspace entry: folder-first setup, inferred labels, one explicit open flow, progressive advanced options, and responsive retained-workspace layout.
+
+- **2026-10-29** — Extended SDUC-488 with read-only SSH folder browsing and connection-scoped path selection.
+
+- **2026-10-29** — Fixed SDUC-491 SSH Open project crash at the native/Tokio runtime boundary; added SDTEST-2721 for pending success, cancellation and worker failure outside Tokio.
+
+- **2026-10-29** — Added safe removal of settled workspace attempts and unused projects (SDUC-488/491); stabilized imported SSH identity and bounded preparation with live progress.
+
+- **2026-10-29** — Per user request, ordinary existing SSH folders now use standard SSH without a server-installed helper; managed subsystem support remains a separate low-level API.
+
+- **2026-10-29** — Corrected SDUC-489 project entry to land in Agents with the saved checkout selected, without implicitly launching a terminal (SDTEST-2733).
+
+- **2026-10-29** — Missing SSH profiles remain SSH and refuse execution; explicit Reconnect SSH repairs idle project conversations without losing folder, transcript or draft (SDUC-488/499, SDTEST-2734..2737).
+
+- **2026-10-29** — Improved Agents composer readiness and missing-SSH navigation, removed repeated chooser names, and added empty search feedback (SDUC-499, SDTEST-2738).
+
+- **2026-10-29** — Routed the shell sidebar toggle to the Agents session navigator, including focused launch and narrow local conversation overlays (SDUC-308/499, SDTEST-2739).

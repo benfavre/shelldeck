@@ -447,8 +447,16 @@ impl AgentConsoleView {
                     .count()
             })
             .unwrap_or(0);
+        // Conversation is the default surface; tabs earn space only once another
+        // document or browser is open. Files and Browser remain in the toolbox.
+        if count == 0 && !active && !self.has_live_browser(cx) && self.live_browsers.error.is_none()
+        {
+            return div().into_any_element();
+        }
         let mut row = div()
             .flex()
+            .flex_wrap()
+            .min_w_0()
             .items_center()
             .flex_shrink_0()
             .gap(px(6.0))
@@ -542,6 +550,9 @@ impl AgentConsoleView {
         if let Some(error) = &self.live_browsers.error {
             row = row.child(
                 div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::error())
                     .child(error.clone()),

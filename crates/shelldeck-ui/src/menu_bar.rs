@@ -1,6 +1,6 @@
 //! The application menu bar (Fichier / Édition / Affichage / Aller / …).
 //!
-//! Rendered as a dedicated row under the titlebar in **every** app mode —
+//! Embedded in the titlebar in **every** app mode —
 //! User, Support and Dev — plus the pre-login welcome screen, where it is
 //! reduced to the handful of commands that work without a session.
 //!
@@ -17,11 +17,8 @@
 use crate::shortcut_reference::display_accelerator;
 use shelldeck_core::config::cloud_account::AppMode;
 
-/// Height of the menu row, in logical px before UI scaling.
-///
-/// The terminal grid sits below this row, so `TerminalView::content_area`
-/// subtracts it when converting the viewport into rows/cols. Keep the two in
-/// sync — see `terminal_view::chrome_top_offset`.
+/// Height of the menu triggers, in logical px before UI scaling.
+/// Embedded in the titlebar, so this does not reserve a separate content row.
 pub const MENU_BAR_HEIGHT: f32 = 28.0;
 
 /// A command a menu entry can fire.
@@ -164,7 +161,7 @@ pub struct MenuBarContext {
 /// Render `secondary-k` style binding descriptions the way the host platform
 /// spells them. `secondary` is Cmd on macOS and Ctrl elsewhere, matching
 /// `crates/shelldeck/src/actions.rs`.
-fn accel(keys: &str) -> String {
+pub(crate) fn accel(keys: &str) -> String {
     display_accelerator(keys)
 }
 

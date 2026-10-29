@@ -116,8 +116,7 @@ impl EventEmitter<TerminalEvent> for TerminalView {}
 // Layout constants – centralised so they aren't scattered as magic numbers.
 // ---------------------------------------------------------------------------
 
-/// Height of the workspace titlebar in pixels (rendered outside terminal view).
-/// Absolute — the workspace titlebar does not scale with the UI size.
+/// Base height of the workspace titlebar in pixels, before UI scaling.
 const TITLEBAR_HEIGHT: f32 = 40.0;
 /// Base height of the terminal tab bar in pixels (before UI scaling).
 const TAB_BAR_HEIGHT: f32 = 38.0;
@@ -467,8 +466,8 @@ impl TerminalView {
         self.sidebar_width = width;
     }
 
-    /// Whether the application menu row is on screen. Shrinks the height the
-    /// grid is sized against — see [`Self::menu_bar_height`].
+    /// Menu visibility is retained with the settings snapshot; the menus now
+    /// share the titlebar and do not reserve a separate content row.
     pub fn set_menu_bar_visible(&mut self, visible: bool) {
         self.menu_bar_visible = visible;
     }
@@ -1488,21 +1487,6 @@ impl TerminalView {
         (fs * 0.6, fs * 1.4)
     }
 
-    /// Vertical space the application menu row takes above the workspace
-    /// content, in absolute pixels at the current UI scale. Zero when the row
-    /// is hidden from Affichage → Barre de menus.
-    ///
-    /// Unlike `TITLEBAR_HEIGHT`, the menu row is styled in rems and therefore
-    /// grows with the App Font Size setting — so it must be scaled here the
-    /// same way the tab bar and toolbar are.
-    fn menu_bar_height(&self, window: &Window) -> f32 {
-        if self.menu_bar_visible {
-            crate::menu_bar::MENU_BAR_HEIGHT * Self::ui_scale(window)
-        } else {
-            0.0
-        }
-    }
-
     /// The full terminal content rectangle (in the grid offset convention:
     /// x = right of the sidebar, y = below the scaled tab bar + toolbar).
     fn content_area(&self, window: &Window) -> PaneRect {
@@ -1512,8 +1496,7 @@ impl TerminalView {
         let w = (viewport.width.to_f64() as f32 - self.sidebar_width - SIDEBAR_HANDLE_WIDTH * 2.0)
             .max(1.0);
         let h = (viewport.height.to_f64() as f32
-            - TITLEBAR_HEIGHT
-            - self.menu_bar_height(window)
+            - TITLEBAR_HEIGHT * Self::ui_scale(window)
             - Self::chrome_top_offset(window)
             - STATUS_BAR_HEIGHT)
             .max(1.0);

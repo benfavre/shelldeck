@@ -518,6 +518,7 @@ pub enum WorkspaceCatalogError {
     DuplicateCheckout(CatalogCheckoutId),
     DuplicateWorkspace(CatalogWorkspaceId),
     UnknownProject(CatalogProjectId),
+    ProjectHasWorkspaces(CatalogProjectId),
     UnknownCheckout(CatalogCheckoutId),
     CheckoutOutsideProject {
         project: CatalogProjectId,
@@ -539,6 +540,8 @@ pub enum WorkspaceCatalogError {
     PlatformMappingNotExact(CatalogWorkspaceId),
     ExpectedLocalCheckout,
     ExpectedSshCheckout,
+    CheckoutHasWorkspaces(CatalogCheckoutId),
+    CheckoutConnectionChanged(CatalogCheckoutId),
     LocalPathUnavailable(PathBuf),
     LocalPathEscapesCheckout(PathBuf),
 }
@@ -555,6 +558,7 @@ impl fmt::Display for WorkspaceCatalogError {
             Self::DuplicateCheckout(id) => write!(f, "duplicate checkout {id}"),
             Self::DuplicateWorkspace(id) => write!(f, "duplicate workspace {id}"),
             Self::UnknownProject(id) => write!(f, "unknown project {id}"),
+            Self::ProjectHasWorkspaces(id) => write!(f, "project {id} still has workspaces"),
             Self::UnknownCheckout(id) => write!(f, "unknown checkout {id}"),
             Self::CheckoutOutsideProject { project, checkout } => write!(
                 f,
@@ -589,6 +593,10 @@ impl fmt::Display for WorkspaceCatalogError {
             }
             Self::ExpectedLocalCheckout => f.write_str("checkout is not local"),
             Self::ExpectedSshCheckout => f.write_str("checkout is not SSH"),
+            Self::CheckoutHasWorkspaces(id) => write!(f, "checkout {id} still has workspaces"),
+            Self::CheckoutConnectionChanged(id) => {
+                write!(f, "checkout {id} SSH connection changed")
+            }
             Self::LocalPathUnavailable(path) => {
                 write!(f, "checkout path is unavailable: {}", path.display())
             }
@@ -712,6 +720,30 @@ impl ProjectCatalog {
         Ok(())
     }
 
+    /// Remove only an empty project's catalog metadata, never its local or remote files.
+    /// Archived workspaces still belong to their project and block removal.
+    pub fn remove_empty_project(
+        &mut self,
+        project_id: CatalogProjectId,
+    ) -> std::result::Result<(), WorkspaceCatalogError> {
+        let index = self
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+            .ok_or(WorkspaceCatalogError::UnknownProject(project_id))?;
+        if self
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.project_id == project_id)
+        {
+            return Err(WorkspaceCatalogError::ProjectHasWorkspaces(project_id));
+        }
+        let next_revision = self.next_revision()?;
+        self.projects.remove(index);
+        self.revision = next_revision;
+        Ok(())
+    }
+
     /// Add an authorized checkout to an existing project as one atomic
     /// catalog mutation.
     pub fn add_checkout(
@@ -738,6 +770,49 @@ impl ProjectCatalog {
         candidate.validate()?;
         candidate.revision = next_revision;
         *self = candidate;
+        Ok(())
+    }
+
+    /// Explicitly reconnect an unused SSH checkout to a caller-selected saved
+    /// connection. A path or label alone never grants a new host authority.
+    pub fn rebind_ssh_checkout(
+        &mut self,
+        project: CatalogProjectId,
+        checkout: CatalogCheckoutId,
+        expected_connection: Uuid,
+        selected_connection: Uuid,
+    ) -> std::result::Result<(), WorkspaceCatalogError> {
+        let record = self.checkout_in_project(project, checkout)?;
+        let CheckoutHost::Ssh { connection_id, .. } = record.host() else {
+            return Err(WorkspaceCatalogError::ExpectedSshCheckout);
+        };
+        if *connection_id != expected_connection {
+            return Err(WorkspaceCatalogError::CheckoutConnectionChanged(checkout));
+        }
+        if self
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.checkout_id == checkout)
+        {
+            return Err(WorkspaceCatalogError::CheckoutHasWorkspaces(checkout));
+        }
+        if expected_connection == selected_connection {
+            return Ok(());
+        }
+        let next_revision = self.next_revision()?;
+        let record = self
+            .projects
+            .iter_mut()
+            .find(|record| record.id == project)
+            .unwrap()
+            .checkouts
+            .iter_mut()
+            .find(|record| record.id == checkout)
+            .unwrap();
+        if let CheckoutHost::Ssh { connection_id, .. } = &mut record.host {
+            *connection_id = selected_connection;
+        }
+        self.revision = next_revision;
         Ok(())
     }
 
@@ -1330,6 +1405,116 @@ mod tests {
         let mut catalog = ProjectCatalog::default();
         catalog.insert_project(project).unwrap();
         catalog
+    }
+
+    // SDTEST-2727 — catalog removal preserves files and refuses active or archived workspaces.
+    #[test]
+    fn remove_empty_project_preserves_files_and_workspace_ownership() {
+        let path = temp_path();
+        let root = path.parent().unwrap();
+        std::fs::create_dir_all(root).unwrap();
+        let kept = root.join("keep.txt");
+        std::fs::write(&kept, b"project contents").unwrap();
+        let project_id = CatalogProjectId::new();
+        let checkout_id = CatalogCheckoutId::new();
+        let mut project = ProjectRecord::new(project_id, "Empty project");
+        project.add_checkout(ProjectCheckout::new(
+            checkout_id,
+            "Local",
+            CheckoutHost::Local {
+                device_label: "Device".into(),
+                root: root.to_owned(),
+            },
+            RepositoryIdentity {
+                slug: "test/project".into(),
+                canonical_url: None,
+            },
+        ));
+        let mut catalog = ProjectCatalog::default();
+        catalog.insert_project(project).unwrap();
+        catalog.save_to(&path).unwrap();
+        let mut occupied = catalog.clone();
+        let workspace = CatalogWorkspaceId::new();
+        occupied
+            .create_workspace(WorkspaceLaunchRequest {
+                id: workspace,
+                project_id,
+                checkout_id,
+                name: "Retained".into(),
+                intake: WorkspaceLaunchIntake::Manual,
+            })
+            .unwrap();
+        let before = occupied.clone();
+        assert_eq!(
+            occupied.remove_empty_project(project_id),
+            Err(WorkspaceCatalogError::ProjectHasWorkspaces(project_id))
+        );
+        assert_eq!(occupied, before);
+        occupied.workspaces[0].lifecycle = UserWorkspaceLifecycle::Archived;
+        assert_eq!(
+            occupied.remove_empty_project(project_id),
+            Err(WorkspaceCatalogError::ProjectHasWorkspaces(project_id))
+        );
+        let revision = catalog.revision();
+        catalog.remove_empty_project(project_id).unwrap();
+        assert_eq!(catalog.revision(), revision + 1);
+        catalog.save_to(&path).unwrap();
+        assert_eq!(
+            ProjectCatalog::load_from(&path).unwrap().projects().len(),
+            0
+        );
+        assert_eq!(std::fs::read(&kept).unwrap(), b"project contents");
+        let after = catalog.clone();
+        assert_eq!(
+            catalog.remove_empty_project(project_id),
+            Err(WorkspaceCatalogError::UnknownProject(project_id))
+        );
+        assert_eq!(catalog, after);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // SDTEST-2736 — explicit host repair keeps exact path and refuses stale or bound authority.
+    #[test]
+    fn ssh_checkout_rebind_preserves_path_and_refuses_stale_or_bound_authority() {
+        let mut catalog = catalog_with_local_and_ssh();
+        let project = CatalogProjectId::from_uuid(id(1));
+        let checkout = CatalogCheckoutId::from_uuid(id(3));
+        let previous = id(4);
+        let selected = id(5);
+        let before = catalog.clone();
+        assert_eq!(
+            catalog.rebind_ssh_checkout(project, checkout, id(99), selected),
+            Err(WorkspaceCatalogError::CheckoutConnectionChanged(checkout))
+        );
+        assert_eq!(catalog, before);
+        let mut occupied = catalog.clone();
+        occupied
+            .create_workspace(WorkspaceLaunchRequest {
+                id: CatalogWorkspaceId::new(),
+                project_id: project,
+                checkout_id: checkout,
+                name: "Retained".into(),
+                intake: WorkspaceLaunchIntake::Manual,
+            })
+            .unwrap();
+        assert_eq!(
+            occupied.rebind_ssh_checkout(project, checkout, previous, selected),
+            Err(WorkspaceCatalogError::CheckoutHasWorkspaces(checkout))
+        );
+        catalog
+            .rebind_ssh_checkout(project, checkout, previous, selected)
+            .unwrap();
+        assert!(
+            matches!(catalog.checkout_in_project(project, checkout).unwrap().host(), CheckoutHost::Ssh { connection_id, root } if *connection_id == selected && root.as_str() == "/srv/workspaces/shelldeck")
+        );
+        assert_eq!(catalog.revision(), before.revision() + 1);
+        assert!(matches!(
+            catalog
+                .checkout_in_project(project, CatalogCheckoutId::from_uuid(id(2)))
+                .unwrap()
+                .host(),
+            CheckoutHost::Local { .. }
+        ));
     }
 
     // SDTEST-1729

@@ -1,7 +1,7 @@
 # Application chrome — scaling, menu bar, sidebar rail
 
 The three fixed surfaces that frame every mode: the **UI scale**, the
-**application menu row**, and the **Dev sidebar**. They share one property —
+**application titlebar menus**, and the **Dev sidebar**. They share one property —
 the terminal grid's geometry is computed against them, so changing their size
 silently mis-sizes every terminal unless the matching constant is updated too.
 
@@ -96,9 +96,11 @@ welcome screen, which is the first thing a new user sees.
   than an absent one.
 - **Icons must exist in the bundled Lucide subset** (`.agents/icons.md`). The
   subset is ~78 files, not all of Lucide — check before using a slug.
-- **`MENU_BAR_HEIGHT` is consumed by `TerminalView::menu_bar_height`.** Change
-  one, change the other, and keep the `menu_bar_visible` flag flowing into
-  `TerminalView::set_menu_bar_visible`.
+- Menus are embedded in the titlebar (`MenuBar::embedded`, SDPATCH-047), beside
+  the Dev sidebar toggle. `MENU_BAR_HEIGHT` sizes their triggers only; it does
+  not reserve another content row. Terminal geometry subtracts the scaled
+  titlebar once, regardless of menu visibility. Keep interactive controls
+  outside the draggable title area. Narrow windows scroll the menu titles.
 - Menu labels live in `locales/{fr,en}.toml` under `menu.*`. Note the TOML
   dotted-key trap: `menu.file` cannot be both a string and a table, which is
   why the titles are namespaced `menu.title.file`.
@@ -118,6 +120,9 @@ something *in the panel*; Monique, Fleet and bext Cloud are places you go,
 reached from the Aller menu and the palette, and Settings is pinned separately
 at the bottom. Adding a rail icon for a section with nothing behind it is the
 mistake this list exists to prevent.
+
+Connections remains first and Agents second. Both the focused Agents window and
+the full Dev shell land on Agents; the full shell keeps the activity rail visible.
 
 **The panel is contextual — it follows `active_section`.** Connections keeps
 its bespoke renderer (groups, pins, per-row hover actions, site badges);
@@ -154,12 +159,12 @@ full width — and `total_width()` must account for that, which is why
   fork, not a preference.** If two surfaces do the same job, the app should
   have one of them — see `.agents/ui-components.md` § Harmonization.
 
-  **Sidebar chrome controls belong in the panel header, not in the list.** The
+  **Sidebar chrome controls belong in the window titlebar, not in the list.** The
   rail toggle also shipped, briefly, as a full-width bordered strip above the
   hosts list. Bordered top and bottom and glued to the `HÔTES` header, it read
   as that section's collapse control rather than as sidebar chrome — and once
   the panel became contextual it appeared above every activity. A control that
-  acts on the whole sidebar goes in the header or the View menu; a control that
+  acts on the whole sidebar goes in the window titlebar or the View menu; a control that
   acts on a list goes in that list.
 
   The panel header names the active activity, so list-level headers must not
@@ -167,7 +172,12 @@ full width — and `total_width()` must account for that, which is why
   `sidebar.hosts` key was retired with it.
 
 - **`collapsed` hides the panel**, leaving the rail. This is what
-  `ToggleSidebar` / `Workspace::toggle_sidebar` drives.
+  `ToggleSidebar` / `Workspace::toggle_sidebar` drives outside Agents. On the
+  Agents surface, the titlebar button, View menu and Ctrl/Cmd+B instead toggle
+  the Agents session navigator, including focused Agents windows. Their state
+  follows the same navigator preference as the in-view session button. Narrow
+  local conversations show the navigator as a dismissible overlay without
+  changing the saved wide-window preference or squeezing the composer.
 - **`SidebarView::total_width()` is the number the terminal needs** — rail plus
   panel, per their independent visibility. Never pass `width()` (the panel
   alone) to `TerminalView::set_sidebar_width`; that is how the grid ends up

@@ -7,6 +7,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
+#[path = "folder_shell.rs"]
+mod folder_shell;
+pub use folder_shell::PreparedFolderShell;
+
 /// Shared handle type used by both SshSession and tunnel tasks.
 pub type SharedHandle = Arc<Mutex<client::Handle<ClientHandler>>>;
 
@@ -100,6 +104,24 @@ impl SshSession {
         }
     }
 
+    /// Prepare an existing directory using standard SSH and POSIX sh, without
+    /// installed helpers or filesystem writes. Resume explicitly after commit.
+    pub async fn prepare_folder_shell(
+        &self,
+        path: &str,
+        rows: u32,
+        cols: u32,
+    ) -> crate::Result<PreparedFolderShell> {
+        let channel = self
+            .handle
+            .lock()
+            .await
+            .channel_open_session()
+            .await
+            .map_err(|error| SshError::Channel(error.to_string()))?;
+        PreparedFolderShell::prepare(channel, path, rows, cols).await
+    }
+
     /// Open an interactive shell channel with PTY.
     pub async fn open_shell(&self, rows: u32, cols: u32) -> crate::Result<SshChannel> {
         let channel = self.open_pty_channel(rows, cols).await?;
@@ -107,7 +129,10 @@ impl SshSession {
             .request_shell(false)
             .await
             .map_err(|e| SshError::Channel(format!("Shell request failed: {}", e)))?;
-        Ok(SshChannel { channel })
+        Ok(SshChannel {
+            channel,
+            initial: Vec::new(),
+        })
     }
 
     async fn open_pty_channel(&self, rows: u32, cols: u32) -> crate::Result<Channel<client::Msg>> {
@@ -152,7 +177,14 @@ impl SshSession {
                 match message {
                     ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
                         if let Some((client, initial)) = handshake.feed(&data)? {
-                            return Ok((SshChannel { channel }, client, initial));
+                            return Ok((
+                                SshChannel {
+                                    channel,
+                                    initial: Vec::new(),
+                                },
+                                client,
+                                initial,
+                            ));
                         }
                     }
                     ChannelMsg::Eof | ChannelMsg::Close | ChannelMsg::ExitStatus { .. } => break,
@@ -484,11 +516,15 @@ impl SshSession {
 
 pub struct SshChannel {
     channel: Channel<client::Msg>,
+    initial: Vec<u8>,
 }
 
 impl SshChannel {
     pub(crate) fn from_workspace_helper(channel: Channel<client::Msg>) -> Self {
-        Self { channel }
+        Self {
+            channel,
+            initial: Vec::new(),
+        }
     }
 
     /// Write data to the channel (keyboard input).
@@ -504,6 +540,11 @@ impl SshChannel {
 
     /// Wait for the next message from the channel.
     pub async fn read(&mut self) -> Option<ChannelMsg> {
+        if !self.initial.is_empty() {
+            return Some(ChannelMsg::Data {
+                data: std::mem::take(&mut self.initial).into(),
+            });
+        }
         self.channel.wait().await
     }
 
@@ -525,11 +566,15 @@ impl SshChannel {
 
     /// Consume the channel into an AsyncRead + AsyncWrite stream.
     /// Useful for integrating with tokio::io::copy or similar utilities.
+    /// This raw conversion excludes any prefetched startup bytes. Prepared
+    /// folder terminals must use `read` or `split` to retain those bytes.
     pub fn into_stream(self) -> russh::ChannelStream<client::Msg> {
         self.channel.into_stream()
     }
 
     /// Get the underlying channel for advanced operations.
+    /// This excludes prefetched startup bytes; prepared folder terminals must
+    /// use `read` or `split` to retain them.
     pub fn into_inner(self) -> Channel<client::Msg> {
         self.channel
     }
@@ -544,6 +589,7 @@ impl SshChannel {
             SshChannelReader {
                 channel: read_half,
                 saw_exit: false,
+                initial: self.initial,
             },
             SshChannelWriter {
                 channel: write_half,
@@ -555,6 +601,7 @@ impl SshChannel {
 /// Read handle for an SSH channel.
 pub struct SshChannelReader {
     channel: ChannelReadHalf,
+    initial: Vec<u8>,
     saw_exit: bool,
 }
 
@@ -599,6 +646,9 @@ impl SshChannelReader {
     /// for a normal shell exit, or [`SshChannelData::ConnectionLost`] when the
     /// transport disappears without a normal channel terminator.
     pub async fn read(&mut self) -> SshChannelData {
+        if !self.initial.is_empty() {
+            return SshChannelData::Data(std::mem::take(&mut self.initial));
+        }
         loop {
             if let Some(data) =
                 classify_channel_message(self.channel.wait().await, &mut self.saw_exit)

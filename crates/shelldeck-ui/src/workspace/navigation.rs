@@ -162,6 +162,8 @@ impl Workspace {
     /// Stop runtime resources that must never survive an account boundary.
     /// Unlike `shutdown`, this keeps the Workspace itself alive for login.
     pub(super) fn stop_authenticated_runtime(&mut self, cx: &mut Context<Self>) {
+        self.workspace_hub
+            .update(cx, |hub, cx| hub.cancel_remote_folder_picker(cx));
         // Retire setup attempts before stopping completed tunnels.
         self.tunnel_starts.cancel_all();
         self.port_forwards.update(cx, |pf, cx| {
@@ -424,8 +426,22 @@ impl Workspace {
         self.companion_command_palette.clone()
     }
 
+    pub(super) fn contextual_sidebar_visible(&self, cx: &App) -> bool {
+        if self.active_view == ActiveView::Agents && !self.settings_open {
+            self.agent_console.read(cx).navigator_visible()
+        } else {
+            self.sidebar_visible
+        }
+    }
+
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         if !self.enter_dev_mode(cx) {
+            return;
+        }
+        if self.active_view == ActiveView::Agents {
+            self.agent_console
+                .update(cx, |view, cx| view.toggle_navigator(cx));
+            cx.notify();
             return;
         }
         self.sidebar_visible = !self.sidebar_visible;
@@ -439,6 +455,7 @@ impl Workspace {
         self.terminal.update(cx, |terminal, _cx| {
             terminal.set_sidebar_width(effective_width);
         });
+        cx.notify();
     }
 
     pub fn switch_to_section(&mut self, section: SidebarSection) {
@@ -485,6 +502,14 @@ impl Workspace {
             self.presentation = WorkspacePresentation::Main;
             self.agents_focus_pending = false;
             self.set_mode(AppMode::Dev, cx);
+        }
+        if self.active_view != ActiveView::Workspaces
+            || self.settings_open
+            || !self.can_access_mode(AppMode::Dev)
+            || self.effective_mode() != AppMode::Dev
+        {
+            self.workspace_hub
+                .update(cx, |hub, cx| hub.cancel_remote_folder_picker(cx));
         }
         let workspace_agent = (self.active_view == ActiveView::Workspaces)
             .then(|| self.workspace_hub.read(cx).active_agent_session_id())

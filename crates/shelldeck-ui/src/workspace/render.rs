@@ -591,6 +591,12 @@ impl Render for Workspace {
                 None
             },
             self.app_config.general.menu_bar_visible,
+            self.menu_bar.clone(),
+            if !self.show_welcome() && self.effective_mode() == AppMode::Dev {
+                Some(self.contextual_sidebar_visible(_cx))
+            } else {
+                None
+            },
             self.ai_available_for_current_surface(_cx),
             self.ai_dock_open,
             self.ai_tasks
@@ -604,13 +610,8 @@ impl Render for Workspace {
             _cx,
         );
 
-        // The application menu row sits between the titlebar and the content
-        // in every mode, including the pre-login welcome screen (where
-        // `menu_bar_spec` reduces it to sign-in / quit / zoom / about).
+        // Menus and sidebar controls share the titlebar; content starts directly below it.
         root = root.child(titlebar);
-        if self.app_config.general.menu_bar_visible && !agents_presentation {
-            root = root.child(self.menu_bar.clone());
-        }
         let show_status_bar =
             workspace_status_bar_visible(self.show_welcome(), self.effective_mode());
         root = root.child(main_area);

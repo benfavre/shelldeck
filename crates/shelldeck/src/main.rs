@@ -83,6 +83,7 @@ lucide_assets!(
     "eye",
     "eye-off",
     "file-text",
+    "folder",
     "filter",
     "flag",
     "globe",
@@ -364,6 +365,7 @@ impl AssetSource for Assets {
             "images/close.svg" => include_bytes!("../assets/images/close.svg"),
             "images/plus.svg" => include_bytes!("../assets/images/plus.svg"),
             "images/minus.svg" => include_bytes!("../assets/images/minus.svg"),
+            "images/sidebar.svg" => include_bytes!("../assets/images/sidebar.svg"),
             "images/minimize.svg" => include_bytes!("../assets/images/minimize.svg"),
             "images/maximize.svg" => include_bytes!("../assets/images/maximize.svg"),
             "images/restore.svg" => include_bytes!("../assets/images/restore.svg"),
@@ -443,6 +445,7 @@ impl AssetSource for Assets {
             SharedString::from("images/close.svg"),
             SharedString::from("images/plus.svg"),
             SharedString::from("images/minus.svg"),
+            SharedString::from("images/sidebar.svg"),
             SharedString::from("images/minimize.svg"),
             SharedString::from("images/maximize.svg"),
             SharedString::from("images/restore.svg"),
@@ -560,6 +563,7 @@ enum CompanionCommand {
 /// alive without constructing every Workspace view and network poller.
 struct CompanionRoot {
     config: Option<AppConfig>,
+    initial_agents_presentation: bool,
     runtime: CompanionRuntime,
     workspace: Option<gpui::Entity<Workspace>>,
     workspace_slot: WorkspaceSlot,
@@ -593,6 +597,7 @@ impl CompanionRoot {
         );
         Self {
             config: Some(config),
+            initial_agents_presentation: false,
             runtime: CompanionRuntime {
                 main_window,
                 ai_companion,
@@ -699,6 +704,11 @@ impl CompanionRoot {
         });
         workspace.read(cx).focus_handle.focus(window);
         workspace.update(cx, |ws, cx| ws.restore_session(cx));
+        if self.initial_agents_presentation {
+            workspace.update(cx, |ws, cx| ws.request_agents_presentation(cx));
+        } else {
+            workspace.update(cx, |ws, cx| ws.show_main_presentation(cx));
+        }
         workspace.update(cx, |ws, cx| ws.check_account_on_startup(cx));
         workspace.update(cx, |ws, cx| ws.activate_current_mode(cx));
         if sync_on_startup {
@@ -979,8 +989,12 @@ fn ai_dock_window_action(visible: Option<bool>, request: AiDockRequest) -> AiDoc
     }
 }
 
-fn companion_main_window_visible(start_hidden: bool, tray_available: bool) -> bool {
-    !start_hidden || !tray_available
+fn companion_main_window_visible(
+    target: &cli::Target,
+    start_hidden: bool,
+    tray_available: bool,
+) -> bool {
+    target.forces_visible_agents() || !start_hidden || !tray_available
 }
 
 fn workspace_created_at_boot(main_window_visible: bool) -> bool {
@@ -1845,6 +1859,7 @@ fn main() -> Result<()> {
         cli::Command::Launch(target) => target,
     };
     let launch_agents = target.is_agents();
+    let force_visible_agents = target.forces_visible_agents();
 
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -1932,7 +1947,8 @@ fn main() -> Result<()> {
         }
     });
     application.on_reopen(move |_cx| {
-        if platform_reopen_tx.send(String::new()).is_err() {
+        let payload = cli::Target::default().payload().unwrap().to_owned();
+        if platform_reopen_tx.send(payload).is_err() {
             tracing::debug!("application reopen dropped during shutdown");
         }
     });
@@ -2030,12 +2046,12 @@ fn main() -> Result<()> {
             }
         };
         let tray_available = tray_handles.is_some();
-        window_options.show = launch_agents
-            || companion_main_window_visible(config.companion.start_hidden, tray_available);
+        window_options.show =
+            companion_main_window_visible(&target, config.companion.start_hidden, tray_available);
         let start_hidden = !window_options.show;
         if start_hidden {
             tracing::info!("companion start: main window hidden in system tray");
-        } else if config.companion.start_hidden && !launch_agents {
+        } else if config.companion.start_hidden && !force_visible_agents {
             tracing::warn!(
                 "companion start requested but tray is unavailable; showing main window"
             );
@@ -2061,16 +2077,12 @@ fn main() -> Result<()> {
                     cx,
                 )
             });
-            if create_workspace_immediately {
-                root.update(cx, |root, cx| {
-                    let workspace = root.ensure_workspace(window, cx);
-                    if launch_agents {
-                        workspace.update(cx, |workspace, cx| {
-                            workspace.open_deep_link(DeepLink::Agents, cx);
-                        });
-                    }
-                });
-            }
+            root.update(cx, |root, cx| {
+                root.initial_agents_presentation = launch_agents;
+                if create_workspace_immediately {
+                    root.ensure_workspace(window, cx);
+                }
+            });
             root.update(cx, |root, cx| {
                 let desktop_character = root.runtime.desktop_character.clone();
                 let runtime_entity = desktop_character.clone();
@@ -2587,10 +2599,20 @@ mod tests {
     // SDTEST-1383
     #[test]
     fn companion_hidden_start_requires_an_available_tray() {
-        assert!(companion_main_window_visible(false, false));
-        assert!(companion_main_window_visible(false, true));
-        assert!(companion_main_window_visible(true, false));
-        assert!(!companion_main_window_visible(true, true));
+        for target in [super::cli::Target::default(), super::cli::Target::Main] {
+            assert!(companion_main_window_visible(&target, false, false));
+            assert!(companion_main_window_visible(&target, false, true));
+            assert!(companion_main_window_visible(&target, true, false));
+            assert!(!companion_main_window_visible(&target, true, true));
+            assert!(!workspace_created_at_boot(companion_main_window_visible(
+                &target, true, true,
+            )));
+        }
+        assert!(companion_main_window_visible(
+            &super::cli::Target::Agents,
+            true,
+            true,
+        ));
     }
 
     // SDTEST-1493

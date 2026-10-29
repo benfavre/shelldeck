@@ -145,6 +145,14 @@ impl Workspace {
             return;
         }
         match event {
+            AgentConsoleEvent::NavigatorChanged => cx.notify(),
+            AgentConsoleEvent::ReconnectProject {
+                checkout_id,
+                expected_connection,
+                connection_id,
+            } => {
+                self.reconnect_agent_project(checkout_id, expected_connection, connection_id, cx);
+            }
             AgentConsoleEvent::RefreshRemoteSessions => self.refresh_fleet_view(cx),
             AgentConsoleEvent::OpenPlatformSession(session) => {
                 if self.platform_connection().is_some()
@@ -752,6 +760,9 @@ impl Workspace {
     }
 
     pub(super) fn refresh_agent_connections(&mut self, cx: &mut Context<Self>) {
+        self.workspace_hub.update(cx, |hub, cx| {
+            hub.refresh_browse_connections(&self.connections, cx)
+        });
         let connections = self
             .connections
             .iter()
@@ -772,6 +783,36 @@ impl Workspace {
         let groups = agent_project_groups(self.workspace_hub.read(cx).catalog(), &self.connections);
         self.agent_console
             .update(cx, |view, cx| view.set_project_groups(groups, cx));
+    }
+
+    pub(super) fn open_project_agents(
+        &mut self,
+        checkout: CatalogCheckoutId,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_access_mode(AppMode::Dev) || self.effective_mode() != AppMode::Dev {
+            return;
+        }
+        // Resolve the current saved checkout rather than trusting an old UI row.
+        let groups = agent_project_groups(self.workspace_hub.read(cx).catalog(), &self.connections);
+        let Some(worktree) = groups
+            .iter()
+            .flat_map(|group| &group.worktrees)
+            .find(|worktree| worktree.id == checkout.to_string())
+            .cloned()
+        else {
+            return;
+        };
+        if matches!(&worktree.target, AgentTarget::Ssh { connection_id, .. }
+            if !self.connections.iter().any(|connection| connection.id == *connection_id))
+        {
+            return;
+        }
+        self.agent_console.update(cx, |view, cx| {
+            view.set_project_groups(groups, cx);
+            view.select_worktree_session(&worktree, cx);
+        });
+        self.activate_dev_section(SidebarSection::Agents, cx);
     }
 
     pub(super) fn bind_agent_run_to_workspace(

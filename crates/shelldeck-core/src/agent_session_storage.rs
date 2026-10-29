@@ -31,7 +31,7 @@ impl Default for AgentConsolePreferences {
             inspector_visible: false,
             context_expanded: false,
             inspector_tab: "files".into(),
-            navigator_width: 240,
+            navigator_width: 280,
             inspector_width: 280,
         }
     }

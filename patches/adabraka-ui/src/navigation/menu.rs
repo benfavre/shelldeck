@@ -350,6 +350,8 @@ pub struct MenuBar {
     // ShellDeck patch: SDPATCH-045 — retained so scroll-to-current can finish
     // after the dropdown's child bounds are measured on its first frame.
     dropdown_scroll: ScrollHandle,
+    // ShellDeck patch: SDPATCH-047 — embed menus in host-owned window chrome.
+    embedded: bool,
 }
 
 impl MenuBar {
@@ -363,6 +365,8 @@ impl MenuBar {
             // ShellDeck patch: SDPATCH-045 — one dropdown is open at a time,
             // so one retained handle is sufficient and avoids stale lifetimes.
             dropdown_scroll: ScrollHandle::new(),
+            // ShellDeck patch: SDPATCH-047 — preserve standalone styling by default.
+            embedded: false,
         }
     }
 
@@ -383,6 +387,12 @@ impl MenuBar {
     /// Height of the trigger row. Defaults to 40px.
     pub fn row_height(mut self, height: Pixels) -> Self {
         self.row_height = height;
+        self
+    }
+
+    /// ShellDeck patch: SDPATCH-047 — transparent, borderless titlebar menus.
+    pub fn embedded(mut self, embedded: bool) -> Self {
+        self.embedded = embedded;
         self
     }
 
@@ -424,17 +434,25 @@ impl Render for MenuBar {
         // That is standard menu-bar behaviour on every desktop platform and
         // the upstream component had no notion of it.
         let menu_open = self.active_menu.is_some();
-        let row_height = self.row_height;
+        // ShellDeck patch: SDPATCH-047 — embedded chrome follows the host UI scale.
+        let row_height = if self.embedded {
+            self.row_height * (window.rem_size().to_f64() as f32 / 16.0)
+        } else {
+            self.row_height
+        };
 
         let mut bar = div()
             .flex()
             .items_center()
             .h(row_height)
-            .px(px(8.0))
-            .gap(px(2.0))
-            .bg(theme.tokens.background)
-            .border_b_1()
-            .border_color(theme.tokens.border)
+            // ShellDeck patch: SDPATCH-047 — the host owns the chrome fill and border.
+            .gap(px(if self.embedded { 6.0 } else { 2.0 }))
+            .when(!self.embedded, |bar| {
+                bar.px(px(8.0))
+                    .bg(theme.tokens.background)
+                    .border_b_1()
+                    .border_color(theme.tokens.border)
+            })
             // ShellDeck patch: SDPATCH-025 — a click anywhere outside the bar
             // (including inside the deferred dropdown, which is why the item
             // handlers close explicitly) dismisses the open menu.
@@ -456,6 +474,8 @@ impl Render for MenuBar {
                 // its rounded background escaped above and below the bar.
                 div()
                     .id(SharedString::from(format!("menubar-trigger-{}", item.id)))
+                    // ShellDeck patch: SDPATCH-047 — narrow hosts scroll whole titles.
+                    .flex_shrink_0()
                     .relative()
                     .h(row_height)
                     .flex()

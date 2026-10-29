@@ -39,6 +39,7 @@ class AgentsCli(unittest.TestCase):
             result = self.run_cli(argument)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("--agents", result.stdout)
+            self.assertIn("--main", result.stdout)
             self.assertIn("Usage: shelldeck", result.stdout)
         result = self.run_cli("--version")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -50,11 +51,15 @@ class AgentsCli(unittest.TestCase):
         self.assertEqual(list(self.root.iterdir()), [], "CLI-only requests wrote desktop state")
 
     # SDTEST-2641 / SDUC-558: a second real executable sends the exact Agents
-    # intent (or normal focus) and exits before constructing another runtime.
+    # intent (or explicit full-app focus) before constructing another runtime.
     def test_sdtest_2641_agents_and_normal_launch_handoff_before_gui_or_config(self):
         for arguments, payload in [(("--agents",), "shelldeck://agents"),
                                    (("shelldeck://agents",), "shelldeck://agents"),
-                                   ((), "")]:
+                                   ((), "shelldeck://agents"),
+                                   (("-psn_0_42",), "shelldeck://agents"),
+                                   (("--main",), ""),
+                                   (("shelldeck://issue/MixedCase",), "shelldeck://issue/MixedCase"),
+                                   (("shelldeck://assistant",), "shelldeck://assistant")]:
             with self.subTest(arguments=arguments):
                 with socket.socket() as server:
                     server.bind(("127.0.0.1", 0))

@@ -140,6 +140,8 @@ mod panels;
 mod polling;
 mod presentation;
 pub use presentation::WorkspacePresentation;
+mod agent_project_repair;
+mod remote_project;
 mod render;
 mod request_views;
 mod requests;
@@ -948,6 +950,7 @@ impl Workspace {
         let initial_dashboard_pins = initial_pinned_connections.clone();
         let sidebar = cx.new(|cx| {
             let mut s = SidebarView::new(cx);
+            s.set_active_section(SidebarSection::Agents);
             s.set_connections(connections.clone());
             s.set_pinned_connections(initial_pinned_connections);
             s.set_site_filter(initial_site_filter);
@@ -1108,6 +1111,7 @@ impl Workspace {
         // click handlers, so `rebuild_menu_bar` fills it in on first render.
         let menu_bar = cx.new(|_| {
             AdabrakaMenuBar::new(Vec::new())
+                .embedded(true)
                 .row_height(gpui::px(crate::menu_bar::MENU_BAR_HEIGHT))
                 .menu_min_width(gpui::px(240.0))
         });
@@ -1231,6 +1235,17 @@ impl Workspace {
         let workspace_hub_sub = cx.subscribe(
             &workspace_hub,
             |this, _hub, event: &workspaces::WorkspaceHubEvent, cx| match event {
+                workspaces::WorkspaceHubEvent::BrowseRemoteFolder {
+                    request,
+                    connection_id,
+                    input,
+                } => {
+                    this.browse_remote_project(*request, *connection_id, input.clone(), cx);
+                }
+                workspaces::WorkspaceHubEvent::PresentationChanged => {
+                    this.on_active_view_changed(cx);
+                    cx.notify();
+                }
                 workspaces::WorkspaceHubEvent::ActiveTerminal(terminal) => {
                     let visible_session = this.workspace_hub.read(cx).active_agent_session_id();
                     this.agent_console.update(cx, |view, cx| {
@@ -1269,6 +1284,9 @@ impl Workspace {
                 }
                 workspaces::WorkspaceHubEvent::CatalogChanged => {
                     this.refresh_agent_projects(cx);
+                }
+                workspaces::WorkspaceHubEvent::OpenProjectAgents(checkout) => {
+                    this.open_project_agents(*checkout, cx);
                 }
             },
         );
@@ -1453,7 +1471,7 @@ impl Workspace {
             script_form: None,
             template_browser: None,
             variable_prompt: None,
-            active_view: ActiveView::Dashboard,
+            active_view: ActiveView::Agents,
             presentation: WorkspacePresentation::Main,
             agents_focus_pending: false,
             native_title: None,

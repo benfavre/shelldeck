@@ -139,6 +139,7 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-106 | `ssh_config.rs::include_directive_does_not_break_parse` | SDUC-040 | Green | Added 2026-07-09 (cluster M). Common shape `Include ~/.ssh/conf.d/*` is tolerated (`ALLOW_UNKNOWN_FIELDS`) — top-level hosts still extracted even if the underlying `ssh2_config` crate doesn't expand the Include itself. |
 | SDTEST-107 | *to write* — wildcard `Host *` fields apply as defaults to specific hosts | SDUC-040 | **Red / P1** | Handled by the `ssh2_config` crate; needs a functional smoke test to lock the merge behaviour. |
 | SDTEST-108 | `ssh_config.rs::parse_never_mutates_the_input_file` | SDUC-040 | Green | Added 2026-07-09 (cluster M). AGENTS.md "Critical Rules" guarantee: mtime + size + content unchanged after parse. Uses `TempDir` + `std::fs::metadata` sensor. |
+| SDTEST-2722 | `ssh_config::tests::sdtest_2722_ssh_ids_survive_reparse_without_rebinding_changed_authority` | SDUC-040 | Green | Stable identity across comment/order edits and reparses; changed endpoint, user, key, jump host or source file cannot reuse persisted checkout authority. All nine SSH parser tests passed. |
 
 ---
 
@@ -363,7 +364,7 @@ Existing: **0 tests**.
 | SDTEST-1322 | `single_instance.rs::stale_discovery_file_is_taken_over` | SDUC-407 | Green | Dead primary → next launch takes over instead of stranding. |
 | SDTEST-1323 | `single_instance.rs::wrong_token_handoff_is_rejected` | SDUC-407 | Green | Token guard drops a rogue local hand-off. |
 | SDTEST-2634 | `deep_link.rs::sdtest_2634_agents_intent_accepts_only_its_route_without_panicking_on_unicode` | SDUC-558 | Green | Standalone Agents accepts its exact route, casing and optional query/fragment; extra route segments, wrong schemes and malformed Unicode prefixes cannot become an Agents intent or panic. Passed in the isolated 480-test core suite. |
-| SDTEST-2635 | `single_instance.rs::sdtest_2635_agents_initial_and_secondary_intents_reach_one_primary_exactly_once` | SDUC-558 | Green | Initial/secondary Agents launches and a subsequent bare launch deliver once to the same authenticated IPC primary; the bare request remains empty so it can restore the full presentation without replacing discovery identity or creating another host. Passed in the isolated 480-test core suite. |
+| SDTEST-2635 | `single_instance.rs::sdtest_2635_agents_initial_and_secondary_intents_reach_one_primary_exactly_once` | SDUC-558 | Green | Initial/secondary Agents launches and a subsequent explicit full-app focus deliver once to the same authenticated IPC primary; the low-level full-app request remains empty so it can restore the full presentation without replacing discovery identity or creating another host. Passed in the isolated 480-test core suite. |
 | SDTEST-2643 | `single_instance.rs::sdtest_2643_concurrent_cold_launches_keep_one_primary_and_deliver_every_intent` | SDUC-558 | Green | Eight simultaneous real cold acquisitions honor the persistent startup-lock inode, produce one bounded primary listener and deliver every distinct intent exactly once. Lock/publication failures return explicit failure rather than another host or a successful handoff. Passed in the isolated 480-test core suite on Linux; macOS/Windows run it in their native core CI gates. |
 
 ---
@@ -709,3 +710,7 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2702 | `config/platform_tasks.rs` | SDUC-560 | Green | Indeterminate responses remain unknown with one dispatch; failed/v1 negotiation sends no mutation. |
 | SDTEST-2703 | `config/platform_task_journal.rs` | SDUC-560 | Green | Restart retains unknown dispatch, wrong scope cannot acknowledge, and acknowledgment does not prepare replay. |
 | SDTEST-2706 | `config/platform_task_journal.rs` | SDUC-560 | Green | Bounded settled history can retire without losing unresolved operations; token namespaces stay separate. |
+
+| SDTEST-2727 | `config::workspace_catalog::tests::remove_empty_project_preserves_files_and_workspace_ownership` | SDUC-488 | Green | Explicit unused-project removal preserves files and revision rules; persisted workspaces block removal. Passed focused core regression on 2026-10-29. |
+
+| SDTEST-2736 | `config::workspace_catalog::tests::ssh_checkout_rebind_preserves_path_and_refuses_stale_or_bound_authority` | SDUC-488, SDUC-499 | Green | Explicit saved-connection repair preserves folder bytes and other checkouts; stale expected connection and persisted workspace bindings refuse without mutation. Passed the focused core regression on 2026-10-29. |

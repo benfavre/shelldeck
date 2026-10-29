@@ -40,6 +40,8 @@ impl Workspace {
         sites_loaded: bool,
         mode_switch: Option<(AppMode, &'static [AppMode])>,
         menu_bar_visible: bool,
+        menu_bar: Entity<AdabrakaMenuBar>,
+        sidebar_visible: Option<bool>,
         ai_configured: bool,
         ai_dock_open: bool,
         ai_task_count: usize,
@@ -57,7 +59,7 @@ impl Workspace {
         // Title area — draggable
         let mut title_area = div()
             .flex_1()
-            .min_w(px(0.0))
+            .min_w(px(32.0))
             .h_full()
             .flex()
             .items_center()
@@ -68,7 +70,7 @@ impl Workspace {
             .on_mouse_down(MouseButton::Left, |_e, window, _cx| {
                 window.start_window_move();
             });
-        if !compact {
+        if !compact && (!menu_bar_visible || agents_presentation) {
             title_area = title_area
                 .child(crate::brand::brand_badge(20.0))
                 .child(crate::brand::brand_wordmark(12.0));
@@ -80,6 +82,48 @@ impl Workspace {
                         .child(t!("agents.title").to_string()),
                 );
             }
+        }
+
+        // Keep interactive controls outside the drag region. The menu bar owns
+        // deferred dropdowns, so scrolling the titles never clips an open menu.
+        let sidebar_button = sidebar_visible.map(|visible| {
+            let tooltip: SharedString = format!(
+                "{} · {}",
+                t!("shortcuts.toggle_sidebar"),
+                crate::menu_bar::accel("secondary-b")
+            )
+            .into();
+            IconButton::new(IconSource::FilePath("images/sidebar.svg".into()))
+                .variant(ButtonVariant::Ghost)
+                .size(gpui::px(28.0))
+                .icon_size(gpui::px(18.0))
+                .text_color(if visible { title_color } else { title_dim })
+                .tooltip(move |_, cx| {
+                    cx.new(|_| WorkspaceTooltip {
+                        label: tooltip.clone(),
+                    })
+                    .into()
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.toggle_sidebar(cx);
+                    cx.notify();
+                }))
+        });
+        let mut navigation = div()
+            .flex()
+            .items_center()
+            .min_w(px(0.0))
+            .gap(px(8.0))
+            .pl(px(10.0))
+            .children(sidebar_button);
+        if menu_bar_visible && !agents_presentation {
+            navigation = navigation.child(
+                div()
+                    .id("titlebar-menus")
+                    .min_w(px(0.0))
+                    .overflow_x_scroll()
+                    .child(menu_bar),
+            );
         }
 
         let control_btn = crate::window_chrome::control_button;
@@ -495,13 +539,15 @@ impl Workspace {
         titlebar
             .border_b_1()
             .border_color(titlebar_border)
+            .child(navigation)
             .child(title_area)
             .child(
                 div()
                     .flex()
                     .items_center()
                     .h_full()
-                    .gap(px(4.0))
+                    .flex_shrink_0()
+                    .gap(px(6.0))
                     .pr(px(8.0))
                     .children(full_app_button)
                     .children(restore_menu_button)

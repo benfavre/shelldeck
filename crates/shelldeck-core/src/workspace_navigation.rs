@@ -893,6 +893,28 @@ pub struct WorkspaceCreationReducer {
 }
 
 impl WorkspaceCreationReducer {
+    /// Forget a settled attempt, retaining the operation tombstone so delayed
+    /// callbacks cannot recreate it. Running work must be cancelled first.
+    pub fn dismiss(
+        &mut self,
+        workspace: CatalogWorkspaceId,
+        operation: CreationOperationId,
+    ) -> bool {
+        if !self.jobs.get(&workspace).is_some_and(|state| {
+            state.operation() == operation
+                && matches!(
+                    state,
+                    BackgroundWorkspaceCreateState::Failed { .. }
+                        | BackgroundWorkspaceCreateState::Cancelled { .. }
+                        | BackgroundWorkspaceCreateState::Conflict { .. }
+                )
+        }) {
+            return false;
+        }
+        self.jobs.remove(&workspace);
+        true
+    }
+
     #[must_use]
     pub fn state(&self, workspace: CatalogWorkspaceId) -> Option<&BackgroundWorkspaceCreateState> {
         self.jobs.get(&workspace)

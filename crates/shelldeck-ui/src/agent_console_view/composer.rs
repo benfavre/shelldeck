@@ -367,7 +367,12 @@ impl AgentConsoleView {
         .detach();
     }
 
-    fn pick_agent_attachment(&mut self, scoped: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn pick_agent_attachment(
+        &mut self,
+        scoped: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session_id) = self.sessions.selected_id() else {
             return;
         };
@@ -454,7 +459,7 @@ impl AgentConsoleView {
         .detach();
     }
 
-    fn paste_agent_context(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn paste_agent_context(&mut self, cx: &mut Context<Self>) {
         let Some(session_id) = self.sessions.selected_id() else {
             return;
         };
@@ -595,7 +600,7 @@ impl AgentConsoleView {
         .detach();
     }
 
-    fn capture_agent_context(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn capture_agent_context(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.sessions.selected_id() else {
             return;
         };
@@ -718,6 +723,22 @@ impl AgentConsoleView {
             .prompt
             .clone();
         let parent = cx.entity();
+        let missing_target =
+            validate_agent_target(&self.displayed_context(cx).target, &self.connections).is_err();
+        // An answer goes to an already running process, rather than starting a
+        // new connection. Keep that route available if its saved profile vanished.
+        let answering = session
+            .question
+            .as_ref()
+            .is_some_and(|q| q.response_supported)
+            && self
+                .session_ui
+                .get(&id)
+                .is_some_and(|ui| ui.run_id.is_some());
+        let text = prompt.read(cx).content();
+        let ready = !text.trim().is_empty()
+            && !self.composer_ui.loading.contains(&id)
+            && (!missing_target || answering);
         let mut composer = Composer::new(format!("agent-composer-{id}"), &prompt)
             .placeholder(
                 t!(if session.status.is_active() {
@@ -727,35 +748,12 @@ impl AgentConsoleView {
                 })
                 .to_string(),
             )
-            .min_rows(2)
+            .min_rows(3)
             .max_rows(8)
+            .commit_enabled(ready)
             .on_commit(move |cx| parent.update(cx, |view, cx| view.submit(cx)))
             .action(
-                Button::new("agent-attach", "")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Icon)
-                    .icon(IconSource::from("plus"))
-                    .tooltip(t!("ai.attachment.choose").to_string())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.pick_agent_attachment(false, window, cx)
-                    })),
-            )
-            .action(
-                Button::new("agent-mention-file", "@")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Sm)
-                    .tooltip(t!("agents.composer.mention_file").to_string())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.pick_agent_attachment(true, window, cx)
-                    })),
-            )
-            .action(
-                Button::new("agent-paste-context", "")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Icon)
-                    .icon(IconSource::from("copy"))
-                    .tooltip(t!("agents.composer.paste").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| this.paste_agent_context(cx))),
+                self.render_composer_menu(super::composer_controls::ComposerMenu::Attachments, cx),
             );
         for (index, attachment) in self
             .composer_ui
@@ -789,19 +787,22 @@ impl AgentConsoleView {
             );
             composer = composer.context(context);
         }
-        if self.provider == AgentProvider::Codex && self.selected_connection.is_none() {
-            composer = composer.action(
-                Button::new("agent-capture", "")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Icon)
-                    .icon(IconSource::from("scan"))
-                    .tooltip(t!("agents.composer.capture").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| this.capture_agent_context(cx))),
-            );
-        }
+        // Keep every execution choice beside the message, in a wrapping slot
+        // that cannot displace the shared Composer's Send/Stop controls.
+        let mut options = div()
+            .flex()
+            .flex_wrap()
+            .w_full()
+            .min_w_0()
+            .items_center()
+            .gap(px(4.0))
+            .child(self.render_composer_menu(super::composer_controls::ComposerMenu::Agent, cx))
+            .child(self.render_composer_menu(super::composer_controls::ComposerMenu::Access, cx))
+            .child(div().flex_1().min_w_0());
         if self.provider != AgentProvider::Automonique {
-            composer = composer.option(self.render_model_popover(cx));
+            options = options.child(self.render_model_popover(cx));
         }
+        composer = composer.option(options);
         if let Some(run_id) = self.session_ui.get(&id).and_then(|ui| ui.run_id) {
             if session.status == AgentSessionStatus::Running
                 && session.context.provider == AgentProvider::Codex
@@ -926,7 +927,14 @@ impl AgentConsoleView {
                     .child(t!("agents.composer.loading").to_string()),
             );
         }
-        if session
+        if missing_target && !answering {
+            composer = composer.footnote(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::warning())
+                    .child(t!("agents.composer.reconnect_hint").to_string()),
+            );
+        } else if session
             .question
             .as_ref()
             .is_some_and(|q| q.response_supported)
@@ -949,6 +957,7 @@ impl AgentConsoleView {
             .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
                 this.import_agent_paths(id, paths.paths().to_vec(), None, cx)
             }))
+            .child(self.render_project_picker(cx))
             .child(composer)
             .into_any_element()
     }
@@ -962,62 +971,66 @@ impl AgentConsoleView {
         let quote = message.text.clone();
         let retry = message.text.clone();
         let role = message.role;
-        let mut row = div().flex().gap(px(6.0)).pt(px(4.0));
+        let mut row = div().flex().gap(px(2.0)).pt(px(4.0));
         row = row.child(
-            Button::new(
-                ("agent-copy-message", uuid_key(message.id)),
-                t!("agents.composer.copy").to_string(),
-            )
-            .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::Sm)
-            .on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
-            }),
-        );
-        row = row.child(
-            Button::new(
-                ("agent-quote-message", uuid_key(message.id)),
-                t!("agents.composer.quote").to_string(),
-            )
-            .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::Sm)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(id) = this.sessions.selected_id() {
-                    if let Some(ui) = this.session_ui.get(&id) {
-                        let old = ui.prompt.read(cx).content().to_string();
-                        let text = format!(
-                            "{}\n\n{}",
-                            quote
-                                .lines()
-                                .map(|line| format!("> {line}"))
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                            old
-                        );
-                        ui.prompt
-                            .update(cx, |state, cx| state.replace_content(text, cx));
-                    }
-                }
-                cx.notify();
-            })),
-        );
-        if role == AgentMessageRole::User {
-            row = row.child(
-                Button::new(
-                    ("agent-edit-message", uuid_key(message.id)),
-                    t!("agents.composer.edit").to_string(),
-                )
+            Button::new(("agent-copy-message", uuid_key(message.id)), "")
                 .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::Sm)
+                .size(ButtonSize::Icon)
+                .w(px(26.0))
+                .h(px(26.0))
+                .icon(IconSource::from("copy"))
+                .tooltip(t!("agents.composer.copy").to_string())
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                }),
+        );
+        row = row.child(
+            Button::new(("agent-quote-message", uuid_key(message.id)), "")
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Icon)
+                .w(px(26.0))
+                .h(px(26.0))
+                .icon(IconSource::from("reply"))
+                .tooltip(t!("agents.composer.quote").to_string())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(id) = this.sessions.selected_id() {
                         if let Some(ui) = this.session_ui.get(&id) {
+                            let old = ui.prompt.read(cx).content().to_string();
+                            let text = format!(
+                                "{}\n\n{}",
+                                quote
+                                    .lines()
+                                    .map(|line| format!("> {line}"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                                old
+                            );
                             ui.prompt
-                                .update(cx, |state, cx| state.replace_content(retry.clone(), cx));
+                                .update(cx, |state, cx| state.replace_content(text, cx));
                         }
                     }
                     cx.notify();
                 })),
+        );
+        if role == AgentMessageRole::User {
+            row = row.child(
+                Button::new(("agent-edit-message", uuid_key(message.id)), "")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Icon)
+                    .w(px(26.0))
+                    .h(px(26.0))
+                    .icon(IconSource::from("pencil"))
+                    .tooltip(t!("agents.composer.edit").to_string())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(id) = this.sessions.selected_id() {
+                            if let Some(ui) = this.session_ui.get(&id) {
+                                ui.prompt.update(cx, |state, cx| {
+                                    state.replace_content(retry.clone(), cx)
+                                });
+                            }
+                        }
+                        cx.notify();
+                    })),
             );
         }
         row.into_any_element()

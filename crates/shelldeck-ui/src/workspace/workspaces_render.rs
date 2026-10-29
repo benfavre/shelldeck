@@ -7,267 +7,265 @@ impl WorkspaceHubView {
             .catalog
             .projects()
             .any(|project| project.checkouts().len() > 0);
+        let mut title = t!("workspaces.title").to_string();
+        let mut subtitle = t!("workspaces.subtitle").to_string();
+        if self.retained_surface_visible() {
+            if let Some(workspace) = self
+                .navigation
+                .active()
+                .and_then(|id| self.catalog.workspace(id).ok())
+            {
+                title = workspace.name().to_owned();
+                if let Ok(checkout) = self
+                    .catalog
+                    .checkout_in_project(workspace.project_id(), workspace.checkout_id())
+                {
+                    subtitle = match checkout.host() {
+                        CheckoutHost::Local { root, .. } => root.to_string_lossy().into_owned(),
+                        CheckoutHost::Ssh {
+                            connection_id,
+                            root,
+                        } => format!(
+                            "{} · {}",
+                            self.connections
+                                .get(connection_id)
+                                .cloned()
+                                .unwrap_or_else(|| t!("workspaces.authority.ssh").to_string()),
+                            root.as_str()
+                        ),
+                    };
+                }
+            }
+        }
+        let mut actions = div().flex().items_center().flex_wrap().gap(px(8.0));
+        if self.navigation.active().is_some() {
+            actions = actions.child(
+                Button::new(
+                    "workspace-overview",
+                    t!(
+                        if self.overview_open && !self.onboarding_open && !self.launcher_open {
+                            "workspaces.hub.back_workspace"
+                        } else {
+                            "workspaces.hub.overview"
+                        }
+                    )
+                    .to_string(),
+                )
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Ghost)
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.toggle_overview(cx);
+                        });
+                    }
+                }),
+            );
+        }
+        // The empty state owns its single primary action.
+        if has_checkout {
+            actions = actions
+                .child(
+                    Button::new(
+                        "workspace-onboarding-open",
+                        t!("workspaces.onboarding.add").to_string(),
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Outline)
+                    .on_click({
+                        let entity = entity.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |this, cx| this.show_onboarding(cx));
+                        }
+                    }),
+                )
+                .child(
+                    Button::new("workspace-launcher-open", t!("workspaces.new").to_string())
+                        .size(ButtonSize::Sm)
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |this, cx| this.show_launcher(cx));
+                        }),
+                );
+        }
         div()
             .flex()
             .items_center()
             .justify_between()
-            .px(px(18.0))
-            .py(px(12.0))
+            .flex_wrap()
+            .gap(px(12.0))
+            .px(px(20.0))
+            .py(px(14.0))
+            .flex_shrink_0()
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(3.0))
+                    .gap(px(4.0))
+                    .flex_1()
+                    // Keep the heading readable; long translated actions wrap below it.
+                    .min_w(px(180.0))
+                    .overflow_hidden()
                     .child(
                         div()
-                            .text_size(px(16.0))
+                            .text_size(px(17.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("workspaces.title").to_string()),
+                            .truncate()
+                            .child(title),
                     )
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(px(12.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child(t!("workspaces.subtitle").to_string()),
+                            .truncate()
+                            .child(subtitle),
                     ),
+            )
+            .child(actions)
+    }
+
+    fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(16.0))
+            .py(px(48.0))
+            .px(px(16.0))
+            .child(lucide_icon("folder", 32.0, ShellDeckColors::text_muted()))
+            .child(
+                div()
+                    .text_size(px(23.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_center()
+                    .child(t!("workspaces.hub.empty_title").to_string()),
             )
             .child(
                 div()
-                    .flex()
-                    .gap(px(6.0))
-                    .child(
-                        Button::new(
-                            "workspace-onboarding-open",
-                            t!("workspaces.onboarding.add").to_string(),
-                        )
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Outline)
-                        .on_click({
-                            let entity = entity.clone();
-                            move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.onboarding_open = true;
-                                    this.error = None;
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                    )
-                    .child(
-                        Button::new("workspace-launcher-open", t!("workspaces.new").to_string())
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Default)
-                            .disabled(!has_checkout)
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.launcher_open = true;
-                                    this.error = None;
-                                    cx.notify();
-                                });
-                            }),
-                    ),
+                    .max_w(px(420.0))
+                    .text_size(px(13.0))
+                    .text_center()
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("workspaces.hub.empty_body").to_string()),
+            )
+            .child(
+                Button::new(
+                    "workspace-empty-add",
+                    t!("workspaces.onboarding.add").to_string(),
+                )
+                .on_click(move |_, _, cx| entity.update(cx, |this, cx| this.show_onboarding(cx))),
             )
     }
 
-    fn render_catalog(&self, _cx: &mut Context<Self>) -> impl IntoElement {
-        let mut body = div().flex().flex_col().gap(px(8.0)).p(px(10.0));
-        if self.catalog.projects().len() == 0 {
+    fn render_catalog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut body = div().flex().flex_col().gap(px(8.0)).w_full().min_w_0();
+        if self.catalog.projects().len() > 0 {
             body = body.child(
-                Card::new().content(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(7.0))
-                        .p(px(16.0))
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(lucide_icon(
-                            "folder-git-2",
-                            22.0,
-                            ShellDeckColors::text_muted(),
-                        ))
-                        .child(t!("workspaces.catalog.empty").to_string()),
-                ),
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("workspaces.hub.projects").to_string()),
             );
         }
         for project in self.catalog.projects() {
-            let mut project_view = div().flex().flex_col().gap(px(5.0)).child(
-                div()
-                    .px(px(4.0))
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(project.name().to_owned()),
-            );
             for checkout in project.checkouts() {
                 let item = checkout_presentation(project, checkout, &self.connections);
-                project_view = project_view.child(
-                    Card::new().content(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(ShellDeckColors::text_primary())
-                                            .child(item.checkout),
-                                    )
-                                    .child(
-                                        Badge::new(t!(item.host_kind).to_string())
-                                            .variant(BadgeVariant::Outline),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(format!("{} · {}", item.host, item.repository)),
-                            ),
-                    ),
+                let root = match checkout.host() {
+                    CheckoutHost::Local { root, .. } => root.to_string_lossy().into_owned(),
+                    CheckoutHost::Ssh { root, .. } => root.as_str().to_owned(),
+                };
+                let checkout_id = checkout.id();
+                let entity = cx.entity();
+                body = body.child(
+                    Button::new(
+                        ("workspace-project", checkout_id.as_uuid().as_u128() as u64),
+                        format!("{} · {}", item.project, item.host),
+                    )
+                    .variant(ButtonVariant::Ghost)
+                    .icon("folder")
+                    .w_full()
+                    .justify_start()
+                    .overflow_hidden()
+                    .tooltip(root.clone())
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.open_project_agents(checkout_id, cx);
+                        })
+                    }),
+                );
+                body = body.child(
+                    div()
+                        .w_full()
+                        .pl(px(34.0))
+                        .pb(px(6.0))
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(root),
                 );
             }
-            body = body.child(project_view);
+            let project_id = project.id();
+            let entity = cx.entity();
+            let removable = self.can_remove_project(project_id);
+            body = body.child(
+                div().flex().justify_end().child(
+                    Button::new(
+                        (
+                            "workspace-project-remove",
+                            project_id.as_uuid().as_u128() as u64,
+                        ),
+                        t!("workspaces.projects.remove").to_string(),
+                    )
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .disabled(!removable)
+                    .tooltip(if removable {
+                        t!("workspaces.projects.remove_keeps_files").to_string()
+                    } else {
+                        t!("workspaces.projects.remove_blocked").to_string()
+                    })
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| this.remove_project(project_id, cx))
+                    }),
+                ),
+            );
         }
-        scrollable_vertical(body)
+        body
     }
 
-    fn render_onboarding(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity();
-        let local_entity = entity.clone();
-        let ssh_entity = entity.clone();
-        let submit_entity = entity.clone();
-        let close_entity = entity.clone();
-        let mut connections = div().flex().flex_wrap().gap(px(5.0));
-        if self.onboarding_ssh {
-            for (id, label) in &self.connections {
-                let id = *id;
-                let selected = self.onboarding_connection == Some(id);
-                let select_entity = entity.clone();
-                connections = connections.child(
-                    Button::new(("workspace-host", id.as_u128() as u64), label.clone())
-                        .size(ButtonSize::Sm)
-                        .variant(if selected {
-                            ButtonVariant::Secondary
-                        } else {
-                            ButtonVariant::Outline
-                        })
-                        .on_click(move |_, _, cx| {
-                            select_entity.update(cx, |this, cx| {
-                                this.onboarding_connection = Some(id);
-                                cx.notify();
-                            });
-                        }),
-                );
+    fn render_workspace_navigation(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut body = div().flex().flex_col().gap(px(8.0)).p(px(12.0)).min_w_0();
+        for workspace in self.catalog.workspaces() {
+            if workspace.lifecycle() == UserWorkspaceLifecycle::Archived {
+                continue;
             }
+            let id = workspace.id();
+            let entity = cx.entity();
+            let active = self.navigation.active() == Some(id);
+            body = body.child(
+                Button::new(
+                    ("workspace-nav", id.as_uuid().as_u128() as u64),
+                    workspace.name().to_owned(),
+                )
+                .icon("folder")
+                .variant(if active {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .w_full()
+                .justify_start()
+                .overflow_hidden()
+                .on_click(move |_, _, cx| entity.update(cx, |this, cx| this.switch_to(id, cx))),
+            );
         }
-        Card::new().content(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .child(t!("workspaces.onboarding.title").to_string())
-                .child(
-                    Input::new(&self.onboarding_project)
-                        .placeholder(t!("workspaces.onboarding.project").to_string()),
-                )
-                .child(
-                    Input::new(&self.onboarding_checkout)
-                        .placeholder(t!("workspaces.onboarding.checkout").to_string()),
-                )
-                .child(
-                    Input::new(&self.onboarding_repository)
-                        .placeholder(t!("workspaces.onboarding.repository").to_string()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(5.0))
-                        .child(
-                            Button::new(
-                                "onboard-local",
-                                t!("workspaces.authority.local").to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(if self.onboarding_ssh {
-                                ButtonVariant::Outline
-                            } else {
-                                ButtonVariant::Secondary
-                            })
-                            .on_click(move |_, _, cx| {
-                                local_entity.update(cx, |this, cx| {
-                                    this.onboarding_ssh = false;
-                                    cx.notify();
-                                })
-                            }),
-                        )
-                        .child(
-                            Button::new("onboard-ssh", t!("workspaces.authority.ssh").to_string())
-                                .size(ButtonSize::Sm)
-                                .variant(if self.onboarding_ssh {
-                                    ButtonVariant::Secondary
-                                } else {
-                                    ButtonVariant::Outline
-                                })
-                                .disabled(self.connections.is_empty())
-                                .on_click(move |_, _, cx| {
-                                    ssh_entity.update(cx, |this, cx| {
-                                        this.onboarding_ssh = true;
-                                        cx.notify();
-                                    })
-                                }),
-                        ),
-                )
-                .child(connections)
-                .child(
-                    Input::new(&self.onboarding_root).placeholder(if self.onboarding_ssh {
-                        t!("workspaces.onboarding.remote_root").to_string()
-                    } else {
-                        t!("workspaces.onboarding.local_root").to_string()
-                    }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(px(5.0))
-                        .child(
-                            Button::new(
-                                "onboard-close",
-                                t!("workspaces.launcher.close").to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Ghost)
-                            .on_click(move |_, _, cx| {
-                                close_entity.update(cx, |this, cx| {
-                                    this.onboarding_open = false;
-                                    cx.notify();
-                                })
-                            }),
-                        )
-                        .child(
-                            Button::new(
-                                "onboard-save",
-                                t!("workspaces.onboarding.save").to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Default)
-                            .on_click(move |_, _, cx| {
-                                submit_entity.update(cx, |this, cx| this.submit_onboarding(cx))
-                            }),
-                        ),
-                ),
-        )
+        body
     }
 
     fn render_workspace_card(
@@ -284,23 +282,33 @@ impl WorkspaceHubView {
         let select_entity = entity.clone();
         let archive_entity = entity.clone();
         let mut badges = div().flex().items_center().flex_wrap().gap(px(5.0));
-        badges = badges
-            .child(
-                Badge::new(format!(
-                    "{} · {}",
-                    t!("workspaces.authority.terminal_filesystem"),
-                    t!(presentation.host_kind)
-                ))
-                .variant(BadgeVariant::Outline),
-            )
-            .child(
-                Badge::new(if presentation.provider_bound {
-                    t!("workspaces.authority.provider_only").to_string()
-                } else {
-                    t!("workspaces.authority.provider_unbound").to_string()
-                })
-                .variant(BadgeVariant::Secondary),
+        badges = badges.child(
+            Badge::new(format!(
+                "{} · {}",
+                t!("workspaces.authority.terminal_filesystem"),
+                t!(presentation.host_kind)
+            ))
+            .variant(BadgeVariant::Outline),
+        );
+        if presentation.provider_bound {
+            badges = badges.child(
+                Badge::new(t!("workspaces.authority.provider_only").to_string())
+                    .variant(BadgeVariant::Secondary),
             );
+        }
+        let mut metadata = vec![presentation.host.clone()];
+        for value in [
+            &presentation.project,
+            &presentation.checkout,
+            &presentation.repository,
+        ] {
+            if value != &presentation.name
+                && value != &t!("workspaces.hub.folder").to_string()
+                && !metadata.contains(value)
+            {
+                metadata.push(value.clone());
+            }
+        }
         if presentation.unread > 0 {
             badges = badges.child(
                 Badge::new(t!("workspaces.card.unread", count = presentation.unread).to_string())
@@ -324,6 +332,7 @@ impl WorkspaceHubView {
                     .flex()
                     .items_start()
                     .justify_between()
+                    .flex_wrap()
                     .gap(px(8.0))
                     .child(
                         div()
@@ -341,20 +350,15 @@ impl WorkspaceHubView {
                                     .truncate()
                                     .text_size(px(10.0))
                                     .text_color(ShellDeckColors::text_muted())
-                                    .child(format!(
-                                        "{} · {} · {} · {}",
-                                        presentation.project,
-                                        presentation.host,
-                                        presentation.repository,
-                                        presentation.checkout
-                                    )),
+                                    .child(metadata.join(" · ")),
                             ),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(4.0))
+                            .flex_wrap()
+                            .gap(px(6.0))
                             .child(
                                 Badge::new(
                                     t!(
@@ -376,27 +380,30 @@ impl WorkspaceHubView {
                                         .unwrap_or(BadgeVariant::Outline),
                                 ),
                             )
-                            .child(
-                                Badge::new(
-                                    t!(
-                                        "workspaces.freshness.provider",
-                                        state = presentation
-                                            .provider_freshness
-                                            .map(freshness_label)
-                                            .unwrap_or_else(
-                                                || t!("workspaces.freshness.unknown").to_string()
-                                            )
-                                            .as_str()
+                            .when(presentation.provider_bound, |row| {
+                                row.child(
+                                    Badge::new(
+                                        t!(
+                                            "workspaces.freshness.provider",
+                                            state = presentation
+                                                .provider_freshness
+                                                .map(freshness_label)
+                                                .unwrap_or_else(|| t!(
+                                                    "workspaces.freshness.unknown"
+                                                )
+                                                .to_string())
+                                                .as_str()
+                                        )
+                                        .to_string(),
                                     )
-                                    .to_string(),
+                                    .variant(
+                                        presentation
+                                            .provider_freshness
+                                            .map(freshness_variant)
+                                            .unwrap_or(BadgeVariant::Outline),
+                                    ),
                                 )
-                                .variant(
-                                    presentation
-                                        .provider_freshness
-                                        .map(freshness_variant)
-                                        .unwrap_or(BadgeVariant::Outline),
-                                ),
-                            ),
+                            }),
                     ),
             )
             .child(badges);
@@ -405,6 +412,7 @@ impl WorkspaceHubView {
             div()
                 .flex()
                 .items_center()
+                .flex_wrap()
                 .gap(px(8.0))
                 .text_size(px(10.0))
                 .text_color(ShellDeckColors::text_muted())
@@ -596,7 +604,9 @@ impl WorkspaceHubView {
                 ),
             );
         }
-        if let Some(state) = creation {
+        if let Some(state) = creation
+            .filter(|state| !matches!(state, BackgroundWorkspaceCreateState::Completed { .. }))
+        {
             content = content.child(render_creation_state(state));
         }
         content = content.child(
@@ -695,42 +705,65 @@ impl WorkspaceHubView {
                 })
             })
         });
-        let active_mode = if selected_is_ssh {
-            WorkspaceLaunchMode::Ssh
-        } else {
-            self.launcher.mode
-        };
-        let mut intake_row = div().flex().items_center().flex_wrap().gap(px(6.0));
-        for (intake_index, intake) in [
-            LauncherIntakeKind::Manual,
-            LauncherIntakeKind::Issue,
-            LauncherIntakeKind::PullRequest,
-            LauncherIntakeKind::Task,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let target = entity.clone();
-            intake_row = intake_row.child(
-                Button::new(("workspace-intake", intake_index), intake.label())
-                    .size(ButtonSize::Sm)
-                    .variant(if self.launcher.intake == intake {
-                        ButtonVariant::Default
-                    } else {
-                        ButtonVariant::Outline
-                    })
-                    .on_click(move |_, _, cx| {
-                        target.update(cx, |this, cx| this.set_intake(intake, cx));
-                    }),
-            );
-        }
         let mut form = div()
             .flex()
             .flex_col()
-            .gap(px(9.0))
-            .child(intake_row)
-            .child({
-                let mut modes = div().flex().flex_wrap().gap(px(6.0));
+            .gap(px(16.0))
+            .min_w_0()
+            .child(
+                div()
+                    .text_size(px(22.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(t!("workspaces.launcher.title").to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("workspaces.hub.launch_body").to_string()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .child(t!("workspaces.hub.project_folder").to_string()),
+                    )
+                    .child(self.checkout_select.clone()),
+            )
+            .child(
+                Input::new(&self.name_state)
+                    .variant(InputVariant::Outline)
+                    .placeholder(t!("workspaces.launcher.name").to_string()),
+            )
+            .child(
+                Button::new(
+                    "workspace-launcher-advanced",
+                    t!("workspaces.hub.advanced").to_string(),
+                )
+                .variant(ButtonVariant::Ghost)
+                .icon(if self.launcher_advanced {
+                    "chevron-down"
+                } else {
+                    "chevron-right"
+                })
+                .justify_start()
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.launcher_advanced = !this.launcher_advanced;
+                            cx.notify();
+                        });
+                    }
+                }),
+            );
+        if self.launcher_advanced {
+            if !selected_is_ssh {
+                let mut modes = div().flex().flex_wrap().gap(px(8.0));
                 for (index, mode, label) in [
                     (
                         0usize,
@@ -742,146 +775,144 @@ impl WorkspaceHubView {
                         WorkspaceLaunchMode::GitWorktree,
                         t!("workspaces.launcher.mode_worktree").to_string(),
                     ),
-                    (
-                        2,
-                        WorkspaceLaunchMode::Ssh,
-                        t!("workspaces.launcher.mode_ssh").to_string(),
-                    ),
                 ] {
-                    let target = entity.clone();
+                    let entity = entity.clone();
                     modes = modes.child(
                         Button::new(("workspace-launch-mode", index), label)
                             .size(ButtonSize::Sm)
-                            .disabled(
-                                (selected_is_ssh && mode != WorkspaceLaunchMode::Ssh)
-                                    || (!selected_is_ssh && mode == WorkspaceLaunchMode::Ssh),
-                            )
-                            .variant(if active_mode == mode {
+                            .variant(if self.launcher.mode == mode {
                                 ButtonVariant::Secondary
                             } else {
                                 ButtonVariant::Outline
                             })
                             .on_click(move |_, _, cx| {
-                                target.update(cx, |this, cx| this.set_launch_mode(mode, cx))
+                                entity.update(cx, |this, cx| this.set_launch_mode(mode, cx))
                             }),
                     );
                 }
-                modes
-            })
-            .child(self.checkout_select.clone())
-            .child(
-                Input::new(&self.name_state)
-                    .size(InputSize::Sm)
-                    .variant(InputVariant::Outline)
-                    .placeholder(t!("workspaces.launcher.name").to_string()),
-            );
-        if self.launcher.mode == WorkspaceLaunchMode::GitWorktree {
-            form = form
-                .child(
-                    Input::new(&self.branch_state)
-                        .size(InputSize::Sm)
-                        .variant(InputVariant::Outline)
-                        .placeholder(t!("workspaces.launcher.branch").to_string()),
-                )
-                .child(
-                    Input::new(&self.start_point_state)
-                        .size(InputSize::Sm)
-                        .variant(InputVariant::Outline)
-                        .placeholder(t!("workspaces.launcher.start_point").to_string()),
-                );
-        }
-        if self.launcher.intake != LauncherIntakeKind::Manual {
-            form = form
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.0))
+                form = form.child(modes);
+                if self.launcher.mode == WorkspaceLaunchMode::GitWorktree {
+                    form = form
                         .child(
-                            Input::new(&self.provider_state)
-                                .size(InputSize::Sm)
-                                .placeholder(t!("workspaces.launcher.provider").to_string()),
+                            Input::new(&self.branch_state)
+                                .placeholder(t!("workspaces.launcher.branch").to_string()),
                         )
                         .child(
-                            Input::new(&self.repository_state)
-                                .size(InputSize::Sm)
-                                .placeholder(t!("workspaces.launcher.repository").to_string()),
-                        ),
-                )
-                .child(
-                    Input::new(&self.key_state)
-                        .size(InputSize::Sm)
-                        .placeholder(t!("workspaces.launcher.key").to_string()),
-                )
-                .child(
-                    Input::new(&self.title_state)
-                        .size(InputSize::Sm)
-                        .placeholder(t!("workspaces.launcher.external_title").to_string()),
-                )
-                .child(
-                    Input::new(&self.url_state)
-                        .size(InputSize::Sm)
-                        .placeholder(t!("workspaces.launcher.url").to_string()),
+                            Input::new(&self.start_point_state)
+                                .placeholder(t!("workspaces.launcher.start_point").to_string()),
+                        );
+                }
+            }
+            form = form.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("workspaces.hub.link_task").to_string()),
+            );
+            let mut intakes = div().flex().flex_wrap().gap(px(8.0));
+            for (index, intake) in [
+                LauncherIntakeKind::Manual,
+                LauncherIntakeKind::Issue,
+                LauncherIntakeKind::PullRequest,
+                LauncherIntakeKind::Task,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let entity = entity.clone();
+                intakes = intakes.child(
+                    Button::new(("workspace-intake", index), intake.label())
+                        .size(ButtonSize::Sm)
+                        .variant(if self.launcher.intake == intake {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Outline
+                        })
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |this, cx| this.set_intake(intake, cx))
+                        }),
                 );
+            }
+            form = form.child(intakes);
+            if self.launcher.intake != LauncherIntakeKind::Manual {
+                form = form
+                    .child(
+                        Input::new(&self.provider_state)
+                            .placeholder(t!("workspaces.launcher.provider").to_string()),
+                    )
+                    .child(
+                        Input::new(&self.repository_state)
+                            .placeholder(t!("workspaces.launcher.repository").to_string()),
+                    )
+                    .child(
+                        Input::new(&self.key_state)
+                            .placeholder(t!("workspaces.launcher.key").to_string()),
+                    )
+                    .child(
+                        Input::new(&self.title_state)
+                            .placeholder(t!("workspaces.launcher.external_title").to_string()),
+                    )
+                    .child(
+                        Input::new(&self.url_state)
+                            .placeholder(t!("workspaces.launcher.url").to_string()),
+                    );
+            }
+        } else if self.launcher.mode == WorkspaceLaunchMode::GitWorktree
+            || self.launcher.intake != LauncherIntakeKind::Manual
+        {
+            form = form.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(format!(
+                        "{} · {}",
+                        if selected_is_ssh {
+                            t!("workspaces.launcher.mode_ssh")
+                        } else if self.launcher.mode == WorkspaceLaunchMode::GitWorktree {
+                            t!("workspaces.launcher.mode_worktree")
+                        } else {
+                            t!("workspaces.launcher.mode_existing")
+                        },
+                        self.launcher.intake.label()
+                    )),
+            );
         }
-        let close_entity = entity.clone();
-        let submit_entity = entity;
-        Card::new().content(
+        form.child(
             div()
                 .flex()
-                .flex_col()
-                .gap(px(10.0))
+                .justify_end()
+                .gap(px(8.0))
                 .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(t!("workspaces.launcher.title").to_string()),
-                )
-                .child(form)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap(px(6.0))
-                        .child(
-                            Button::new(
-                                "workspace-launcher-close",
-                                t!("workspaces.launcher.close").to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Ghost)
-                            .on_click(move |_, _, cx| {
-                                close_entity.update(cx, |this, cx| {
-                                    this.launcher_open = false;
-                                    cx.notify();
-                                });
-                            }),
-                        )
-                        .child(
-                            Button::new(
-                                "workspace-launcher-submit",
-                                t!("workspaces.launcher.create").to_string(),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Default)
-                            .on_click(move |_, _, cx| {
-                                submit_entity.update(cx, |this, cx| this.submit_launcher(cx));
-                            }),
-                        ),
+                    Button::new(
+                        "workspace-launcher-close",
+                        t!("workspaces.launcher.close").to_string(),
+                    )
+                    .variant(ButtonVariant::Ghost)
+                    .on_click({
+                        let entity = entity.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.dismiss_forms(cx);
+                            });
+                        }
+                    }),
                 )
                 .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("workspaces.launcher.effect_notice").to_string()),
+                    Button::new(
+                        "workspace-launcher-submit",
+                        t!("workspaces.launcher.create").to_string(),
+                    )
+                    .disabled(self.launcher.checkout.is_none() || self.recovery_pending)
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| this.submit_launcher(cx))
+                    }),
                 ),
         )
     }
 }
 
 impl Render for WorkspaceHubView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut workspace_cards = div().flex().flex_col().gap(px(8.0));
         let default_card = WorkspaceCardState::default();
         for workspace in self.catalog.workspaces() {
@@ -922,7 +953,7 @@ impl Render for WorkspaceHubView {
             };
             let id = *workspace;
             let entity = cx.entity();
-            let mut actions = div().flex().gap(px(6.0));
+            let mut actions = div().flex().flex_wrap().gap(px(6.0));
             if matches!(
                 state,
                 BackgroundWorkspaceCreateState::Running { .. }
@@ -944,6 +975,7 @@ impl Render for WorkspaceHubView {
                     }),
                 );
             } else if creation_retryable(state) {
+                let entity = entity.clone();
                 actions = actions.child(
                     Button::new(
                         ("workspace-pending-retry", id.as_uuid().as_u128() as u64),
@@ -952,6 +984,25 @@ impl Render for WorkspaceHubView {
                     .size(ButtonSize::Sm)
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| this.retry_create(id, cx));
+                    }),
+                );
+            }
+            if matches!(
+                state,
+                BackgroundWorkspaceCreateState::Failed { .. }
+                    | BackgroundWorkspaceCreateState::Conflict { .. }
+                    | BackgroundWorkspaceCreateState::Cancelled { .. }
+            ) {
+                let operation = request.operation;
+                actions = actions.child(
+                    Button::new(
+                        ("workspace-pending-remove", id.as_uuid().as_u128() as u64),
+                        t!("workspaces.create.remove").to_string(),
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| this.dismiss_create(id, operation, cx));
                     }),
                 );
             }
@@ -967,99 +1018,100 @@ impl Render for WorkspaceHubView {
                 ),
             );
         }
-        if self.catalog.workspaces().len() == 0 && self.pending_requests.is_empty() {
-            workspace_cards = workspace_cards.child(
-                div()
-                    .p(px(16.0))
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("workspaces.cards.empty").to_string()),
-            );
-        }
-
-        let mut center = div().flex().flex_col().min_w_0().flex_1();
-        let mut top = div().flex().flex_col().gap(px(8.0)).p(px(12.0));
-        if let Some(error) = self.load_error.as_ref().or(self.error.as_ref()) {
-            top = top.child(
-                Alert::new()
-                    .variant(AlertVariant::Error)
-                    .description(error.clone()),
-            );
-        }
-        if self.launcher_open {
-            top = top.child(self.render_launcher(cx));
-        }
-        if self.onboarding_open {
-            top = top.child(self.render_onboarding(cx));
-        }
-        top = top.child(workspace_cards);
-        center = center.child(scrollable_vertical(top));
-
         let active_surface = self
             .navigation
             .active()
             .and_then(|id| self.retained.get(&id).cloned());
-        let surface = div()
-            .flex()
-            .flex_col()
-            .min_w(px(280.0))
-            .flex_1()
-            .border_l_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                div()
-                    .px(px(14.0))
-                    .py(px(9.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(t!("workspaces.surface.title").to_string()),
-            )
-            .children(active_surface)
-            .when(self.navigation.active().is_none(), |view| {
-                view.child(
+        let editing = self.launcher_open || self.onboarding_open;
+        let show_surface = self.retained_surface_visible();
+        let mut body = div().flex().flex_1().min_h(px(0.0)).min_w_0();
+        if show_surface {
+            // At smaller widths the overview button replaces the list; retained entities stay alive.
+            if window.viewport_size().width >= px(1100.0).to_pixels(window.rem_size()) {
+                body = body.child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(8.0))
-                        .flex_1()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(lucide_icon(
-                            "mouse-pointer-2",
-                            22.0,
-                            ShellDeckColors::text_muted(),
-                        ))
-                        .child(t!("workspaces.surface.select").to_string()),
-                )
-            });
-
-        div()
+                        .w(px(240.0))
+                        .flex_shrink_0()
+                        .min_h(px(0.0))
+                        .border_r_1()
+                        .border_color(ShellDeckColors::border())
+                        .child(scrollable_vertical(
+                            self.render_workspace_navigation(cx).into_any_element(),
+                        )),
+                );
+            }
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h(px(0.0))
+                    .children(active_surface),
+            );
+        } else {
+            let mut content = div()
+                .flex()
+                .flex_col()
+                .gap(px(24.0))
+                .w_full()
+                .max_w(px(if editing { 580.0 } else { 880.0 }))
+                .min_w_0();
+            if self.onboarding_open {
+                content = content.child(self.render_onboarding(cx));
+            } else if self.launcher_open {
+                content = content.child(self.render_launcher(cx));
+            } else if self.catalog.projects().len() == 0 {
+                content = content.child(self.render_empty(cx));
+            } else {
+                content = content.child(self.render_catalog(cx));
+                if self.catalog.workspaces().len() > 0 || !self.pending_requests.is_empty() {
+                    content = content
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(t!("workspaces.title").to_string()),
+                        )
+                        .child(workspace_cards);
+                } else {
+                    content = content.child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("workspaces.cards.empty").to_string()),
+                    );
+                }
+            }
+            body = body.child(scrollable_vertical(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .w_full()
+                    .min_w_0()
+                    .p(px(24.0))
+                    .child(content),
+            ));
+        }
+        let mut root = div()
             .flex()
             .flex_col()
             .size_full()
+            .min_w_0()
+            .min_h(px(0.0))
             .bg(ShellDeckColors::bg_primary())
             .text_color(ShellDeckColors::text_primary())
-            .child(self.render_header(cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .child(
-                        div()
-                            .w(px(250.0))
-                            .flex_shrink_0()
-                            .border_r_1()
-                            .border_color(ShellDeckColors::border())
-                            .child(self.render_catalog(cx)),
-                    )
-                    .child(center)
-                    .child(surface),
-            )
+            .child(self.render_header(cx));
+        if let Some(error) = self.load_error.as_ref().or(self.error.as_ref()) {
+            root = root.child(
+                div().p(px(12.0)).flex_shrink_0().child(
+                    Alert::new()
+                        .variant(AlertVariant::Error)
+                        .description(error.clone()),
+                ),
+            );
+        }
+        root.child(body)
     }
 }

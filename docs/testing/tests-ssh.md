@@ -190,3 +190,16 @@ Existing: **0 tests.**
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-2710 | `client.rs::sdtest_2710_upstream_key_formats_authenticate_only_after_signature_and_user_match` | SDUC-456 | Green | Generated Ed25519, RSA and P-256 keys round-trip encrypted OpenSSH formats; wrong passphrase/user refuse, then production key authentication succeeds only after server signature verification over in-memory SSH. No real host, known-hosts file or keychain access. |
+
+| SDTEST-2714 | `directory_browser::tests::sdtest_2714_directory_navigation_preserves_exact_paths_and_one_session` | SDUC-488 | Green | HOME and absolute paths remain exact data across one retained authenticated session; invalid paths are refused before listing. Passed locally. |
+| SDTEST-2715 | `directory_browser::tests::sdtest_2715_close_cancels_connection_and_bounds_pending_admission` | SDUC-488 | Green | Pending queue is bounded; closing cancels connection and the worker ends without retaining its sender. Passed locally. |
+| SDTEST-2716 | `directory_browser::tests::sdtest_2716_close_cancels_listing_disconnects_and_finishes_worker` | SDUC-488 | Green | Closing interrupts an outstanding listing, disconnects and drops the session before completion. Passed locally. |
+
+## Standard SSH existing folders — 2026-10-29
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2729 | `session::folder_shell::tests::folder_handshake_preserves_output_and_rejects_missing_or_wrong_nonce` | SDUC-488, SDUC-491 | Green | Exact random-nonce readiness markers tolerate every split boundary, preserve adjacent terminal bytes, and reject wrong-phase, wrong-token and oversized output; invalid paths refuse. |
+| SDTEST-2730 | `session::folder_shell::tests::folder_script_holds_exact_directory_until_resume_and_restores_modes` | SDUC-488, SDUC-491 | Green | Unix-only disposable fixture executes the production POSIX script with controlled shell/stty: quotes, newline and trailing spaces remain path data; a renamed folder remains cwd; no shell before resume, on wrong token, EOF or missing folder. Saved-mode restoration is checked through fixture stty; native QA covers a real PTY. No real SSH host or installed helper. |
+
+| SDTEST-2740 | `session::folder_shell::tests::folder_release_attempts_close_after_eof_failure_or_timeout` | SDUC-491 | Green | Bounded EOF failure/timeout still attempts Close, and a blocked Close has its own deadline. Release retains channel Drop custody until cleanup succeeds. Passed in the complete SSH library suite: 67 passed, one intentional live test ignored (2026-10-29). |
