@@ -20,6 +20,8 @@
 //! 3. on a matching-token `OK` reply → [`Acquire::AlreadyRunning`] (exit),
 //! 4. otherwise locks the persistent startup file, rechecks discovery, then
 //!    binds and publishes a new primary only if no existing primary answers.
+//!    The primary retains the lock until its listener exits. Contenders retry
+//!    handoff while waiting; an unresponsive lock holder is never replaced.
 //!
 //! The token defends against another local process on the same port
 //! stealing the hand-off — a payload with the wrong token is dropped.
@@ -37,7 +39,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// How long a launching process waits for the primary to ack the hand-off
-/// before giving up and becoming primary itself.
+/// before rechecking the primary's lifetime lock and discovery identity.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(800);
 const STARTUP_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -67,6 +69,7 @@ pub struct Primary {
     listener: TcpListener,
     token: String,
     info_path: PathBuf,
+    startup_lock: File,
 }
 
 /// Path of the instance-discovery file.
@@ -92,10 +95,14 @@ fn acquire_at(path: PathBuf, payload: Option<&str>) -> Acquire {
         // take over the role.
     }
 
-    // Only cold starts/takeovers touch the startup lock. Keep its inode in
-    // place after unlocking: unlinking allows two locks on different inodes.
-    let _startup_lock = match acquire_startup_lock(&path) {
-        Ok(lock) => lock,
+    // The primary retains this lock for its entire lifetime. A slow listener
+    // cannot be declared stale merely because a handoff acknowledgement timed out.
+    // Keep the inode installed: unlinking permits independent locks on new inodes.
+    let startup_lock = match acquire_startup_lock(&path, || {
+        read_info(&path).is_some_and(|info| forward_to_primary(&info, payload))
+    }) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => return Acquire::AlreadyRunning,
         Err(error) => return Acquire::Failed(error),
     };
     // Another cold launch may have published while this process waited.
@@ -128,6 +135,7 @@ fn acquire_at(path: PathBuf, payload: Option<&str>) -> Acquire {
         listener,
         token,
         info_path: path,
+        startup_lock,
     })
 }
 
@@ -137,7 +145,10 @@ fn startup_lock_path(path: &Path) -> PathBuf {
     PathBuf::from(lock_path)
 }
 
-fn acquire_startup_lock(path: &Path) -> std::io::Result<File> {
+fn acquire_startup_lock(
+    path: &Path,
+    mut forwarded: impl FnMut() -> bool,
+) -> std::io::Result<Option<File>> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -155,8 +166,13 @@ fn acquire_startup_lock(path: &Path) -> std::io::Result<File> {
     let deadline = Instant::now() + STARTUP_LOCK_TIMEOUT;
     loop {
         match FileExt::try_lock_exclusive(&file) {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(Some(file)),
             Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+                // The holder may have begun listening since the first probe.
+                // Waiting only for its lock would strand every valid secondary.
+                if forwarded() {
+                    return Ok(None);
+                }
                 if Instant::now() >= deadline {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
@@ -202,11 +218,13 @@ impl Primary {
             listener,
             token,
             info_path,
+            startup_lock,
         } = self;
 
         if let Some(link) = initial {
             if !deliver(link) {
                 let _ = std::fs::remove_file(&info_path);
+                drop(startup_lock);
                 return;
             }
         }
@@ -233,6 +251,9 @@ impl Primary {
                     }
                 }
                 let _ = std::fs::remove_file(&info_path);
+                // Explicit use retains the lock inside this closure until the
+                // listener ends and discovery cleanup is complete.
+                drop(startup_lock);
             })
         {
             tracing::warn!("single-instance listener thread failed to start: {error}");
@@ -423,18 +444,21 @@ mod tests {
     #[test]
     fn sdtest_2643_concurrent_cold_launches_keep_one_primary_and_deliver_every_intent() {
         use std::collections::BTreeSet;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{Arc, Barrier};
 
         const LAUNCHES: usize = 8;
         let path = temp_info_path("concurrent-agents");
-        let held_lock = acquire_startup_lock(&path).unwrap();
+        let held_lock = acquire_startup_lock(&path, || false).unwrap().unwrap();
         let barrier = Arc::new(Barrier::new(LAUNCHES + 1));
+        let stop = Arc::new(AtomicBool::new(false));
         let (results_tx, results_rx) = mpsc::channel();
         let mut workers = Vec::new();
         for index in 0..LAUNCHES {
             let path = path.clone();
             let barrier = barrier.clone();
             let results = results_tx.clone();
+            let stop = stop.clone();
             workers.push(std::thread::spawn(move || {
                 let intent = format!("shelldeck://agents?launch={index}");
                 barrier.wait();
@@ -444,11 +468,14 @@ mod tests {
                             listener,
                             token,
                             info_path,
+                            startup_lock,
                         } = primary;
                         listener.set_nonblocking(true).unwrap();
                         let deadline = Instant::now() + Duration::from_secs(10);
                         let mut received = vec![intent];
-                        while received.len() < LAUNCHES {
+                        // Do not let received count govern primary lifetime:
+                        // a retry can arrive before its acquisition worker exits.
+                        while !stop.load(Ordering::Acquire) {
                             assert!(Instant::now() < deadline, "bounded primary timed out");
                             match listener.accept() {
                                 Ok((stream, _)) => {
@@ -463,6 +490,7 @@ mod tests {
                             }
                         }
                         std::fs::remove_file(info_path).unwrap();
+                        drop(startup_lock);
                         received
                     })),
                     Acquire::AlreadyRunning => None,
@@ -491,9 +519,17 @@ mod tests {
         for worker in workers {
             worker.join().unwrap();
         }
-        assert_eq!(servers.len(), 1, "only one cold launch may own a runtime");
-        let received = servers.pop().unwrap().join().unwrap();
-        assert_eq!(received.len(), LAUNCHES);
+        stop.store(true, Ordering::Release);
+        let primary_count = servers.len();
+        let mut received: Vec<_> = servers
+            .into_iter()
+            .map(|server| server.join().unwrap())
+            .collect();
+        assert_eq!(primary_count, 1, "only one cold launch may own a runtime");
+        let received = received.pop().unwrap();
+        // The existing two-line handoff can replay a navigation intent after
+        // an ambiguous ACK timeout. Assert complete exact intent coverage and
+        // one primary, not an exactly-once guarantee the protocol does not make.
         assert_eq!(
             received.into_iter().collect::<BTreeSet<_>>(),
             (0..LAUNCHES)
@@ -515,6 +551,84 @@ mod tests {
             acquire_at(blocked_publication, None),
             Acquire::Failed(_)
         ));
+    }
+
+    // SDTEST-2741 — SDUC-558: a live primary remains exclusive beyond both
+    // former handoff timeouts, then accepts a waiting launch once listening.
+    #[test]
+    fn delayed_primary_holds_lifetime_lock_and_waiting_launch_eventually_forwards() {
+        let path = temp_info_path("delayed-primary");
+        let primary = match acquire_at(path.clone(), None) {
+            Acquire::Primary(primary) => primary,
+            _ => panic!("first launch must own the primary"),
+        };
+        let original = read_info(&path).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let next_path = path.clone();
+        let secondary = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(acquire_at(next_path, Some("delayed-intent")))
+                .unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            matches!(
+                result_rx.recv_timeout(CONNECT_TIMEOUT * 2 + Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "unacknowledged live primary must not be replaced"
+        );
+        let unchanged = read_info(&path).unwrap();
+        assert_eq!(unchanged.port, original.port);
+        assert_eq!(unchanged.token, original.token);
+        let (delivered_tx, delivered_rx) = mpsc::channel();
+        primary.listen_with(None, move |payload| {
+            if payload == "stop-fixture" {
+                return false;
+            }
+            delivered_tx.send(payload).is_ok()
+        });
+        assert!(matches!(
+            result_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Acquire::AlreadyRunning
+        ));
+        secondary.join().unwrap();
+        assert_eq!(
+            delivered_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "delayed-intent"
+        );
+
+        // The accept thread, not just the acquired Primary value, owns custody.
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(startup_lock_path(&path))
+            .unwrap();
+        assert_eq!(
+            FileExt::try_lock_exclusive(&lock)
+                .unwrap_err()
+                .raw_os_error(),
+            fs2::lock_contended_error().raw_os_error()
+        );
+        assert!(forward_to_primary(&original, Some("stop-fixture")));
+        // Any queued retries are delivered before the explicit stop. Sender drop
+        // marks callback shutdown, so the next acquisition can wait for cleanup.
+        while delivered_rx.recv_timeout(Duration::from_secs(2)).is_ok() {}
+        let replacement = match acquire_at(path.clone(), None) {
+            Acquire::Primary(primary) => primary,
+            _ => panic!("finished primary must release its lifetime lock"),
+        };
+        assert_ne!(read_info(&path).unwrap().token, original.token);
+        // A crash/drop without cleanup leaves discovery behind, but releases
+        // both listener and file lock so ordinary stale takeover still works.
+        drop(replacement);
+        let successor = match acquire_at(path.clone(), None) {
+            Acquire::Primary(primary) => primary,
+            _ => panic!("dropped primary must permit stale discovery takeover"),
+        };
+        successor.cleanup();
     }
 
     // SDTEST-1322 — a stale discovery file (dead primary, nothing

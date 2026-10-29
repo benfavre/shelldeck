@@ -4443,6 +4443,13 @@ Explicit deep links keep their destination. Conversation/session state stays in
 the existing Workspace rather than a second process or example fixture. Welcome/login and current Dev
 capabilities remain authoritative before Agents is exposed or an agent runs.
 
+A primary retains its persistent file lock through the listener lifetime. Slow
+startup or delayed acknowledgements cannot authorize a second primary. Waiting
+launches retry handoff within the startup deadline; an unavailable live primary
+returns a startup error, while a dropped/crashed primary permits stale takeover.
+The existing handoff protocol may replay a navigation intent after an ambiguous
+acknowledgement timeout; this lock guarantee does not claim exactly-once delivery.
+
 Linux desktop actions and Windows Start Menu shortcuts pass the flag to the same
 packaged executable, preserving the default ShellDeck launch and URL handler.
 Both generated install scripts retain the same behavior for their platforms;
@@ -4514,3 +4521,5 @@ these deterministic client tests.
 - **2026-10-29** — Improved Agents composer readiness and missing-SSH navigation, removed repeated chooser names, and added empty search feedback (SDUC-499, SDTEST-2738).
 
 - **2026-10-29** — Routed the shell sidebar toggle to the Agents session navigator, including focused launch and narrow local conversation overlays (SDUC-308/499, SDTEST-2739).
+
+- **2026-10-29** — SDUC-558 retains the primary lock through listener lifetime, with deterministic delayed-start coverage (SDTEST-2741) and an explicit parent-controlled shutdown gate in concurrent-start fixture SDTEST-2643.
