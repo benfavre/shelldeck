@@ -55,7 +55,13 @@ impl AgentConsoleView {
         session: &AgentSession,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut column = div().flex().flex_col().min_w(px(0.0)).gap(px(8.0));
+        let mut column = div()
+            .debug_selector(|| "agent-run-progress".into())
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .min_w(px(0.0))
+            .gap(px(8.0));
         if let Some(plan) = &session.plan {
             let completed = plan
                 .steps

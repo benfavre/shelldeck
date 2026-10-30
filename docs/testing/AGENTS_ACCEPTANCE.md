@@ -226,3 +226,52 @@ This walkthrough also exposed an overflowing older-conversations sidebar label;
 its visible text is now shorter in both languages, with the full action in a
 tooltip. The preview supports `SHELLDECK_PREVIEW_MISSING_SSH=1` and
 `SHELLDECK_PREVIEW_FR=1` for repeating this case without SSH/provider access.
+
+### Screenshot follow-up — native titles and cropped command cards
+
+SDTEST-2856 reproduced `agent session name is too long` with the screenshot's
+240-byte French title before the correction. Discovery accepts longer titles
+than local session names. Native import now bounds only the display label to
+160 bytes with a UTF-8-safe ellipsis; manual naming and control-character checks
+remain strict. The matrix covers all four provider variants, multibyte and
+boundary-length titles, saved transcript/rename preservation, exact resume
+authority and distinct conversations sharing a display prefix. SDTEST-2857
+clicks the production reconnect button for all three native formats at 900×700
+and 620×560, loads a validated history page, reuses the same chat and preserves
+both local and native drafts without emitting Run.
+
+Technical trace cards, expanded completed-work groups, transcript bodies and
+run details now explicitly retain their natural height. A command icon cannot
+shrink, and wrapped titles have an explicit full-width header and line height.
+SDTEST-2858 covers Dark/Solarized Light at 900×700, 620×560 and 900×400 with and
+without multiline Unicode output. It checks complete child bounds, separation
+from the preparing indicator and run details, real wheel reachability and a
+fixed composer with completed work collapsed/expanded. The initial Linux
+fixture and simple headless geometry did not reproduce the exact compressed
+Windows card from the user screenshot; this is layout hardening with regression
+coverage, not a claim of a Windows GPU reproduction.
+
+The wheel harness waits for GPUI's 70 ms smooth-scroll animation, which uses
+`std::time::Instant` rather than the test dispatcher clock. Checking geometry
+before that animation settled caused an intermittent offscreen-click failure;
+the harness now moves the pointer and waits 80 ms before measuring. No assertion
+was widened and no production scrolling code was changed.
+
+Native Linux GPU walkthroughs used fresh isolated XDG profiles, a masked real
+home and disabled networking. The synthetic browser traces did not execute a
+browser, SSH command or provider. Dark at 900×700 shows the complete warning,
+preparation indicator and run details (`/tmp/shelldeck-chat-qa/03-warning-dark.png`);
+900×400 keeps the complete warning reachable by wheel while the composer stays
+fixed (`06-short-scrolled-dark.png`). Solarized Light at 620×560 covers both
+collapsed and expanded completed work
+(`/tmp/shelldeck-chat-light-qa/03-warning-light.png`, `04-expanded-light.png`).
+The full-title native preview reconnects into retained history at 1280×900
+(`/tmp/shelldeck-long-title-qa/02-preview.png`, `03-reconnected.png`). Repeat with
+`SHELLDECK_PREVIEW_CROPPED_TRACE=1` or
+`SHELLDECK_PREVIEW_SSH=1 SHELLDECK_PREVIEW_LONG_TITLE=1`; add
+`SHELLDECK_PREVIEW_FR=1` and optionally `SHELLDECK_PREVIEW_LIGHT=1`.
+
+Final isolated offline workspace sweep: 1,135 tests passed, including 510 core
+and 329 UI tests; the same nine existing live/doc tests remain ignored. Strict
+workspace all-target Clippy, formatting and whitespace checks passed. Logs:
+`/tmp/shelldeck-chat-final-tests.log`, `/tmp/shelldeck-chat-final-clippy.log`.

@@ -1683,6 +1683,7 @@ impl AgentConsoleView {
             return div()
                 .id(("agent-trace", uuid_key(trace.id)))
                 .w_full()
+                .flex_shrink_0()
                 .min_w(px(0.0))
                 .flex()
                 .items_start()
@@ -1706,6 +1707,10 @@ impl AgentConsoleView {
             .debug_selector(|| format!("agent-trace-{}", trace.id))
             .w_full()
             .min_w_0()
+            // Retained output must scroll at its natural height. Hidden overflow
+            // otherwise permits a flex parent to squeeze the card to its padding.
+            .flex_shrink_0()
+            .min_h(px(36.0))
             .overflow_hidden()
             .flex()
             .items_start()
@@ -1726,8 +1731,10 @@ impl AgentConsoleView {
             })
             .child(
                 div()
+                    .debug_selector(|| format!("agent-trace-{}-icon", trace.id))
                     .mt(px(1.0))
                     .size(px(20.0))
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1737,6 +1744,7 @@ impl AgentConsoleView {
             )
             .child(
                 div()
+                    .debug_selector(|| format!("agent-trace-{}-content", trace.id))
                     .flex_1()
                     .min_w(px(0.0))
                     .flex()
@@ -1744,15 +1752,18 @@ impl AgentConsoleView {
                     .gap(px(2.0))
                     .child(
                         div()
+                            .w_full()
                             .flex()
                             .items_center()
                             .gap(px(7.0))
                             .child(
                                 div()
+                                    .debug_selector(|| format!("agent-trace-{}-title", trace.id))
                                     .flex_1()
                                     .min_w(px(0.0))
                                     .whitespace_normal()
                                     .text_size(px(10.0))
+                                    .line_height(relative(1.4))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(color)
                                     .child(title),
@@ -2268,7 +2279,9 @@ impl Render for AgentConsoleView {
             if status.is_active() && !received_output {
                 timeline_view = timeline_view.child(
                     div()
+                        .debug_selector(|| "agent-preparing-output".into())
                         .flex()
+                        .flex_shrink_0()
                         .items_center()
                         .gap(px(7.0))
                         .py(px(4.0))

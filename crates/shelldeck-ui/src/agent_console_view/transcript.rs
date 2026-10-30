@@ -206,6 +206,7 @@ impl AgentConsoleView {
         let mut body = div()
             .w_full()
             .min_w_0()
+            .flex_shrink_0()
             .overflow_hidden()
             .debug_selector(|| id.selector(if show_raw { "raw" } else { "folded" }));
         if prose && !show_raw {
@@ -270,6 +271,7 @@ impl AgentConsoleView {
             body = div()
                 .w_full()
                 .min_w_0()
+                .flex_shrink_0()
                 .flex()
                 .flex_col()
                 .gap(px(6.0))

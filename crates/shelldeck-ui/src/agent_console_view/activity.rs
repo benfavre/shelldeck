@@ -77,6 +77,7 @@ impl AgentConsoleView {
         let mut column = div()
             .w_full()
             .min_w(px(0.0))
+            .flex_shrink_0()
             .flex()
             .flex_col()
             .gap(px(6.0))

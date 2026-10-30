@@ -592,6 +592,7 @@ impl AgentConsoleView {
         let busy = self.ssh_sessions.reconnecting.is_some();
         let mut details = div()
             .id("ssh-session-preview")
+            .debug_selector(|| "agent-ssh-preview".into())
             .flex_1()
             .min_w_0()
             .h_full()
@@ -654,6 +655,7 @@ impl AgentConsoleView {
                             "ssh-session-reconnect",
                             t!("agents.ssh_sessions.reconnect").to_string(),
                         )
+                        .debug_selector(|| "agent-ssh-reconnect".into())
                         .icon(IconSource::from("plug"))
                         .loading(busy)
                         .disabled(busy)

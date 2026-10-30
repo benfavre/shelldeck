@@ -933,6 +933,11 @@ The session search has a usable text viewport, and inherited navigator/provider
 labels follow the active theme in both light and dark appearances
 (SDTEST-1931/1932, manual native validation).
 
+Technical trace cards, expanded completed work and run details keep their natural
+height inside the timeline. Wrapped command titles and retained output remain
+readable without overlapping the preparation indicator; short windows scroll
+the output while keeping the composer fixed (SDTEST-2858).
+
 The empty Claude Code/Codex session shows the shared subscription sign-in
 guide. SSH targets require their own installed CLI and provider login; local
 provider credentials are never forwarded to them.
@@ -3313,6 +3318,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-30** — SDUC-562/563: valid native titles may exceed the local display-name budget; import bounds the UTF-8 label with an ellipsis while retaining exact resume authority and saved work (SDTEST-2856/2857). SDUC-475/564: technical warning and completed-work output must retain its natural height without cropping (SDTEST-2858).
+
 - **2026-10-30** — SDUC-562: older-conversation discovery uses a short sidebar label with the complete action available in a tooltip, preventing the French caption from overflowing.
 
 - **2026-10-30** — SDUC-499/551/564: selecting the current chat from search restores composer focus; missing SSH recovery is covered through actual picker/search/Send controls in both languages, themes and narrow/wide layouts (SDTEST-2738/2855).
@@ -4650,6 +4657,10 @@ by server/provider, with timestamps, search, collapse, pagination and explicit
 partial-results warnings. Refresh failures retain previous rows marked stale.
 Selecting a conversation shows its original server, native ID, folder and model;
 **Reconnect in chat** rechecks SSH access, folder and current native metadata.
+Long provider titles are retained in discovery and preview. Import creates a
+UTF-8-safe display name within the local 160-byte budget with an ellipsis;
+length never prevents reconnecting a valid native conversation. Reconnection
+matches the exact source identity and preserves a saved user rename and draft.
 No provider starts until Send. The next turn uses native resume in that exact
 folder, defaults to read-only and bypasses catalog path translation. A changed
 SSH destination blocks Send until reconnection. Native history is read from the original server and shown through the paged
@@ -4658,7 +4669,7 @@ persisted: rediscovery/reconnection is required after app restart. Automonique
 remains a separate typed Platform directory and refreshes independently.
 
 Automated: SDTEST-2806, SDTEST-2807, SDTEST-2808, SDTEST-2809, SDTEST-2810,
-SDTEST-2811, SDTEST-2812; SDTEST-1905 covers resume path mapping exclusion.
+SDTEST-2811, SDTEST-2812, SDTEST-2856, SDTEST-2857; SDTEST-1905 covers resume path mapping exclusion.
 Native fixture: `SHELLDECK_PREVIEW_SSH=1` on `agent_console_preview`.
 
 

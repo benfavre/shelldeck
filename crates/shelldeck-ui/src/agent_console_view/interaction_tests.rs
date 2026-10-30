@@ -208,12 +208,17 @@ impl Cockpit {
 
     fn wheel(&mut self, amount: f32) {
         let position = self.bounds("agent-timeline-scroll").unwrap().center();
+        self.window
+            .simulate_mouse_move(position, None, Modifiers::none());
         self.window.simulate_event(ScrollWheelEvent {
             position,
             delta: ScrollDelta::Pixels(point(gpui::px(0.0), gpui::px(amount))),
             touch_phase: TouchPhase::Moved,
             ..Default::default()
         });
+        // GPUI's 70 ms smooth scroll uses std::time::Instant rather than the
+        // test dispatcher clock. Let that animation settle before measuring.
+        std::thread::sleep(std::time::Duration::from_millis(80));
         self.redraw();
     }
 
@@ -994,6 +999,268 @@ fn rendered_missing_ssh_keeps_drafts_and_navigation_until_explicit_repair() {
                             .to_owned()),
                     "A local draft stays separate"
                 );
+            }
+        }
+    }
+}
+
+// SDTEST-2857 / SDUC-562, SDUC-563 — reproduce discovery -> Reconnect with a 240-byte title.
+#[::core::prelude::v1::test]
+fn rendered_long_native_titles_reconnect_and_preserve_existing_drafts() {
+    use shelldeck_core::agent_remote_sessions::parse_inventory;
+    use shelldeck_core::agent_session::MAX_AGENT_SESSION_NAME_BYTES;
+    use shelldeck_core::config::app_config::UiLanguage;
+    for provider in [
+        AgentProvider::Claude,
+        AgentProvider::Codex,
+        AgentProvider::Jcode,
+    ] {
+        for (width, height) in [(900.0, 700.0), (620.0, 560.0)] {
+            let mut ui = Cockpit::new(ThemePreference::Dark, width, height, false);
+            crate::apply_ui_language(&UiLanguage::Fr);
+            let local = ui.session;
+            ui.type_draft("Keep the outgoing local draft");
+            let title = "Site : plante-artificielle-unique.com Thème : Rapport · visibilité locale à Rennes Date des faits : 2026-10-30 Chiffres de tête : - Ville : Rennes - Mots-clés relevés depuis Rennes : 2 visibles sur 20 mesurés, couverture 10 %, top 3";
+            let wire = serde_json::json!({"version":1,"sessions":[{
+                "provider":provider,"session_id":"80582780-28b5-433c-a51c-afdac90e0baa",
+                "workdir":"/home/infra-sj278/.cache/seo-reading-cwd", "title":title,
+                "updated_at_ms":1793360000000_u64,"model":null
+            }],"warnings":[],"truncated":false});
+            let remote = parse_inventory(&wire.to_string())
+                .unwrap()
+                .sessions
+                .remove(0);
+            let connection = Uuid::new_v4();
+            let preview = |ui: &mut Cockpit| {
+                ui.view.update(&mut ui.app, |view, cx| {
+                    view.set_connections(
+                        vec![AgentConnectionOption {
+                            id: connection,
+                            label: "Original server".into(),
+                            host: "fixture.invalid".into(),
+                        }],
+                        cx,
+                    );
+                    view.ssh_sessions.preview = Some((connection, remote.clone()));
+                    view.sessions.set_surface_visible(false);
+                    cx.notify();
+                });
+                ui.redraw();
+                // Scroll the actual preview owner, including when the full title wraps.
+                let position = ui.bounds("agent-ssh-preview").unwrap().center();
+                ui.window.simulate_event(ScrollWheelEvent {
+                    position,
+                    delta: ScrollDelta::Pixels(point(gpui::px(0.0), gpui::px(-100000.0))),
+                    touch_phase: TouchPhase::Moved,
+                    ..Default::default()
+                });
+                ui.redraw();
+            };
+            let page = RemoteHistoryPage {
+                provider,
+                session_id: remote.session_id.clone(),
+                workdir: remote.workdir.clone(),
+                model: None,
+                snapshot: format!("v1:1:{}", "a".repeat(64)),
+                total_entries: 1,
+                start: 0,
+                end: 1,
+                entries: vec![RemoteHistoryEntry {
+                    index: 0,
+                    kind: RemoteHistoryKind::Assistant,
+                    title: None,
+                    text: "Complete saved native reply".into(),
+                    at_ms: Some(1),
+                    part: 1,
+                    parts: 1,
+                }],
+                warnings: vec![],
+            };
+            let mut imported = None;
+            for attempt in 0..2 {
+                preview(&mut ui);
+                ui.click("agent-ssh-reconnect");
+                let request_id = ui
+                    .events
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find_map(|event| match event {
+                        AgentConsoleEvent::ReconnectSshSession {
+                            connection_id,
+                            request_id,
+                            session,
+                        } => {
+                            assert_eq!(*connection_id, connection);
+                            assert_eq!(
+                                session, &remote,
+                                "discovery retains the complete title and original authority"
+                            );
+                            Some(*request_id)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                ui.view.update(&mut ui.app, |view, cx| {
+                    view.complete_ssh_reconnect(request_id, Ok(page.clone()), cx)
+                });
+                ui.redraw();
+                assert!(
+                    ui.bounds("agent-ssh-preview").is_none(),
+                    "reconnect must leave the preview without a name-length error"
+                );
+                let id = ui
+                    .view
+                    .read_with(&ui.app, |view, _| view.sessions.selected_id().unwrap());
+                if let Some(expected) = imported {
+                    assert_eq!(id, expected);
+                } else {
+                    imported = Some(id);
+                }
+                ui.session = id;
+                ui.view.read_with(&ui.app, |view, cx| {
+                    let session = view.sessions.get(id).unwrap();
+                    assert!(session.name.len() <= MAX_AGENT_SESSION_NAME_BYTES);
+                    assert!(session.name.ends_with('…'));
+                    let request = session.run_request("Continue this native conversation");
+                    assert_eq!(request.resume_session.as_deref(),Some(remote.session_id.as_str()));
+                    assert_eq!(request.provider,provider);
+                    assert_eq!(request.workdir,remote.workdir);
+                    assert!(matches!(request.target,AgentTarget::Ssh {connection_id,..} if connection_id==connection));
+                    assert_eq!(request.access,AgentAccessMode::ReadOnly);
+                    assert_eq!(view.native_history[&id].page.as_ref().unwrap(),&page);
+                    assert_eq!(view.session_ui[&local].prompt.read(cx).content(),"Keep the outgoing local draft");
+                    assert_eq!(view.sessions.active_count(),0);
+                });
+                if attempt == 0 {
+                    ui.type_draft("Preserve my native draft");
+                } else {
+                    assert_eq!(ui.draft(), "Preserve my native draft");
+                }
+                assert!(!ui
+                    .events
+                    .borrow()
+                    .iter()
+                    .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+            }
+        }
+    }
+}
+
+// SDTEST-2858 / SDUC-475, SDUC-564 — technical output must retain its natural height.
+#[::core::prelude::v1::test]
+fn rendered_warning_cards_and_expanded_work_do_not_crop_output() {
+    use shelldeck_core::agent_session::AgentTraceUpdate;
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        for (width, height) in [(900.0, 700.0), (620.0, 560.0), (900.0, 400.0)] {
+            for with_output in [false, true] {
+                let mut ui = Cockpit::new(theme.clone(), width, height, false);
+                let run = ui.start();
+                ui.view.update(&mut ui.app,|view,cx| view.push_stream_events_for(run,[
+                AgentStreamEvent::Trace(AgentTraceUpdate {correlation_id:Some("curl".into()),detail:AgentTraceKind::Command {
+                    command:"curl -sS -o /dev/null -w 'home: %{http_code} %{time_total}s %{size_download}B via %{remote_ip}' -L https://inklura.fr".into(),
+                    status:AgentTraceStatus::Succeeded, exit_code:Some(0), summary:Some("home: 200 0.41s 18420B\nNavigation complete".into())
+                }}),
+                AgentStreamEvent::Trace(AgentTraceUpdate {correlation_id:Some("browser-warning".into()),detail:AgentTraceKind::Command {
+                    command:format!("/home/fixture/.cache/ms-playwright/chromium-{}/chrome-linux64/chrome: browser process warning — inspect retained stderr and retry the original operation", "152.0.7977.75".repeat(3)),
+                    status:AgentTraceStatus::Running, exit_code:None,
+                    summary:with_output.then(|| "Browser launch warning:\nFirst retained output line.\nSecond retained output line.\nFinal retained output line · é🌍".into())
+                }}),
+                AgentStreamEvent::Usage(shelldeck_core::agent_runtime::AgentUsageUpdate { input_tokens:Some(18420), output_tokens:Some(3), ..Default::default() }),
+            ],cx));
+                ui.redraw();
+                let (completed, warning) = ui.view.read_with(&ui.app, |view, _| {
+                    let traces = &view.sessions.get(ui.session).unwrap().trace;
+                    (
+                        traces
+                            .iter()
+                            .find(|trace| trace.correlation_id.as_deref() == Some("curl"))
+                            .unwrap()
+                            .id,
+                        traces
+                            .iter()
+                            .find(|trace| {
+                                trace.correlation_id.as_deref() == Some("browser-warning")
+                            })
+                            .unwrap()
+                            .id,
+                    )
+                });
+                let composer = ui.composer();
+                for expanded in [false, true] {
+                    if expanded {
+                        let selector = format!("agent-work-{completed}");
+                        for _ in 0..8 {
+                            let control = ui.bounds(&selector).unwrap();
+                            let viewport = ui.bounds("agent-timeline-scroll").unwrap();
+                            if viewport.contains(&control.center()) {
+                                break;
+                            }
+                            ui.wheel((viewport.center().y - control.center().y).to_f64() as f32);
+                        }
+                        let control = ui.bounds(&selector).unwrap();
+                        let viewport = ui.bounds("agent-timeline-scroll").unwrap();
+                        assert!(viewport.contains(&control.center()),"{width}x{height}, output={with_output}: control={control:?}, viewport={viewport:?}");
+                        ui.click(&selector);
+                    }
+                    let card = ui.bounds(&format!("agent-trace-{warning}")).unwrap();
+                    let content = ui
+                        .bounds(&format!("agent-trace-{warning}-content"))
+                        .unwrap();
+                    let title = ui.bounds(&format!("agent-trace-{warning}-title")).unwrap();
+                    let body = ui.bounds(&TranscriptId::Trace(warning).selector("folded"));
+                    let icon = ui.bounds(&format!("agent-trace-{warning}-icon")).unwrap();
+                    let preparing = ui.bounds("agent-preparing-output").unwrap();
+                    let progress = ui.bounds("agent-run-progress").unwrap();
+                    assert!(
+                        card.bottom() <= preparing.top(),
+                        "warning output cannot overlap the preparing indicator"
+                    );
+                    assert!(
+                        preparing.bottom() <= progress.top(),
+                        "run details must remain below the preparing indicator"
+                    );
+                    assert!(
+                        progress.size.height >= gpui::px(36.0),
+                        "the run-details disclosure must keep its natural height"
+                    );
+                    assert!(
+                        card.size.height >= gpui::px(36.0),
+                        "a trace cannot shrink below its icon plus padding: {card:?}"
+                    );
+                    for child in [Some(content), Some(title), body, Some(icon)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        assert!(
+                            child.top() >= card.top() && child.bottom() <= card.bottom(),
+                            "trace child is vertically clipped: card={card:?}, child={child:?}"
+                        );
+                        assert!(
+                            child.left() >= card.left() && child.right() <= card.right(),
+                            "trace child is horizontally clipped: card={card:?}, child={child:?}"
+                        );
+                    }
+                    if with_output {
+                        let body = body.unwrap();
+                        assert!(
+                            body.size.height >= gpui::px(52.0),
+                            "all four literal output lines must have room: {body:?}"
+                        );
+                    }
+                    assert_eq!(
+                        ui.composer(),
+                        composer,
+                        "technical output must scroll independently of the composer"
+                    );
+                    ui.wheel(-100000.0);
+                    let card = ui.bounds(&format!("agent-trace-{warning}")).unwrap();
+                    let viewport = ui.bounds("agent-timeline-scroll").unwrap();
+                    assert!(
+                        card.bottom() <= viewport.bottom(),
+                        "the bottom of the complete warning must be reachable by scrolling"
+                    );
+                }
             }
         }
     }
