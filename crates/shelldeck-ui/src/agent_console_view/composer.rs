@@ -1427,8 +1427,13 @@ impl AgentConsoleView {
             }
             composer = composer.option(
                 Button::new(("agent-stop", uuid_key(run_id)), "")
+                    .debug_selector(|| "agent-stop-control".into())
                     .variant(ButtonVariant::Destructive)
                     .size(ButtonSize::Icon)
+                    .w(px(28.0))
+                    .h(px(28.0))
+                    .rounded_full()
+                    .disabled(session.status == AgentSessionStatus::Stopping)
                     .icon(IconSource::from("square"))
                     .tooltip(t!("agents.stop").to_string())
                     .on_click(cx.listener(move |this, _, _, cx| this.request_stop(run_id, cx))),
@@ -1585,6 +1590,7 @@ impl AgentConsoleView {
                                 ("agent-queue-edit", index),
                                 t!("agents.composer.edit").to_string(),
                             )
+                            .debug_selector(|| format!("agent-queue-edit-{index}"))
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(
@@ -1593,6 +1599,7 @@ impl AgentConsoleView {
                         )
                         .child(
                             Button::new(("agent-queue-remove", index), "")
+                                .debug_selector(|| format!("agent-queue-remove-{index}"))
                                 .variant(ButtonVariant::Ghost)
                                 .size(ButtonSize::Icon)
                                 .icon(IconSource::from("x"))

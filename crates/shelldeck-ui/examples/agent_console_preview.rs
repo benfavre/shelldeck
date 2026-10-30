@@ -88,6 +88,34 @@ fn main() -> anyhow::Result<()> {
     collection.create("Review the terminal shortcuts", context.clone(), 6)?;
     collection.create("Investigate SSH reconnects", context, 7)?;
     collection.select(first)?;
+    if std::env::var_os("SHELLDECK_PREVIEW_MISSING_SSH").is_some() {
+        let session = collection.get_mut(first).unwrap();
+        let mut context = session.context.clone();
+        context.target = AgentTarget::Ssh {
+            connection_id: uuid::Uuid::from_u128(777),
+            connection_label: "Removed server".into(),
+        };
+        context.workdir = "/srv/customer project".into();
+        session.set_context(context, 8)?;
+        session.rename("Recover missing SSH", 9)?;
+    }
+    if std::env::var_os("SHELLDECK_PREVIEW_BLOBS").is_some() {
+        collection.reconnect_remote(
+            "Inspect the saved image diff",
+            AgentExecutionContext {
+                provider: AgentProvider::Codex,
+                target: AgentTarget::Ssh {
+                    connection_id: uuid::Uuid::from_u128(421),
+                    connection_label: "Development server".into(),
+                },
+                access: AgentAccessMode::ReadOnly,
+                workdir: "/srv/customer-project".into(),
+                model: None,
+            },
+            "fixture-conversation-1",
+            8,
+        )?;
+    }
     let mut snapshot = AgentSessionSnapshot {
         collection,
         ..Default::default()
@@ -124,7 +152,11 @@ fn main() -> anyhow::Result<()> {
             shelldeck_ui::theme::ShellDeckColors::set_theme(&shelldeck_core::config::app_config::ThemePreference::SolarizedLight);
         }
         install_theme(cx, shelldeck_ui::theme::adabraka_theme_from_palette());
-        shelldeck_ui::apply_ui_language(&shelldeck_core::config::app_config::UiLanguage::En);
+        shelldeck_ui::apply_ui_language(&if std::env::var_os("SHELLDECK_PREVIEW_FR").is_some() {
+            shelldeck_core::config::app_config::UiLanguage::Fr
+        } else {
+            shelldeck_core::config::app_config::UiLanguage::En
+        });
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
@@ -237,7 +269,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 })
                 .detach();
-                if std::env::var_os("SHELLDECK_PREVIEW_SSH").is_some() {
+                if std::env::var_os("SHELLDECK_PREVIEW_SSH").is_some() || std::env::var_os("SHELLDECK_PREVIEW_BLOBS").is_some() || std::env::var_os("SHELLDECK_PREVIEW_MISSING_SSH").is_some() {
                     let id=uuid::Uuid::from_u128(421);
                     view.update(cx,|view,cx|{
                         view.set_connections(vec![shelldeck_ui::agent_console_view::AgentConnectionOption{id,label:"Development server".into(),host:"dev.example.invalid".into()}],cx);
@@ -442,7 +474,8 @@ fn native_history_fixture(
     remote: &shelldeck_core::agent_remote_sessions::RemoteAgentSession,
     query: &RemoteHistoryQuery,
 ) -> Result<RemoteHistoryPage, String> {
-    let total = 160u64;
+    let blobs = std::env::var_os("SHELLDECK_PREVIEW_BLOBS").is_some();
+    let total = if blobs { 6u64 } else { 160u64 };
     let snapshot = format!("v1:{total}:{}", "a".repeat(64));
     if query
         .snapshot
@@ -464,12 +497,22 @@ fn native_history_fixture(
     };
     let entries = (start..end)
         .map(|index| {
-            let (kind, title, text) = match index % 4 {
+            let (kind, title, text) = if blobs {
+                let data = "aB3+/xY9".repeat(40);
+                match index {
+                    0 => (RemoteHistoryKind::User, None, "Check the image changes and keep the conversation readable.".into()),
+                    1 => (RemoteHistoryKind::Assistant, None, "The image is stored as encoded text. The tool details remain available below.".into()),
+                    2 => (RemoteHistoryKind::Tool, Some("git diff -- assets/image.txt".into()), format!("diff --git a/assets/image.txt b/assets/image.txt\n@@ -1 +1,12 @@\n-old\n{}\nKeep this readable explanation.", (format!("+{data}\n")).repeat(12))),
+                    3 => (RemoteHistoryKind::Reasoning, Some("Reasoning".into()), "The diff is image data; keep the patch available for inspection.".into()),
+                    4 => (RemoteHistoryKind::Assistant, None, format!("Encoded attachment:\n\n{{\"image\":\"data:image/png;base64,{data}\"}}\n\nThe explanation after the attachment stays readable.")),
+                    _ => (RemoteHistoryKind::Tool, Some("cargo check".into()), "Finished successfully.\nNo warnings in the changed code.".into()),
+                }
+            } else { match index % 4 {
                 0 => (RemoteHistoryKind::User, None, format!("Saved request {}: investigate notification reconnects and preserve the selected workspace.", index / 4 + 1)),
                 1 => (RemoteHistoryKind::Assistant, None, "I traced the saved connection to the original workspace. The retained messages and tool results are available below.".into()),
                 2 => (RemoteHistoryKind::Tool, Some("Read src/notifications.rs".into()), format!("Saved tool result {}\nConnection remains attached across navigation.\nThe original workspace is /srv/customer-project.", index / 4 + 1)),
                 _ => (RemoteHistoryKind::Assistant, None, "The focused checks passed. Reconnecting should restore the conversation before the next message is sent.".into()),
-            };
+            }};
             RemoteHistoryEntry { index, kind, title, text, at_ms: Some(1793360000000 + index as i64 * 1000), part: 1, parts: 1 }
         })
         .collect();

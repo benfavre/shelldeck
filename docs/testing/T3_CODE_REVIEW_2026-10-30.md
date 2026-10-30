@@ -105,6 +105,57 @@ native conversation continuity. Remaining rows are real follow-up work, not
 claims of completed parity. Use `AGENTS_ACCEPTANCE.md` to verify each affected
 journey and record implementation evidence here after validation.
 
+## Test-suite follow-up
+
+Test sources were reviewed at upstream HEAD
+[`9b1d351`](https://github.com/pingdotgg/t3code/tree/9b1d351ba0f63f527f884ffb3f2e394f50388764)
+(2026-10-30). This is a test-source review, not an execution of T3's suite;
+the earlier behavior reference remains pinned to `6575ce3`.
+
+T3 separates pure reducer tests from real Chromium component tests. Its web test
+command runs both; render-count scenarios are a separate opt-in project. CI
+installs Chromium and runs the web suite. See the
+[test projects](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/apps/web/vite.config.ts)
+and [CI job](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/.github/workflows/ci.yml).
+
+| Reference coverage | ShellDeck counterpart and disposition |
+| --- | --- |
+| [Long active tool groups](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/apps/web/src/components/chat/MessagesTimeline.active-tools.test.ts): 1,000 updates, ordering and latest work, folded/expanded. | SDTEST-2846 replays 1,000 updates for Claude, Codex, Jcode and DeepSeek through the production model and timeline grouping. It respects ShellDeck's 512-entry retention bound while requiring every retained payload and unfinished/failed row to remain reachable and ordered. |
+| [Timeline reducer scenarios](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/apps/web/src/components/chat/MessagesTimeline.logic.test.ts): failures, late updates, run boundaries and reloads. | Existing SDTEST-2793/2794 and 2840 plus SDTEST-2846 cover stream fences, completed-work disclosure and durable failure ordering. Do not claim parity with T3's attempt/subagent projection. |
+| [Rendered copy controls](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/apps/web/src/components/chat/MarkdownCopy.browser.test.tsx): actual control clicks and browser clipboard fallback. | SDTEST-2844/2845 exercise the production reveal/copy handlers with GPUI's private test clipboard across message/command/diff/test/tool/native sources, conversation switches and replaced snapshots. SDTEST-2848 adds real GPUI clicks, exact private clipboard contents, replacement of folded/raw bodies and composer bounds across two themes, three window sizes and local/native transcripts. Native clipboard handling has no browser fallback to port. |
+| [Rendered timeline journeys](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx): variable-height content, disclosure, thread switching, scrolling, attachments and concurrent approvals. | SDTEST-2848–2854 render the production cockpit and dispatch real mouse, key and wheel events: disclosure/copy, conversation drafts, variable-height streaming, history retry/paging, queued Enter, restart and exact question/approval decisions. SDTEST-1713 measures Send/Stop at 28 px. These offline scenarios do not claim live-provider, split-pane or concurrent-approval support; Codex serializes pending interactions. |
+| [Scroll-state transitions](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/apps/web/src/components/chat/timelineScrollAnchoring.test.tsx): hydration, thread changes, queued starts and once-only framing. | SDTEST-2850 verifies follow-at-bottom, reading-position retention during streaming and explicit Jump to latest with a fixed composer. SDTEST-2852 verifies paging resets to the page top and error/retry stays reachable at the footer. ShellDeck replaces bounded pages rather than prepending T3's unified timeline. |
+
+The first increment keeps `.agents/testing.md`'s production-controller/pure-helper
+approach instead of adding a browser framework to a native Rust app. SDTEST-2847
+adds a wrapped-data/streaming/Unicode corpus; it exposed a short encoded final
+line escaping the original folding rule, now covered by regression. Copy/reveal
+callbacks now resolve their current retained source and refuse stale page/chat
+actions. The `agent-history` CI job runs the real native-reader/discovery fixtures
+without SSH, provider binaries or private dependencies. Those Python fixtures
+previously lacked a CI step. No new test dependencies or paid provider runs.
+
+The shared GPUI interaction harness now runs by default with the UI suite and
+CI's isolated profile. It uses the production renderer/layout and control event
+dispatch on GPUI's test platform, with a private clipboard and fixture provider
+events. It does not require a GPU or start a provider. GPU painting remains a
+separate native walkthrough; a black Xvfb presentation cannot satisfy it.
+
+The scenarios reproduced product defects: Stop was 40 px while Send was 28 px;
+new/restored conversations lost composer focus; history errors had no reachable
+footer Retry; duplicate approval clicks emitted multiple decisions. Fixes retain
+focus, preserve bottom-follow during loading/error layout changes, expose footer
+Retry, and reserve approval decisions until an exact acknowledgment or transport
+rejection. Stale transport failures cannot reopen another decision. Test metadata
+also retained removed bounds across frames; SDPATCH-122 corrects that observability
+bug, with production paint behavior unchanged.
+
+Validation of the rendered-suite follow-up: all 1,130 runnable workspace tests
+passed (325 UI), with nine existing live/doc tests ignored. Strict workspace
+all-target Clippy, formatting and all three Python reader suites passed. Native
+Dark/Solarized Light screenshots at 900×700 and 620×560 are recorded in
+`AGENTS_ACCEPTANCE.md`. No remote CI run or live provider execution is claimed.
+
 ### Implemented and validated in this pass
 
 - Stable pinned/creation ordering replaces activity timestamp sorting. Completed

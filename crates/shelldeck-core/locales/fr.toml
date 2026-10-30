@@ -19,7 +19,8 @@ agents.composer.saved_context_changed = "Ce message enregistré utilise d’autr
 agents.composer.attachment_context_changed = "Le contexte de cette conversation a changé pendant l’ajout de la pièce jointe. Sélectionnez-la à nouveau."
 agents.model.effort_unverified = "Les niveaux disponibles ne sont pas connus pour ce modèle. Automatique conserve le réglage de l’agent."
 agents.ssh_sessions.hide_server = "Masquer le serveur"
-agents.ssh_sessions.load_older = "Charger les conversations plus anciennes du serveur"
+agents.ssh_sessions.load_older = "Conversations plus anciennes"
+agents.ssh_sessions.load_older_hint = "Charger les conversations plus anciennes du serveur"
 agents.ssh_sessions.destination_changed = "Ce profil SSH a changé depuis la reconnexion. Actualisez ses conversations et reconnectez-la avant tout envoi."
 agents.ssh_sessions.session_missing = "Cette conversation n’a pas pu être vérifiée dans la liste actuelle. Actualisez le serveur et sélectionnez-la à nouveau."
 agents.ssh_sessions.title = "Conversations SSH"
@@ -2913,3 +2914,11 @@ reconnect_required = "Reconnectez cette conversation avant d’envoyer un messag
 fresh = "Voir l’historique distant actualisé"
 back = "Retour à la conversation"
 fresh_help = "Vous consultez l’historique actuel du serveur. Votre conversation locale est conservée ; revenez-y pour envoyer un message."
+
+[agents.transcript]
+encoded_hidden = "[Données encodées masquées : %{bytes} octets]"
+show_raw = "Afficher le contenu original"
+copy_raw = "Copier l’original"
+hide_raw = "Masquer les données encodées"
+expand = "Afficher les détails"
+collapse = "Replier les détails"

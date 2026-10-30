@@ -51,6 +51,7 @@ impl AgentConsoleView {
         &self,
         session_id: Uuid,
         traces: &[AgentTraceEvent],
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(first) = traces.first() else {
@@ -87,6 +88,7 @@ impl AgentConsoleView {
                     .gap(px(6.0))
                     .child(
                         Button::new(("agent-work-disclosure", uuid_key(group_id)), label)
+                            .debug_selector(|| format!("agent-work-{group_id}"))
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Sm)
                             .icon(IconSource::from(if expanded {
@@ -124,11 +126,9 @@ impl AgentConsoleView {
         if expanded {
             // Keep the conversation as the sole scroll owner. All structured
             // output remains inline, including file changes and test summaries.
-            column = column.children(
-                traces
-                    .iter()
-                    .map(|trace| self.render_trace(trace, self.focused_trace == Some(trace.id))),
-            );
+            column = column.children(traces.iter().map(|trace| {
+                self.render_trace(trace, self.focused_trace == Some(trace.id), window, cx)
+            }));
         }
         column.into_any_element()
     }

@@ -8,11 +8,21 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total marker occurrences in code: **166**
+Total marker occurrences in code: **163**
 (`rg "ShellDeck patch:" src/`; SDPATCH-103, SDPATCH-119, and SDPATCH-121 are
 Cargo.toml-only and outside the src-scoped marker convention.)
 
 ## Patches
+
+### SDPATCH-122 — Observe only current-frame controls in interaction tests
+
+- **Files / symbols**: `src/window.rs` — `WindowFrame::clear`; `src/app/test_context.rs` — `VisualTestContext::debug_bounds`.
+- **Markers**:
+  - `src/window.rs` — `// ShellDeck patch: SDPATCH-122 — removed controls must not retain stale test bounds.`
+  - `src/app/test_context.rs` — `// ShellDeck patch: SDPATCH-122 — session-scoped selectors need no leaked static strings.`
+- **Why**: Debug bounds survived frame clearing, so a removed disclosure body or conversation control appeared present forever. Reset test metadata with its frame and accept borrowed selector strings so session-specific controls can be queried without leaking allocations. Production rendering outside test-support builds is unchanged.
+- **Validation**: SDTEST-2848 asserts that folded/raw bodies disappear after real clicks and native rows disappear on collapse.
+- **Upstream status**: not filed yet — backward-compatible test API correction.
 
 ### SDPATCH-121 — Move stack-safety macros off an unmaintained diagnostic dependency
 

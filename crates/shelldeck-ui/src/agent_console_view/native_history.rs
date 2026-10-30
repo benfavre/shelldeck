@@ -21,6 +21,28 @@ pub(super) struct NativeHistoryUi {
     pending: Option<Uuid>,
     error: Option<String>,
     query: RemoteHistoryQuery,
+    expanded_entries: HashSet<u64>,
+}
+
+impl NativeHistoryUi {
+    fn toggle_entry(&mut self, snapshot: &str, index: u64) -> bool {
+        if !self.page.as_ref().is_some_and(|page| {
+            page.snapshot == snapshot
+                && page.entries.iter().any(|entry| {
+                    entry.index == index
+                        && matches!(
+                            entry.kind,
+                            RemoteHistoryKind::Tool | RemoteHistoryKind::Reasoning
+                        )
+                })
+        }) {
+            return false;
+        }
+        if !self.expanded_entries.remove(&index) {
+            self.expanded_entries.insert(index);
+        }
+        true
+    }
 }
 fn remote(reference: &RemoteHistoryReference, title: &str) -> RemoteAgentSession {
     RemoteAgentSession {
@@ -174,10 +196,17 @@ impl AgentConsoleView {
         if state.pending.is_some() {
             return;
         }
+        if self.sessions.selected_id() == Some(id)
+            && !self.remote_sessions.active
+            && self.ssh_sessions.preview.is_none()
+        {
+            follow_latest_if_at_end(&self.scroll);
+        }
         let query = RemoteHistoryQuery {
             snapshot: if reload {
                 state.fresh_view = true;
                 state.page = None;
+                state.expanded_entries.clear();
                 None
             } else if state.fresh_view {
                 state.query.snapshot.clone()
@@ -256,6 +285,14 @@ impl AgentConsoleView {
             }
             Ok(_) => state.error = Some(t!("agents.ssh_sessions.session_missing").to_string()),
             Err(error) => state.error = Some(error),
+        }
+        if self.native_history[&request.session_id].error.is_some()
+            && self.sessions.selected_id() == Some(request.session_id)
+            && !self.remote_sessions.active
+            && self.ssh_sessions.preview.is_none()
+        {
+            // Keep the footer and its retry reachable when an error adds content.
+            follow_latest_if_at_end(&self.scroll);
         }
         cx.notify();
     }
@@ -339,6 +376,50 @@ impl AgentConsoleView {
         None
     }
 
+    fn render_history_error(
+        &self,
+        id: Uuid,
+        state: &NativeHistoryUi,
+        scope: &'static str,
+        compact: bool,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let error = state.error.as_ref()?;
+        let position = state.query.position;
+        let button = Button::new(
+            SharedString::from(format!("history-retry-{scope}")),
+            t!("agents.native_history.retry").to_string(),
+        )
+        .debug_selector(|| format!("agent-history-retry-{scope}"))
+        .size(ButtonSize::Sm)
+        .tooltip(error.clone())
+        .disabled(state.pending.is_some())
+        .on_click(
+            cx.listener(move |this, _, _, cx| this.request_native_history(id, position, false, cx)),
+        );
+        if compact {
+            return Some(button.into_any_element());
+        }
+        Some(
+            div()
+                .id(SharedString::from(format!("history-error-{scope}")))
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .whitespace_normal()
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::error())
+                        .child(error.clone()),
+                )
+                .child(div().flex().child(button))
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn render_native_history(
         &self,
         session: &AgentSession,
@@ -417,27 +498,8 @@ impl AgentConsoleView {
         }
         view = view.child(bar);
         if let Some(state) = state {
-            if let Some(error) = &state.error {
-                let position = state.query.position;
-                view = view
-                    .child(
-                        div()
-                            .whitespace_normal()
-                            .text_size(px(12.0))
-                            .text_color(ShellDeckColors::error())
-                            .child(error.clone()),
-                    )
-                    .child(
-                        Button::new(
-                            "history-retry",
-                            t!("agents.native_history.retry").to_string(),
-                        )
-                        .size(ButtonSize::Sm)
-                        .disabled(busy)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.request_native_history(id, position, false, cx)
-                        })),
-                    );
+            if let Some(error) = self.render_history_error(id, state, "top", false, cx) {
+                view = view.child(error);
             }
             if let Some(page) = &state.page {
                 let start = page.start;
@@ -460,7 +522,7 @@ impl AgentConsoleView {
                             .to_string(),
                         ),
                 );
-                let controls = || {
+                let controls = |scope: &'static str| {
                     div()
                         .flex()
                         .flex_wrap()
@@ -470,6 +532,7 @@ impl AgentConsoleView {
                                 "history-older",
                                 t!("agents.native_history.older").to_string(),
                             )
+                            .debug_selector(|| format!("agent-history-{scope}-older"))
                             .size(ButtonSize::Sm)
                             .variant(ButtonVariant::Ghost)
                             .disabled(busy || start == 0)
@@ -489,6 +552,7 @@ impl AgentConsoleView {
                                 "history-newer",
                                 t!("agents.native_history.newer").to_string(),
                             )
+                            .debug_selector(|| format!("agent-history-{scope}-newer"))
                             .size(ButtonSize::Sm)
                             .variant(ButtonVariant::Ghost)
                             .disabled(busy || end >= page.total_entries)
@@ -508,6 +572,7 @@ impl AgentConsoleView {
                                 "history-latest",
                                 t!("agents.native_history.latest").to_string(),
                             )
+                            .debug_selector(|| format!("agent-history-{scope}-latest"))
                             .size(ButtonSize::Sm)
                             .variant(ButtonVariant::Ghost)
                             .disabled(busy || end >= page.total_entries)
@@ -523,7 +588,7 @@ impl AgentConsoleView {
                             )),
                         )
                 };
-                view = view.child(controls());
+                view = view.child(controls("top"));
                 for warning in &page.warnings {
                     view = view.child(
                         div()
@@ -546,36 +611,113 @@ impl AgentConsoleView {
                     } else {
                         label
                     };
-                    view = view.child(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .flex_shrink_0()
-                            .px(px(12.0))
-                            .py(px(8.0))
-                            .rounded(px(8.0))
-                            .when(entry.kind == RemoteHistoryKind::User, |row| {
-                                row.bg(ShellDeckColors::bg_surface())
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(label),
-                            )
-                            .child(
-                                Markdown::new(entry.text.clone())
-                                    .base_font_size(px(14.0).to_pixels(window.rem_size()))
-                                    .compact()
-                                    .w_full()
-                                    .min_w_0()
-                                    .whitespace_normal(),
-                            ),
+                    let collapsible = matches!(
+                        entry.kind,
+                        RemoteHistoryKind::Tool | RemoteHistoryKind::Reasoning
                     );
+                    let expanded = state.expanded_entries.contains(&entry.index);
+                    let mut row = div()
+                        .id(("native-history-entry", entry.index))
+                        .debug_selector(|| format!("agent-history-entry-{}", entry.index))
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .flex_shrink_0()
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .rounded(px(8.0));
+                    if entry.kind == RemoteHistoryKind::User {
+                        row = row.bg(ShellDeckColors::bg_surface());
+                    }
+                    if collapsible {
+                        let snapshot = page.snapshot.clone();
+                        let index = entry.index;
+                        let toggle_label = if expanded {
+                            t!("agents.transcript.collapse").to_string()
+                        } else {
+                            t!("agents.transcript.expand").to_string()
+                        };
+                        row = row.child(
+                            div()
+                                .flex()
+                                .min_w_0()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    Button::new("history-entry-toggle", "")
+                                        .debug_selector(|| format!("agent-history-toggle-{index}"))
+                                        .variant(ButtonVariant::Ghost)
+                                        .size(ButtonSize::Icon)
+                                        .flex_shrink_0()
+                                        .icon(IconSource::from(if expanded {
+                                            "chevron-down"
+                                        } else {
+                                            "chevron-right"
+                                        }))
+                                        .tooltip(toggle_label)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if this.sessions.selected_id() == Some(id) {
+                                                if let Some(state) =
+                                                    this.native_history.get_mut(&id)
+                                                {
+                                                    if state.toggle_entry(&snapshot, index) {
+                                                        cx.notify();
+                                                    }
+                                                }
+                                            }
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(11.0))
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(label),
+                                ),
+                        );
+                    } else {
+                        row = row.child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(label),
+                        );
+                    }
+                    if !collapsible || expanded {
+                        row = row.child(self.render_transcript_text(
+                            transcript::TranscriptId::Native {
+                                snapshot: page.snapshot.clone(),
+                                index: entry.index,
+                            },
+                            &entry.text,
+                            matches!(
+                                entry.kind,
+                                RemoteHistoryKind::User | RemoteHistoryKind::Assistant
+                            ),
+                            window,
+                            cx,
+                        ));
+                    }
+                    view = view.child(row);
                 }
                 // Footer controls use a distinct ID scope.
-                view = view.child(div().id("history-footer").child(controls()));
+                let mut footer = div()
+                    .id("history-footer")
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(8.0));
+                // Put recovery first so it remains at the old footer's visible
+                // position even when a narrow window wraps the other controls.
+                if let Some(error) = self.render_history_error(id, state, "bottom", true, cx) {
+                    footer = footer.child(error);
+                }
+                view = view.child(footer.child(controls("bottom")));
             }
         }
         view.into_any_element()
@@ -585,6 +727,65 @@ impl AgentConsoleView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // SDTEST-2843 / SDUC-563 — disclosure is passive and bound to the visible page.
+    #[::core::prelude::v1::test]
+    fn native_history_disclosure_preserves_payload_and_rejects_stale_rows() {
+        use shelldeck_core::agent_remote_history::RemoteHistoryEntry;
+        let entries: Vec<_> = [
+            RemoteHistoryKind::Tool,
+            RemoteHistoryKind::Assistant,
+            RemoteHistoryKind::Reasoning,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| RemoteHistoryEntry {
+            index: index as u64,
+            kind,
+            title: Some("Saved operation".into()),
+            text: format!("Complete original output {}", "aB3+/xY9".repeat(80)),
+            at_ms: None,
+            part: 1,
+            parts: 1,
+        })
+        .collect();
+        let page = RemoteHistoryPage {
+            provider: AgentProvider::Codex,
+            session_id: "native-id".into(),
+            workdir: "/srv/repo".into(),
+            model: None,
+            snapshot: "original-snapshot".into(),
+            total_entries: 3,
+            start: 0,
+            end: 3,
+            entries: entries.clone(),
+            warnings: vec![],
+        };
+        let mut state = NativeHistoryUi {
+            page: Some(page.clone()),
+            ..Default::default()
+        };
+        assert!(state.expanded_entries.is_empty());
+        assert!(!state.toggle_entry("stale-snapshot", 0));
+        assert!(!state.toggle_entry(&page.snapshot, 99));
+        assert!(!state.toggle_entry(&page.snapshot, 1));
+        assert!(state.expanded_entries.is_empty());
+        assert!(state.toggle_entry(&page.snapshot, 0));
+        assert!(state.toggle_entry(&page.snapshot, 2));
+        assert_eq!(state.expanded_entries.len(), 2);
+        assert!(state.toggle_entry(&page.snapshot, 0));
+        assert!(!state.expanded_entries.contains(&0));
+        state.error = Some("Disconnected; retry available".into());
+        assert!(
+            state.toggle_entry(&page.snapshot, 0),
+            "failed reads retain inspectable prior content"
+        );
+        assert_eq!(state.page.as_ref().unwrap().entries, entries);
+        assert!(
+            state.pending.is_none(),
+            "viewing saved output never requests execution or I/O"
+        );
+    }
+
     // SDTEST-2832 / SDUC-564 — edits cannot silently shed native resume custody;
     // only an explicit separate draft accepts a changed execution context.
     #[::core::prelude::v1::test]

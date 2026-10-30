@@ -112,3 +112,117 @@ that slice for complete parity with the reference.
 No live provider prompt was submitted for this pass. The remaining gates above
 still apply; the T3 review tracks remaining parity work. The real running app
 was left untouched while the isolated preview was tested.
+
+### Encoded transcript follow-up — 2026-10-30
+
+- **Source reviewed:** the pinned T3 `TimelineWorkEntryRow.tsx` initializes tool
+  disclosure collapsed and presents plain output in monospace. Native retained
+  history now follows that presentation while keeping the conversation as its
+  sole vertical scroll owner. Long base64/hex runs fold behind a size notice in
+  both native history and locally retained messages/trace output. Reveal/hide and
+  copy-original controls operate on presentation/original text respectively;
+  snapshot hashes, stored entries and export text are unchanged.
+- **Automated regression:** all 313 isolated-profile UI tests passed, including
+  SDTEST-2842/2843. All five native-history Python fixtures passed. UI compilation,
+  strict all-target UI Clippy, preview build, FR/EN key/placeholder parity and
+  whitespace checks passed.
+- **Native fixture clicked:** `SHELLDECK_PREVIEW_BLOBS=1` reproduces an encoded
+  image diff and an inline data URI without a provider. On the desktop with a
+  disposable XDG profile, hidden real home and disabled network, verified initial
+  tool collapse, expanded literal output with the data folded, explicit original
+  reveal, hide again, and a usable composer at 900×700 in Dark and Solarized Light.
+  Captures: `/tmp/shelldeck-transcript-qa/04-history.png`, `05-tool-folded.png`,
+  `06-original-visible.png`, `07-rehidden.png`, `08-narrow.png`, and
+  `11-light-tool.png`. Xvfb's black rendering could not validate this fixture;
+  the final captures use the desktop display and the same isolated test profile.
+  Clipboard copying was source-reviewed; the native walkthrough exercised the
+  reveal/hide controls. No live SSH history or provider turn was exercised here.
+
+### T3-inspired test-suite increment — 2026-10-30
+
+The test-source comparison at upstream `9b1d351` is recorded in
+`T3_CODE_REVIEW_2026-10-30.md` (§ Test-suite follow-up). SDTEST-2844–2847 add
+production-handler scenarios with a private clipboard, source/page replacement,
+1,000-event tool replays for all four provider choices, durable failure ordering,
+and a wrapping/streaming/Unicode corpus. The corpus reproduced a short wrapped
+base64 tail leaking into display; the final rule includes that tail without
+consuming the readable prose after the block. Stale copy/reveal callbacks now
+resolve their exact retained source before changing presentation or clipboard.
+
+All 317 isolated-profile UI tests, all three Python discovery/history suites,
+strict all-target UI Clippy and the preview build passed locally. CI now has an
+independent `agent-history` job for those reader suites; no remote CI run is
+claimed. Handler tests execute the same methods bound by the controls, without
+rendering GPUI or writing the desktop clipboard. The subsequent rendered
+interaction increment below covers actual control dispatch and layout. The prior
+native screenshots retain their narrower manual-fixture meaning.
+
+The rebuilt native preview also rechecked the updated source-bound reveal/hide
+callbacks on the desktop at 900×700 with a disposable profile, hidden real home
+and disabled network. The inline native attachment revealed its complete text,
+hid it again, and kept the composer accessible. Evidence:
+`/tmp/shelldeck-t3-native-qa/03-reveal.png` and `04-hide.png`. Exact clipboard
+content and stale-action rejection were exercised through the private test
+clipboard by SDTEST-2844/2845; the desktop clipboard was not used.
+
+
+### Rendered interaction suite — 2026-10-30
+
+SDTEST-1713 and SDTEST-2848–2854 use one shared GPUI harness around the production
+cockpit. The suite dispatches actual clicks, keyboard input, Enter and wheel
+events, checks emitted requests and drafts, and measures rendered bounds. The
+reveal/copy matrix covers local and native transcripts at 1280×900, 900×700 and
+620×560 in Dark and Solarized Light. Other journeys cover conversation focus,
+streaming while reading older content, Jump to latest, footer retry and paging,
+once-only queued admission, durable draft reload and pending question/approval
+responses. Clipboard tests use GPUI's private clipboard.
+
+The tests reproduced and drove fixes for Send/Stop sizing (both now 28 px),
+new/restored composer focus, footer Retry visibility during loading/error layout
+changes, and duplicate approval decisions. Approval controls remain disabled
+until the exact interaction resolves or its transport rejects the submission;
+uncorrelated failures cannot release a pending decision. Restart tests use their
+own durable stores and never execute a restored draft.
+
+This layer exercises real layout and input dispatch on GPUI's test platform.
+Native GPU paint evidence and real provider runs remain separate: the suite does
+not claim to test external processes or the broader split-pane/restart journey
+SDTEST-2480/2482. CI runs it by default with serialized tests and disposable XDG
+roots, alongside the independent Python reader suites.
+
+Validation: `cargo test --workspace --locked --offline -- --test-threads=1`
+passed 1,130 tests (325 UI); nine existing live/doc tests were ignored. All
+three Python reader/discovery suites passed. Strict workspace all-target Clippy,
+formatting, translation key/placeholder parity and whitespace checks passed.
+The native preview was exercised on the real desktop with a disposable profile,
+hidden real home and disabled network. Tool expansion, original reveal/hide and
+fixed composer containment were checked at 900×700 and 620×560 in Dark, plus
+folded tool/attachment rendering in Solarized Light at both sizes. Evidence:
+`/tmp/shelldeck-rendered-suite-qa/02-folded.png`, `03-tool-expanded.png`,
+`04-raw.png`, `05-narrow.png`, `06-light.png`, `07-light-narrow.png`.
+The desktop clipboard and real providers were not used. These screenshots show
+native GPU paint; SDTEST-2848–2854 separately verify layout and event behavior.
+
+
+### Release follow-up — current-chat focus and missing SSH recovery
+
+SDTEST-2855 reproduced typing staying in navigator search after selecting the
+already-open chat. Selection now requests surface focus even when its session ID
+is unchanged, without resetting unsent context choices. SDTEST-2738 uses the
+rendered project/reconnect pickers, actual search input and commit controls
+across EN/FR, Dark/Solarized Light and 900×700/620×560. Missing targets block
+click/Enter execution while preserving editable multiline drafts; chat switching
+retains separate local/remote drafts; no-match searches recover; explicit repair
+admits exactly one request for the selected server and original remote folder.
+The harness records the admitted request without running SSH or a provider.
+Its locale is restored on drop, including after a failed assertion.
+
+The follow-up workspace sweep passed 1,132 tests, including 327 UI tests; the
+same nine existing live/doc tests remain ignored. Strict workspace all-target
+Clippy passed. The French Solarized Light preview at 900×700 showed the retained
+remote draft, disabled Send, both project and Reconnect SSH controls, and exact
+folder `/srv/customer project` (`/tmp/shelldeck-release-qa/02-missing-selected.png`).
+This walkthrough also exposed an overflowing older-conversations sidebar label;
+its visible text is now shorter in both languages, with the full action in a
+tooltip. The preview supports `SHELLDECK_PREVIEW_MISSING_SSH=1` and
+`SHELLDECK_PREVIEW_FR=1` for repeating this case without SSH/provider access.

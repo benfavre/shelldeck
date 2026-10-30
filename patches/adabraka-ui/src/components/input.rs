@@ -107,6 +107,8 @@ pub enum InputSize {
 #[derive(IntoElement)]
 pub struct Input {
     state: Entity<InputState>,
+    // ShellDeck patch: SDPATCH-051 — observe the actual input without a layout wrapper.
+    debug_selector: Option<&'static str>,
     placeholder: SharedString,
     variant: InputVariant,
     size: InputSize,
@@ -151,10 +153,18 @@ pub struct Input {
 }
 
 impl Input {
+    // ShellDeck patch: SDPATCH-051 — identify the same input that receives pointer events.
+    pub fn debug_selector(mut self, selector: &'static str) -> Self {
+        self.debug_selector = Some(selector);
+        self
+    }
+
     /// Create a new input with an InputState entity
     pub fn new(state: &Entity<InputState>) -> Self {
         Self {
             state: state.clone(),
+            // ShellDeck patch: SDPATCH-051 — selectors are optional static test metadata.
+            debug_selector: None,
             placeholder: "".into(),
             variant: InputVariant::Default,
             size: InputSize::default(),
@@ -769,6 +779,11 @@ impl RenderOnce for Input {
                     .w_full()
                     .flex()
                     .id(("input", self.state.entity_id()))
+                    // ShellDeck patch: SDPATCH-051 — GPUI omits selector allocation outside test support.
+                    .map(|input| match self.debug_selector {
+                        Some(selector) => input.debug_selector(|| selector.to_owned()),
+                        None => input,
+                    })
                     .key_context("Input")
                     .track_focus(
                         &self

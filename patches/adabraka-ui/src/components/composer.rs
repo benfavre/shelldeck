@@ -253,6 +253,8 @@ impl RenderOnce for Composer {
             color: theme.tokens.shadow_xs.color,
         };
         let mut frame: Div = div()
+            // ShellDeck patch: SDPATCH-051 — measure the production composer without wrapper elements.
+            .debug_selector(|| format!("{}-frame", self.id))
             .flex()
             .flex_col()
             .w_full()
@@ -369,6 +371,8 @@ impl RenderOnce for Composer {
                         button
                     }
                 };
+                // ShellDeck patch: SDPATCH-051 — click and measure the same commit control users get.
+                let commit_el = commit_el.debug_selector(|| format!("{}-commit", self.id));
                 let commit_el = match (enabled, on_commit) {
                     (true, Some(handler)) => commit_el.on_click(move |_event, _window, cx| {
                         handler(cx);

@@ -465,6 +465,7 @@ impl AgentConsoleView {
                         SharedString::from(format!("ssh-older-{id}")),
                         t!("agents.ssh_sessions.load_older").to_string(),
                     )
+                    .tooltip(t!("agents.ssh_sessions.load_older_hint").to_string())
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Sm)
                     .disabled(server.loading)

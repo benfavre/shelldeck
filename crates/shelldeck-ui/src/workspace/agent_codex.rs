@@ -109,12 +109,21 @@ impl Workspace {
             &command,
             LiveCodexCommand::Steer { .. } | LiveCodexCommand::Answer { .. }
         );
+        let approval = match &command {
+            LiveCodexCommand::Approval { request_id, .. } => Some(request_id.clone()),
+            _ => None,
+        };
         let result = self
             .active_agent_runs
             .get(&run_id)
             .ok_or("Agent run is no longer active".to_string())
             .and_then(|run| run.send_live(command));
         if let Err(error) = result {
+            if let Some(request_id) = approval {
+                self.agent_console.update(cx, |view, cx| {
+                    view.reject_approval_decision(run_id, &request_id, error.clone(), cx)
+                });
+            }
             if user_input {
                 self.agent_console.update(cx, |view, cx| {
                     view.reject_live_input(run_id, error.clone(), cx)

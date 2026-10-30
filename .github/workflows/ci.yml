@@ -16,6 +16,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  agent-history:
+    name: Native agent history contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Execute the production readers against disposable native-format stores.
+      # No SSH endpoint, provider binary, credentials or private Rust dep needed.
+      - name: Verify discovery, continuation and immutable transcript paging
+        run: |
+          python3 -B scripts/test-remote-session-discovery.py
+          python3 -B scripts/test-remote-session-discovery-pages.py
+          python3 -B crates/shelldeck-core/src/agent_remote_history_test.py
+
   agents-packaging:
     name: Agents launcher and packaging contracts
     runs-on: ubuntu-latest
@@ -116,6 +135,8 @@ jobs:
 
       - name: cargo test
         env:
+          # GPUI integration scenarios share process-wide theme and profile state.
+          RUST_TEST_THREADS: "1"
           XDG_CONFIG_HOME: ${{ runner.temp }}/shelldeck-tests/config
           XDG_DATA_HOME: ${{ runner.temp }}/shelldeck-tests/data
           XDG_CACHE_HOME: ${{ runner.temp }}/shelldeck-tests/cache

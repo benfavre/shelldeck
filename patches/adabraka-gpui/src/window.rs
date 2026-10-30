@@ -740,6 +740,9 @@ impl Frame {
     }
 
     pub(crate) fn clear(&mut self) {
+        // ShellDeck patch: SDPATCH-122 — removed controls must not retain stale test bounds.
+        #[cfg(any(test, feature = "test-support"))]
+        self.debug_bounds.clear();
         self.element_states.clear();
         self.accessed_element_states.clear();
         self.mouse_listeners.clear();

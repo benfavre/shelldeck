@@ -3313,6 +3313,16 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-30** — SDUC-562: older-conversation discovery uses a short sidebar label with the complete action available in a tooltip, preventing the French caption from overflowing.
+
+- **2026-10-30** — SDUC-499/551/564: selecting the current chat from search restores composer focus; missing SSH recovery is covered through actual picker/search/Send controls in both languages, themes and narrow/wide layouts (SDTEST-2738/2855).
+
+- **2026-10-30** — SDUC-475/554/563/564: shared rendered cockpit scenarios dispatch actual clicks, keyboard and wheel events; fixes cover 28 px Send/Stop, chat focus, footer retry, scroll retention and once-only approval responses (SDTEST-1713, SDTEST-2848–2854).
+
+- **2026-10-30** — SDUC-563/564: T3-inspired transcript scenarios cover exact copy, disclosure isolation, stale snapshot callbacks, long tool streams and a wrapped-data corpus (SDTEST-2844–2847). Native reader/discovery fixtures now have their own provider-free CI gate.
+
+- **2026-10-30** — SDUC-563/564: long encoded payloads fold in the Agents transcript with explicit original-content disclosure; native tool/reasoning entries start collapsed and retain complete passive history (SDTEST-2842/2843).
+
 - **2026-10-30** — Amended SDUC-046/047/067: retain streaming exit status after EOF, cancel queued/connecting execution, bind script UI updates to execution UUID, and report missing status/start failure truthfully (SDTEST-2760–2769), including local owned-process-tree cleanup.
 
 - **2026-10-29** — SDUC-551: searchable project chooser, explicit agent/permissions/model controls, retained model search, reasoning labels and a shared context-intake menu. Draft choices survive project navigation. Native coverage remains tracked in SDTEST-2480.
@@ -4672,13 +4682,22 @@ server snapshot without altering the original cutoff or local replies. Return
 to the conversation to send; pagination and retries remain available in either view.
 Missing files, changed identities and malformed history remain explicit errors.
 
+Tool results and reasoning start collapsed inline; opening them never replays
+the operation. Long encoded data is replaced by a size notice in messages and
+technical output, with an explicit original-content toggle. Folding changes only
+presentation: saved text, export, paging indices and immutable snapshots remain
+exact. Technical results use literal monospace text rather than prose Markdown.
+
 Passive history identity and the snapshot may survive application restart;
 executable resume authority does not. Restoring or browsing saved history cannot
 start an agent. A fresh verified reconnect restores the exact native resume
 binding, while existing local messages remain intact. Changing the current chat
 context does not silently retarget its retained history source.
 
-Automated: SDTEST-2813, SDTEST-2814, SDTEST-2815, SDTEST-2816, SDTEST-2817, SDTEST-2818.
+Automated: SDTEST-2813, SDTEST-2814, SDTEST-2815, SDTEST-2816, SDTEST-2817, SDTEST-2818,
+SDTEST-2842–2848, SDTEST-2852. Copy/reveal actions resolve the currently retained source;
+delayed actions from another conversation, replaced snapshot or missing page are
+refused without changing clipboard contents or stored history.
 Native fixture: `SHELLDECK_PREVIEW_SSH=1` on `agent_console_preview`, with
 isolated XDG homes. Each synthetic remote conversation returns 160 entries in
 three pages, covering user/assistant text and tool results without network or
@@ -4710,3 +4729,9 @@ visibility with complete details on demand. Sidebar conversation actions share
 the Library handlers, and archiving has a persistent undo without deleting work.
 Draft restoration includes attachments, context, reasoning choice and paused
 queued follow-ups; restoration must never launch a provider or replay a queue.
+
+Rendered workflow regressions (SDTEST-2848–2854) additionally pin composer focus
+after chat selection and durable reload, independent transcript scrolling,
+footer retry, exact copy/disclosure, once-only queued admission, and duplicate
+question/approval click prevention with correlated failure recovery. They use
+production controls with provider-event fixtures and a private test clipboard.
