@@ -17,7 +17,7 @@ project/session sidebar, composer, and browser beside the conversation.
 | Open the app | Agents is the default; Agents is second in the full shell rail; shell toggle works in Agents mode; resizing retains navigation and composer. | Source reviewed and native fixture clicked: Agents startup, second activity after Connections (below brand), sidebar toggle, 900px resize; composer remains usable. |
 | Add/open a project | Local folder picker or saved SSH connection plus remote folder browser; standard SSH folders require no helper install; successful add lands in Agents; Cancel returns without losing draft. | Native fixture clicked: Add project → local folder → Agents; canonical re-add retains one project/name and selects existing chat. SSH browsing covered by earlier onboarding work; not repeated against a live host in this pass. |
 | Start another task | New conversation has explicit project, server, agent and model; existing project sessions are selectable; archived sessions do not reopen implicitly; nested checkouts do not duplicate rows. | Navigator/project-picker corrections and regression coverage in this pass. |
-| Manage the list | Search matches project/server/session; collapsed groups remain manageable; active/archived state is clear; archive and restore have distinct actions; hiding an SSH list does not delete server history. | Native fixture clicked: archive → archived filter → restore retains unsent draft; project search excludes unrelated chats; Other conversations collapses separately. SSH page/hide state regressions. No implied parity with T3 snoozing/drag ordering. |
+| Manage the list | Search matches project/server/session; collapsed groups remain manageable; active/archived state is clear; archive and restore have distinct actions; hiding an SSH list does not delete server history. | Native fixture clicked: archive → archived filter → restore retains unsent draft; pins above folders, hidden attention and current-row retention, provider-mixed SSH folders and temporary search reveal. SDTEST-2859–2861 cover exact folder scope, pin/unpin, paging, drafts and legacy collapse migration. SSH page/hide state regressions remain. No implied parity with T3 snoozing/drag ordering. |
 | Discover remote work | Automonique and native SSH are clearly separate and grouped; selecting a saved SSH server loads fresh metadata; last successful fetch and failures are visible; large histories and older inventory pages remain accessible. | Paged inventory and large-file fixtures plus live read-only verification. Candidate/time/output bounds must remain explicit. |
 | Reconnect and read | Exact server/provider/native ID/directory; full provider-retained history is reachable in pages; reading never runs tools; source reference survives restart; explicit revalidation restores resume authority. | SDUC-562/563 parser/storage/UI regressions and native reconnect walkthrough. Deleted/compacted server content cannot be recreated. |
 | Continue after external changes | Refresh can read current server history without duplicating retained local messages; compaction recovery preserves draft and resume identity; late responses cannot switch conversations. | SDTEST-2818 and private refreshed-history/back-to-chat walkthrough. |
@@ -275,3 +275,52 @@ Final isolated offline workspace sweep: 1,135 tests passed, including 510 core
 and 329 UI tests; the same nine existing live/doc tests remain ignored. Strict
 workspace all-target Clippy, formatting and whitespace checks passed. Logs:
 `/tmp/shelldeck-chat-final-tests.log`, `/tmp/shelldeck-chat-final-clippy.log`.
+
+### Sidebar grouping follow-up — 2026-10-31
+
+Source review of T3 Code's optional project-folder sidebar at `cb9629e` is in
+`T3_CODE_REVIEW_2026-10-30.md`. ShellDeck now keeps active pins above catalog
+projects, uses exact execution target/workdir folders for uncatalogued chats,
+and groups native SSH discovery by server/folder across providers. Catalog
+ownership still uses the most specific matching checkout. Group membership
+never depends on display names, provider binaries or hashed preference keys.
+Collapsed groups retain the current chat/native preview; their badges and
+attention describe the other hidden rows. Native server actions are compact
+icon controls, and each native folder owns its own visible-row limit.
+
+SDTEST-2859 covers exact target/path scope, identical server/folder labels,
+cross-provider grouping, pin/catalog exclusion and stable ordering during
+streaming. SDTEST-2860 dispatches real pin/unpin, collapse, search and navigation
+controls in EN/Dark and FR/Solarized Light at 900×700 and 620×560. It flushes
+separate drafts to the real isolated store and restores a legacy closed catch-all
+into closed folder groups without losing the selected chat. SDTEST-2861 clicks
+mixed-provider discovery folders, independently grows two folders, retains the
+current preview when its folder/server closes, and searches across server/title
+terms without mutating saved collapse. All callbacks are fixture-only; neither
+Run nor native reconnect execution is admitted by these grouping scenarios.
+Existing SDTEST-2744 additionally persists the bounded folder/server/pin keys.
+
+Native Linux GPU walkthrough used fresh XDG profiles, a masked home, no network,
+providers or desktop clipboard. The old layout is captured at
+`/tmp/shelldeck-sidebar-before/01-sidebar.png`. Dark 1280×900 evidence:
+`/tmp/shelldeck-sidebar-qa/01-grouped.png` (pins, catalog and uncatalogued folders),
+`02-hidden-attention.png` (closed project with hidden approval),
+`03-current-in-closed-project.png` (current chat retained),
+`05-native-folder-closed.png` (selected native preview retained), and
+`06-search-reveals.png` / `07-cleared-search.png` (temporary reveal and restored
+collapse). Solarized Light 620×560 evidence:
+`/tmp/shelldeck-sidebar-light-qa/02-narrow-sidebar.png` and
+`03-narrow-native-folders.png`; the overlay scrolls independently and the
+underlying composer keeps its width. The standalone fixture uses its existing
+Ctrl+Shift+B session toggle. Repeat with
+`SHELLDECK_PREVIEW_SSH=1 SHELLDECK_PREVIEW_GROUPS=1`; add
+`SHELLDECK_PREVIEW_ATTENTION=1`, `SHELLDECK_PREVIEW_FR=1` or
+`SHELLDECK_PREVIEW_LIGHT=1` as needed. This is native ShellDeck fixture evidence,
+not a new T3 runtime or live-provider walkthrough.
+
+Validation: the isolated offline workspace sweep passed 1,138 tests, including
+332 UI tests, with the same nine existing live/doc ignores. The final focused
+folder run passed all ten selected scenarios after the migration, source-selection
+and visible-count refinements. Strict workspace all-target Clippy and formatting
+passed. Logs: `/tmp/shelldeck-sidebar-final-tests.log`,
+`/tmp/shelldeck-sidebar-reviewed-tests.log`, `/tmp/shelldeck-sidebar-final-lint.log`.

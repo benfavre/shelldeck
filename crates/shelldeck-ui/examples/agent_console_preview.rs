@@ -88,6 +88,39 @@ fn main() -> anyhow::Result<()> {
     collection.create("Review the terminal shortcuts", context.clone(), 6)?;
     collection.create("Investigate SSH reconnects", context, 7)?;
     collection.select(first)?;
+    if std::env::var_os("SHELLDECK_PREVIEW_GROUPS").is_some() {
+        let template = collection.get(first).unwrap().context.clone();
+        for (target, path, name) in [
+            (
+                AgentTarget::Local,
+                root.parent()
+                    .unwrap()
+                    .join("image-tools")
+                    .display()
+                    .to_string(),
+                "Resize the product screenshots",
+            ),
+            (
+                AgentTarget::Ssh {
+                    connection_id: uuid::Uuid::from_u128(421),
+                    connection_label: "Development server".into(),
+                },
+                "/srv/customer-project".into(),
+                "Continue the remote deployment review",
+            ),
+        ] {
+            collection.create(
+                name,
+                AgentExecutionContext {
+                    target,
+                    workdir: path,
+                    ..template.clone()
+                },
+                10,
+            )?;
+        }
+        collection.select(first)?;
+    }
     if std::env::var_os("SHELLDECK_PREVIEW_MISSING_SSH").is_some() {
         let session = collection.get_mut(first).unwrap();
         let mut context = session.context.clone();

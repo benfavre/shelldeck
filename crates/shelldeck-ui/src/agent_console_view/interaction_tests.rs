@@ -207,7 +207,11 @@ impl Cockpit {
     }
 
     fn wheel(&mut self, amount: f32) {
-        let position = self.bounds("agent-timeline-scroll").unwrap().center();
+        self.wheel_in("agent-timeline-scroll", amount);
+    }
+
+    fn wheel_in(&mut self, selector: &str, amount: f32) {
+        let position = self.bounds(selector).unwrap().center();
         self.window
             .simulate_mouse_move(position, None, Modifiers::none());
         self.window.simulate_event(ScrollWheelEvent {
@@ -220,6 +224,46 @@ impl Cockpit {
         // test dispatcher clock. Let that animation settle before measuring.
         std::thread::sleep(std::time::Duration::from_millis(80));
         self.redraw();
+    }
+
+    fn open_navigator(&mut self) {
+        self.view.update(&mut self.app, |view, cx| {
+            view.tools.navigator_visible = true;
+            view.tools.navigator_overlay = true;
+            cx.notify();
+        });
+        self.redraw();
+    }
+
+    fn search_navigator(&mut self, query: &str) {
+        self.click("agent-nav-search");
+        self.window
+            .simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            });
+        self.window.simulate_keystrokes("backspace");
+        self.window.simulate_input(query);
+        self.redraw();
+    }
+
+    fn click_navigation(&mut self, selector: &str) {
+        for _ in 0..4 {
+            let row = self
+                .bounds(selector)
+                .unwrap_or_else(|| panic!("Missing navigation row: {selector}"));
+            let viewport = self.bounds("agent-navigator-scroll").unwrap();
+            if viewport.contains(&row.center()) {
+                self.click(selector);
+                return;
+            }
+            self.wheel_in(
+                "agent-navigator-scroll",
+                (viewport.center().y - row.center().y).to_f64() as f32,
+            );
+        }
+        panic!("Navigation control is unreachable: {selector}");
     }
 
     fn start(&mut self) -> Uuid {
@@ -1263,5 +1307,385 @@ fn rendered_warning_cards_and_expanded_work_do_not_crop_output() {
                 }
             }
         }
+    }
+}
+
+// SDTEST-2860 / SDUC-551, SDUC-564 — closed folders retain the open chat and pins stay above projects.
+#[::core::prelude::v1::test]
+fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
+    use super::navigation_groups::directory_group_key;
+    use shelldeck_core::config::app_config::UiLanguage;
+    for (theme, language) in [
+        (ThemePreference::Dark, UiLanguage::En),
+        (ThemePreference::SolarizedLight, UiLanguage::Fr),
+    ] {
+        for (width, height) in [(900.0, 700.0), (620.0, 560.0)] {
+            let mut ui = Cockpit::new(theme.clone(), width, height, false);
+            crate::apply_ui_language(&language);
+            let first = ui.session;
+            ui.type_draft("Keep the selected project's draft · é🌍");
+            let (background, pinned, other, folder_key) =
+                ui.view.update(&mut ui.app, |view, cx| {
+                    let context = view.sessions.get(first).unwrap().context.clone();
+                    view.set_project_groups(
+                        vec![AgentProjectGroup {
+                            id: "catalog".into(),
+                            label: "Customer project".into(),
+                            worktrees: vec![AgentWorktreeOption {
+                                id: "primary".into(),
+                                label: "Customer project".into(),
+                                path: context.workdir.clone(),
+                                target: context.target.clone(),
+                                branch: None,
+                                is_primary: true,
+                            }],
+                        }],
+                        cx,
+                    );
+                    let background = view
+                        .create_session("Background approval", context.clone(), cx)
+                        .unwrap();
+                    view.sessions
+                        .begin_run(background, "Wait for a decision", 20)
+                        .unwrap();
+                    view.sessions
+                        .apply_stream_event(
+                            background,
+                            AgentStreamEvent::Question(
+                                shelldeck_core::agent_runtime::AgentQuestionRequest {
+                                    id: "which".into(),
+                                    prompt: "Which destination?".into(),
+                                    options: vec![],
+                                    multiple: false,
+                                    response_supported: false,
+                                },
+                            ),
+                            21,
+                        )
+                        .unwrap();
+                    let pinned = view
+                        .create_session("Pinned task", context.clone(), cx)
+                        .unwrap();
+                    view.sessions.set_pinned(pinned, true, 22).unwrap();
+                    let mut elsewhere = context;
+                    elsewhere.workdir = "/tmp/shelldeck-uncatalogued-project".into();
+                    let key =
+                        directory_group_key("chat-folder", &elsewhere.target, &elsewhere.workdir);
+                    let other = view
+                        .create_session("Another folder", elsewhere, cx)
+                        .unwrap();
+                    view.select_session(first, cx);
+                    (background, pinned, other, key)
+                });
+            ui.open_navigator();
+            assert!(
+                ui.bounds(&format!("agent-nav-session-{pinned}"))
+                    .unwrap()
+                    .top()
+                    < ui.bounds("agent-project-collapse-catalog").unwrap().top()
+            );
+            assert!(ui.bounds(&format!("agent-folder-{folder_key}")).is_some());
+            ui.click_navigation("agent-project-collapse-catalog");
+            assert!(
+                ui.bounds(&format!("agent-nav-session-{first}")).is_some(),
+                "the current chat remains in its closed project"
+            );
+            assert!(ui
+                .bounds(&format!("agent-nav-session-{background}"))
+                .is_none());
+            assert!(
+                ui.bounds("agent-group-summary-catalog").is_some(),
+                "hidden pending work is summarized"
+            );
+            ui.click_navigation(&format!("agent-nav-session-{pinned}"));
+            ui.session = pinned;
+            ui.type_draft("A separate pinned draft");
+            ui.open_navigator();
+            ui.click_navigation(&format!("agent-nav-menu-{pinned}"));
+            ui.click(&format!("agent-nav-action-{pinned}-TogglePin"));
+            assert!(ui.bounds("agent-folder-pinned-sessions").is_none());
+            assert!(
+                ui.bounds(&format!("agent-nav-session-{pinned}")).is_some(),
+                "unpinning keeps the open chat visible in its closed project"
+            );
+            assert_eq!(ui.draft(), "A separate pinned draft");
+            ui.click_navigation(&format!("agent-nav-menu-{pinned}"));
+            ui.click(&format!("agent-nav-action-{pinned}-TogglePin"));
+            assert!(ui.bounds("agent-folder-pinned-sessions").is_some());
+            assert!(ui.bounds(&format!("agent-nav-session-{first}")).is_none());
+            let saved = ui
+                .view
+                .read_with(&ui.app, |view, _| view.library.preferences.clone());
+            ui.search_navigator("background approval");
+            assert!(ui
+                .bounds(&format!("agent-nav-session-{background}"))
+                .is_some());
+            assert!(ui.bounds(&format!("agent-nav-session-{other}")).is_none());
+            assert_eq!(
+                ui.view
+                    .read_with(&ui.app, |view, _| view.library.preferences.clone()),
+                saved
+            );
+            ui.search_navigator("Transcript");
+            ui.click_navigation(&format!("agent-nav-session-{first}"));
+            ui.session = first;
+            assert_eq!(ui.draft(), "Keep the selected project's draft · é🌍");
+            ui.open_navigator();
+            ui.search_navigator("");
+            assert!(ui.bounds(&format!("agent-nav-session-{first}")).is_some());
+            assert!(ui
+                .bounds(&format!("agent-nav-session-{background}"))
+                .is_none());
+            ui.click_navigation(&format!("agent-folder-toggle-{folder_key}"));
+            assert!(ui.bounds(&format!("agent-nav-session-{other}")).is_none());
+            let loaded = ui.view.update(&mut ui.app, |view, cx| {
+                view.flush_library(cx).unwrap();
+                view.draft_store().load(100).unwrap()
+            });
+            assert!(loaded
+                .preferences
+                .collapsed_project_ids
+                .contains(&"catalog".to_owned()));
+            assert!(loaded
+                .preferences
+                .collapsed_project_ids
+                .contains(&folder_key));
+            assert_eq!(
+                loaded.drafts[&first],
+                "Keep the selected project's draft · é🌍"
+            );
+            assert_eq!(loaded.drafts[&pinned], "A separate pinned draft");
+            // A legacy closed catch-all becomes closed folders on an actual store restore.
+            let store = ui.view.read_with(&ui.app, |view, _| view.draft_store());
+            let catalog = ui
+                .view
+                .read_with(&ui.app, |view, _| view.project_groups.clone());
+            let mut legacy = loaded;
+            legacy
+                .preferences
+                .collapsed_project_ids
+                .retain(|id| id != &folder_key);
+            legacy
+                .preferences
+                .collapsed_project_ids
+                .push("unassigned-sessions".into());
+            store.save(&legacy).unwrap();
+            let mut restored = Cockpit::new(theme.clone(), width, height, false);
+            restored.view.update(&mut restored.app, |view, cx| {
+                let context = view.sessions.selected().unwrap().context.clone();
+                view.library = AgentLibraryUi::with_store(cx, store);
+                view.sessions = AgentSessionCollection::default();
+                view.session_ui.clear();
+                let placeholder = view.sessions.create("New chat", context, 1).unwrap();
+                view.session_ui.insert(placeholder, AgentSessionUi::new(cx));
+                view.set_project_groups(catalog, cx);
+                view.apply_selected_context(cx);
+                view.restore_library(cx);
+            });
+            restored.redraw();
+            restored.session = first;
+            restored.open_navigator();
+            assert_eq!(restored.draft(), "Keep the selected project's draft · é🌍");
+            assert!(restored
+                .bounds(&format!("agent-nav-session-{first}"))
+                .is_some());
+            assert!(restored
+                .bounds(&format!("agent-nav-session-{other}"))
+                .is_none());
+            restored.view.read_with(&restored.app, |view, _| {
+                assert!(view
+                    .library
+                    .preferences
+                    .collapsed_project_ids
+                    .contains(&folder_key));
+                assert!(!view
+                    .library
+                    .preferences
+                    .collapsed_project_ids
+                    .contains(&"unassigned-sessions".to_owned()));
+            });
+            assert!(!ui
+                .events
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+        }
+    }
+}
+
+// SDTEST-2861 / SDUC-562, SDUC-563 — SSH folders combine providers without combining machines or authority.
+#[::core::prelude::v1::test]
+fn rendered_ssh_folders_preserve_source_search_collapse_and_independent_pages() {
+    use super::navigation_groups::directory_group_key;
+    use shelldeck_core::agent_remote_sessions::{RemoteAgentSession, RemoteAgentSessionInventory};
+    for (width, height) in [(900.0, 700.0), (620.0, 560.0)] {
+        let mut ui = Cockpit::new(ThemePreference::Dark, width, height, false);
+        ui.type_draft("Keep my local draft while browsing remote projects");
+        let a = Uuid::from_u128(501);
+        let b = Uuid::from_u128(502);
+        let remote = |index: usize, path: &str| RemoteAgentSession {
+            provider: [
+                AgentProvider::Claude,
+                AgentProvider::Codex,
+                AgentProvider::Jcode,
+            ][index % 3],
+            session_id: format!("native-{index}"),
+            workdir: path.into(),
+            title: format!("Saved task {index}"),
+            updated_at_ms: index as u64,
+            model: None,
+        };
+        let alpha = (0..12)
+            .map(|index| remote(index, "/srv/customer/api"))
+            .collect::<Vec<_>>();
+        let beta = (12..23)
+            .map(|index| remote(index, "/srv/other/api"))
+            .collect::<Vec<_>>();
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.set_connections(
+                vec![
+                    AgentConnectionOption {
+                        id: a,
+                        label: "Server A".into(),
+                        host: "a.invalid".into(),
+                    },
+                    AgentConnectionOption {
+                        id: b,
+                        label: "Server B".into(),
+                        host: "b.invalid".into(),
+                    },
+                ],
+                cx,
+            );
+            view.scan_ssh_sessions(a, cx);
+            view.scan_ssh_sessions(b, cx);
+        });
+        let requests = ui
+            .events
+            .borrow()
+            .iter()
+            .filter_map(|event| match event {
+                AgentConsoleEvent::DiscoverSshSessions {
+                    connection_id,
+                    request_id,
+                    ..
+                } => Some((*connection_id, *request_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        ui.view.update(&mut ui.app, |view, cx| {
+            for (id, request) in requests {
+                view.set_ssh_sessions(
+                    id,
+                    request,
+                    Ok(RemoteAgentSessionInventory {
+                        sessions: if id == a {
+                            alpha.iter().chain(&beta).cloned().collect()
+                        } else {
+                            vec![remote(0, "/srv/customer/api")]
+                        },
+                        warnings: vec![],
+                        truncated: false,
+                        next_cursor: None,
+                    }),
+                    cx,
+                );
+            }
+        });
+        ui.open_navigator();
+        let target = |id| AgentTarget::Ssh {
+            connection_id: id,
+            connection_label: "ignored alias".into(),
+        };
+        let alpha_key = directory_group_key("ssh-folder", &target(a), "/srv/customer/api");
+        let beta_key = directory_group_key("ssh-folder", &target(a), "/srv/other/api");
+        let b_key = directory_group_key("ssh-folder", &target(b), "/srv/customer/api");
+        let row = |server, session: &RemoteAgentSession| {
+            format!(
+                "agent-ssh-conversation-{server}-{:?}-{}",
+                session.provider, session.session_id
+            )
+        };
+        let folder = ui.bounds(&format!("agent-folder-{alpha_key}")).unwrap();
+        for session in alpha.iter().take(3) {
+            let bounds = ui.bounds(&row(a, session)).unwrap();
+            assert!(
+                bounds.top() >= folder.top() && bounds.bottom() <= folder.bottom(),
+                "all three providers share the folder"
+            );
+        }
+        assert!(
+            ui.bounds(&format!("agent-folder-{b_key}")).is_some(),
+            "same path on another server stays separate"
+        );
+        assert!(ui.bounds(&row(a, &alpha[11])).is_none());
+        assert!(ui.bounds(&row(a, &beta[10])).is_none());
+        ui.click_navigation(&format!("agent-ssh-more-{alpha_key}"));
+        assert!(ui.bounds(&row(a, &alpha[11])).is_some());
+        assert!(
+            ui.bounds(&row(a, &beta[10])).is_none(),
+            "show more only grows its own folder"
+        );
+        ui.click_navigation(&row(a, &alpha[11]));
+        assert_eq!(
+            ui.view
+                .read_with(&ui.app, |view, _| view.ssh_sessions.preview.clone()),
+            Some((a, alpha[11].clone()))
+        );
+        if ui.bounds("agent-navigator-scroll").is_none() {
+            ui.click("agent-ssh-preview-navigator");
+        }
+        ui.click_navigation(&format!("agent-folder-toggle-{alpha_key}"));
+        assert!(
+            ui.bounds(&row(a, &alpha[11])).is_some(),
+            "closed folder retains the open preview"
+        );
+        assert!(ui.bounds(&row(a, &alpha[0])).is_none());
+        ui.click_navigation(&format!("agent-folder-toggle-ssh-server:{a}"));
+        assert!(
+            ui.bounds(&row(a, &alpha[11])).is_some(),
+            "closed server retains the open preview"
+        );
+        assert!(ui.bounds(&format!("agent-folder-{beta_key}")).is_none());
+        let saved = ui
+            .view
+            .read_with(&ui.app, |view, _| view.library.preferences.clone());
+        ui.search_navigator("Server A task 11");
+        assert!(ui.bounds(&row(a, &alpha[11])).is_some());
+        assert!(ui.bounds(&format!("agent-folder-{b_key}")).is_none());
+        assert_eq!(
+            ui.view
+                .read_with(&ui.app, |view, _| view.library.preferences.clone()),
+            saved
+        );
+        ui.search_navigator("no matching project");
+        assert!(ui.bounds(&row(a, &alpha[11])).is_none());
+        ui.search_navigator("");
+        assert!(ui.bounds(&row(a, &alpha[11])).is_some());
+        assert!(ui.bounds(&row(a, &alpha[0])).is_none());
+        ui.click_navigation(&format!("agent-folder-toggle-ssh-server:{a}"));
+        assert!(
+            ui.bounds(&row(a, &alpha[0])).is_none(),
+            "opening the server preserves its folder's saved collapse"
+        );
+        assert!(ui.bounds(&row(a, &beta[0])).is_some());
+        ui.click_navigation(&format!("agent-ssh-more-{beta_key}"));
+        assert!(ui.bounds(&row(a, &beta[10])).is_some());
+        assert_eq!(
+            ui.draft(),
+            "Keep my local draft while browsing remote projects"
+        );
+        let loaded = ui.view.update(&mut ui.app, |view, cx| {
+            view.flush_library(cx).unwrap();
+            view.draft_store().load(100).unwrap()
+        });
+        assert!(loaded
+            .preferences
+            .collapsed_project_ids
+            .contains(&alpha_key));
+        assert!(!ui.events.borrow().iter().any(|event| matches!(
+            event,
+            AgentConsoleEvent::Run(_) | AgentConsoleEvent::ReconnectSshSession { .. }
+        )));
     }
 }

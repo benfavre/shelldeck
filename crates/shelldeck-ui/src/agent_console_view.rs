@@ -70,6 +70,7 @@ mod live_input;
 mod model;
 #[path = "agent_console_view/native_history.rs"]
 mod native_history;
+mod navigation_groups;
 #[path = "agent_console_view/navigator.rs"]
 mod navigator;
 #[path = "agent_console_view/progress.rs"]

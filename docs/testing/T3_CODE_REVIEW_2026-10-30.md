@@ -244,3 +244,31 @@ Retained image assets are capped at 128 MiB/4096 files, with no automatic asset
 deletion. A restored attachment check is all-or-nothing; unavailable items must
 be removed or reattached before checking again. The running user application
 was not restarted and this pass did not publish a release.
+
+## Sidebar grouping follow-up — 2026-10-31
+
+Source checked against upstream HEAD
+[`cb9629e`](https://github.com/pingdotgg/t3code/tree/cb9629e6891ef0745772b69f09c9acd0c6a74f7e).
+This follow-up is source review; the native walkthrough below exercises ShellDeck.
+T3's optional project-grouped sidebar keeps pins above project folders. Folder
+membership uses scoped environment/project references, retains thread order,
+and preserves the selected thread inside a closed folder. Counts and the most
+urgent hidden status summarize the other threads; legacy expansion keys remain
+usable. Empty folders are omitted unless explicitly retained by the project
+filter. Sources: [thread sidebar documentation](https://github.com/pingdotgg/t3code/blob/cb9629e6891ef0745772b69f09c9acd0c6a74f7e/docs/user/thread-sidebar.md),
+[folder grouping and status logic](https://github.com/pingdotgg/t3code/blob/cb9629e6891ef0745772b69f09c9acd0c6a74f7e/apps/web/src/components/Sidebar.logic.ts),
+[selected-thread retention](https://github.com/pingdotgg/t3code/blob/cb9629e6891ef0745772b69f09c9acd0c6a74f7e/apps/web/src/components/Sidebar.tsx),
+[folder header](https://github.com/pingdotgg/t3code/blob/cb9629e6891ef0745772b69f09c9acd0c6a74f7e/apps/web/src/components/sidebar/SidebarProjectFolderHeader.tsx).
+
+ShellDeck adopts a global pinned section and selected-row retention in closed
+groups. Catalog ownership stays authoritative; uncatalogued chats group by exact
+machine/server ID and workdir, with duplicate folder names disambiguated. Native
+SSH discovery groups server → folder → conversations, keeping provider icons on
+rows. Each folder has independent pagination and persisted collapse; search
+reveals matches without changing saved choices. The old catch-all collapse is
+migrated on library restore. Registered empty catalog projects remain available
+for starting work. The Automonique directory remains a separate typed source.
+This does not add T3's Working/Snoozed/Settled lifecycle or Git-remote grouping.
+
+SDTEST-2859–2861 cover scope, rendered navigation and discovery. Native Linux
+Dark and Solarized Light walkthroughs are recorded in `AGENTS_ACCEPTANCE.md`.

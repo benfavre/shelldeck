@@ -3,7 +3,7 @@ use shelldeck_core::agent_session::storage::AgentConsolePreferences;
 
 /// Navigation reflects what needs the person's attention, not just process state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NavigatorState {
+pub(super) enum NavigatorState {
     Quiet,
     Starting,
     Working,
@@ -89,9 +89,12 @@ fn project_session_summary(
     groups: &[AgentProjectGroup],
     sessions: &[AgentSession],
     include_archived: bool,
+    selected: Option<Uuid>,
 ) -> (usize, NavigatorState) {
     session_group_summary(sessions.iter().filter(|session| {
         (include_archived || !session.archived)
+            && !super::navigation_groups::navigator_pin(session)
+            && Some(session.id) != selected
             && navigator_worktree(session, groups).is_some_and(|owner| {
                 project
                     .worktrees
@@ -101,7 +104,7 @@ fn project_session_summary(
     }))
 }
 
-fn session_group_summary<'a>(
+pub(super) fn session_group_summary<'a>(
     sessions: impl Iterator<Item = &'a AgentSession>,
 ) -> (usize, NavigatorState) {
     let mut count = 0;
@@ -132,7 +135,7 @@ impl Render for NavigatorTooltip {
     }
 }
 
-fn collapsed_session_summary(
+pub(super) fn collapsed_session_summary(
     group_id: &str,
     count: usize,
     attention: NavigatorState,
@@ -145,6 +148,7 @@ fn collapsed_session_summary(
         .id(SharedString::from(format!(
             "agent-group-summary-{group_id}"
         )))
+        .debug_selector(|| format!("agent-group-summary-{group_id}"))
         .tooltip(move |_, cx| cx.new(|_| NavigatorTooltip(hint.clone())).into())
         .flex()
         .items_center()
@@ -156,7 +160,7 @@ fn collapsed_session_summary(
         .child(Badge::new(count.to_string()).variant(BadgeVariant::Secondary))
 }
 
-fn navigator_worktree<'a>(
+pub(super) fn navigator_worktree<'a>(
     session: &AgentSession,
     groups: &'a [AgentProjectGroup],
 ) -> Option<&'a AgentWorktreeOption> {
@@ -195,7 +199,7 @@ fn worktree_search_text(project: &str, worktree: &AgentWorktreeOption) -> String
     )
 }
 
-fn navigator_session_matches_query(
+pub(super) fn navigator_session_matches_query(
     session: &AgentSession,
     groups: &[AgentProjectGroup],
     query: &str,
@@ -242,7 +246,7 @@ fn navigator_session_matches_query(
     missing.is_empty()
 }
 
-fn project_group_collapsed(
+pub(super) fn project_group_collapsed(
     preferences: &AgentConsolePreferences,
     project_id: &str,
     query: &str,
@@ -254,7 +258,7 @@ fn project_group_collapsed(
             .any(|id| id == project_id)
 }
 
-fn toggle_project_group(
+pub(super) fn toggle_project_group(
     preferences: &mut AgentConsolePreferences,
     project_id: &str,
     query: &str,
@@ -512,6 +516,7 @@ impl AgentConsoleView {
                         let parent = parent.clone();
                         content = content.child(
                             Button::new(("agent-row-action", index), action.label(session))
+                                .debug_selector(|| format!("agent-nav-action-{id}-{action:?}"))
                                 .variant(ButtonVariant::Ghost)
                                 .size(ButtonSize::Sm)
                                 .w_full()
@@ -705,20 +710,21 @@ impl AgentConsoleView {
             .iter()
             .map(|session| u64::from(session.unread_count))
             .sum::<u64>();
-        let mut body = div().flex().flex_col().gap(px(4.0)).px(px(6.0)).py(px(7.0));
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .px(px(6.0))
+            .py(px(7.0))
+            .child(self.render_pinned_conversations(cx));
         let query = self.navigator_search.read(cx).content().to_string();
-        if self.project_groups.is_empty() {
-            body = body.child(self.render_session_rows(None, cx));
-        } else {
-            for project in &self.project_groups {
-                let visible_worktrees = project
-                    .worktrees
-                    .iter()
-                    .filter(|worktree| {
-                        navigator_query_matches(
-                            &query,
-                            &worktree_search_text(&project.label, worktree),
-                        ) || self
+        for project in &self.project_groups {
+            let visible_worktrees = project
+                .worktrees
+                .iter()
+                .filter(|worktree| {
+                    navigator_query_matches(&query, &worktree_search_text(&project.label, worktree))
+                        || self
                             .sessions
                             .library_sessions(self.library.show_archived())
                             .iter()
@@ -731,194 +737,201 @@ impl AgentConsoleView {
                                         &query,
                                     )
                             })
-                    })
-                    .collect::<Vec<_>>();
-                if visible_worktrees.is_empty() {
-                    continue;
-                }
-                let collapsed =
-                    project_group_collapsed(&self.library.preferences, &project.id, &query);
-                let project_id = project.id.clone();
-                let mut header = div()
-                    .flex()
-                    .items_center()
-                    .min_w_0()
-                    .gap(px(3.0))
-                    .pt(px(3.0))
-                    .child(
+                })
+                .collect::<Vec<_>>();
+            if visible_worktrees.is_empty() {
+                continue;
+            }
+            let collapsed = project_group_collapsed(&self.library.preferences, &project.id, &query);
+            let project_id = project.id.clone();
+            let mut header = div()
+                .flex()
+                .items_center()
+                .min_w_0()
+                .gap(px(3.0))
+                .pt(px(3.0))
+                .child(
+                    Button::new(
+                        SharedString::from(format!("agent-project-collapse-{}", project.id)),
+                        "",
+                    )
+                    .debug_selector(|| format!("agent-project-collapse-{}", project.id))
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Icon)
+                    .icon(IconSource::from(if collapsed {
+                        "chevron-right"
+                    } else {
+                        "chevron-down"
+                    }))
+                    .w(px(24.0))
+                    .h(px(24.0))
+                    .flex_shrink_0()
+                    .disabled(!query.trim().is_empty())
+                    .tooltip(
+                        t!(if collapsed {
+                            "agents.navigator.expand_project"
+                        } else {
+                            "agents.navigator.collapse_project"
+                        })
+                        .to_string(),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this
+                            .project_groups
+                            .iter()
+                            .any(|group| group.id == project_id)
+                        {
+                            return;
+                        }
+                        let query = this.navigator_search.read(cx).content().to_string();
+                        if toggle_project_group(&mut this.library.preferences, &project_id, &query)
+                        {
+                            this.schedule_library_save(cx);
+                            cx.notify();
+                        }
+                    })),
+                );
+            if let [worktree] = project.worktrees.as_slice() {
+                // Name navigation remains separate from the collapse control.
+                let worktree_option = worktree.clone();
+                header = header.child(
+                    div().flex_1().min_w_0().overflow_hidden().child(
                         Button::new(
-                            SharedString::from(format!("agent-project-collapse-{}", project.id)),
-                            "",
+                            SharedString::from(format!("agent-project-{}", project.id)),
+                            project.label.clone(),
                         )
                         .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Icon)
-                        .icon(IconSource::from(if collapsed {
-                            "chevron-right"
-                        } else {
-                            "chevron-down"
-                        }))
-                        .w(px(24.0))
-                        .h(px(24.0))
-                        .flex_shrink_0()
-                        .disabled(!query.trim().is_empty())
-                        .tooltip(
-                            t!(if collapsed {
-                                "agents.navigator.expand_project"
-                            } else {
-                                "agents.navigator.collapse_project"
-                            })
-                            .to_string(),
-                        )
+                        .size(ButtonSize::Sm)
+                        .w_full()
+                        .justify_start()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .icon(IconSource::from("folder"))
+                        .tooltip(worktree.path.clone())
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if !this
-                                .project_groups
-                                .iter()
-                                .any(|group| group.id == project_id)
-                            {
-                                return;
-                            }
-                            let query = this.navigator_search.read(cx).content().to_string();
-                            if toggle_project_group(
-                                &mut this.library.preferences,
-                                &project_id,
-                                &query,
-                            ) {
-                                this.schedule_library_save(cx);
-                                cx.notify();
-                            }
+                            this.select_worktree_session(&worktree_option, cx);
                         })),
-                    );
-                if let [worktree] = project.worktrees.as_slice() {
-                    // Name navigation remains separate from the collapse control.
-                    let worktree_option = worktree.clone();
-                    header = header.child(
-                        div().flex_1().min_w_0().overflow_hidden().child(
-                            Button::new(
-                                SharedString::from(format!("agent-project-{}", project.id)),
-                                project.label.clone(),
-                            )
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm)
-                            .w_full()
-                            .justify_start()
+                    ),
+                );
+                header = header.child(self.new_worktree_button(worktree, cx));
+            } else {
+                header = header
+                    .child(lucide_icon("folder", 12.0, ShellDeckColors::text_muted()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .icon(IconSource::from("folder"))
-                            .tooltip(worktree.path.clone())
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.select_worktree_session(&worktree_option, cx);
-                                },
-                            )),
-                        ),
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(project.label.clone()),
                     );
-                    header = header.child(self.new_worktree_button(worktree, cx));
-                } else {
-                    header = header
-                        .child(lucide_icon("folder", 12.0, ShellDeckColors::text_muted()))
+            }
+            if collapsed {
+                let (count, attention) = project_session_summary(
+                    project,
+                    &self.project_groups,
+                    self.sessions.sessions(),
+                    self.library.show_archived(),
+                    self.navigator_selected_session(),
+                );
+                if count > 0 {
+                    header = header.child(collapsed_session_summary(&project.id, count, attention));
+                }
+            }
+            body = body.child(header);
+            if collapsed {
+                let selected = self.navigator_selected_session();
+                body = body.child(self.render_session_rows_matching(
+                    |session| {
+                        Some(session.id) == selected
+                            && !super::navigation_groups::navigator_pin(session)
+                            && navigator_worktree(session, &self.project_groups).is_some_and(
+                                |owner| {
+                                    project
+                                        .worktrees
+                                        .iter()
+                                        .any(|worktree| worktree.id == owner.id)
+                                },
+                            )
+                    },
+                    cx,
+                ));
+                continue;
+            }
+            // A single primary checkout sharing the project name stays one row.
+            if let [worktree] = project.worktrees.as_slice() {
+                if worktree.label == project.label && worktree.branch.is_none() {
+                    body = body.child(self.render_project_session_rows(worktree, cx));
+                    continue;
+                }
+            }
+            for worktree in visible_worktrees {
+                let worktree_option = worktree.clone();
+                let worktree_selected = self
+                    .navigator_selected_session()
+                    .and_then(|id| self.sessions.get(id))
+                    .is_some_and(|session| session_worktree_matches(session, worktree));
+                body = body.child(
+                    div()
+                        .id(("agent-worktree", stable_string_key(&worktree.id)))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.0))
+                        .px(px(11.0))
+                        .py(px(3.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .when(worktree_selected, |row| {
+                            row.bg(ShellDeckColors::selected_bg())
+                        })
+                        .when(!worktree_selected, |row| {
+                            row.hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_worktree_session(&worktree_option, cx);
+                        }))
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(lucide_icon(
+                            "git-branch",
+                            10.0,
+                            ShellDeckColors::text_muted(),
+                        ))
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(project.label.clone()),
-                        );
-                }
-                if collapsed {
-                    let (count, attention) = project_session_summary(
-                        project,
-                        &self.project_groups,
-                        self.sessions.sessions(),
-                        self.library.show_archived(),
-                    );
-                    header = header.child(collapsed_session_summary(&project.id, count, attention));
-                }
-                body = body.child(header);
-                if collapsed {
-                    continue;
-                }
-                // A single primary checkout sharing the project name stays one row.
-                if let [worktree] = project.worktrees.as_slice() {
-                    if worktree.label == project.label && worktree.branch.is_none() {
-                        body = body.child(self.render_session_rows(Some(worktree), cx));
-                        continue;
-                    }
-                }
-                for worktree in visible_worktrees {
-                    let worktree_option = worktree.clone();
-                    let worktree_selected = !self.remote_sessions.active
-                        && self
-                            .sessions
-                            .selected()
-                            .is_some_and(|session| session_worktree_matches(session, worktree));
-                    body = body.child(
-                        div()
-                            .id(("agent-worktree", stable_string_key(&worktree.id)))
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .px(px(11.0))
-                            .py(px(3.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .when(worktree_selected, |row| {
-                                row.bg(ShellDeckColors::selected_bg())
-                            })
-                            .when(!worktree_selected, |row| {
-                                row.hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_worktree_session(&worktree_option, cx);
-                            }))
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(lucide_icon(
-                                "git-branch",
-                                10.0,
-                                ShellDeckColors::text_muted(),
-                            ))
-                            .child(
+                                .truncate()
+                                .child(worktree.label.clone()),
+                        )
+                        .when_some(worktree.branch.clone(), |row, branch| {
+                            row.child(
                                 div()
                                     .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(worktree.label.clone()),
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .font_family("JetBrains Mono")
+                                    .text_size(px(10.0))
+                                    .child(branch),
                             )
-                            .when_some(worktree.branch.clone(), |row, branch| {
-                                row.child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.0))
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .font_family("JetBrains Mono")
-                                        .text_size(px(10.0))
-                                        .child(branch),
-                                )
-                            })
-                            .when(worktree.is_primary, |row| {
-                                row.child(
-                                    div()
-                                        .size(px(5.0))
-                                        .rounded_full()
-                                        .bg(ShellDeckColors::success()),
-                                )
-                            })
-                            .child(self.new_worktree_button(worktree, cx)),
-                    );
-                    body = body.child(self.render_session_rows(Some(worktree), cx));
-                }
+                        })
+                        .when(worktree.is_primary, |row| {
+                            row.child(
+                                div()
+                                    .size(px(5.0))
+                                    .rounded_full()
+                                    .bg(ShellDeckColors::success()),
+                            )
+                        })
+                        .child(self.new_worktree_button(worktree, cx)),
+                );
+                body = body.child(self.render_project_session_rows(worktree, cx));
             }
-            let known_worktrees = self
-                .project_groups
-                .iter()
-                .flat_map(|project| project.worktrees.iter())
-                .collect::<Vec<_>>();
-            body = body.child(self.render_unmatched_session_rows(&known_worktrees, cx));
         }
+        body = body.child(self.render_uncatalogued_folders(cx));
         body = body.child(self.render_ssh_session_rows(cx));
         body = body.child(self.render_remote_session_rows(cx));
         div()
@@ -1019,6 +1032,7 @@ impl AgentConsoleView {
             .child(
                 div()
                     .id("agent-navigator-scroll")
+                    .debug_selector(|| "agent-navigator-scroll".into())
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
@@ -1067,93 +1081,7 @@ impl AgentConsoleView {
         )
     }
 
-    fn render_unmatched_session_rows(
-        &self,
-        known_worktrees: &[&AgentWorktreeOption],
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let query = self
-            .navigator_search
-            .read(cx)
-            .content()
-            .trim()
-            .to_lowercase();
-        let unmatched = |session: &AgentSession| {
-            !known_worktrees
-                .iter()
-                .any(|worktree| session_worktree_matches(session, worktree))
-        };
-        if !self
-            .sessions
-            .library_sessions(self.library.show_archived())
-            .iter()
-            .any(|session| {
-                unmatched(session)
-                    && navigator_session_matches_query(session, &self.project_groups, &query)
-            })
-        {
-            return div().into_any_element();
-        }
-        let collapsed =
-            project_group_collapsed(&self.library.preferences, "unassigned-sessions", &query);
-        let mut header = div().flex().items_center().gap(px(5.0)).child(
-            Button::new(
-                "agent-unassigned-toggle",
-                t!("agents.sessions.other").to_string(),
-            )
-            .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::Sm)
-            .justify_start()
-            .flex_1()
-            .min_w_0()
-            .overflow_hidden()
-            .text_ellipsis()
-            .icon(IconSource::from(if collapsed {
-                "chevron-right"
-            } else {
-                "chevron-down"
-            }))
-            .on_click(cx.listener(|this, _, _, cx| {
-                let query = this
-                    .navigator_search
-                    .read(cx)
-                    .content()
-                    .trim()
-                    .to_lowercase();
-                if toggle_project_group(
-                    &mut this.library.preferences,
-                    "unassigned-sessions",
-                    &query,
-                ) {
-                    this.schedule_library_save(cx);
-                    cx.notify();
-                }
-            })),
-        );
-        if collapsed {
-            let (count, attention) =
-                session_group_summary(self.sessions.sessions().iter().filter(|session| {
-                    (self.library.show_archived() || !session.archived) && unmatched(session)
-                }));
-            header = header.child(collapsed_session_summary(
-                "unassigned-sessions",
-                count,
-                attention,
-            ));
-        }
-        let mut group = div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .pt(px(8.0))
-            .child(header);
-        if !collapsed {
-            group = group.child(self.render_session_rows_matching(unmatched, cx));
-        }
-        group.into_any_element()
-    }
-
-    fn render_session_rows_matching(
+    pub(super) fn render_session_rows_matching(
         &self,
         include: impl Fn(&AgentSession) -> bool,
         cx: &mut Context<Self>,
@@ -1175,8 +1103,15 @@ impl AgentConsoleView {
             })
         {
             let id = session.id;
-            let selected = !self.remote_sessions.active && self.sessions.selected_id() == Some(id);
+            let selected = self.navigator_selected_session() == Some(id);
             let state = NavigatorState::for_session(session);
+            let hint = format!(
+                "{}\n{} · {}\n{}",
+                session.name,
+                session.context.provider.display_name(),
+                target_label(&session.context.target),
+                session.context.workdir
+            );
             let row = div()
                 .id(("agent-nav-session", uuid_key(id)))
                 .debug_selector(|| format!("agent-nav-session-{id}"))
@@ -1187,6 +1122,7 @@ impl AgentConsoleView {
                 .w_full()
                 .min_w_0()
                 .cursor_pointer()
+                .tooltip(move |_, cx| cx.new(|_| NavigatorTooltip(hint.clone())).into())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_session(id, cx);
                 }))
@@ -1194,8 +1130,6 @@ impl AgentConsoleView {
                 .child(lucide_icon(
                     if session.archived {
                         "archive"
-                    } else if session.pinned {
-                        "pin"
                     } else {
                         provider_icon(session.context.provider)
                     },
@@ -1253,6 +1187,7 @@ impl AgentConsoleView {
             let actions = self.conversation_actions_menu(
                 id,
                 Button::new(("agent-conversation-actions", uuid_key(id)), "")
+                    .debug_selector(|| format!("agent-nav-menu-{id}"))
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Icon)
                     .w(px(22.0))
@@ -1685,15 +1620,15 @@ mod journey_tests {
         archived.archived = true;
         let mut sessions = vec![working, pending, completed, nested, archived];
         assert_eq!(
-            project_session_summary(&groups[0], &groups, &sessions, false),
+            project_session_summary(&groups[0], &groups, &sessions, false, None),
             (3, NavigatorState::Approval)
         );
         assert_eq!(
-            project_session_summary(&groups[1], &groups, &sessions, false),
+            project_session_summary(&groups[1], &groups, &sessions, false, None),
             (1, NavigatorState::Failed)
         );
         assert_eq!(
-            project_session_summary(&groups[0], &groups, &sessions, true),
+            project_session_summary(&groups[0], &groups, &sessions, true, None),
             (4, NavigatorState::Approval)
         );
         // Native imports outside the catalog use the same attention summary.
@@ -1707,7 +1642,7 @@ mod journey_tests {
             (1, NavigatorState::Approval)
         );
         assert_eq!(
-            project_session_summary(&groups[0], &groups, &sessions, false),
+            project_session_summary(&groups[0], &groups, &sessions, false, None),
             (3, NavigatorState::Approval)
         );
         sessions[1].approval = None;
@@ -1724,7 +1659,7 @@ mod journey_tests {
         );
         sessions[1].mark_read();
         assert_eq!(
-            project_session_summary(&groups[0], &groups, &sessions, false),
+            project_session_summary(&groups[0], &groups, &sessions, false, None),
             (3, NavigatorState::Input)
         );
         sessions[1]
@@ -1732,7 +1667,7 @@ mod journey_tests {
             .unwrap();
         sessions[1].acknowledge_attention();
         assert_eq!(
-            project_session_summary(&groups[0], &groups, &sessions, true),
+            project_session_summary(&groups[0], &groups, &sessions, true, None),
             (4, NavigatorState::Working)
         );
         assert_eq!(

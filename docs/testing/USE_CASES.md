@@ -3318,6 +3318,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-31** — SDUC-551/562/564: pins stay above project folders; uncatalogued chats and native SSH history group by exact machine/server and workdir across providers. Closed folders retain the current chat/preview and summarize hidden work. Search preserves saved collapse; per-folder native pagination and legacy collapse migration are covered by SDTEST-2859–2861.
+
 - **2026-10-30** — SDUC-562/563: valid native titles may exceed the local display-name budget; import bounds the UTF-8 label with an ellipsis while retaining exact resume authority and saved work (SDTEST-2856/2857). SDUC-475/564: technical warning and completed-work output must retain its natural height without cropping (SDTEST-2858).
 
 - **2026-10-30** — SDUC-562: older-conversation discovery uses a short sidebar label with the complete action available in a tooltip, preventing the French caption from overflowing.
@@ -4653,7 +4655,8 @@ Automated: SDTEST-2802, SDTEST-2803, SDTEST-2804. Native fixture:
 
 Agents offers a searchable saved-server picker and **Connect and refresh**.
 Read-only SSH discovery groups recent Claude Code, Codex and Jcode conversations
-by server/provider, with timestamps, search, collapse, pagination and explicit
+by server and exact original folder, with provider icons per conversation,
+timestamps, search, persisted collapse, independent folder pagination and explicit
 partial-results warnings. Refresh failures retain previous rows marked stale.
 Selecting a conversation shows its original server, native ID, folder and model;
 **Reconnect in chat** rechecks SSH access, folder and current native metadata.
@@ -4733,6 +4736,15 @@ collapsed groups retain count/attention, row states distinguish approval/input
 from work, and unsent drafts remain visible. Editing an imported native context
 requires explicit new-conversation intent instead of silently losing continuity.
 Provider-specific access labels describe the mode actually passed to the CLI.
+
+Pinned conversations stay in one section above project folders. Catalog ownership
+remains authoritative; other chats group by exact local/SSH target and folder,
+including when no projects are registered. Identical folder names on different
+servers remain separate, and duplicate names within a server show their paths.
+Closed groups keep the current chat or native preview visible and summarize only
+the remaining hidden conversations. Search reveals matching rows without changing
+saved collapse choices. Older closed catch-all preferences migrate to folder
+choices on library restore (SDTEST-2859–2861).
 
 Further T3 parity: completed technical work expands inline without losing output;
 live work, failures and pending decisions stay visible. Plans retain current-step
