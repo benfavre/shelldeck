@@ -69,6 +69,7 @@ impl AgentConsoleView {
             .anchor(Corner::BottomLeft)
             .trigger(
                 Button::new("agent-project-trigger", compact_label(&label, 36))
+                    .debug_selector(|| "agent-project-trigger".into())
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Sm)
                     .icon(IconSource::from("folder"))
@@ -205,6 +206,7 @@ impl AgentConsoleView {
                                     ("agent-project-session", stable_string_key(&id.to_string())),
                                     compact_label(&label, 48),
                                 )
+                                .debug_selector(|| format!("agent-project-session-{id}"))
                                 .variant(if selected == Some(id) {
                                     ButtonVariant::Secondary
                                 } else {
@@ -240,6 +242,7 @@ impl AgentConsoleView {
                         if matches == 0 {
                             rows = rows.child(
                                 div()
+                                    .debug_selector(|| "agent-project-no-matches".into())
                                     .p(px(8.0))
                                     .text_size(px(12.0))
                                     .text_color(ShellDeckColors::text_muted())
@@ -262,6 +265,7 @@ impl AgentConsoleView {
                             .gap(px(8.0))
                             .child(
                                 Input::new(&search)
+                                    .debug_selector("agent-project-search")
                                     .size(InputSize::Sm)
                                     .placeholder(t!("agents.project.search").to_string())
                                     .on_change(move |_, cx| {
@@ -339,6 +343,7 @@ impl AgentConsoleView {
         let picker = Popover::new("agent-reconnect-ssh")
             .anchor(Corner::BottomLeft)
             .trigger(Button::new("agent-reconnect-trigger", t!("agents.project.reconnect").to_string())
+                .debug_selector(|| "agent-reconnect-trigger".into())
                 .variant(ButtonVariant::Outline).size(ButtonSize::Sm)
                 .icon(IconSource::from("server")).disabled(locked)
                 .tooltip(if locked { t!("agents.project.reconnect_blocked").to_string() }
@@ -383,7 +388,8 @@ impl AgentConsoleView {
                                 let dismiss = cx.entity().downgrade();
                                 rows = rows.child(Button::new(
                                     ("agent-reconnect-option", stable_string_key(&format!("{checkout:?}:{connection_id}"))), label,
-                                ).variant(ButtonVariant::Ghost).size(ButtonSize::Sm).w_full()
+                                ).debug_selector(|| format!("agent-reconnect-{checkout:?}-{connection_id}"))
+                                    .variant(ButtonVariant::Ghost).size(ButtonSize::Sm).w_full()
                                     .justify_start().overflow_hidden().disabled(!current)
                                     .on_click(move |_, _, cx| {
                                         choose.update(cx, |view, cx| {
@@ -411,6 +417,7 @@ impl AgentConsoleView {
                         if view.connections.is_empty() {
                             rows = rows.child(t!("agents.project.no_connections").to_string());
                         } else if matches == 0 {
+                            rows = rows.debug_selector(|| "agent-reconnect-no-matches".into());
                             rows = rows.child(t!("agents.project.no_connections_match").to_string());
                         }
                         let notify = cx.entity().downgrade();
@@ -419,6 +426,7 @@ impl AgentConsoleView {
                             .flex().flex_col().min_w_0().overflow_hidden().gap(px(8.0))
                             .child(div().text_size(px(12.0)).whitespace_normal().child(t!("agents.project.reconnect_hint").to_string()))
                             .child(Input::new(&search).size(InputSize::Sm)
+                                .debug_selector("agent-reconnect-search")
                                 .placeholder(t!("agents.target.search").to_string())
                                 .on_change(move |_, cx| { let _ = notify.update(cx, |_, cx| cx.notify()); }))
                             .child(rows).into_any_element()

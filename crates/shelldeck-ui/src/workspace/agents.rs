@@ -259,6 +259,14 @@ impl Workspace {
                     .and_then(|run| run.approval_broker.as_ref())
                 {
                     if let Err(error) = broker.respond(&request_id, option_id.as_deref()) {
+                        self.agent_console.update(cx, |view, cx| {
+                            view.reject_approval_decision(
+                                run_id,
+                                &request_id,
+                                error.to_string(),
+                                cx,
+                            )
+                        });
                         self.show_toast(error.to_string(), ToastLevel::Warning, cx);
                     } else {
                         self.agent_console.update(cx, |view, cx| {

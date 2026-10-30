@@ -57,6 +57,9 @@ mod connection_repair;
 mod explorer;
 #[path = "agent_console_view/inspector.rs"]
 mod inspector;
+#[cfg(test)]
+#[path = "agent_console_view/interaction_tests.rs"]
+mod interaction_tests;
 #[path = "agent_console_view/library.rs"]
 mod library;
 #[path = "agent_console_view/live_browser.rs"]
@@ -77,6 +80,8 @@ mod project_picker;
 mod remote_sessions;
 #[path = "agent_console_view/ssh_sessions.rs"]
 mod ssh_sessions;
+#[path = "agent_console_view/transcript.rs"]
+mod transcript;
 use live_input::PendingLiveInput;
 pub use native_history::NativeHistoryRequest;
 #[path = "agent_console_view/review.rs"]
@@ -256,6 +261,8 @@ struct AgentSessionUi {
     run_details_expanded: bool,
     plan_expanded: bool,
     expanded_activity: HashSet<Uuid>,
+    raw_transcripts: HashSet<transcript::TranscriptId>,
+    pending_approval: Option<String>,
 }
 
 impl AgentSessionUi {
@@ -280,6 +287,8 @@ impl AgentSessionUi {
             run_details_expanded: false,
             plan_expanded: false,
             expanded_activity: HashSet::new(),
+            raw_transcripts: HashSet::new(),
+            pending_approval: None,
         }
     }
 }
@@ -895,6 +904,9 @@ impl AgentConsoleView {
         if !unchanged {
             self.apply_selected_context(cx);
         }
+        if self.sessions.surface_visible() {
+            self.request_surface_focus(cx);
+        }
         self.schedule_library_save(cx);
         pin_to_latest(&self.scroll);
         cx.notify();
@@ -917,6 +929,9 @@ impl AgentConsoleView {
         self.close_navigator_overlay(cx);
         self.set_remote_session_active(false, cx);
         self.apply_selected_context(cx);
+        if self.sessions.surface_visible() {
+            self.request_surface_focus(cx);
+        }
         self.schedule_library_save(cx);
         pin_to_latest(&self.scroll);
         cx.notify();
@@ -933,6 +948,7 @@ impl AgentConsoleView {
         self.run_sessions.insert(request.id, session_id);
         if let Some(ui) = self.session_ui.get_mut(&session_id) {
             ui.run_id = Some(request.id);
+            ui.pending_approval = None;
             ui.received_delta = false;
             ui.received_output = false;
         }
@@ -979,6 +995,7 @@ impl AgentConsoleView {
             .finish(session_id, AgentSessionStatus::Failed, now_ms());
         if let Some(ui) = self.session_ui.get_mut(&session_id) {
             ui.run_id = None;
+            ui.pending_approval = None;
         }
         if self.sessions.selected_id() == Some(session_id) {
             self.apply_selected_context(cx);
@@ -1032,6 +1049,13 @@ impl AgentConsoleView {
         };
         self.workflow_observe_event(run_id, &event, cx);
         self.acknowledge_live_input(run_id, session_id, &event, cx);
+        if let AgentStreamEvent::InteractionResolved { id } = &event {
+            if let Some(ui) = self.session_ui.get_mut(&session_id) {
+                if ui.pending_approval.as_ref() == Some(id) {
+                    ui.pending_approval = None;
+                }
+            }
+        }
         if self.sessions.selected_id() == Some(session_id) && self.sessions.surface_visible() {
             follow_latest_if_at_end(&self.scroll);
         }
@@ -1110,6 +1134,7 @@ impl AgentConsoleView {
         let _ = self.sessions.finish(session_id, status, now_ms());
         if let Some(ui) = self.session_ui.get_mut(&session_id) {
             ui.run_id = None;
+            ui.pending_approval = None;
         }
         if self.sessions.selected_id() == Some(session_id) && self.sessions.surface_visible() {
             follow_latest_if_at_end(&self.scroll);
@@ -1639,7 +1664,13 @@ impl AgentConsoleView {
             .into_any_element()
     }
 
-    fn render_trace(&self, trace: &AgentTraceEvent, focused: bool) -> AnyElement {
+    fn render_trace(
+        &self,
+        trace: &AgentTraceEvent,
+        focused: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (icon, color, title, detail, stats) = trace_presentation(&trace.detail);
         let title = if matches!(trace.detail, AgentTraceKind::Activity { .. }) {
             Self::concise_activity_label(title)
@@ -1672,7 +1703,10 @@ impl AgentConsoleView {
         div()
             .id(("agent-trace", uuid_key(trace.id)))
             .anchor_scroll(focused.then(|| self.focused_trace_anchor.clone()))
+            .debug_selector(|| format!("agent-trace-{}", trace.id))
             .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .flex()
             .items_start()
             .gap(px(8.0))
@@ -1734,15 +1768,13 @@ impl AgentConsoleView {
                             }),
                     )
                     .when_some(detail, |column, detail| {
-                        column.child(
-                            div()
-                                .font_family("JetBrains Mono")
-                                .text_size(px(10.0))
-                                .line_height(relative(1.35))
-                                .text_color(ShellDeckColors::text_muted())
-                                .whitespace_normal()
-                                .child(detail),
-                        )
+                        column.child(self.render_transcript_text(
+                            transcript::TranscriptId::Trace(trace.id),
+                            &detail,
+                            false,
+                            window,
+                            cx,
+                        ))
                     }),
             )
             .into_any_element()
@@ -2069,6 +2101,7 @@ impl Render for AgentConsoleView {
 
         let mut output = div()
             .id(("agent-console-output", uuid_key(session_id)))
+            .debug_selector(|| "agent-timeline-scroll".into())
             .flex()
             .flex_col()
             .flex_1()
@@ -2163,6 +2196,7 @@ impl Render for AgentConsoleView {
                         timeline_view = timeline_view.child(
                             div()
                                 .id(("agent-message", uuid_key(message.id)))
+                                .debug_selector(|| format!("agent-message-{}", message.id))
                                 .flex_shrink_0()
                                 .w_full()
                                 .min_w(px(0.0))
@@ -2190,14 +2224,13 @@ impl Render for AgentConsoleView {
                                         .text_color(color)
                                         .child(label),
                                 )
-                                .child(
-                                    Markdown::new(message.text.clone())
-                                        .base_font_size(px(14.0).to_pixels(window.rem_size()))
-                                        .compact()
-                                        .w_full()
-                                        .min_w_0()
-                                        .whitespace_normal(),
-                                )
+                                .child(self.render_transcript_text(
+                                    transcript::TranscriptId::Message(message.id),
+                                    &message.text,
+                                    true,
+                                    window,
+                                    cx,
+                                ))
                                 .child(self.render_message_actions(message, cx)),
                         );
                     }
@@ -2219,12 +2252,16 @@ impl Render for AgentConsoleView {
                         );
                     }
                     TimelineItem::CompletedWork(traces) => {
-                        timeline_view =
-                            timeline_view.child(self.render_completed_work(session_id, traces, cx));
+                        timeline_view = timeline_view
+                            .child(self.render_completed_work(session_id, traces, window, cx));
                     }
                     TimelineItem::Trace(trace) => {
-                        timeline_view = timeline_view
-                            .child(self.render_trace(trace, self.focused_trace == Some(trace.id)));
+                        timeline_view = timeline_view.child(self.render_trace(
+                            trace,
+                            self.focused_trace == Some(trace.id),
+                            window,
+                            cx,
+                        ));
                     }
                 }
             }
@@ -2319,6 +2356,7 @@ impl Render for AgentConsoleView {
                 content = content.child(
                     div().flex().justify_center().flex_shrink_0().child(
                         Button::new("agent-jump-latest", t!("agents.parity.latest").to_string())
+                            .debug_selector(|| "agent-jump-latest".into())
                             .variant(ButtonVariant::Secondary)
                             .size(ButtonSize::Sm)
                             .h(px(28.0))
@@ -2332,6 +2370,7 @@ impl Render for AgentConsoleView {
             }
             content = content.child(
                 div()
+                    .debug_selector(|| "agent-composer-shell".into())
                     .flex_shrink_0()
                     .w_full()
                     .px(if wide { px(18.0) } else { px(10.0) })

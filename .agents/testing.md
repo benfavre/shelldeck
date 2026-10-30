@@ -53,12 +53,16 @@ after `let x = X { field: "hardcoded".into(), .. }`, stop.
 | **Live smoke** (`#[ignore]`) | same file, gated by `SHELLDECK_LIVE=1` or an env token | ❌ | Real-network sanity check the mock cannot substitute for (e.g. `merge_profiles` against the actual Manage). Never in CI. |
 | **Cross-platform check** | `cargo check --target …` in CI | ✅ (CI) | Any code guarded by `#[cfg(target_os = "…")]`. See [`cross-platform.md`](cross-platform.md). |
 
-We deliberately do **not** attempt to unit-test GPUI views. Testing a
-`Render for MyView` block requires spinning up a GPUI `TestAppContext`
-which today has a much higher maintenance cost than the bug rate it
-would catch. Instead, factor logic *out* of `Render` into pure helpers
-(reducers, filters, formatters) and unit-test those — see the sidebar
-`fuzzy_match_indices` and command_palette `fuzzy_match` for the model.
+Prefer pure helpers for reducers, filters and formatters; avoid one-off tests
+that merely construct a `Render for MyView`. For user workflows whose failures
+depend on layout, focus, scrolling or event dispatch, use a shared GPUI rendered
+interaction harness. The Agents harness in
+`agent_console_view/interaction_tests.rs` renders production controls, dispatches
+mouse/key/wheel events and checks layout, drafts and emitted requests. Its test
+platform owns a private clipboard and never starts providers. These tests run
+offline in the ordinary UI suite. They do not exercise GPU painting; record a
+separate native visual walkthrough for paint changes. Keep live-provider tests
+as explicit opt-in gates.
 
 ## ID scheme
 
@@ -166,7 +170,7 @@ tests or a workspace-wide sweep on a machine with a real ShellDeck profile.
 XDG_CONFIG_HOME="$shelldeck_test_root/config" \
 XDG_DATA_HOME="$shelldeck_test_root/data" \
 XDG_CACHE_HOME="$shelldeck_test_root/cache" \
-PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig cargo test --workspace
+PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig cargo test --workspace -- --test-threads=1
 
 # Single crate:
 cargo test -p shelldeck-core

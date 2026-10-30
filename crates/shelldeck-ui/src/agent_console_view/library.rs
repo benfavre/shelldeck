@@ -29,6 +29,10 @@ pub(super) struct AgentLibraryUi {
 
 impl AgentLibraryUi {
     pub fn new(cx: &mut Context<AgentConsoleView>) -> Self {
+        Self::with_store(cx, AgentSessionStore::default())
+    }
+
+    pub(super) fn with_store(cx: &mut Context<AgentConsoleView>, store: AgentSessionStore) -> Self {
         Self {
             preferences: AgentConsolePreferences::default(),
             error: None,
@@ -36,7 +40,7 @@ impl AgentLibraryUi {
             rename_session: None,
             undo_archive: None,
             rename_state: input_state(cx, String::new()),
-            store: AgentSessionStore::default(),
+            store,
             loading: false,
             writable: true,
             generation: Arc::new(AtomicU64::new(0)),
@@ -157,6 +161,9 @@ impl AgentConsoleView {
                         } else {
                             this.sessions.set_surface_visible(surface_visible);
                             this.apply_selected_context(cx);
+                            if untouched && surface_visible {
+                                this.request_surface_focus(cx);
+                            }
                         }
                         this.schedule_library_save(cx);
                     }

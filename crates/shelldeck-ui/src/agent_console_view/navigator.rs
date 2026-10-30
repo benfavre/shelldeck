@@ -988,6 +988,7 @@ impl AgentConsoleView {
                     .child(
                         div().flex().flex_col().flex_1().min_w(px(0.0)).child(
                             Input::new(&self.navigator_search)
+                                .debug_selector("agent-nav-search")
                                 .variant(InputVariant::Bare)
                                 .size(InputSize::Sm)
                                 .w_full()
@@ -1178,6 +1179,7 @@ impl AgentConsoleView {
             let state = NavigatorState::for_session(session);
             let row = div()
                 .id(("agent-nav-session", uuid_key(id)))
+                .debug_selector(|| format!("agent-nav-session-{id}"))
                 .flex()
                 .items_center()
                 .gap(px(7.0))

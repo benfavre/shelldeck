@@ -3,6 +3,43 @@ use super::*;
 use shelldeck_core::agent_runtime::{AgentApprovalOptionKind, AgentPlanStepStatus};
 
 impl AgentConsoleView {
+    fn reserve_approval_decision(
+        &mut self,
+        session_id: Uuid,
+        run_id: Uuid,
+        request_id: &str,
+    ) -> bool {
+        if !self.current_approval_matches(session_id, run_id, request_id) {
+            return false;
+        }
+        let ui = self.session_ui.get_mut(&session_id).unwrap();
+        if ui.pending_approval.is_some() {
+            return false;
+        }
+        ui.pending_approval = Some(request_id.to_owned());
+        true
+    }
+
+    pub fn reject_approval_decision(
+        &mut self,
+        run_id: Uuid,
+        request_id: &str,
+        error: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session_id) = self.run_sessions.get(&run_id).copied() else {
+            return;
+        };
+        let Some(ui) = self.session_ui.get_mut(&session_id) else {
+            return;
+        };
+        if ui.run_id == Some(run_id) && ui.pending_approval.as_deref() == Some(request_id) {
+            ui.pending_approval = None;
+            self.composer_ui.errors.insert(session_id, error);
+            cx.notify();
+        }
+    }
+
     fn current_approval_matches(&self, session_id: Uuid, run_id: Uuid, request_id: &str) -> bool {
         self.sessions.selected_id() == Some(session_id)
             && self.session_ui.get(&session_id).and_then(|ui| ui.run_id) == Some(run_id)
@@ -154,6 +191,7 @@ impl AgentConsoleView {
         }
         if let Some(question) = &session.question {
             let mut card = div()
+                .debug_selector(|| "agent-live-question".into())
                 .p(px(12.0))
                 .border_1()
                 .border_color(ShellDeckColors::border())
@@ -170,6 +208,7 @@ impl AgentConsoleView {
                 let run_id = self.session_ui.get(&session.id).and_then(|ui| ui.run_id);
                 card = card.child(
                     Button::new(("agent-question", index), option.label.clone())
+                        .debug_selector(|| format!("agent-question-{index}"))
                         .variant(ButtonVariant::Outline)
                         .size(ButtonSize::Sm)
                         .tooltip(option.description.clone())
@@ -242,6 +281,7 @@ impl AgentConsoleView {
             self.session_ui.get(&session.id).and_then(|ui| ui.run_id),
         ) {
             let card = div()
+                .debug_selector(|| "agent-live-approval".into())
                 .p(px(12.0))
                 .border_1()
                 .border_color(ShellDeckColors::warning())
@@ -257,6 +297,10 @@ impl AgentConsoleView {
                 )
                 .child(div().text_size(px(12.0)).child(approval.title.clone()));
             let session_id = session.id;
+            let responding = self
+                .session_ui
+                .get(&session_id)
+                .is_some_and(|ui| ui.pending_approval.is_some());
             let mut choices = div().flex().flex_wrap().gap(px(8.0));
             for (index, option) in approval.options.iter().enumerate() {
                 let request_id = approval.id.clone();
@@ -268,10 +312,12 @@ impl AgentConsoleView {
                 };
                 choices = choices.child(
                     Button::new(("agent-permission", index), option.label.clone())
+                        .debug_selector(|| format!("agent-approval-{index}"))
                         .variant(variant)
                         .size(ButtonSize::Sm)
+                        .disabled(responding)
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if !this.current_approval_matches(session_id, run_id, &request_id) {
+                            if !this.reserve_approval_decision(session_id, run_id, &request_id) {
                                 return;
                             }
                             cx.emit(AgentConsoleEvent::ApprovalDecision {
@@ -289,10 +335,12 @@ impl AgentConsoleView {
                     "agent-permission-cancel",
                     t!("agents.progress.cancel_permission").to_string(),
                 )
+                .debug_selector(|| "agent-approval-cancel".into())
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Sm)
+                .disabled(responding)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if !this.current_approval_matches(session_id, run_id, &request_id) {
+                    if !this.reserve_approval_decision(session_id, run_id, &request_id) {
                         return;
                     }
                     cx.emit(AgentConsoleEvent::ApprovalDecision {

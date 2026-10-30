@@ -132,6 +132,12 @@ impl Button {
         self
     }
 
+    // ShellDeck patch: SDPATCH-051 — identify the actual control in GPUI interaction tests.
+    pub fn debug_selector(mut self, selector: impl FnOnce() -> String) -> Self {
+        self.base = self.base.debug_selector(selector);
+        self
+    }
+
     pub fn size(mut self, size: ButtonSize) -> Self {
         self.size = size;
         self

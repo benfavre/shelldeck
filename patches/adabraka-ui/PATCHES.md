@@ -4,10 +4,9 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **195**
-(175 preceded SDPATCH-046; SDPATCH-046 adds four, SDPATCH-047 adds six,
-and SDPATCH-048 adds ten. The per-entry `Markers` lists remain the inventory;
-SDPATCH-008 is an adapter and carries no marker of its own — see its entry).
+Total markers in code: **206**
+(`rg "ShellDeck patch:" src/`; the per-entry `Markers` lists remain the
+inventory. SDPATCH-008 is an adapter and carries no marker of its own.)
 
 ## Patches
 
@@ -1166,3 +1165,18 @@ SDPATCH-008 is an adapter and carries no marker of its own — see its entry).
 - **Why**: The unstyled intermediate container could give its percentage-width row a zero-width text area inside nested flexible panels, despite painting a full-width border. Explicit full-width flex layout passes the available width to the row so text and its clear control occupy the intended space.
 - **Validation**: Native Scripts search typing, replacement and clear; Recent Activity search and narrow layouts.
 - **Upstream status**: not filed yet.
+
+### SDPATCH-051 — Observe real input, button and composer controls in interaction tests
+
+- **Files / symbols**: `src/components/button.rs` — `Button::debug_selector`; `src/components/input.rs` — optional static selectors on the actual input; `src/components/composer.rs` — frame and commit element construction.
+- **Markers**:
+  - `src/components/button.rs` — `// ShellDeck patch: SDPATCH-051 — identify the actual control in GPUI interaction tests.`
+  - `src/components/composer.rs` — `// ShellDeck patch: SDPATCH-051 — measure the production composer without wrapper elements.`
+  - `src/components/composer.rs` — `// ShellDeck patch: SDPATCH-051 — click and measure the same commit control users get.`
+  - `src/components/input.rs` — `// ShellDeck patch: SDPATCH-051 — observe the actual input without a layout wrapper.`
+  - `src/components/input.rs` — `// ShellDeck patch: SDPATCH-051 — selectors are optional static test metadata.`
+  - `src/components/input.rs` — `// ShellDeck patch: SDPATCH-051 — identify the same input that receives pointer events.`
+  - `src/components/input.rs` — `// ShellDeck patch: SDPATCH-051 — GPUI omits selector allocation outside test support.`
+- **Why**: Stable test selectors on the actual controls let Agents integration scenarios click and measure shared widgets without introducing wrapper layouts or copying their implementation. GPUI omits selector storage outside test-support builds.
+- **Validation**: SDTEST-2848 and SDTEST-1713 exercise production cockpit rendering, input dispatch and composer containment; pixel painting remains a separate native check.
+- **Upstream status**: not filed yet — backward-compatible test observability API.
