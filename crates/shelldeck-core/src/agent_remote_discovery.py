@@ -429,4 +429,3 @@ while len(payload) > 4 * 1024 * 1024:
     result["sessions"].pop()
     payload = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 sys.stdout.buffer.write(payload)
-
