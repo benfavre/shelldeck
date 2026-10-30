@@ -3318,6 +3318,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-31** — SDUC-564: themed tree guides and indented children make folder/worktree ownership visible in the Agents navigator. SDTEST-2860 also checks guide alignment, containment and nested checkout indentation.
+
 - **2026-10-31** — SDUC-551/562/564: pins stay above project folders; uncatalogued chats and native SSH history group by exact machine/server and workdir across providers. Closed folders retain the current chat/preview and summarize hidden work. Search preserves saved collapse; per-folder native pagination and legacy collapse migration are covered by SDTEST-2859–2861.
 
 - **2026-10-30** — SDUC-562/563: valid native titles may exceed the local display-name budget; import bounds the UTF-8 label with an ellipsis while retaining exact resume authority and saved work (SDTEST-2856/2857). SDUC-475/564: technical warning and completed-work output must retain its natural height without cropping (SDTEST-2858).
@@ -4745,6 +4747,10 @@ Closed groups keep the current chat or native preview visible and summarize only
 the remaining hidden conversations. Search reveals matching rows without changing
 saved collapse choices. Older closed catch-all preferences migrate to folder
 choices on library restore (SDTEST-2859–2861).
+
+Child conversations have a theme-colored tree guide aligned below the parent
+chevron, with space before the row chrome. Nested worktrees add another guide
+level; closed groups draw a guide only for any retained visible conversation.
 
 Further T3 parity: completed technical work expands inline without losing output;
 live work, failures and pending decisions stay visible. Plans retain current-step

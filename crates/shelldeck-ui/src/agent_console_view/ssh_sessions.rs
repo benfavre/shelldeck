@@ -547,6 +547,7 @@ impl AgentConsoleView {
                         cx,
                     ));
                 }
+                let mut rows = div().flex().flex_col().min_w_0().gap(px(2.0));
                 let limit = server.visible_limits.get(&key).copied().unwrap_or(10);
                 for session in sessions.iter().enumerate().filter_map(|(index, session)| {
                     let selected = is_selected(session);
@@ -558,7 +559,7 @@ impl AgentConsoleView {
                         "agent-ssh-conversation-{id}-{:?}-{}",
                         session.provider, session.session_id
                     );
-                    folder = folder.child(
+                    rows = rows.child(
                         Button::new(SharedString::from(selector.clone()), session.title.clone())
                             .debug_selector(move || selector.clone())
                             .variant(if selected {
@@ -599,7 +600,8 @@ impl AgentConsoleView {
                         .count();
                 if !collapsed && sessions.len() > shown {
                     let selector = format!("agent-ssh-more-{key}");
-                    folder = folder.child(
+                    let page_key = key.clone();
+                    rows = rows.child(
                         Button::new(
                             SharedString::from(selector.clone()),
                             t!(
@@ -614,13 +616,16 @@ impl AgentConsoleView {
                         .size(ButtonSize::Sm)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(server) = this.ssh_sessions.servers.get_mut(&id) {
-                                *server.visible_limits.entry(key.clone()).or_insert(10) += 20;
+                                *server.visible_limits.entry(page_key.clone()).or_insert(10) += 20;
                             }
                             cx.notify();
                         })),
                     );
                 }
-                list = list.child(folder);
+                list = list.child(folder.child(super::navigation_groups::navigation_children(
+                    &key,
+                    rows.into_any_element(),
+                )));
             }
         }
         list.into_any_element()

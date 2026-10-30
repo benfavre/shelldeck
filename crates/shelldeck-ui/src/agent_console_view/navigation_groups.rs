@@ -11,6 +11,21 @@ pub(super) fn navigator_pin(session: &AgentSession) -> bool {
     session.pinned && !session.archived
 }
 
+pub(super) fn navigation_children(key: &str, children: AnyElement) -> AnyElement {
+    // Layout only: adabraka Tree owns selection/expansion, while these retained
+    // conversation controls already own both through the canonical session model.
+    div()
+        .debug_selector(|| format!("agent-tree-children-{key}"))
+        .min_w_0()
+        .flex_shrink_0()
+        .ml(px(12.0))
+        .pl(px(6.0))
+        .border_l_1()
+        .border_color(ShellDeckColors::border())
+        .child(children)
+        .into_any_element()
+}
+
 pub(super) fn directory_group_key(namespace: &str, target: &AgentTarget, path: &str) -> String {
     let authority = match target {
         AgentTarget::Local => "local".to_owned(),
@@ -136,6 +151,7 @@ impl AgentConsoleView {
                 .debug_selector(move || selector.clone())
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Sm)
+                .px(px(4.0))
                 .justify_start()
                 .flex_1()
                 .min_w_0()
@@ -192,9 +208,14 @@ impl AgentConsoleView {
             .gap(px(2.0))
             .pt(px(4.0))
             .child(self.render_navigation_group_header(key, label, tooltip, hidden, cx))
-            .child(self.render_session_rows_matching(
-                |session| ids.contains(&session.id) && (!collapsed || Some(session.id) == selected),
-                cx,
+            .child(navigation_children(
+                key,
+                self.render_session_rows_matching(
+                    |session| {
+                        ids.contains(&session.id) && (!collapsed || Some(session.id) == selected)
+                    },
+                    cx,
+                ),
             ))
             .into_any_element()
     }

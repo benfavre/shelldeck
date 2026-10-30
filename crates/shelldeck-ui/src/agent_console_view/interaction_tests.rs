@@ -1336,7 +1336,11 @@ fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
                                 label: "Customer project".into(),
                                 path: context.workdir.clone(),
                                 target: context.target.clone(),
-                                branch: None,
+                                branch: if matches!(&theme, ThemePreference::SolarizedLight) {
+                                    Some("main".into())
+                                } else {
+                                    None
+                                },
                                 is_primary: true,
                             }],
                         }],
@@ -1378,6 +1382,25 @@ fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
                     (background, pinned, other, key)
                 });
             ui.open_navigator();
+            let guide = ui.bounds("agent-tree-children-catalog").unwrap();
+            let parent = ui.bounds("agent-project-collapse-catalog").unwrap();
+            let child = ui.bounds(&format!("agent-nav-session-{first}")).unwrap();
+            assert_eq!(
+                guide.left(),
+                parent.center().x,
+                "the guide aligns beneath its parent chevron"
+            );
+            assert!(
+                child.left() >= guide.left() + gpui::px(6.0) && child.right() <= guide.right(),
+                "conversation controls stay inset and contained beside the guide"
+            );
+            if matches!(&theme, ThemePreference::SolarizedLight) {
+                let nested = ui.bounds("agent-tree-children-worktree-primary").unwrap();
+                assert!(
+                    nested.left() > guide.left() && child.left() >= nested.left() + gpui::px(6.0),
+                    "worktree conversations keep a second hierarchy level"
+                );
+            }
             assert!(
                 ui.bounds(&format!("agent-nav-session-{pinned}"))
                     .unwrap()

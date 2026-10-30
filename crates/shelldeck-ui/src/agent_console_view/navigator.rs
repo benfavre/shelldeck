@@ -843,37 +843,44 @@ impl AgentConsoleView {
             body = body.child(header);
             if collapsed {
                 let selected = self.navigator_selected_session();
-                body = body.child(self.render_session_rows_matching(
-                    |session| {
-                        Some(session.id) == selected
-                            && !super::navigation_groups::navigator_pin(session)
-                            && navigator_worktree(session, &self.project_groups).is_some_and(
-                                |owner| {
-                                    project
-                                        .worktrees
-                                        .iter()
-                                        .any(|worktree| worktree.id == owner.id)
-                                },
-                            )
-                    },
-                    cx,
+                body = body.child(super::navigation_groups::navigation_children(
+                    &project.id,
+                    self.render_session_rows_matching(
+                        |session| {
+                            Some(session.id) == selected
+                                && !super::navigation_groups::navigator_pin(session)
+                                && navigator_worktree(session, &self.project_groups).is_some_and(
+                                    |owner| {
+                                        project
+                                            .worktrees
+                                            .iter()
+                                            .any(|worktree| worktree.id == owner.id)
+                                    },
+                                )
+                        },
+                        cx,
+                    ),
                 ));
                 continue;
             }
             // A single primary checkout sharing the project name stays one row.
             if let [worktree] = project.worktrees.as_slice() {
                 if worktree.label == project.label && worktree.branch.is_none() {
-                    body = body.child(self.render_project_session_rows(worktree, cx));
+                    body = body.child(super::navigation_groups::navigation_children(
+                        &project.id,
+                        self.render_project_session_rows(worktree, cx),
+                    ));
                     continue;
                 }
             }
+            let mut checkout_rows = div().flex().flex_col().min_w_0().gap(px(4.0));
             for worktree in visible_worktrees {
                 let worktree_option = worktree.clone();
                 let worktree_selected = self
                     .navigator_selected_session()
                     .and_then(|id| self.sessions.get(id))
                     .is_some_and(|session| session_worktree_matches(session, worktree));
-                body = body.child(
+                checkout_rows = checkout_rows.child(
                     div()
                         .id(("agent-worktree", stable_string_key(&worktree.id)))
                         .flex()
@@ -928,8 +935,15 @@ impl AgentConsoleView {
                         })
                         .child(self.new_worktree_button(worktree, cx)),
                 );
-                body = body.child(self.render_project_session_rows(worktree, cx));
+                checkout_rows = checkout_rows.child(super::navigation_groups::navigation_children(
+                    &format!("worktree-{}", worktree.id),
+                    self.render_project_session_rows(worktree, cx),
+                ));
             }
+            body = body.child(super::navigation_groups::navigation_children(
+                &project.id,
+                checkout_rows.into_any_element(),
+            ));
         }
         body = body.child(self.render_uncatalogued_folders(cx));
         body = body.child(self.render_ssh_session_rows(cx));

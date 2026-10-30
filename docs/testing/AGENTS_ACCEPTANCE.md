@@ -324,3 +324,26 @@ folder run passed all ten selected scenarios after the migration, source-selecti
 and visible-count refinements. Strict workspace all-target Clippy and formatting
 passed. Logs: `/tmp/shelldeck-sidebar-final-tests.log`,
 `/tmp/shelldeck-sidebar-reviewed-tests.log`, `/tmp/shelldeck-sidebar-final-lint.log`.
+
+### Tree gutter follow-up — 2026-10-31
+
+Catalog, pinned, uncatalogued and native SSH folder children share one decorative
+guide wrapper. A one-pixel themed border aligns below the parent chevron; child
+rows have six pixels of padding before their existing chrome. Nested worktrees
+add a second guide level. A closed empty group has no visible rail, while a
+retained current conversation keeps its guide. Headers use matching chevron
+insets. Conversation controls and their event routing remain the existing ones.
+
+The ten focused folder scenarios passed. SDTEST-2860 additionally measures guide
+alignment and child containment in wide/narrow Dark and Solarized Light layouts;
+the light fixture uses a labelled checkout to exercise nested guides. This
+expanded scenario and strict UI all-target Clippy passed afterward. Logs:
+`/tmp/shelldeck-tree-gutter-tests.log`, `/tmp/shelldeck-tree-gutter-nested.log`,
+`/tmp/shelldeck-tree-gutter-final-clippy.log`.
+
+Native Linux GPU evidence: `/tmp/shelldeck-tree-gutter-qa/01-dark.png`,
+`02-collapsed-current.png`, `03-empty-closed.png`, and
+`/tmp/shelldeck-tree-gutter-light-qa/01-light.png`, `02-narrow.png`,
+`03-narrow-ssh.png`. The isolated fixtures used no providers, network or desktop
+clipboard. The production app was rebuilt separately; the user's running
+instance was left open.
