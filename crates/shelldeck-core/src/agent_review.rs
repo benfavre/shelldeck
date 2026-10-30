@@ -7,6 +7,16 @@
 //! evidence supplied by the agent adapter. Unknown or oversized data refuses
 //! writes rather than being interpreted as an empty file or a clean checkout.
 
+/// Only local runs with write access need eager before/after attribution.
+/// Read-only chat can inspect Changes on demand without delaying the provider.
+pub fn requires_turn_snapshot(
+    target: &crate::agent_runtime::AgentTarget,
+    access: crate::agent_runtime::AgentAccessMode,
+) -> bool {
+    matches!(target, crate::agent_runtime::AgentTarget::Local)
+        && access != crate::agent_runtime::AgentAccessMode::ReadOnly
+}
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, Write};
@@ -1962,7 +1972,8 @@ mod tests {
     // SDTEST-2261 — SDUC-552
     #[test]
     fn sdtest_2261_numstat_distinguishes_binary_unknown_zero_and_renames() {
-        let counts = parse_numstat_z(b"0\t0\tempty\0-\t-\timage.png\012\t3\t\0old\0new\0").unwrap();
+        let counts =
+            parse_numstat_z(b"0\t0\tempty\0-\t-\timage.png\x0012\t3\t\0old\0new\0").unwrap();
         assert_eq!(
             counts["empty"],
             LineCounts {
@@ -1995,7 +2006,7 @@ mod tests {
             state.tracked.push(("gone.rs".into(), 0o100644));
             state.untracked = vec!["new file".into(), "image.bin".into()];
             state.cached_numstat = b"2\t1\tfile.rs\0".to_vec();
-            state.worktree_numstat = b"3\t2\tfile.rs\00\t5\tgone.rs\0".to_vec();
+            state.worktree_numstat = b"3\t2\tfile.rs\x000\t5\tgone.rs\0".to_vec();
         }
         let snapshot = backend.observe(&fixture.root).unwrap();
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
@@ -2397,5 +2408,33 @@ mod tests {
             b"original-index"
         );
         assert!(!fixture.root.join(".git/index.lock").exists());
+    }
+}
+
+#[cfg(test)]
+mod chat_snapshot_tests {
+    use super::requires_turn_snapshot;
+    use crate::agent_runtime::{AgentAccessMode, AgentTarget};
+
+    // SDTEST-2792 — read-only chat bypasses Git; edit attribution stays exact.
+    #[test]
+    fn chat_snapshot_policy_preserves_local_mutation_boundaries() {
+        for access in [
+            AgentAccessMode::ReadOnly,
+            AgentAccessMode::WorkspaceWrite,
+            AgentAccessMode::FullAccess,
+        ] {
+            assert_eq!(
+                requires_turn_snapshot(&AgentTarget::Local, access),
+                access != AgentAccessMode::ReadOnly
+            );
+            assert!(!requires_turn_snapshot(
+                &AgentTarget::Ssh {
+                    connection_id: uuid::Uuid::new_v4(),
+                    connection_label: "test".into()
+                },
+                access
+            ));
+        }
     }
 }

@@ -195,7 +195,7 @@ impl Workspace {
         if allowed_modes.len() > 1 {
             for &m in allowed_modes {
                 actions.push(PaletteAction::new(
-                    t!("palette.mode", mode = m.label()).to_string(),
+                    t!("palette.mode", mode = super::modes::mode_label(m)).to_string(),
                     None,
                     "shield",
                     Box::new(SetAppMode { mode: m }),

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::scale::px;
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use adabraka_ui::prelude::*;
 use gpui::*;
@@ -61,6 +62,7 @@ pub struct ScriptEditorView {
     // New: filtering state
     selected_category: Option<ScriptCategory>,
     search_query: String,
+    search_state: Entity<InputState>,
     show_favorites_only: bool,
     // Template browser toggle (handled in workspace)
     pub template_browser_open: bool,
@@ -117,6 +119,8 @@ impl ScriptEditorView {
             self.inline_buffer = EditorBuffer::from_text(script.body.clone());
             self.inline_editing = true;
             self.inline_script_id = Some(script_id);
+            self.run_target_menu_open = false;
+            self.ai_actions_menu = None;
         }
     }
 
@@ -238,51 +242,6 @@ impl ScriptEditorView {
         }
     }
 
-    /// Handle search input key events when search is active but not inline editing.
-    fn handle_search_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let mods = &event.keystroke.modifiers;
-
-        match key {
-            "escape" => {
-                self.search_query.clear();
-                cx.notify();
-                return;
-            }
-            "backspace" => {
-                self.search_query.pop();
-                cx.notify();
-                return;
-            }
-            _ => {}
-        }
-
-        // Ctrl+V paste into search
-        if key == "v" && mods.secondary() {
-            if let Some(item) = cx.read_from_clipboard() {
-                if let Some(text) = item.text() {
-                    self.search_query.push_str(&text);
-                    cx.notify();
-                }
-            }
-            return;
-        }
-
-        // Printable characters
-        if let Some(ref kc) = event.keystroke.key_char {
-            if !mods.control && !mods.alt {
-                self.search_query.push_str(kc);
-                cx.notify();
-                return;
-            }
-        }
-
-        if key.len() == 1 && !mods.control && !mods.alt {
-            self.search_query.push_str(key);
-            cx.notify();
-        }
-    }
-
     /// Filter scripts based on current category, search query, and favorites.
     fn filtered_scripts(&self) -> Vec<&Script> {
         let query_lower = self.search_query.to_lowercase();
@@ -344,6 +303,7 @@ impl ScriptEditorView {
             focus_handle: cx.focus_handle(),
             selected_category: None,
             search_query: String::new(),
+            search_state: cx.new(InputState::new),
             show_favorites_only: false,
             template_browser_open: false,
             last_var_values: HashMap::new(),
@@ -546,33 +506,35 @@ impl ScriptEditorView {
         // Search bar
         list = list.child(
             div()
+                .flex()
+                .flex_col()
+                .flex_shrink_0()
+                .w_full()
+                .min_w_0()
                 .px(px(8.0))
                 .py(px(6.0))
                 .border_b_1()
                 .border_color(ShellDeckColors::border())
                 .child(
-                    div()
-                        .id("script-search-box")
+                    Input::new(&self.search_state)
                         .w_full()
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded(px(4.0))
-                        .bg(ShellDeckColors::bg_primary())
-                        .border_1()
-                        .border_color(ShellDeckColors::border())
-                        .text_size(px(12.0))
-                        .cursor_text()
-                        .on_click(cx.listener(|_this, _: &ClickEvent, _, _cx| {
-                            // Focus is handled by key_down interception
-                        }))
-                        .child(if self.search_query.is_empty() {
-                            div()
-                                .text_color(ShellDeckColors::text_muted())
-                                .child(t!("scripts.search_placeholder").to_string())
-                        } else {
-                            div()
-                                .text_color(ShellDeckColors::text_primary())
-                                .child(self.search_query.clone())
+                        .size(InputSize::Sm)
+                        .placeholder(t!("scripts.search_placeholder").to_string())
+                        .clearable(true)
+                        .prefix(
+                            svg()
+                                .path("icons/lucide/search.svg")
+                                .size(px(13.0))
+                                .text_color(ShellDeckColors::text_muted()),
+                        )
+                        .on_change({
+                            let entity = cx.entity();
+                            move |value, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.search_query = value.to_string();
+                                    cx.notify();
+                                });
+                            }
                         }),
                 ),
         );
@@ -1044,35 +1006,20 @@ impl ScriptEditorView {
                 )
         };
 
-        // Edit/Cancel button in header
-        let edit_button = if is_inline_editing {
-            div()
-                .id("edit-script-btn")
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.cancel_inline_edit();
-                    cx.notify();
-                }))
-                .child(
-                    Button::new("cancel-edit-script", t!("scripts.cancel").to_string())
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("x")),
-                )
-        } else {
-            div()
-                .id("edit-script-btn")
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    this.start_inline_edit(script_id);
-                    this.focus_handle.focus(window);
-                    cx.notify();
-                }))
-                .child(
-                    Button::new("edit-script", t!("scripts.edit").to_string())
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("pencil")),
-                )
-        };
+        // Editing owns its Save/Cancel toolbar; keep one set of actions.
+        let edit_button = div()
+            .id("edit-script-btn")
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.start_inline_edit(script_id);
+                this.focus_handle.focus(window);
+                cx.notify();
+            }))
+            .child(
+                Button::new("edit-script", t!("scripts.edit").to_string())
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("pencil")),
+            );
         let ai_actions = self.ai_generation_enabled.then(|| {
             div()
                 .flex()
@@ -1115,7 +1062,7 @@ impl ScriptEditorView {
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(script_info)
-            .child(
+            .children((!is_inline_editing || self.is_running()).then(|| {
                 div()
                     .flex()
                     .flex_wrap()
@@ -1124,10 +1071,10 @@ impl ScriptEditorView {
                     .items_center()
                     .justify_end()
                     .gap(px(8.0))
-                    .children(ai_actions)
-                    .child(edit_button)
-                    .child(run_buttons),
-            );
+                    .children((!is_inline_editing).then_some(ai_actions).flatten())
+                    .children((!is_inline_editing).then_some(edit_button))
+                    .child(run_buttons)
+            }));
 
         // Dependency status bar (if script has dependencies)
         let dep_bar = if !script.dependencies.is_empty() {
@@ -1816,11 +1763,9 @@ impl Render for ScriptEditorView {
             .when(compact, |container| container.flex_col())
             .size_full()
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _window, cx| {
-                if is_editing {
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if is_editing && this.focus_handle.is_focused(window) {
                     this.handle_inline_key_down(event, cx);
-                } else {
-                    this.handle_search_key_down(event, cx);
                 }
             }));
 

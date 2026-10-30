@@ -731,6 +731,7 @@ pub(super) struct WorkspaceHubView {
     connections: HashMap<Uuid, String>,
     executor: Arc<dyn WorkspaceLaunchExecutor>,
     onboarding_open: bool,
+    return_to_agents_on_cancel: bool,
     onboarding_advanced: bool,
     remote_browse_epoch: u64,
     remote_folder_picker: Option<remote_browse::RemoteFolderSelection>,
@@ -776,6 +777,7 @@ pub(super) enum WorkspaceHubEvent {
     /// explicit orchestration boundary.
     OpenWorkspacePane(WorkspacePaneActivation),
     OpenProjectAgents(CatalogCheckoutId),
+    ReturnToAgents,
     /// The project/checkout/workspace tree changed and consumers should pull
     /// a fresh snapshot through `catalog()`.
     CatalogChanged,
@@ -878,6 +880,7 @@ fn retained_surface_entity(
 
 impl WorkspaceHubView {
     pub(super) fn show_launcher(&mut self, cx: &mut Context<Self>) {
+        self.return_to_agents_on_cancel = false;
         self.cancel_remote_folder_picker(cx);
         let has_checkout = self
             .catalog
@@ -890,6 +893,7 @@ impl WorkspaceHubView {
     }
 
     fn show_onboarding(&mut self, cx: &mut Context<Self>) {
+        self.return_to_agents_on_cancel = false;
         self.cancel_remote_folder_picker(cx);
         self.onboarding_open = true;
         self.launcher_open = false;
@@ -897,7 +901,21 @@ impl WorkspaceHubView {
         self.presentation_changed(cx);
     }
 
+    pub(super) fn show_agent_project_setup(&mut self, cx: &mut Context<Self>) {
+        self.show_onboarding(cx);
+        self.return_to_agents_on_cancel = true;
+    }
+
+    fn cancel_forms(&mut self, cx: &mut Context<Self>) {
+        let return_to_agents = self.return_to_agents_on_cancel;
+        self.dismiss_forms(cx);
+        if return_to_agents {
+            cx.emit(WorkspaceHubEvent::ReturnToAgents);
+        }
+    }
+
     fn toggle_overview(&mut self, cx: &mut Context<Self>) {
+        self.return_to_agents_on_cancel = false;
         self.cancel_remote_folder_picker(cx);
         self.overview_open = self.onboarding_open || self.launcher_open || !self.overview_open;
         self.onboarding_open = false;
@@ -907,6 +925,7 @@ impl WorkspaceHubView {
     }
 
     fn dismiss_forms(&mut self, cx: &mut Context<Self>) {
+        self.return_to_agents_on_cancel = false;
         self.cancel_remote_folder_picker(cx);
         self.onboarding_open = false;
         self.launcher_open = false;
@@ -1716,6 +1735,7 @@ impl WorkspaceHubView {
             connections,
             executor,
             onboarding_open,
+            return_to_agents_on_cancel: false,
             onboarding_advanced: false,
             remote_browse_epoch: 0,
             remote_folder_picker: None,
@@ -2055,6 +2075,17 @@ impl WorkspaceHubView {
     }
 
     fn submit_onboarding(&mut self, cx: &mut Context<Self>) {
+        self.submit_onboarding_with_persist(
+            |catalog| catalog.save().map_err(|error| error.to_string()),
+            cx,
+        );
+    }
+
+    fn submit_onboarding_with_persist(
+        &mut self,
+        persist: impl FnOnce(&mut ProjectCatalog) -> Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
         if self.remote_folder_picker.is_some() {
             return;
         }
@@ -2126,23 +2157,60 @@ impl WorkspaceHubView {
                 root: canonical,
             }
         };
+        // Adding an already catalogued folder reopens it. A label or repository
+        // edit here must not duplicate its identity or overwrite saved metadata.
+        let existing_checkout = self
+            .catalog
+            .projects()
+            .flat_map(|project| project.checkouts())
+            .find(|checkout| match (checkout.host(), &host) {
+                (CheckoutHost::Local { root: saved, .. }, CheckoutHost::Local { root, .. }) => {
+                    saved == root
+                }
+                (
+                    CheckoutHost::Ssh {
+                        connection_id: saved_connection,
+                        root: saved,
+                    },
+                    CheckoutHost::Ssh {
+                        connection_id,
+                        root,
+                    },
+                ) => {
+                    saved_connection == connection_id
+                        && saved.as_str().trim_end_matches('/')
+                            == root.as_str().trim_end_matches('/')
+                }
+                _ => false,
+            })
+            .map(ProjectCheckout::id);
+        if let Some(checkout) = existing_checkout {
+            self.error = None;
+            self.open_project_agents(checkout, cx);
+            return;
+        }
         let checkout_id = CatalogCheckoutId::new();
         let (repository, existing_project) =
             onboarding_identity(&self.catalog, &project_name, repository, checkout_id);
         let checkout = ProjectCheckout::new(checkout_id, checkout_name, host, repository);
-        let result = mutate_and_save(&mut self.catalog, |catalog| {
-            if let Some(project_id) = existing_project {
-                catalog
-                    .add_checkout(project_id, checkout)
-                    .map_err(|error| error.to_string())
-            } else {
-                let mut project = ProjectRecord::new(CatalogProjectId::new(), project_name.clone());
-                project.add_checkout(checkout);
-                catalog
-                    .insert_project(project)
-                    .map_err(|error| error.to_string())
-            }
-        });
+        let result = mutate_and_persist(
+            &mut self.catalog,
+            |catalog| {
+                if let Some(project_id) = existing_project {
+                    catalog
+                        .add_checkout(project_id, checkout)
+                        .map_err(|error| error.to_string())
+                } else {
+                    let mut project =
+                        ProjectRecord::new(CatalogProjectId::new(), project_name.clone());
+                    project.add_checkout(checkout);
+                    catalog
+                        .insert_project(project)
+                        .map_err(|error| error.to_string())
+                }
+            },
+            persist,
+        );
         match result {
             Ok(()) => {
                 cx.emit(WorkspaceHubEvent::CatalogChanged);

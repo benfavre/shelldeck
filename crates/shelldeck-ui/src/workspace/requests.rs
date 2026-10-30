@@ -1167,6 +1167,8 @@ impl Workspace {
         self.issue_attachment_busy = true;
         self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
         let sent_issue_id = id.clone();
+        let sent_draft =
+            crate::support_view::SentSupportDraft::new(body.clone(), attachments.clone(), false);
         cx.notify();
         let request = self.manage_requests.session();
         let attachment_generation = self.issue_attachment_generation;
@@ -1221,11 +1223,16 @@ impl Workspace {
                         }
                         ws.push_issues_to_support(cx);
                         ws.support.update(cx, |view, cx| {
-                            view.clear_issue_draft_after_send(&sent_issue_id, cx);
+                            view.clear_issue_draft_after_send(&sent_issue_id, &sent_draft, cx);
                         });
                         if ws.manage_requests.is_current(detail_request)
                             && ws.issue_selected.as_deref() == Some(sent_issue_id.as_str())
                             && ws.issue_attachment_generation == attachment_generation
+                            && sent_draft.matches(
+                                ws.issue_comment_state.read(cx).content(),
+                                &ws.issue_comment_attachments,
+                                false,
+                            )
                         {
                             Self::reset_input(&ws.issue_comment_state.clone(), cx);
                             Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);

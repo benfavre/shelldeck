@@ -116,7 +116,8 @@ pub struct SyncPayload {
     pub version: u32,
     #[serde(default)]
     pub generated_at: Option<String>,
-    #[serde(default)]
+    // An omitted collection is an invalid response, not an authoritative
+    // empty directory: interpreting it as empty would prune saved profiles.
     pub connections: Vec<RemoteProfile>,
 }
 
@@ -138,9 +139,10 @@ impl MergeStats {
 /// Merge a set of remote profiles into `store` (pure — no I/O).
 ///
 /// - Upsert by UUID `id`. Entries with an unparseable `id` are skipped.
-/// - Existing connection with the same id → overwrite the mutable fields and
-///   force `source = CloudSync`, while PRESERVING `auto_forwards`,
+/// - Existing CloudSync connection with the same id → overwrite mutable fields,
+///   while PRESERVING `auto_forwards`,
 ///   `auto_scripts` and the (skip-serialized) live `status`.
+/// - A UUID collision with a Manual/SSH-config entry leaves that local entry untouched.
 /// - Missing id → push a new `CloudSync` connection.
 /// - Prune connections whose `source == CloudSync` that are no longer present
 ///   remotely. Manual / SSH-config connections are never removed.
@@ -165,8 +167,13 @@ pub fn merge_profiles(store: &mut ConnectionStore, remote: &[RemoteProfile]) -> 
             .map(PathBuf::from);
 
         if let Some(existing) = store.connections.iter_mut().find(|c| c.id == id) {
-            // Overwrite managed fields; preserve auto_forwards / auto_scripts /
-            // status. Force the source so a profile always reads as cloud-managed.
+            if existing.source != ConnectionSource::CloudSync {
+                tracing::warn!(
+                    "Cloud sync: preserving locally managed profile with colliding UUID {id}"
+                );
+                continue;
+            }
+            // Overwrite managed fields; preserve auto_forwards / auto_scripts / status.
             existing.alias = rp.alias.clone();
             existing.hostname = rp.hostname.clone();
             existing.port = rp.port;
@@ -451,6 +458,54 @@ mod tests {
             .connections
             .iter()
             .any(|c| c.id == ssh_id && c.source == ConnectionSource::SshConfig));
+    }
+
+    // SDTEST-2752 — a remote UUID cannot take custody of a local SSH profile.
+    #[test]
+    fn merge_uuid_collision_preserves_local_profiles_across_later_prune() {
+        for source in [ConnectionSource::Manual, ConnectionSource::SshConfig] {
+            let mut local =
+                Connection::new_manual("local".into(), "local.example".into(), "operator".into());
+            local.source = source;
+            local.identity_file = Some(PathBuf::from("operator-key"));
+            local.forward_agent = true;
+            let before = serde_json::to_value(&local).unwrap();
+            let mut store = ConnectionStore::default();
+            store.connections.push(local.clone());
+            let payload = [remote(local.id, "remote", "different.example")];
+            assert_eq!(merge_profiles(&mut store, &payload), MergeStats::default());
+            assert_eq!(store.connections.len(), 1);
+            assert_eq!(serde_json::to_value(&store.connections[0]).unwrap(), before);
+            assert_eq!(merge_profiles(&mut store, &[]), MergeStats::default());
+            assert_eq!(store.connections.len(), 1);
+            assert_eq!(serde_json::to_value(&store.connections[0]).unwrap(), before);
+        }
+    }
+
+    // SDTEST-2753 — absent/error-shaped payloads cannot authorize directory prune.
+    #[test]
+    fn sync_payload_requires_explicit_connections_before_pruning() {
+        let id = Uuid::new_v4();
+        let mut store = ConnectionStore::default();
+        store.connections.push(cloud_conn(id, "retained"));
+        for malformed in [
+            r#"{}"#,
+            r#"{"ok":false,"error":"temporary failure"}"#,
+            r#"{"version":1}"#,
+            r#"{"connections":null}"#,
+        ] {
+            let result = serde_json::from_str::<SyncPayload>(malformed)
+                .map(|payload| merge_profiles(&mut store, &payload.connections));
+            assert!(
+                result.is_err(),
+                "malformed directory must be refused: {malformed}"
+            );
+            assert_eq!(store.connections.len(), 1);
+            assert_eq!(store.connections[0].id, id);
+        }
+        let empty: SyncPayload = serde_json::from_str(r#"{"version":1,"connections":[]}"#).unwrap();
+        assert_eq!(merge_profiles(&mut store, &empty.connections).removed, 1);
+        assert!(store.connections.is_empty());
     }
 
     #[test]

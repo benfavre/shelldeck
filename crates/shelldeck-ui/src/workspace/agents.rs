@@ -141,6 +141,30 @@ impl Workspace {
                         cx,
                     );
                 }
+                match &event {
+                    AgentConsoleEvent::LoadSshHistory(request) => view.complete_native_history(
+                        request.clone(),
+                        Err(t!("agents.live.authorization_lost").to_string()),
+                        cx,
+                    ),
+                    AgentConsoleEvent::ReconnectSshSession { request_id, .. } => view
+                        .complete_ssh_reconnect(
+                            *request_id,
+                            Err(t!("agents.live.authorization_lost").to_string()),
+                            cx,
+                        ),
+                    AgentConsoleEvent::DiscoverSshSessions {
+                        connection_id,
+                        request_id,
+                        ..
+                    } => view.set_ssh_sessions(
+                        *connection_id,
+                        *request_id,
+                        Err(t!("agents.live.authorization_lost").to_string()),
+                        cx,
+                    ),
+                    _ => {}
+                }
             });
             return;
         }
@@ -153,15 +177,28 @@ impl Workspace {
             } => {
                 self.reconnect_agent_project(checkout_id, expected_connection, connection_id, cx);
             }
-            AgentConsoleEvent::RefreshRemoteSessions => self.refresh_fleet_view(cx),
+            AgentConsoleEvent::RefreshRemoteSessions => self.refresh_remote_sessions(cx),
+            AgentConsoleEvent::DiscoverSshSessions {
+                connection_id,
+                request_id,
+                cursor,
+            } => self.discover_ssh_agent_sessions(connection_id, request_id, cursor, cx),
+            AgentConsoleEvent::ReconnectSshSession {
+                connection_id,
+                request_id,
+                session,
+            } => self.reconnect_ssh_agent_session(connection_id, request_id, session, cx),
+            AgentConsoleEvent::LoadSshHistory(request) => self.load_ssh_agent_history(request, cx),
             AgentConsoleEvent::OpenPlatformSession(session) => {
                 if self.platform_connection().is_some()
                     && self
                         .fleet_view
                         .update(cx, |view, cx| view.select_agent_session(&session, cx))
                 {
-                    self.agent_console
-                        .update(cx, |view, cx| view.set_remote_session_active(true, cx));
+                    self.agent_console.update(cx, |view, cx| {
+                        view.clear_ssh_session_preview();
+                        view.set_remote_session_active(true, cx);
+                    });
                 }
             }
             AgentConsoleEvent::SaveFile(request) => self.save_agent_file(request, cx),
@@ -179,6 +216,7 @@ impl Workspace {
             }
             AgentConsoleEvent::OpenTerminal { context } => self.open_agent_terminal(context, cx),
             AgentConsoleEvent::OpenWorkspaceLauncher => self.open_agent_workspace_launcher(cx),
+            AgentConsoleEvent::OpenProjectSetup => self.open_agent_project_setup(cx),
             AgentConsoleEvent::OpenRemoteFile {
                 context,
                 session_id,
@@ -279,6 +317,15 @@ impl Workspace {
             return;
         }
 
+        if !self.imported_agent_destination_matches(&request) {
+            self.reject_agent_run(
+                &request,
+                t!("agents.ssh_sessions.destination_changed").to_string(),
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
         if !agent_run_has_capacity(self.active_agent_runs.len()) {
             let message = t!(
                 "agents.error.parallel_limit",
@@ -300,22 +347,18 @@ impl Workspace {
             self.start_automonique_agent_run(request, cx);
             return;
         }
-        if let AgentTarget::Ssh { connection_id, .. } = &request.target {
-            if let Some(workdir) = mapped_remote_agent_workdir(
-                self.workspace_hub.read(cx).catalog(),
-                *connection_id,
-                &request.workdir,
-            ) {
-                let admitted = self.agent_console.update(cx, |view, cx| {
-                    view.admit_starting_run_workdir(&mut request, &workdir, cx)
+        if let Some(workdir) =
+            remote_launch_workdir(self.workspace_hub.read(cx).catalog(), &request)
+        {
+            let admitted = self.agent_console.update(cx, |view, cx| {
+                view.admit_starting_run_workdir(&mut request, &workdir, cx)
+            });
+            if let Err(message) = admitted {
+                self.agent_console.update(cx, |view, cx| {
+                    view.reject_run_for(request.id, message.clone(), cx)
                 });
-                if let Err(message) = admitted {
-                    self.agent_console.update(cx, |view, cx| {
-                        view.reject_run_for(request.id, message.clone(), cx)
-                    });
-                    self.show_toast(message, ToastLevel::Error, cx);
-                    return;
-                }
+                self.show_toast(message, ToastLevel::Error, cx);
+                return;
             }
         }
         let mut options = self
@@ -432,60 +475,31 @@ impl Workspace {
         );
 
         let console = self.agent_console.downgrade();
+        let mut pump = super::agent_stream::AgentEventPump::new(event_rx, done_rx);
         cx.spawn(async move |this, cx: &mut AsyncApp| loop {
             cx.background_executor()
-                .timer(std::time::Duration::from_millis(50))
+                .timer(super::agent_stream::FRAME_INTERVAL)
                 .await;
-            let mut events = Vec::new();
-            while let Ok(event) = event_rx.try_recv() {
-                events.push(event);
-            }
+            let (events, completion) = pump.poll();
             if !events.is_empty() {
                 let _ = console.update(cx, |view, cx| {
-                    for event in events {
-                        view.push_stream_event_for(run_id, event, cx);
-                    }
+                    view.push_stream_events_for(run_id, events, cx)
                 });
             }
-            match done_rx.try_recv() {
-                Ok((exit_code, error)) => {
-                    let trailing = event_rx.try_iter().collect::<Vec<_>>();
-                    if !trailing.is_empty() {
-                        let _ = console.update(cx, |view, cx| {
-                            for event in trailing {
-                                view.push_stream_event_for(run_id, event, cx);
-                            }
-                        });
-                    }
-                    let error = error.or_else(|| {
-                        (exit_code == Some(127)).then(|| {
-                            t!(
-                                "agents.error.remote_binary_missing",
-                                binary = provider.binary()
-                            )
-                            .to_string()
-                        })
-                    });
-                    let _ = this.update(cx, |workspace, cx| {
-                        workspace.complete_agent_run(run_id, exit_code, error, cx)
-                    });
-                    break;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    let _ = console.update(cx, |view, cx| {
-                        view.finish_run(
-                            run_id,
-                            None,
-                            Some(t!("agents.error.runtime_lost").to_string()),
-                            cx,
+            if let Some((exit_code, error)) = completion {
+                let error = error.or_else(|| {
+                    (exit_code == Some(127)).then(|| {
+                        t!(
+                            "agents.error.remote_binary_missing",
+                            binary = provider.binary()
                         )
-                    });
-                    let _ = this.update(cx, |workspace, _| {
-                        workspace.active_agent_runs.remove(&run_id);
-                    });
-                    break;
-                }
+                        .to_string()
+                    })
+                });
+                let _ = this.update(cx, |workspace, cx| {
+                    workspace.complete_agent_run(run_id, exit_code, error, cx)
+                });
+                break;
             }
         })
         .detach();
@@ -596,51 +610,22 @@ impl Workspace {
         );
 
         let console = self.agent_console.downgrade();
+        let mut pump = super::agent_stream::AgentEventPump::new(event_rx, done_rx);
         cx.spawn(async move |this, cx: &mut AsyncApp| loop {
             cx.background_executor()
-                .timer(std::time::Duration::from_millis(50))
+                .timer(super::agent_stream::FRAME_INTERVAL)
                 .await;
-            let mut events = Vec::new();
-            while let Ok(event) = event_rx.try_recv() {
-                events.push(event);
-            }
+            let (events, completion) = pump.poll();
             if !events.is_empty() {
                 let _ = console.update(cx, |view, cx| {
-                    for event in events {
-                        view.push_stream_event_for(run_id, event, cx);
-                    }
+                    view.push_stream_events_for(run_id, events, cx)
                 });
             }
-            match done_rx.try_recv() {
-                Ok((exit_code, error)) => {
-                    let trailing = event_rx.try_iter().collect::<Vec<_>>();
-                    if !trailing.is_empty() {
-                        let _ = console.update(cx, |view, cx| {
-                            for event in trailing {
-                                view.push_stream_event_for(run_id, event, cx);
-                            }
-                        });
-                    }
-                    let _ = this.update(cx, |workspace, cx| {
-                        workspace.complete_agent_run(run_id, exit_code, error, cx)
-                    });
-                    break;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    let _ = console.update(cx, |view, cx| {
-                        view.finish_run(
-                            run_id,
-                            None,
-                            Some(t!("agents.error.runtime_lost").to_string()),
-                            cx,
-                        )
-                    });
-                    let _ = this.update(cx, |workspace, _| {
-                        workspace.active_agent_runs.remove(&run_id);
-                    });
-                    break;
-                }
+            if let Some((exit_code, error)) = completion {
+                let _ = this.update(cx, |workspace, cx| {
+                    workspace.complete_agent_run(run_id, exit_code, error, cx)
+                });
+                break;
             }
         })
         .detach();
@@ -960,6 +945,19 @@ fn catalog_workspace_for_run(
         })
         .max_by_key(|(authority_len, _, _)| *authority_len)
         .map(|(_, workspace, checkout)| (workspace, checkout))
+}
+
+fn remote_launch_workdir(
+    catalog: &shelldeck_core::config::workspace_catalog::ProjectCatalog,
+    request: &AgentRunRequest,
+) -> Option<String> {
+    if request.resume_session.is_some() {
+        return None;
+    }
+    let AgentTarget::Ssh { connection_id, .. } = &request.target else {
+        return None;
+    };
+    mapped_remote_agent_workdir(catalog, *connection_id, &request.workdir)
 }
 
 fn remote_path_contains(root: &str, candidate: &str) -> bool {
@@ -1466,6 +1464,26 @@ mod tests {
         ));
         let mut catalog = ProjectCatalog::default();
         catalog.insert_project(project).unwrap();
+        let request = AgentRunRequest::new(
+            AgentProvider::Claude,
+            AgentTarget::Ssh {
+                connection_id,
+                connection_label: "Server".into(),
+            },
+            shelldeck_core::agent_runtime::AgentAccessMode::ReadOnly,
+            "/home/pc1/dev/infra",
+            None,
+            "continue",
+        );
+        assert!(super::remote_launch_workdir(&catalog, &request).is_some());
+        assert!(
+            super::remote_launch_workdir(
+                &catalog,
+                &request.with_resume_session(Some("existing-remote-id".into()))
+            )
+            .is_none(),
+            "a native resume must keep its verified remote directory"
+        );
 
         assert_eq!(
             mapped_remote_agent_workdir(&catalog, connection_id, "/home/pc1/dev/infra/crates/api")

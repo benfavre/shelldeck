@@ -2559,7 +2559,7 @@ mod tests {
         let pending = executor.launch(request, events);
         let replacement =
             Connection::new_manual("Replacement".into(), "127.0.0.1".into(), "test".into());
-        executor.update_connections(&[replacement.clone()]);
+        executor.update_connections(std::slice::from_ref(&replacement));
         let failure = futures_lite::future::block_on(pending).err().unwrap();
         assert_eq!(failure.kind, WorkspaceCreateFailureKind::RuntimeUnavailable);
         assert_eq!(

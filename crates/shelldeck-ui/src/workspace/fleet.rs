@@ -17,6 +17,10 @@ use shelldeck_core::config::platform_review::{
 };
 
 enum PlatformActionResult {
+    SessionChecked {
+        updates: Vec<RetainedSessionUpdate>,
+        capabilities: shelldeck_core::config::platform::Capabilities,
+    },
     Attached(Attachment),
     Detached(ResourceCoordinate, Option<Attachment>),
     ControlClaimed(ControlClaimResult),
@@ -35,7 +39,7 @@ enum PlatformLoadResult {
     },
     Refresh {
         refresh: PlatformRefresh,
-        retained: Vec<RetainedSessionUpdate>,
+        retained: Result<Vec<RetainedSessionUpdate>, String>,
         reconciled: Vec<PlatformFollowUpResult>,
         review: Option<AttributedPlatformReview>,
         review_action: Option<Box<AttributedPlatformReviewActionResult>>,
@@ -282,6 +286,25 @@ impl Workspace {
             .update(cx, |view, cx| view.set_remote_sessions_available(show, cx));
     }
 
+    pub(super) fn refresh_remote_sessions(&mut self, cx: &mut Context<Self>) {
+        self.fleet_retry_not_before = None;
+        self.fleet_view.update(cx, |view, cx| {
+            view.request_directory_refresh();
+            cx.notify();
+        });
+        self.refresh_fleet_view(cx);
+    }
+
+    fn continue_remote_reads(&mut self, cx: &mut Context<Self>) {
+        if self.fleet_view.read(cx).directory_refresh_requested() {
+            self.refresh_fleet_view(cx);
+        } else {
+            self.fleet_view.update(cx, |view, cx| {
+                view.dispatch_queued_remote_check(cx);
+            });
+        }
+    }
+
     pub(super) fn refresh_fleet_view(&mut self, cx: &mut Context<Self>) {
         let attention_context = self
             .workspace_hub
@@ -299,6 +322,9 @@ impl Workspace {
         };
         let request_connection = connection.clone();
         self.fleet_refresh_in_flight = true;
+        let refresh_selected = self
+            .fleet_view
+            .update(cx, |view, _| view.take_directory_refresh_request());
         let request_epoch = self.fleet_request_epoch;
         self.fleet_view.update(cx, |view, cx| {
             view.set_loading(true);
@@ -324,7 +350,10 @@ impl Workspace {
                 .spawn(async move {
                     if let Some(previous) = previous.as_ref() {
                         let refresh = connection.refresh(previous, &attachments)?;
-                        let retained = connection.refresh_retained_sessions(&retained_reads)?;
+                        // Transcript failure must not discard a successfully refreshed directory.
+                        let retained = connection
+                            .refresh_retained_sessions(&retained_reads)
+                            .map_err(|error| crate::i18n::platform_error_message(&error, false));
                         let reconciled = pending_follow_ups
                             .into_iter()
                             .map(|follow_up| connection.reconcile_follow_up(follow_up))
@@ -448,6 +477,11 @@ impl Workspace {
                             }
                         }
                         workspace.focus_pending_fleet_session(cx);
+                        if refresh_selected {
+                            workspace
+                                .fleet_view
+                                .update(cx, |view, _| view.queue_selected_remote_check());
+                        }
                     }
                     Ok(PlatformLoadResult::Refresh {
                         refresh,
@@ -484,7 +518,10 @@ impl Workspace {
                             for result in reconciled {
                                 view.set_follow_up_result(result, cx);
                             }
-                            view.apply_retained_updates(retained);
+                            match retained {
+                                Ok(updates) => view.apply_retained_updates(updates),
+                                Err(message) => view.set_remote_read_error(message),
+                            }
                             let (review, capabilities) = review
                                 .map(|(review, capabilities)| (Some(review), Some(capabilities)))
                                 .unwrap_or((None, None));
@@ -521,6 +558,11 @@ impl Workspace {
                             }
                         }
                         workspace.focus_pending_fleet_session(cx);
+                        if refresh_selected {
+                            workspace
+                                .fleet_view
+                                .update(cx, |view, _| view.queue_selected_remote_check());
+                        }
                     }
                     Err(error) => {
                         workspace.mark_all_platform_attention_unavailable(cx);
@@ -539,6 +581,7 @@ impl Workspace {
                         });
                     }
                 }
+                workspace.continue_remote_reads(cx);
             });
         })
         .detach();
@@ -550,7 +593,7 @@ impl Workspace {
         };
         let opened = self
             .fleet_view
-            .update(cx, |view, _cx| view.open_session_by_id(&session_id));
+            .update(cx, |view, cx| view.open_session_by_id(&session_id, cx));
         if opened {
             self.pending_fleet_session_focus = None;
         }
@@ -723,12 +766,21 @@ impl Workspace {
             return;
         }
         if matches!(event, FleetViewEvent::Refresh) {
-            self.refresh_fleet_view(cx);
+            self.refresh_remote_sessions(cx);
             return;
         }
         if let FleetViewEvent::OpenAttention(activation) = &event {
             self.activate_platform_attention(*activation, cx);
             return;
+        }
+        if let FleetViewEvent::Attach(session) = &event {
+            if self
+                .fleet_view
+                .read(cx)
+                .agent_session_resume_pending(session)
+            {
+                return;
+            }
         }
         let Some(connection) = self.platform_connection() else {
             return;
@@ -747,7 +799,11 @@ impl Workspace {
             FleetViewEvent::FollowUp(_) | FleetViewEvent::ExecuteReview(_)
         );
         let started = self.fleet_view.update(cx, |view, cx| {
-            let started = operation_already_started || view.begin_operation();
+            let started = if let FleetViewEvent::CheckSession(session) = &event {
+                view.begin_remote_connection_check(session)
+            } else {
+                operation_already_started || view.begin_operation()
+            };
             cx.notify();
             started
         });
@@ -765,6 +821,19 @@ impl Workspace {
                         | FleetViewEvent::TaskCommand(_)
                         | FleetViewEvent::AcknowledgeTasks(_) => unreachable!(),
                         FleetViewEvent::OpenAttention(_) => unreachable!(),
+                        FleetViewEvent::CheckSession(session) => {
+                            let capabilities = connection.capabilities()?;
+                            let updates = connection.refresh_retained_sessions(&[
+                                shelldeck_core::config::platform::RetainedSessionRead {
+                                    session,
+                                    after: None,
+                                },
+                            ])?;
+                            Ok(PlatformActionResult::SessionChecked {
+                                updates,
+                                capabilities,
+                            })
+                        }
                         FleetViewEvent::Attach(session) => connection
                             .attach(session, client)
                             .map(PlatformActionResult::Attached),
@@ -802,6 +871,19 @@ impl Workspace {
                     return;
                 }
                 match result {
+                    Ok(PlatformActionResult::SessionChecked {
+                        updates,
+                        capabilities,
+                    }) => {
+                        if let Some(snapshot) = workspace.fleet_snapshot.as_mut() {
+                            snapshot.capabilities = capabilities.clone();
+                        }
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.set_remote_capabilities(capabilities);
+                            view.set_remote_connection_results(updates);
+                            cx.notify();
+                        });
+                    }
                     Ok(PlatformActionResult::Attached(attachment)) => {
                         if let Some(snapshot) = workspace.fleet_snapshot.as_mut() {
                             snapshot.view.track_attachment(&attachment);
@@ -891,6 +973,7 @@ impl Workspace {
                         cx.notify();
                     }),
                 }
+                workspace.continue_remote_reads(cx);
             });
         })
         .detach();

@@ -1,5 +1,23 @@
 use super::*;
 
+// Missing display fields are compatible with older Manage tokens, but never
+// let them retain capabilities or roles from a previous whoami response.
+fn refreshed_account(
+    info: &cloud_account::WhoamiInfo,
+    previous: Option<&AccountInfo>,
+) -> AccountInfo {
+    let mut refreshed = info.account_info();
+    if let Some(previous) = previous {
+        if refreshed.name.trim().is_empty() {
+            refreshed.name = previous.name.clone();
+        }
+        if refreshed.email.trim().is_empty() {
+            refreshed.email = previous.email.clone();
+        }
+    }
+    refreshed
+}
+
 impl Workspace {
     // --- Cloud account (Inklura Manage) ---
 
@@ -34,11 +52,9 @@ impl Workspace {
                 match result {
                     Ok(info) => {
                         ws.account_status = AccountStatus::Ok;
-                        let refreshed = info.account_info();
-                        if !refreshed.name.trim().is_empty() || !refreshed.email.trim().is_empty() {
-                            ws.app_config.account = Some(refreshed);
-                            let _ = ws.app_config.save();
-                        }
+                        ws.app_config.account =
+                            Some(refreshed_account(&info, ws.app_config.account.as_ref()));
+                        let _ = ws.app_config.save();
                         ws.sync_agent_browser_account(cx);
                         ws.sync_settings_config(cx);
                         // Stash the full whoami — the User "Mes informations"
@@ -566,7 +582,10 @@ impl Workspace {
         self._support_poll_task = None;
         self._issues_poll = None;
         self._monique_poll_task = None;
+        self.agent_console
+            .update(cx, |view, cx| view.reset_ssh_sessions(cx));
         self._fleet_view_poll = None;
+        self.imported_agent_destinations.clear();
         self.fleet_refresh_in_flight = false;
         self.fleet_refresh_failures = 0;
         self.fleet_retry_not_before = None;
@@ -618,5 +637,47 @@ impl Workspace {
         self.agent_console.update(cx, |view, cx| {
             view.set_browser_account(&origin, email.as_deref(), cx)
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refreshed_account;
+    use shelldeck_core::config::cloud_account::{AccountInfo, AppMode, WhoamiInfo};
+
+    // SDTEST-2750 — omitted display identity must not retain revoked staff access.
+    #[test]
+    fn whoami_without_display_fields_replaces_capabilities_and_roles() {
+        let previous = AccountInfo {
+            name: "Operator".into(),
+            email: "operator@example.test".into(),
+            is_superadmin: true,
+            is_admin: true,
+            is_inklura_support: true,
+            roles: vec!["superadmin".into()],
+        };
+        let response: WhoamiInfo =
+            serde_json::from_str(r#"{"ok":true,"user":{"name":" ","email":""}}"#).unwrap();
+        let refreshed = refreshed_account(&response, Some(&previous));
+        assert_eq!(refreshed.name, previous.name);
+        assert_eq!(refreshed.email, previous.email);
+        assert!(!refreshed.is_superadmin);
+        assert!(!refreshed.is_admin);
+        assert!(!refreshed.is_inklura_support);
+        assert!(refreshed.roles.is_empty());
+        assert_eq!(
+            AppMode::allowed_modes(refreshed.is_inklura_support, refreshed.is_superadmin),
+            &[AppMode::User]
+        );
+
+        let response: WhoamiInfo = serde_json::from_str(r#"{"ok":true,"is_inklura_support":true,"user":{"name":"Support","email":"support@example.test","roles":["inklura_support"]}}"#).unwrap();
+        let refreshed = refreshed_account(&response, Some(&previous));
+        assert_eq!(refreshed.name, "Support");
+        assert_eq!(refreshed.email, "support@example.test");
+        assert_eq!(refreshed.roles, ["inklura_support"]);
+        assert_eq!(
+            AppMode::allowed_modes(refreshed.is_inklura_support, refreshed.is_superadmin),
+            &[AppMode::User, AppMode::Support]
+        );
     }
 }

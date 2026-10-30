@@ -58,6 +58,7 @@ impl AgentConsoleView {
                 session.context.clone()
             };
             context.target = replacement.clone();
+            self.validate_native_context_transition(session.id, &context)?;
             next.set_context(context, now_ms())
                 .map_err(|error| error.to_string())?;
             repaired.push(next);

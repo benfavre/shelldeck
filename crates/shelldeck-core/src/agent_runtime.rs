@@ -735,6 +735,8 @@ pub enum AgentStreamEvent {
     Text(String),
     /// An incremental text fragment from a streaming provider.
     TextDelta(String),
+    /// Authoritative replacement of the current turn’s cumulative answer (Jcode).
+    TextSnapshot(String),
     /// Opaque provider conversation identifier used only for a matching
     /// follow-up run on the same target and execution context.
     Session(String),
@@ -1023,37 +1025,121 @@ fn parse_codex_event(value: &Value) -> Vec<AgentStreamEvent> {
 
 fn parse_jcode_event(value: &Value) -> Vec<AgentStreamEvent> {
     let mut events = session_events(value);
-    let kind = value
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if let Some(delta) = value.get("delta").and_then(text_from_value) {
-        events.push(AgentStreamEvent::TextDelta(safe_visible_text(&delta)));
+    let kind = value["type"].as_str().unwrap_or_default();
+    // Error records take precedence over a result body.
+    if value["is_error"].as_bool() == Some(true) || kind == "error" {
+        if let Some(text) = value
+            .get("error")
+            .or_else(|| value.get("message"))
+            .and_then(text_from_value)
+        {
+            events.push(AgentStreamEvent::Error(safe_visible_text(&text)));
+        }
         return events;
     }
-    if matches!(kind, "result" | "assistant" | "message") {
-        for key in ["result", "text", "content", "message", "response"] {
-            if let Some(text) = value.get(key).and_then(text_from_value) {
-                events.push(AgentStreamEvent::Text(safe_visible_text(&text)));
-                return events;
+    match kind {
+        "start" => events.push(AgentStreamEvent::Ready),
+        "text_delta" | "content.delta" | "delta" => {
+            if let Some(text) = value
+                .get("delta")
+                .or_else(|| value.get("text"))
+                .and_then(text_from_value)
+            {
+                events.push(AgentStreamEvent::TextDelta(safe_visible_text(&text)));
             }
         }
-    }
-    if value.get("is_error").and_then(Value::as_bool) == Some(true) || kind == "error" {
-        events.extend(
-            value
-                .get("error")
-                .or_else(|| value.get("message"))
-                .and_then(text_from_value)
-                .map(|text| AgentStreamEvent::Error(safe_visible_text(&text))),
-        );
-        return events;
-    }
-    if !kind.is_empty() {
-        events.push(AgentStreamEvent::Activity(safe_provider_text(
+        "done" | "text_replace" => {
+            if let Some(text) = value["text"].as_str() {
+                events.push(AgentStreamEvent::TextSnapshot(safe_visible_text(text)));
+            }
+        }
+        "result" | "assistant" | "message" => {
+            for key in ["result", "text", "content", "message", "response"] {
+                if let Some(text) = value.get(key).and_then(text_from_value) {
+                    events.push(AgentStreamEvent::Text(safe_visible_text(&text)));
+                    break;
+                }
+            }
+        }
+        "tool_start" | "tool_exec" | "tool_done" => {
+            let status = if kind != "tool_done" {
+                AgentTraceStatus::Running
+            } else if value["error"].as_bool() == Some(true)
+                || value["error"].as_str().is_some_and(|s| !s.is_empty())
+            {
+                AgentTraceStatus::Failed
+            } else {
+                AgentTraceStatus::Succeeded
+            };
+            events.push(trace_update(
+                AgentTraceKind::Tool {
+                    name: safe_provider_text(
+                        value["name"].as_str().unwrap_or("tool"),
+                        MAX_AGENT_TRACE_FIELD_BYTES,
+                    ),
+                    status,
+                    summary: value
+                        .get("output")
+                        .and_then(text_from_value)
+                        .map(|s| safe_provider_text(&s, MAX_AGENT_TRACE_FIELD_BYTES)),
+                },
+                value["id"].as_str(),
+            ));
+        }
+        // These are transport/usage bookkeeping, not conversation activity.
+        // tool_input carries JSON argument fragments, never assistant text.
+        "connection_type" | "connection_phase" | "message_end" | "tokens" | "upstream_provider"
+        | "session" | "tool_input" => {}
+        "status_detail" => {
+            if let Some(detail) = value["detail"].as_str().filter(|s| !s.is_empty()) {
+                events.push(AgentStreamEvent::Activity(safe_provider_text(
+                    detail,
+                    MAX_AGENT_ACTIVITY_BYTES,
+                )));
+            }
+        }
+        "" => {}
+        _ => events.push(AgentStreamEvent::Activity(safe_provider_text(
             &humanize_kind(kind),
             MAX_AGENT_ACTIVITY_BYTES,
-        )));
+        ))),
+    }
+    if matches!(kind, "start" | "done") {
+        if let Some(model) = value["model"].as_str().filter(|s| !s.is_empty()) {
+            events.push(AgentStreamEvent::Metadata(
+                AgentRunMetadata {
+                    model: Some(model.into()),
+                    ..Default::default()
+                }
+                .bounded(),
+            ));
+        }
+    }
+    let usage = match kind {
+        "tokens" => Some(value),
+        "done" => value.get("usage").filter(|v| v.is_object()),
+        _ => None,
+    };
+    if let Some(usage) = usage {
+        events.push(AgentStreamEvent::Usage(AgentUsageUpdate {
+            input_tokens: usage
+                .get("input_tokens")
+                .or_else(|| usage.get("input"))
+                .and_then(Value::as_u64),
+            output_tokens: usage
+                .get("output_tokens")
+                .or_else(|| usage.get("output"))
+                .and_then(Value::as_u64),
+            cached_input_tokens: usage
+                .get("cache_read_input_tokens")
+                .or_else(|| usage.get("cache_read_input"))
+                .and_then(Value::as_u64),
+            cache_write_input_tokens: usage
+                .get("cache_creation_input_tokens")
+                .or_else(|| usage.get("cache_creation_input"))
+                .and_then(Value::as_u64),
+            ..Default::default()
+        }));
     }
     events
 }
@@ -1921,5 +2007,95 @@ mod tests {
         let status = terminate_local_process(&mut child, &mut process_tree).unwrap();
         assert!(!status.success());
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+}
+
+#[cfg(test)]
+mod jcode_ndjson_regression {
+    use super::*;
+
+    // SDTEST-2799 — replay the real Jcode lifecycle, tools and cumulative answer.
+    #[test]
+    fn jcode_chat_replay_keeps_transport_out_of_prose_and_replaces_snapshots() {
+        use crate::agent_session::{
+            AgentExecutionContext, AgentMessageRole, AgentSession, AgentSessionStatus,
+        };
+        let mut session = AgentSession::new(
+            "Chat",
+            AgentExecutionContext {
+                provider: AgentProvider::DeepSeek,
+                target: AgentTarget::Local,
+                access: AgentAccessMode::ReadOnly,
+                workdir: std::env::temp_dir().display().to_string(),
+                model: None,
+            },
+            0,
+        )
+        .unwrap();
+        session.begin_run("hello", 1).unwrap();
+        let mut parser = AgentStreamParser::new(AgentProvider::DeepSeek);
+        for line in [
+            r#"{"type":"start","model":"deepseek-v4-flash","session_id":"fixture"}"#,
+            r#"{"type":"connection_type","connection":"https/sse"}"#,
+            r#"{"type":"connection_phase","phase":"waiting for response"}"#,
+            r#"{"type":"text_delta","text":"Draft"}"#,
+            r#"{"type":"tool_start","id":"tool-1","name":"read"}"#,
+            r#"{"type":"tool_input","delta":"{\"path\":\"/fixture\"}"}"#,
+            r#"{"type":"tool_exec","id":"tool-1","name":"read"}"#,
+            r#"{"type":"tool_done","id":"tool-1","name":"read","output":"File read","error":false}"#,
+            r#"{"type":"text_replace","text":"Corrected"}"#,
+            r#"{"type":"text_delta","text":" answer"}"#,
+            r#"{"type":"message_end","stop_reason":"stop"}"#,
+            r#"{"type":"tokens","input":12,"output":3,"cache_read_input":4}"#,
+            r#"{"type":"done","text":"Corrected answer.","model":"deepseek-v4-flash","usage":{"input_tokens":12,"output_tokens":4,"cache_read_input_tokens":4}}"#,
+        ] {
+            for event in parser.parse_line(line) {
+                session.apply_stream_event(event, 2, true);
+            }
+        }
+        let answers: Vec<_> = session
+            .messages
+            .iter()
+            .filter(|m| m.role == AgentMessageRole::Agent)
+            .collect();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].text, "Corrected answer.");
+        assert_eq!(session.trace.len(), 1);
+        assert!(
+            matches!(&session.trace[0].detail, AgentTraceKind::Tool { status: AgentTraceStatus::Succeeded, summary: Some(summary), .. } if summary == "File read")
+        );
+        assert_eq!(
+            session.metadata.as_ref().unwrap().model.as_deref(),
+            Some("deepseek-v4-flash")
+        );
+        assert_eq!(session.usage.as_ref().unwrap().output_tokens, Some(4));
+        session
+            .finish(AgentSessionStatus::Completed, 3, true)
+            .unwrap();
+        session.begin_run("next", 4).unwrap();
+        assert!(session.metadata.is_none());
+        assert!(session.metadata_turn_id.is_none());
+        assert!(session.usage.is_none());
+        let errors = parser.parse_line(r#"{"type":"result","is_error":true,"result":"not an answer","message":"Permission denied"}"#);
+        assert!(
+            matches!(&errors[..], [AgentStreamEvent::Error(message)] if message == "Permission denied")
+        );
+    }
+
+    // SDTEST-2797 — actual v0.79.35 run output must become answer text.
+    #[test]
+    fn deepseek_current_ndjson_text_and_final_snapshot_are_answers() {
+        for provider in [AgentProvider::DeepSeek, AgentProvider::Jcode] {
+            assert_eq!(
+                parse_stream_line(provider, r#"{"type":"text_delta","text":"OK"}"#),
+                vec![AgentStreamEvent::TextDelta("OK".into())]
+            );
+            let events = parse_stream_line(
+                provider,
+                r#"{"type":"done","text":"OK","session_id":"fixture"}"#,
+            );
+            assert!(events.contains(&AgentStreamEvent::TextSnapshot("OK".into())));
+            assert!(events.contains(&AgentStreamEvent::Session("fixture".into())));
+        }
     }
 }

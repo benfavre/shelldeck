@@ -2,14 +2,31 @@
 //! Set all three XDG homes to a disposable directory before running.
 use adabraka_ui::prelude::*;
 use gpui::*;
+use shelldeck_core::agent_remote_history::{
+    RemoteHistoryEntry, RemoteHistoryKind, RemoteHistoryPage, RemoteHistoryPosition,
+    RemoteHistoryQuery, REMOTE_HISTORY_PAGE_SIZE,
+};
 use shelldeck_core::agent_runtime::*;
 use shelldeck_core::agent_session::{storage::*, *};
 use shelldeck_ui::agent_console_view::{
-    save_local_document, AgentConsoleEvent, AgentConsoleView, AgentFileOrigin,
+    save_local_document, AgentConsoleEvent, AgentConsoleView, AgentFileOrigin, AgentProjectGroup,
+    AgentWorktreeOption,
 };
 use std::{borrow::Cow, path::PathBuf, time::Duration};
 
 struct Assets;
+struct PreviewRoot(Entity<AgentConsoleView>);
+impl Render for PreviewRoot {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The production Workspace supplies the UI font; standalone fixtures must too.
+        div()
+            .size_full()
+            .font_family(shelldeck_ui::settings::normalize_ui_font_family(
+                "Inter", cx,
+            ))
+            .child(self.0.clone())
+    }
+}
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
         Ok(std::fs::read(
@@ -75,19 +92,26 @@ fn main() -> anyhow::Result<()> {
         collection,
         ..Default::default()
     };
+    if std::env::var_os("SHELLDECK_PREVIEW_COLLAPSED").is_some() {
+        snapshot.preferences.collapsed_project_ids = vec!["preview-project".into()];
+    }
     snapshot.preferences.inspector_visible = std::env::var_os("SHELLDECK_PREVIEW_PANEL").is_some();
     snapshot.drafts.insert(
         first,
         "Add coverage for a reconnect while the page is hidden.".into(),
     );
+    snapshot.preferences.remote_sessions_expanded =
+        std::env::var_os("SHELLDECK_PREVIEW_CONNECT").is_some();
     AgentSessionStore::default().save(&snapshot)?;
+    let preview_remote = std::env::var_os("SHELLDECK_PREVIEW_REMOTE").is_some();
+    let preview_root = root.clone();
     let preview_editor = std::env::var_os("SHELLDECK_PREVIEW_EDITOR").is_some();
     let editor_path = root.join("src/main.rs");
     let preview_seconds = std::env::var("SHELLDECK_PREVIEW_SECONDS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(45)
-        .clamp(5, 120);
+        .clamp(5, 900);
     let width = std::env::var("SHELLDECK_PREVIEW_WIDTH")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
@@ -96,6 +120,9 @@ fn main() -> anyhow::Result<()> {
         adabraka_ui::init(cx);
         adabraka_ui::components::input::init(cx);
         adabraka_ui::set_icon_base_path("icons/lucide");
+        if std::env::var_os("SHELLDECK_PREVIEW_LIGHT").is_some() {
+            shelldeck_ui::theme::ShellDeckColors::set_theme(&shelldeck_core::config::app_config::ThemePreference::SolarizedLight);
+        }
         install_theme(cx, shelldeck_ui::theme::adabraka_theme_from_palette());
         shelldeck_ui::apply_ui_language(&shelldeck_core::config::app_config::UiLanguage::En);
         cx.open_window(
@@ -111,11 +138,57 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             },
             |_, cx| {
+                let remote = cx.new(shelldeck_ui::fleet_view::FleetView::new);
+                if preview_remote {
+                    remote.update(cx, |view, _| view.set_snapshot(remote_fixture()));
+                }
                 let view = cx.new(|cx| {
                     let mut view = AgentConsoleView::new(cx);
                     view.set_surface_visible(true, cx);
+                    view.set_project_groups(
+                        vec![AgentProjectGroup {
+                            id: "preview-project".into(),
+                            label: "ShellDeck".into(),
+                            worktrees: vec![AgentWorktreeOption {
+                                id: "preview-main".into(),
+                                label: "ShellDeck".into(),
+                                path: preview_root.display().to_string(),
+                                branch: None,
+                                is_primary: true,
+                                target: AgentTarget::Local,
+                            }],
+                        }],
+                        cx,
+                    );
+                    if preview_remote {
+                        view.set_remote_session_source(remote.clone(), cx);
+                        view.set_remote_sessions_available(true, cx);
+                    }
                     view
                 });
+                if preview_remote {
+                    cx.subscribe(&remote, |remote, event: &shelldeck_ui::fleet_view::FleetViewEvent, cx| {
+                        if let shelldeck_ui::fleet_view::FleetViewEvent::CheckSession(session) = event {
+                            remote.update(cx, |view,cx| {
+                                view.set_remote_capabilities(remote_fixture().capabilities);
+                                view.set_remote_connection_results(vec![remote_connection_fixture(session.clone())]);
+                                cx.notify();
+                            });
+                        }
+                        if let shelldeck_ui::fleet_view::FleetViewEvent::FollowUp(follow_up) = event {
+                            remote.update(cx, |view,cx| {
+                                view.set_follow_up_result(shelldeck_core::config::platform::PlatformFollowUpResult::ReconciliationPending {
+                                    follow_up: follow_up.clone(), category: "fixture-no-provider".into(),
+                                },cx);
+                            });
+                        }
+                    }).detach();
+                }
+                if std::env::var_os("SHELLDECK_PREVIEW_CONNECT").is_some() {
+                    let selected = remote_fixture().sessions[9].session.resource.clone();
+                    remote.update(cx, |remote,cx| { remote.open_session_exact(&selected,cx); cx.emit(shelldeck_ui::fleet_view::FleetViewEvent::CheckSession(selected.clone())); });
+                    view.update(cx, |view,cx| view.set_remote_session_active(true,cx));
+                }
                 // This fixture has no Workspace orchestrator. Its Save adapter
                 // accepts only local documents in the disposable fixture root.
                 let fixture_root = editor_path
@@ -125,6 +198,28 @@ fn main() -> anyhow::Result<()> {
                     .unwrap()
                     .to_path_buf();
                 cx.subscribe(&view, move |view, event: &AgentConsoleEvent, cx| {
+                    if let AgentConsoleEvent::OpenPlatformSession(coordinate) = event {
+                        let opened = remote
+                            .update(cx, |source, cx| {
+                                let opened = source.open_session_exact(coordinate, cx);
+                                if opened { cx.emit(shelldeck_ui::fleet_view::FleetViewEvent::CheckSession(coordinate.clone())); }
+                                opened
+                            });
+                        if opened {
+                            view.update(cx, |view, cx| view.set_remote_session_active(true, cx));
+                        }
+                    }
+                    if let AgentConsoleEvent::DiscoverSshSessions {connection_id,request_id,cursor} = event {
+                        view.update(cx,|view,cx|view.set_ssh_sessions(*connection_id,*request_id,Ok(ssh_sessions_page_fixture(cursor.as_deref())),cx));
+                    }
+                    if let AgentConsoleEvent::ReconnectSshSession {request_id,session,..} = event {
+                        let page = native_history_fixture(session, &RemoteHistoryQuery::default());
+                        view.update(cx,|view,cx|view.complete_ssh_reconnect(*request_id,page,cx));
+                    }
+                    if let AgentConsoleEvent::LoadSshHistory(request) = event {
+                        let page = native_history_fixture(&request.remote, &request.query);
+                        view.update(cx, |view,cx|view.complete_native_history(request.clone(),page,cx));
+                    }
                     if let AgentConsoleEvent::SaveFile(request) = event {
                         let result = match &request.origin {
                             AgentFileOrigin::Local { root, .. } if root == &fixture_root => {
@@ -142,6 +237,13 @@ fn main() -> anyhow::Result<()> {
                     }
                 })
                 .detach();
+                if std::env::var_os("SHELLDECK_PREVIEW_SSH").is_some() {
+                    let id=uuid::Uuid::from_u128(421);
+                    view.update(cx,|view,cx|{
+                        view.set_connections(vec![shelldeck_ui::agent_console_view::AgentConnectionOption{id,label:"Development server".into(),host:"dev.example.invalid".into()}],cx);
+                        view.scan_ssh_sessions(id,cx);
+                    });
+                }
                 if preview_editor {
                     let editor_view = view.downgrade();
                     cx.spawn(async move |cx| {
@@ -154,7 +256,33 @@ fn main() -> anyhow::Result<()> {
                     })
                     .detach();
                 }
-                view
+                if std::env::var_os("SHELLDECK_PREVIEW_ATTENTION").is_some() {
+                    let attention_view = view.downgrade();
+                    cx.spawn(async move |cx| {
+                        cx.background_executor().timer(Duration::from_millis(500)).await;
+                        let _ = attention_view.update(cx, |view, cx| {
+                            let pending = view.sessions().iter().find(|session| {
+                                session.name == "Investigate SSH reconnects"
+                            }).map(|session| (session.id, session.context.clone()));
+                            if let Some((id, context)) = pending {
+                                view.select_session(id, cx);
+                                let request = context.run_request("Synthetic approval preview");
+                                let run_id = request.id;
+                                view.begin_run(request, cx);
+                                view.push_stream_events_for(run_id, [
+                                    AgentStreamEvent::Ready,
+                                    AgentStreamEvent::Approval(AgentApprovalRequest {
+                                        id: "preview-approval".into(), session_id: "preview".into(),
+                                        tool_call_id: "preview-edit".into(),
+                                        title: "Apply the proposed change?".into(), options: vec![],
+                                    }),
+                                ], cx);
+                                view.select_session(first, cx);
+                            }
+                        });
+                    }).detach();
+                }
+                cx.new(|_| PreviewRoot(view))
             },
         )
         .unwrap();
@@ -167,4 +295,201 @@ fn main() -> anyhow::Result<()> {
         .detach();
     });
     Ok(())
+}
+
+// Synthetic directory: no credentials, provider process, or remote network calls.
+fn remote_fixture() -> shelldeck_core::config::platform::PlatformSnapshot {
+    use automonique_protocol::platform::{Capabilities, CursorTopic, Freshness};
+    use automonique_protocol::primitives::{EpochMillis, Revision};
+    use shelldeck_core::config::platform::*;
+    let sessions = (0..119)
+        .map(|i| SessionRecord {
+            session: ResourceRecord {
+                resource: ResourceCoordinate::new(
+                    ResourceAuthority::Automonique,
+                    ResourceKind::Session,
+                    ResourceId::new(format!("session_preview_{i:04}_demo{i:06}")).unwrap(),
+                ),
+                summary: PlatformText::new(if i % 8 == 0 { "closed" } else { "open" }).unwrap(),
+                freshness: Freshness {
+                    state: if i < 9 {
+                        FreshnessState::Fresh
+                    } else {
+                        FreshnessState::Unknown
+                    },
+                    observed_at: EpochMillis::from_millis(1000 - i),
+                    revision: Revision::FIRST,
+                },
+            },
+            run: None,
+            attachable: i < 9,
+            controllable: false,
+        })
+        .collect();
+    let cursor = PlatformCursor {
+        authority: ResourceAuthority::Automonique,
+        topic: CursorTopic::new("sessions").unwrap(),
+        sequence: Revision::FIRST,
+    };
+    PlatformSnapshot {
+        capabilities: Capabilities::platform_v1(),
+        resources: vec![],
+        cursor: cursor.clone(),
+        sessions,
+        sessions_cursor: cursor,
+        view: PlatformView::default(),
+    }
+}
+
+// Typed server reply for exercising connection/review without a real runtime.
+fn remote_connection_fixture(
+    session: shelldeck_core::config::platform::ResourceCoordinate,
+) -> shelldeck_core::config::platform::RetainedSessionUpdate {
+    use automonique_protocol::platform::{Freshness, SessionHistoryMessageText};
+    use automonique_protocol::primitives::EpochMillis;
+    use shelldeck_core::config::platform::*;
+    let state = SessionCommandState::new(
+        ResourceRecord {
+            resource: session.clone(),
+            summary: PlatformText::new("open").unwrap(),
+            freshness: Freshness {
+                state: FreshnessState::Fresh,
+                observed_at: EpochMillis::from_millis(1),
+                revision: Revision::FIRST,
+            },
+        },
+        None,
+        vec![],
+    )
+    .unwrap();
+    let empty = std::env::var_os("SHELLDECK_PREVIEW_EMPTY_HISTORY").is_some();
+    let events = if empty {
+        vec![]
+    } else {
+        vec![SessionHistoryEvent::Message {
+        cursor: 1, at: EpochMillis::from_millis(1), evidence: SessionHistoryEvidence::Authoritative,
+        role: SessionHistoryRole::Assistant,
+        text: SessionHistoryMessageText::new("The saved conversation is available. We were investigating the notification reconnect behavior.").unwrap(), truncated:false,
+    }]
+    };
+    RetainedSessionUpdate {
+        session: session.clone(),
+        command_state: SessionCommandStateResult::State(state),
+        history: RetainedHistoryUpdate::Replace {
+            retention_gap: false,
+            page: SessionHistoryPage::new(
+                session,
+                128,
+                128,
+                0,
+                if empty { 0 } else { 1 },
+                false,
+                events,
+            )
+            .unwrap(),
+        },
+    }
+}
+
+fn ssh_sessions_fixture() -> shelldeck_core::agent_remote_sessions::RemoteAgentSessionInventory {
+    use shelldeck_core::agent_remote_sessions::*;
+    RemoteAgentSessionInventory {
+        sessions: [
+            AgentProvider::Claude,
+            AgentProvider::Codex,
+            AgentProvider::Jcode,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, provider)| RemoteAgentSession {
+            provider,
+            session_id: format!("fixture-conversation-{i}"),
+            workdir: "/srv/customer-project".into(),
+            title: [
+                "Investigate checkout failure",
+                "Improve the remote session picker",
+                "Review API latency",
+            ][i]
+                .into(),
+            updated_at_ms: 1793360000000,
+            model: None,
+        })
+        .collect(),
+        warnings: vec![],
+        truncated: false,
+        next_cursor: None,
+    }
+}
+
+fn ssh_sessions_page_fixture(
+    cursor: Option<&str>,
+) -> shelldeck_core::agent_remote_sessions::RemoteAgentSessionInventory {
+    let mut page = ssh_sessions_fixture();
+    if cursor.is_none() {
+        page.truncated = true;
+        page.next_cursor = Some("fixture_page_2".into());
+    } else {
+        page.sessions.truncate(1);
+        page.sessions[0].session_id = "fixture-older-conversation".into();
+        page.sessions[0].title = "Older retained conversation".into();
+    }
+    page
+}
+
+// A complete synthetic three-page transcript. All callbacks stay local: clicking
+// reconnect, loading older/newer pages and reloading cannot contact a provider.
+fn native_history_fixture(
+    remote: &shelldeck_core::agent_remote_sessions::RemoteAgentSession,
+    query: &RemoteHistoryQuery,
+) -> Result<RemoteHistoryPage, String> {
+    let total = 160u64;
+    let snapshot = format!("v1:{total}:{}", "a".repeat(64));
+    if query
+        .snapshot
+        .as_ref()
+        .is_some_and(|value| value != &snapshot)
+    {
+        return Err("The preview history snapshot changed. Reload history.".into());
+    }
+    let count = REMOTE_HISTORY_PAGE_SIZE as u64;
+    let (start, end) = match query.position {
+        RemoteHistoryPosition::Latest => (total.saturating_sub(count), total),
+        RemoteHistoryPosition::Before(boundary) if boundary <= total => {
+            (boundary.saturating_sub(count), boundary)
+        }
+        RemoteHistoryPosition::After(boundary) if boundary <= total => {
+            (boundary, boundary.saturating_add(count).min(total))
+        }
+        _ => return Err("The preview history cursor is invalid.".into()),
+    };
+    let entries = (start..end)
+        .map(|index| {
+            let (kind, title, text) = match index % 4 {
+                0 => (RemoteHistoryKind::User, None, format!("Saved request {}: investigate notification reconnects and preserve the selected workspace.", index / 4 + 1)),
+                1 => (RemoteHistoryKind::Assistant, None, "I traced the saved connection to the original workspace. The retained messages and tool results are available below.".into()),
+                2 => (RemoteHistoryKind::Tool, Some("Read src/notifications.rs".into()), format!("Saved tool result {}\nConnection remains attached across navigation.\nThe original workspace is /srv/customer-project.", index / 4 + 1)),
+                _ => (RemoteHistoryKind::Assistant, None, "The focused checks passed. Reconnecting should restore the conversation before the next message is sent.".into()),
+            };
+            RemoteHistoryEntry { index, kind, title, text, at_ms: Some(1793360000000 + index as i64 * 1000), part: 1, parts: 1 }
+        })
+        .collect();
+    Ok(RemoteHistoryPage {
+        provider: remote.provider,
+        session_id: remote.session_id.clone(),
+        workdir: remote.workdir.clone(),
+        model: Some(
+            match remote.provider {
+                AgentProvider::Claude => "claude-fixture",
+                AgentProvider::Codex => "codex-fixture",
+                _ => "deepseek-fixture",
+            }
+            .into(),
+        ),
+        snapshot,
+        total_entries: total,
+        start,
+        end,
+        entries,
+        warnings: Vec::new(),
+    })
 }

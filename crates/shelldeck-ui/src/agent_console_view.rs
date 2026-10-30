@@ -39,6 +39,10 @@ use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
+#[path = "agent_console_view/activity.rs"]
+mod activity;
+#[path = "agent_console_view/auth_recovery.rs"]
+mod auth_recovery;
 #[path = "agent_console_view/composer.rs"]
 mod composer;
 #[path = "agent_console_view/composer_controls.rs"]
@@ -61,6 +65,8 @@ mod live_browser;
 mod live_input;
 #[path = "agent_console_view/model.rs"]
 mod model;
+#[path = "agent_console_view/native_history.rs"]
+mod native_history;
 #[path = "agent_console_view/navigator.rs"]
 mod navigator;
 #[path = "agent_console_view/progress.rs"]
@@ -69,7 +75,10 @@ mod progress;
 mod project_picker;
 #[path = "agent_console_view/remote_sessions.rs"]
 mod remote_sessions;
+#[path = "agent_console_view/ssh_sessions.rs"]
+mod ssh_sessions;
 use live_input::PendingLiveInput;
+pub use native_history::NativeHistoryRequest;
 #[path = "agent_console_view/review.rs"]
 mod review;
 #[path = "agent_console_view/tools.rs"]
@@ -131,6 +140,17 @@ pub enum AgentConsoleEvent {
         connection_id: Uuid,
     },
     RefreshRemoteSessions,
+    LoadSshHistory(NativeHistoryRequest),
+    DiscoverSshSessions {
+        connection_id: Uuid,
+        request_id: Uuid,
+        cursor: Option<String>,
+    },
+    ReconnectSshSession {
+        connection_id: Uuid,
+        request_id: Uuid,
+        session: shelldeck_core::agent_remote_sessions::RemoteAgentSession,
+    },
     OpenPlatformSession(shelldeck_core::config::platform::ResourceCoordinate),
     SaveFile(AgentFileSaveRequest),
     Run(AgentRunRequest),
@@ -140,6 +160,7 @@ pub enum AgentConsoleEvent {
         context: AgentExecutionContext,
     },
     OpenWorkspaceLauncher,
+    OpenProjectSetup,
     CheckReadiness {
         check_id: Uuid,
         context: AgentExecutionContext,
@@ -232,6 +253,9 @@ struct AgentSessionUi {
     run_id: Option<Uuid>,
     received_delta: bool,
     received_output: bool,
+    run_details_expanded: bool,
+    plan_expanded: bool,
+    expanded_activity: HashSet<Uuid>,
 }
 
 impl AgentSessionUi {
@@ -253,6 +277,9 @@ impl AgentSessionUi {
             run_id: None,
             received_delta: false,
             received_output: false,
+            run_details_expanded: false,
+            plan_expanded: false,
+            expanded_activity: HashSet::new(),
         }
     }
 }
@@ -269,6 +296,7 @@ struct PendingRun {
 enum TimelineItem {
     Message(AgentMessage),
     Trace(AgentTraceEvent),
+    CompletedWork(Vec<AgentTraceEvent>),
     Boundary(shelldeck_core::agent_session::AgentHistoryBoundary),
 }
 
@@ -277,6 +305,7 @@ impl TimelineItem {
         match self {
             Self::Message(message) => message.sequence,
             Self::Trace(trace) => trace.sequence,
+            Self::CompletedWork(traces) => traces.first().map_or(0, |trace| trace.sequence),
             Self::Boundary(boundary) => boundary.sequence,
         }
     }
@@ -285,6 +314,7 @@ impl TimelineItem {
         match self {
             Self::Message(message) => message.at_ms,
             Self::Trace(trace) => trace.at_ms,
+            Self::CompletedWork(traces) => traces.first().map_or(0, |trace| trace.at_ms),
             Self::Boundary(boundary) => boundary.at_ms,
         }
     }
@@ -305,6 +335,8 @@ pub struct AgentConsoleView {
     navigator_search: Entity<InputState>,
     sessions: AgentSessionCollection,
     remote_sessions: remote_sessions::RemoteAgentSessionsUi,
+    ssh_sessions: ssh_sessions::SshSessionsUi,
+    native_history: HashMap<Uuid, native_history::NativeHistoryUi>,
     session_ui: HashMap<Uuid, AgentSessionUi>,
     run_sessions: HashMap<Uuid, Uuid>,
     foreground_runs: HashSet<Uuid>,
@@ -313,8 +345,11 @@ pub struct AgentConsoleView {
     context_locks: HashSet<Uuid>,
     pending_confirm: Option<PendingRun>,
     context_expanded: bool,
+    agent_setup_expanded: bool,
     inspector_tab: AgentInspectorTab,
     focused_trace: Option<Uuid>,
+    focused_trace_anchor: ScrollAnchor,
+    pending_trace_reveal: Option<Uuid>,
     surface_focus_requested: bool,
     inspector_local_browser: FileBrowserPanel,
     inspector_remote_request: Uuid,
@@ -340,11 +375,23 @@ pub struct AgentConsoleView {
 }
 
 fn input_state(cx: &mut Context<AgentConsoleView>, initial: String) -> Entity<InputState> {
-    cx.new(|cx| {
+    let state = cx.new(|cx| {
         let mut state = InputState::new(cx);
         state.content = initial.into();
         state
+    });
+    // Manual model/path edits must immediately refresh continuity and Send readiness.
+    cx.subscribe(&state, |this, _, event, cx| {
+        if matches!(
+            event,
+            adabraka_ui::components::input_state::InputEvent::Change
+        ) {
+            this.schedule_library_save(cx);
+            cx.notify();
+        }
     })
+    .detach();
+    state
 }
 
 fn selected_agent_target(
@@ -440,8 +487,13 @@ impl AgentConsoleView {
         let parent = cx.entity();
         let provider_select =
             Self::build_provider_select(AgentProvider::Claude, false, parent.clone(), cx);
-        let access_select =
-            Self::build_access_select(AgentAccessMode::ReadOnly, false, parent.clone(), cx);
+        let access_select = Self::build_access_select(
+            AgentProvider::Claude,
+            AgentAccessMode::ReadOnly,
+            false,
+            parent.clone(),
+            cx,
+        );
         let target_select = Self::build_target_select(&[], None, false, parent, cx);
         let default_workdir = std::env::current_dir()
             .ok()
@@ -463,6 +515,7 @@ impl AgentConsoleView {
         session_ui.insert(session_id, AgentSessionUi::new(cx));
         let mut inspector_local_browser = FileBrowserPanel::new();
         inspector_local_browser.set_root(PathBuf::from(&default_workdir));
+        let scroll = ScrollHandle::new();
         let mut view = Self {
             provider: AgentProvider::Claude,
             access: AgentAccessMode::ReadOnly,
@@ -478,6 +531,8 @@ impl AgentConsoleView {
             navigator_search: input_state(cx, String::new()),
             sessions,
             remote_sessions: remote_sessions::RemoteAgentSessionsUi::default(),
+            ssh_sessions: Default::default(),
+            native_history: Default::default(),
             session_ui,
             run_sessions: HashMap::new(),
             foreground_runs: HashSet::new(),
@@ -486,8 +541,11 @@ impl AgentConsoleView {
             context_locks: HashSet::new(),
             pending_confirm: None,
             context_expanded: false,
+            agent_setup_expanded: false,
             inspector_tab: AgentInspectorTab::Files,
             focused_trace: None,
+            focused_trace_anchor: ScrollAnchor::for_handle(scroll.clone()),
+            pending_trace_reveal: None,
             surface_focus_requested: false,
             inspector_local_browser,
             inspector_remote_request: Uuid::new_v4(),
@@ -500,7 +558,7 @@ impl AgentConsoleView {
             inspector_remote_entries: Vec::new(),
             inspector_remote_loading: false,
             inspector_remote_error: None,
-            scroll: ScrollHandle::new(),
+            scroll,
             library: AgentLibraryUi::new(cx),
             composer_ui: AgentComposerUi::new(cx),
             review: AgentReviewUi::new(),
@@ -554,6 +612,7 @@ impl AgentConsoleView {
     }
 
     fn build_access_select(
+        provider: AgentProvider,
         selected: AgentAccessMode,
         disabled: bool,
         parent: Entity<Self>,
@@ -562,7 +621,7 @@ impl AgentConsoleView {
         let options = vec![
             SelectOption::new(
                 AgentAccessMode::ReadOnly,
-                t!("agents.access.read_only").to_string(),
+                composer_controls::provider_access_label(provider, AgentAccessMode::ReadOnly),
             )
             .with_icon("icons/lucide/lock.svg"),
             SelectOption::new(
@@ -628,6 +687,7 @@ impl AgentConsoleView {
                             });
                         }
                         this.selected_connection = *connection_id;
+                        this.schedule_library_save(cx);
                         cx.notify();
                     });
                 })
@@ -642,6 +702,7 @@ impl AgentConsoleView {
         // Discovery cannot grant a different execution target. A missing SSH
         // UUID remains selected until the user explicitly chooses another target.
         self.connections = connections;
+        self.rebuild_ssh_session_selector(cx);
         let locked = self.context_controls_locked();
         self.target_select = Self::build_target_select(
             &self.connections,
@@ -822,6 +883,7 @@ impl AgentConsoleView {
             return false;
         }
         let unchanged = self.sessions.selected_id() == Some(session_id);
+        self.clear_ssh_session_preview();
         self.close_navigator_overlay(cx);
         if !unchanged {
             self.retain_draft_context(cx);
@@ -851,6 +913,7 @@ impl AgentConsoleView {
             .create(name, context, now_ms())
             .map_err(|error| error.to_string())?;
         self.session_ui.insert(session_id, AgentSessionUi::new(cx));
+        self.clear_ssh_session_preview();
         self.close_navigator_overlay(cx);
         self.set_remote_session_active(false, cx);
         self.apply_selected_context(cx);
@@ -879,10 +942,9 @@ impl AgentConsoleView {
 
     pub fn set_surface_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         self.remote_sessions.surface_visible = visible;
-        if self
-            .sessions
-            .set_surface_visible(visible && !self.remote_sessions.active)
-        {
+        if self.sessions.set_surface_visible(
+            visible && !self.remote_sessions.active && self.ssh_sessions.preview.is_none(),
+        ) {
             cx.notify();
         }
     }
@@ -900,6 +962,7 @@ impl AgentConsoleView {
 
     pub fn reject_run_for(&mut self, run_id: Uuid, error: String, cx: &mut Context<Self>) {
         self.retire_browser_run(run_id);
+        self.take_run_options(run_id);
         self.pending_live_inputs.remove(&run_id);
         self.foreground_runs.remove(&run_id);
         self.workflow_finish_run(run_id, AgentSessionStatus::Failed, cx);
@@ -917,6 +980,10 @@ impl AgentConsoleView {
         if let Some(ui) = self.session_ui.get_mut(&session_id) {
             ui.run_id = None;
         }
+        if self.sessions.selected_id() == Some(session_id) {
+            self.apply_selected_context(cx);
+        }
+        self.schedule_library_save(cx);
         cx.notify();
     }
 
@@ -934,12 +1001,40 @@ impl AgentConsoleView {
         event: AgentStreamEvent,
         cx: &mut Context<Self>,
     ) {
+        self.push_stream_events_for(run_id, std::iter::once(event), cx);
+    }
+
+    /// One persistence timer and repaint per bounded runtime batch.
+    pub fn push_stream_events_for(
+        &mut self,
+        run_id: Uuid,
+        events: impl IntoIterator<Item = AgentStreamEvent>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut changed = false;
+        for event in events {
+            changed |= self.apply_stream_event_for(run_id, event, cx);
+        }
+        if changed {
+            self.schedule_library_save(cx);
+            cx.notify();
+        }
+    }
+
+    fn apply_stream_event_for(
+        &mut self,
+        run_id: Uuid,
+        event: AgentStreamEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(session_id) = self.run_sessions.get(&run_id).copied() else {
-            return;
+            return false;
         };
         self.workflow_observe_event(run_id, &event, cx);
         self.acknowledge_live_input(run_id, session_id, &event, cx);
-        follow_latest_if_at_end(&self.scroll);
+        if self.sessions.selected_id() == Some(session_id) && self.sessions.surface_visible() {
+            follow_latest_if_at_end(&self.scroll);
+        }
         let suppress_complete_jcode = matches!(event, AgentStreamEvent::Text(_))
             && self
                 .session_ui
@@ -952,11 +1047,13 @@ impl AgentConsoleView {
                 )
             });
         if suppress_complete_jcode {
-            return;
+            return false;
         }
         if let Some(ui) = self.session_ui.get_mut(&session_id) {
             match &event {
-                AgentStreamEvent::Text(text) | AgentStreamEvent::TextDelta(text) => {
+                AgentStreamEvent::Text(text)
+                | AgentStreamEvent::TextDelta(text)
+                | AgentStreamEvent::TextSnapshot(text) => {
                     if !text.is_empty() {
                         ui.received_output = true;
                     }
@@ -971,8 +1068,7 @@ impl AgentConsoleView {
         let _ = self
             .sessions
             .apply_stream_event(session_id, event, now_ms());
-        self.schedule_library_save(cx);
-        cx.notify();
+        true
     }
 
     pub fn finish_run(
@@ -983,6 +1079,7 @@ impl AgentConsoleView {
         cx: &mut Context<Self>,
     ) {
         self.retire_browser_run(run_id);
+        self.take_run_options(run_id);
         self.pending_live_inputs.remove(&run_id);
         self.foreground_runs.remove(&run_id);
         let Some(session_id) = self.run_sessions.remove(&run_id) else {
@@ -1014,7 +1111,9 @@ impl AgentConsoleView {
         if let Some(ui) = self.session_ui.get_mut(&session_id) {
             ui.run_id = None;
         }
-        follow_latest_if_at_end(&self.scroll);
+        if self.sessions.selected_id() == Some(session_id) && self.sessions.surface_visible() {
+            follow_latest_if_at_end(&self.scroll);
+        }
         if self.sessions.selected_id() == Some(session_id) {
             self.apply_selected_context(cx);
         }
@@ -1036,7 +1135,8 @@ impl AgentConsoleView {
         };
         let locked = self.context_locks.contains(&session.id) || session.status.is_active();
         self.provider_select = Self::build_provider_select(self.provider, locked, cx.entity(), cx);
-        self.access_select = Self::build_access_select(self.access, locked, cx.entity(), cx);
+        self.access_select =
+            Self::build_access_select(self.provider, self.access, locked, cx.entity(), cx);
         self.target_select = Self::build_target_select(
             &self.connections,
             self.selected_connection,
@@ -1113,6 +1213,9 @@ impl AgentConsoleView {
             self.composer_ui.effort.remove(&id);
         }
         self.provider_select = Self::build_provider_select(provider, false, cx.entity(), cx);
+        self.access_select =
+            Self::build_access_select(provider, self.access, false, cx.entity(), cx);
+        self.schedule_library_save(cx);
         cx.notify();
     }
 
@@ -1121,7 +1224,9 @@ impl AgentConsoleView {
             return;
         }
         self.access = access;
-        self.access_select = Self::build_access_select(access, false, cx.entity(), cx);
+        self.access_select =
+            Self::build_access_select(self.provider, access, false, cx.entity(), cx);
+        self.schedule_library_save(cx);
         cx.notify();
     }
 
@@ -1158,6 +1263,9 @@ impl AgentConsoleView {
             model: (self.provider != AgentProvider::Automonique && !model.is_empty())
                 .then_some(model),
         };
+        if let Some(id) = self.sessions.selected_id() {
+            self.validate_native_context_transition(id, &context)?;
+        }
         context
             .run_request("validate")
             .validate()
@@ -1170,6 +1278,18 @@ impl AgentConsoleView {
             .sessions
             .selected_id()
             .ok_or_else(|| t!("agents.error.prompt_empty").to_string())?;
+        if self
+            .native_history
+            .get(&session_id)
+            .is_some_and(|state| state.fresh_view)
+        {
+            return Err(t!("agents.native_history.fresh_help").to_string());
+        }
+        if self.sessions.get(session_id).is_some_and(|session| {
+            Self::native_context_needs_reconnect(session, &self.displayed_context(cx))
+        }) {
+            return Err(t!("agents.native_history.reconnect_required").to_string());
+        }
         let prompt = self
             .session_ui
             .get(&session_id)
@@ -1253,6 +1373,13 @@ impl AgentConsoleView {
     }
 
     fn start_pending(&mut self, pending: PendingRun, cx: &mut Context<Self>) {
+        if let Err(error) =
+            self.validate_native_context_transition(pending.session_id, &pending.context)
+        {
+            self.composer_ui.errors.insert(pending.session_id, error);
+            cx.notify();
+            return;
+        }
         if let Err(error) = validate_agent_target(&pending.context.target, &self.connections) {
             self.apply_session_draft_error(pending.session_id, error, cx);
             return;
@@ -1291,7 +1418,7 @@ impl AgentConsoleView {
             self.apply_session_draft_error(session_id, error.to_string(), cx);
             return;
         }
-        if session.messages.is_empty() {
+        if session.messages.is_empty() && session.provider_session_id().is_none() {
             let _ = session.rename(session_name(&pending.prompt), now_ms());
         }
         match self
@@ -1316,6 +1443,9 @@ impl AgentConsoleView {
                         cx,
                     );
                     return;
+                }
+                if !foreground {
+                    self.consume_admitted_queued(&request);
                 }
                 if clear_draft {
                     if let Some(ui) = self.session_ui.get(&session_id) {
@@ -1369,7 +1499,7 @@ impl AgentConsoleView {
         }
         let base = self.displayed_context(cx);
         let context = context_for_worktree(&base, worktree);
-        self.create_session(worktree.label.clone(), context, cx)
+        self.create_session(t!("agents.session.new").to_string(), context, cx)
             .ok()
     }
 
@@ -1509,10 +1639,39 @@ impl AgentConsoleView {
             .into_any_element()
     }
 
-    fn render_trace(trace: &AgentTraceEvent, focused: bool) -> AnyElement {
+    fn render_trace(&self, trace: &AgentTraceEvent, focused: bool) -> AnyElement {
         let (icon, color, title, detail, stats) = trace_presentation(&trace.detail);
+        let title = if matches!(trace.detail, AgentTraceKind::Activity { .. }) {
+            Self::concise_activity_label(title)
+        } else {
+            title
+        };
+        // Plain lifecycle activity belongs in the timeline, but does not need
+        // the command/tool card chrome used for inspectable technical work.
+        if matches!(trace.detail, AgentTraceKind::Activity { .. }) && !focused {
+            return div()
+                .id(("agent-trace", uuid_key(trace.id)))
+                .w_full()
+                .min_w(px(0.0))
+                .flex()
+                .items_start()
+                .gap(px(6.0))
+                .py(px(3.0))
+                .text_size(px(10.5))
+                .text_color(color)
+                .child(lucide_icon(icon, 12.0, color))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .whitespace_normal()
+                        .child(title),
+                )
+                .into_any_element();
+        }
         div()
             .id(("agent-trace", uuid_key(trace.id)))
+            .anchor_scroll(focused.then(|| self.focused_trace_anchor.clone()))
             .w_full()
             .flex()
             .items_start()
@@ -1558,8 +1717,7 @@ impl AgentConsoleView {
                                 div()
                                     .flex_1()
                                     .min_w(px(0.0))
-                                    .overflow_hidden()
-                                    .text_ellipsis()
+                                    .whitespace_normal()
                                     .text_size(px(10.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(color)
@@ -1663,10 +1821,20 @@ impl AgentConsoleView {
 
 impl Render for AgentConsoleView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.ssh_sessions.preview.is_some() {
+            let wide = window.viewport_size().width.to_f64() as f32
+                >= px(840.0).to_pixels(window.rem_size()).to_f64() as f32;
+            self.update_navigator_layout(wide, cx);
+            return self.render_ssh_session_preview(cx);
+        }
         if self.remote_sessions.active && self.remote_sessions.available {
-            self.update_navigator_layout(true, cx);
+            let wide = window.viewport_size().width.to_f64() as f32
+                >= px(840.0).to_pixels(window.rem_size()).to_f64() as f32;
+            self.update_navigator_layout(wide, cx);
             return self.render_remote_session(cx);
         }
+        self.ensure_ssh_discovery(cx);
+        self.ensure_native_history(cx);
         if self.surface_focus_requested
             && self.pending_confirm.is_none()
             && self.workflows.dialog.is_none()
@@ -1751,7 +1919,15 @@ impl Render for AgentConsoleView {
         let status = session.status;
         let attention = session.attention;
         let elapsed = session_elapsed(&session);
-        let timeline = merged_timeline(&session);
+        let timeline = if self
+            .native_history
+            .get(&session_id)
+            .is_some_and(|state| state.fresh_view)
+        {
+            Vec::new()
+        } else {
+            activity::group_completed_work(merged_timeline(&session))
+        };
         let received_output = self
             .session_ui
             .get(&session_id)
@@ -1901,7 +2077,10 @@ impl Render for AgentConsoleView {
             .track_scroll(&self.scroll)
             .px(if wide { px(24.0) } else { px(12.0) })
             .py(px(16.0));
-        if !has_content {
+        if session.remote_history.is_some() {
+            output = output.child(self.render_native_history(&session, window, cx));
+        }
+        if !has_content && session.remote_history.is_none() {
             let subscription_setup = crate::cli_subscription_setup::render_subscription_setup(
                 self.provider.binary(),
                 self.selected_connection.is_some(),
@@ -1928,19 +2107,38 @@ impl Render for AgentConsoleView {
                         .text_align(TextAlign::Center)
                         .child(t!("agents.empty.description").to_string()),
                 );
-            if subscription_setup.is_some() {
+            if subscription_setup.is_some() && self.agent_setup_expanded {
                 empty_state = empty_state.flex_shrink_0().py(px(16.0));
             } else {
                 empty_state = empty_state.flex_1();
             }
+            if subscription_setup.is_some() {
+                empty_state = empty_state.child(
+                    Button::new("agent-setup-toggle", t!("agents.setup.toggle").to_string())
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from(if self.agent_setup_expanded {
+                            "chevron-up"
+                        } else {
+                            "chevron-down"
+                        }))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.agent_setup_expanded = !this.agent_setup_expanded;
+                            cx.notify();
+                        })),
+                );
+            }
             output = output.child(empty_state);
-            if let Some(setup) = subscription_setup {
-                output = output.child(div().w_full().max_w(px(520.0)).mx_auto().child(setup));
+            if self.agent_setup_expanded {
+                if let Some(setup) = subscription_setup {
+                    output = output.child(div().w_full().max_w(px(520.0)).mx_auto().child(setup));
+                }
             }
         } else {
             let mut timeline_view = div()
+                .flex_shrink_0()
                 .w_full()
-                .max_w(px(880.0))
+                .max_w(px(800.0))
                 .mx_auto()
                 .flex()
                 .flex_col()
@@ -1950,7 +2148,7 @@ impl Render for AgentConsoleView {
                     TimelineItem::Message(message) => {
                         let color = match message.role {
                             AgentMessageRole::User => ShellDeckColors::text_muted(),
-                            AgentMessageRole::Agent => ShellDeckColors::primary(),
+                            AgentMessageRole::Agent => ShellDeckColors::text_muted(),
                             AgentMessageRole::Error => ShellDeckColors::error(),
                         };
                         let label = match message.role {
@@ -1965,12 +2163,15 @@ impl Render for AgentConsoleView {
                         timeline_view = timeline_view.child(
                             div()
                                 .id(("agent-message", uuid_key(message.id)))
+                                .flex_shrink_0()
                                 .w_full()
                                 .min_w(px(0.0))
                                 .overflow_hidden()
                                 .py(px(10.0))
                                 .when(message.role == AgentMessageRole::User, |message| {
                                     message
+                                        .w(relative(0.85))
+                                        .ml_auto()
                                         .px(px(16.0))
                                         .rounded(px(12.0))
                                         .bg(ShellDeckColors::bg_surface())
@@ -1984,14 +2185,14 @@ impl Render for AgentConsoleView {
                                 .child(
                                     div()
                                         .mb(px(4.0))
-                                        .text_size(px(9.5))
+                                        .text_size(px(10.5))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(color)
                                         .child(label),
                                 )
                                 .child(
                                     Markdown::new(message.text.clone())
-                                        .base_font_size(px(12.0).to_pixels(window.rem_size()))
+                                        .base_font_size(px(14.0).to_pixels(window.rem_size()))
                                         .compact()
                                         .w_full()
                                         .min_w_0()
@@ -2013,15 +2214,17 @@ impl Render for AgentConsoleView {
                                 .border_y_1()
                                 .border_color(ShellDeckColors::border())
                                 .text_size(px(10.5))
-                                .text_color(ShellDeckColors::warning())
+                                .text_color(ShellDeckColors::text_muted())
                                 .child(t!(key).to_string()),
                         );
                     }
+                    TimelineItem::CompletedWork(traces) => {
+                        timeline_view =
+                            timeline_view.child(self.render_completed_work(session_id, traces, cx));
+                    }
                     TimelineItem::Trace(trace) => {
-                        timeline_view = timeline_view.child(Self::render_trace(
-                            trace,
-                            self.focused_trace == Some(trace.id),
-                        ));
+                        timeline_view = timeline_view
+                            .child(self.render_trace(trace, self.focused_trace == Some(trace.id)));
                     }
                 }
             }
@@ -2048,9 +2251,21 @@ impl Render for AgentConsoleView {
                 );
             }
             timeline_view = timeline_view
+                .children(self.render_auth_recovery(&session, cx))
                 .child(self.render_run_progress(&session, cx))
                 .child(self.render_turn_change_cards(&session, cx));
             output = output.child(timeline_view);
+            if let Some(trace_id) = self.pending_trace_reveal.take() {
+                if self.focused_trace == Some(trace_id)
+                    && session.trace.iter().any(|trace| trace.id == trace_id)
+                {
+                    // Schedule from render: the expanded trace must first acquire
+                    // its new anchor bounds during this frame's prepaint.
+                    self.focused_trace_anchor.scroll_to(window, cx);
+                    window.on_next_frame(|window, _| window.refresh());
+                    window.request_animation_frame();
+                }
+            }
         }
 
         let composer = self.render_composer(&session, window, cx);
@@ -2096,9 +2311,7 @@ impl Render for AgentConsoleView {
             .abs()
             > 4.0;
         content = content.child(self.render_middle_switcher(cx));
-        if self.live_browser_visible(cx) {
-            content = content.child(self.render_live_browser(cx));
-        } else if self.agent_editor_visible(cx) {
+        if self.agent_editor_visible(cx) {
             content = content.child(self.render_middle_editor(cx));
         } else {
             content = content.child(output);
@@ -2124,7 +2337,7 @@ impl Render for AgentConsoleView {
                     .px(if wide { px(18.0) } else { px(10.0) })
                     .pt(px(7.0))
                     .pb(px(11.0))
-                    .child(div().w_full().max_w(px(880.0)).mx_auto().child(composer)),
+                    .child(div().w_full().max_w(px(800.0)).mx_auto().child(composer)),
             );
         }
         let mut root = div()
@@ -2160,7 +2373,24 @@ impl Render for AgentConsoleView {
         if wide && self.tools.navigator_visible {
             root = root.child(self.render_navigator(cx));
         }
-        root = root.child(content);
+        if self.live_browser_visible(cx) {
+            let available_width = width / window.rem_size().to_f64() as f32 * 16.0
+                - if wide && self.tools.navigator_visible {
+                    f32::from(self.library.preferences.navigator_width)
+                } else {
+                    0.0
+                };
+            root = root.child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(self.render_browser_split(content, available_width, cx)),
+            );
+        } else {
+            root = root.child(content);
+        }
         if self.tools.panel_visible {
             let panel = if self.tools.active.is_some() {
                 self.render_tools_panel(&session, cx)
@@ -2297,7 +2527,12 @@ fn session_elapsed(session: &AgentSession) -> Option<String> {
 fn merged_timeline(session: &AgentSession) -> Vec<TimelineItem> {
     let mut timeline = Vec::with_capacity(session.messages.len() + session.trace.len());
     timeline.extend(session.messages.iter().cloned().map(TimelineItem::Message));
-    timeline.extend(session.trace.iter().cloned().map(TimelineItem::Trace));
+    timeline.extend(session.trace.iter().filter(|trace| {
+        let provider = trace.turn_id.and_then(|id| session.turns.iter().find(|turn| turn.id == id)).map(|turn| turn.context.provider);
+        // Hide bookkeeping retained by older Jcode parsers without deleting history.
+        !(matches!(provider, Some(AgentProvider::Jcode | AgentProvider::DeepSeek))
+            && matches!(&trace.detail, AgentTraceKind::Activity { label } if matches!(label.as_str(), "start" | "connection type" | "connection phase" | "message end" | "tokens" | "upstream provider" | "session" | "tool input")))
+    }).cloned().map(TimelineItem::Trace));
     timeline.extend(
         session
             .boundaries
@@ -2480,7 +2715,15 @@ fn worktree_bound_session(
 ) -> Option<Uuid> {
     sessions
         .iter()
-        .find(|session| session_worktree_matches(session, worktree))
+        .filter(|session| !session.archived && session_worktree_matches(session, worktree))
+        .max_by_key(|session| {
+            (
+                session.context.workdir.trim_end_matches('/')
+                    == worktree.path.trim_end_matches('/'),
+                session.updated_at_ms,
+                session.id,
+            )
+        })
         .map(|session| session.id)
 }
 
@@ -2576,10 +2819,10 @@ fn trace_presentation(
             path,
             line_start,
             line_end,
-            ..
+            status,
         } => (
             "search",
-            ShellDeckColors::text_muted(),
+            trace_status_color(*status),
             path.clone(),
             None,
             match (line_start, line_end) {
@@ -2593,10 +2836,10 @@ fn trace_presentation(
             additions,
             deletions,
             preview,
-            ..
+            status,
         } => (
             "git-branch",
-            ShellDeckColors::warning(),
+            trace_status_color(*status),
             path.clone(),
             preview.clone(),
             Some(format!("+{additions} −{deletions}")),
@@ -2647,6 +2890,118 @@ fn bounded_utf8(mut value: String, max_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    // SDTEST-2801 — clean legacy Jcode bookkeeping without hiding real work or other providers.
+    #[test]
+    fn legacy_jcode_timeline_hides_only_known_transport_rows() {
+        use super::{merged_timeline, AgentStreamEvent};
+        let mut session = AgentSession::new(
+            "Legacy",
+            AgentExecutionContext {
+                provider: AgentProvider::DeepSeek,
+                target: AgentTarget::Local,
+                access: AgentAccessMode::ReadOnly,
+                workdir: std::env::temp_dir().display().to_string(),
+                model: None,
+            },
+            0,
+        )
+        .unwrap();
+        session.begin_run("hello", 1).unwrap();
+        session.apply_stream_event(
+            AgentStreamEvent::Activity("connection phase".into()),
+            2,
+            true,
+        );
+        session.apply_stream_event(
+            AgentStreamEvent::Activity("Compacting context".into()),
+            3,
+            true,
+        );
+        assert_eq!(merged_timeline(&session).len(), 2); // user message and real activity
+        assert_eq!(session.trace.len(), 2); // retained diagnostics are untouched
+        session.turns.last_mut().unwrap().context.provider = AgentProvider::Claude;
+        assert_eq!(merged_timeline(&session).len(), 3);
+    }
+
+    // SDTEST-2795 — failed admission releases inputs and unlocks a new attempt.
+    #[test]
+    fn rejected_chat_run_releases_options_and_retains_conversation() {
+        use super::*;
+        use gpui::{AppContext, TestAppContext};
+        let mut app = TestAppContext::single();
+        let view = app.update(|cx| cx.new(AgentConsoleView::new));
+        view.update(&mut app, |view, cx| {
+            let id = view.sessions.selected_id().unwrap();
+            let request = view.sessions.begin_run(id, "Keep this request", 1).unwrap();
+            view.run_sessions.insert(request.id, id);
+            view.set_run_options(
+                request.id,
+                shelldeck_core::agent_runtime::AgentInputOptions {
+                    image_paths: vec![PathBuf::from("/fixture/attachment.png")],
+                    ..Default::default()
+                },
+            );
+            view.reject_run_for(request.id, "Provider not installed".into(), cx);
+            assert!(view.take_run_options(request.id).image_paths.is_empty());
+            assert!(!view.context_controls_locked());
+            assert_eq!(
+                view.sessions.get(id).unwrap().status,
+                AgentSessionStatus::Failed
+            );
+            assert!(view
+                .sessions
+                .get(id)
+                .unwrap()
+                .messages
+                .iter()
+                .any(|m| m.text == "Keep this request"));
+            assert!(view.sessions.begin_run(id, "Try again", 2).is_ok());
+        });
+    }
+
+    // SDTEST-2794 — batched/background output stays with its run; late output
+    // cannot revive a finished turn or contaminate the visible conversation.
+    #[test]
+    fn batched_chat_events_preserve_session_identity_and_terminal_fence() {
+        use super::*;
+        use gpui::{AppContext, TestAppContext};
+        let mut app = TestAppContext::single();
+        let view = app.update(|cx| cx.new(AgentConsoleView::new));
+        view.update(&mut app, |view, cx| {
+            let visible = view.sessions.selected_id().unwrap();
+            let context = view.sessions.get(visible).unwrap().context.clone();
+            let background = view.sessions.create("Background", context, 1).unwrap();
+            view.sessions.select(visible).unwrap();
+            view.sessions.set_surface_visible(true);
+            let request = view.sessions.begin_run(background, "hello", 2).unwrap();
+            view.run_sessions.insert(request.id, background);
+            view.push_stream_events_for(
+                request.id,
+                [
+                    AgentStreamEvent::Text("Hello".into()),
+                    AgentStreamEvent::TextDelta(" there".into()),
+                    AgentStreamEvent::TextDelta("!".into()),
+                ],
+                cx,
+            );
+            assert!(view.sessions.get(visible).unwrap().messages.is_empty());
+            let session = view.sessions.get(background).unwrap();
+            assert_eq!(session.messages.last().unwrap().text, "Hello there!");
+            assert!(session.unread_count > 0);
+            view.finish_run(request.id, None, None, cx);
+            let messages = view.sessions.get(background).unwrap().messages.len();
+            view.push_stream_events_for(
+                request.id,
+                [AgentStreamEvent::TextDelta("late".into())],
+                cx,
+            );
+            let session = view.sessions.get(background).unwrap();
+            assert_eq!(session.status, AgentSessionStatus::Cancelled);
+            assert_eq!(session.messages.len(), messages);
+            assert_eq!(view.sessions.selected_id(), Some(visible));
+        });
+    }
+
     // SDTEST-2734 — disappeared SSH identities remain SSH across refresh,
     // selection display and controls; only explicit selection can change target.
     #[test]

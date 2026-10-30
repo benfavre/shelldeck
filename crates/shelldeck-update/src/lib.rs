@@ -106,6 +106,18 @@ fn update_checks_enabled(requested: bool, verification_key: Option<&str>) -> boo
 pub fn verify_release_signature(release: &ReleaseInfo) -> anyhow::Result<()> {
     let encoded_key = embedded_verification_key()
         .ok_or_else(|| anyhow::anyhow!("Update verification key is not configured"))?;
+    verify_release_for_platform(release, encoded_key, &platform::current_platform())
+}
+
+fn verify_release_for_platform(
+    release: &ReleaseInfo,
+    encoded_key: &str,
+    platform: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        release.platform == platform,
+        "Update manifest targets a different platform"
+    );
     verify_release_signature_with_key(release, encoded_key)
 }
 
@@ -145,6 +157,7 @@ pub struct AutoUpdater {
     enabled: bool,
     check_interval: Duration,
     latest_release: Option<ReleaseInfo>,
+    operation_generation: u64,
     _poll_task: Option<Task<()>>,
 }
 
@@ -163,6 +176,7 @@ impl AutoUpdater {
             enabled: false,
             check_interval: DEFAULT_CHECK_INTERVAL,
             latest_release: None,
+            operation_generation: 0,
             _poll_task: None,
         }
     }
@@ -199,7 +213,9 @@ impl AutoUpdater {
             return;
         }
 
-        self.set_status(AutoUpdateStatus::Checking, cx);
+        let Some(generation) = self.begin_operation(AutoUpdateStatus::Checking, cx) else {
+            return;
+        };
 
         let platform = platform::current_platform();
         let url = format!(
@@ -210,7 +226,13 @@ impl AutoUpdater {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = http_runtime()
                 .spawn(async move {
-                    let response = reqwest::get(&url).await?;
+                    let response = reqwest::Client::builder()
+                        .connect_timeout(Duration::from_secs(5))
+                        .timeout(Duration::from_secs(20))
+                        .build()?
+                        .get(&url)
+                        .send()
+                        .await?;
                     if !response.status().is_success() {
                         anyhow::bail!("Server returned HTTP {}", response.status().as_u16());
                     }
@@ -225,13 +247,19 @@ impl AutoUpdater {
             match result {
                 Ok(release) => {
                     let _ = this.update(cx, |u, cx| {
-                        u.handle_release_check(release, cx);
+                        if u.accepts_operation(generation, &AutoUpdateStatus::Checking) && u.enabled
+                        {
+                            u.handle_release_check(release, cx);
+                        }
                     });
                 }
                 Err(e) => {
                     tracing::warn!("Update check failed: {}", e);
                     let _ = this.update(cx, |u, cx| {
-                        u.set_status(AutoUpdateStatus::Errored(e.to_string()), cx);
+                        if u.accepts_operation(generation, &AutoUpdateStatus::Checking) && u.enabled
+                        {
+                            u.set_status(AutoUpdateStatus::Errored(e.to_string()), cx);
+                        }
                     });
                 }
             }
@@ -278,13 +306,16 @@ impl AutoUpdater {
             }
         } else {
             tracing::info!("Already up to date ({})", CURRENT_VERSION);
+            self.latest_release = None;
             self.set_status(AutoUpdateStatus::Idle, cx);
         }
     }
 
     /// Download, verify, and install the given release.
     pub fn download_and_install(&mut self, release: ReleaseInfo, cx: &mut Context<Self>) {
-        self.set_status(AutoUpdateStatus::Downloading, cx);
+        let Some(generation) = self.begin_operation(AutoUpdateStatus::Downloading, cx) else {
+            return;
+        };
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             // Download phase runs on the Tokio runtime (needs reactor for HTTP)
@@ -311,9 +342,18 @@ impl AutoUpdater {
 
             match download_result {
                 Ok((_tmp_dir, archive_path, version)) => {
-                    let _ = this.update(cx, |u, cx| {
-                        u.set_status(AutoUpdateStatus::Installing, cx);
-                    });
+                    let install_allowed = this
+                        .update(cx, |u, cx| {
+                            if !u.accepts_operation(generation, &AutoUpdateStatus::Downloading) {
+                                return false;
+                            }
+                            u.set_status(AutoUpdateStatus::Installing, cx);
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !install_allowed {
+                        return;
+                    }
 
                     // Install phase also runs on the Tokio runtime (uses tokio::process)
                     let install_result = http_runtime()
@@ -328,13 +368,18 @@ impl AutoUpdater {
                     match install_result {
                         Ok(version) => {
                             let _ = this.update(cx, |u, cx| {
-                                u.set_status(AutoUpdateStatus::Updated(version), cx);
+                                if u.accepts_operation(generation, &AutoUpdateStatus::Installing) {
+                                    u.latest_release = None;
+                                    u.set_status(AutoUpdateStatus::Updated(version), cx);
+                                }
                             });
                         }
                         Err(e) => {
                             tracing::error!("Update installation failed: {}", e);
                             let _ = this.update(cx, |u, cx| {
-                                u.set_status(AutoUpdateStatus::Errored(e.to_string()), cx);
+                                if u.accepts_operation(generation, &AutoUpdateStatus::Installing) {
+                                    u.set_status(AutoUpdateStatus::Errored(e.to_string()), cx);
+                                }
                             });
                         }
                     }
@@ -342,7 +387,9 @@ impl AutoUpdater {
                 Err(e) => {
                     tracing::error!("Update download failed: {}", e);
                     let _ = this.update(cx, |u, cx| {
-                        u.set_status(AutoUpdateStatus::Errored(e.to_string()), cx);
+                        if u.accepts_operation(generation, &AutoUpdateStatus::Downloading) {
+                            u.set_status(AutoUpdateStatus::Errored(e.to_string()), cx);
+                        }
                     });
                 }
             }
@@ -352,6 +399,9 @@ impl AutoUpdater {
 
     /// Manually trigger the download/install of a previously detected update.
     pub fn trigger_update(&mut self, cx: &mut Context<Self>) {
+        if !self.can_start_operation() {
+            return;
+        }
         if let Some(release) = self.latest_release.take() {
             self.download_and_install(release, cx);
         }
@@ -359,6 +409,7 @@ impl AutoUpdater {
 
     /// Enable or disable auto-update polling.
     pub fn set_enabled(&mut self, requested: bool, cx: &mut Context<Self>) {
+        let was_enabled = self.enabled;
         self.enabled = update_checks_enabled(requested, embedded_verification_key());
         if requested && !self.enabled {
             tracing::debug!(
@@ -372,7 +423,41 @@ impl AutoUpdater {
             }
         } else {
             self._poll_task = None;
+            if was_enabled
+                && matches!(
+                    self.status,
+                    AutoUpdateStatus::Checking | AutoUpdateStatus::Downloading
+                )
+            {
+                // Re-enabling must not revive an old check/download. Once the
+                // atomic installation starts, let it finish rather than abandon a swap.
+                self.operation_generation = self.operation_generation.wrapping_add(1);
+                self.set_status(AutoUpdateStatus::Idle, cx);
+            }
         }
+    }
+
+    fn can_start_operation(&self) -> bool {
+        !matches!(
+            self.status,
+            AutoUpdateStatus::Checking
+                | AutoUpdateStatus::Downloading
+                | AutoUpdateStatus::Installing
+                | AutoUpdateStatus::Updated(_)
+        )
+    }
+
+    fn begin_operation(&mut self, status: AutoUpdateStatus, cx: &mut Context<Self>) -> Option<u64> {
+        if !self.can_start_operation() {
+            return None;
+        }
+        self.operation_generation = self.operation_generation.wrapping_add(1);
+        self.set_status(status, cx);
+        Some(self.operation_generation)
+    }
+
+    fn accepts_operation(&self, generation: u64, status: &AutoUpdateStatus) -> bool {
+        self.operation_generation == generation && &self.status == status
     }
 
     fn set_status(&mut self, status: AutoUpdateStatus, cx: &mut Context<Self>) {
@@ -385,11 +470,12 @@ impl AutoUpdater {
 #[cfg(test)]
 mod tests {
     use super::{
-        release_signing_message, update_checks_enabled, verify_release_signature_with_key,
-        ReleaseInfo,
+        release_signing_message, update_checks_enabled, verify_release_for_platform,
+        verify_release_signature_with_key, AutoUpdateStatus, AutoUpdater, ReleaseInfo,
     };
     use base64::Engine as _;
     use ed25519_dalek::{Signer, SigningKey};
+    use gpui::AppContext;
 
     fn signed_release() -> (ReleaseInfo, String) {
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
@@ -410,6 +496,68 @@ mod tests {
                 .to_bytes(),
         );
         (release, public_key)
+    }
+
+    // SDTEST-2780 / SDUC-281, SDUC-285
+    #[test]
+    fn updater_serializes_operations_and_fences_disabled_downloads_before_install() {
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            let updater = cx.new(|_| AutoUpdater::new());
+            updater.update(cx, |updater, cx| {
+                updater.enabled = true;
+                let check = updater
+                    .begin_operation(AutoUpdateStatus::Checking, cx)
+                    .unwrap();
+                assert!(updater
+                    .begin_operation(AutoUpdateStatus::Checking, cx)
+                    .is_none());
+                updater.set_enabled(false, cx);
+                assert!(!updater.accepts_operation(check, &AutoUpdateStatus::Checking));
+                updater.enabled = true;
+                let download = updater
+                    .begin_operation(AutoUpdateStatus::Downloading, cx)
+                    .unwrap();
+                updater.latest_release = Some(signed_release().0);
+                updater.trigger_update(cx);
+                assert!(
+                    updater.latest_release.is_some(),
+                    "busy click must not consume the retry release"
+                );
+                assert!(updater.accepts_operation(download, &AutoUpdateStatus::Downloading));
+                updater.set_enabled(false, cx);
+                updater.enabled = true;
+                let newer = updater
+                    .begin_operation(AutoUpdateStatus::Downloading, cx)
+                    .unwrap();
+                assert!(!updater.accepts_operation(download, &AutoUpdateStatus::Downloading));
+                updater.set_status(AutoUpdateStatus::Installing, cx);
+                updater.set_enabled(false, cx);
+                assert!(
+                    updater.accepts_operation(newer, &AutoUpdateStatus::Installing),
+                    "an atomic swap must finish"
+                );
+                assert!(updater
+                    .begin_operation(AutoUpdateStatus::Checking, cx)
+                    .is_none());
+                updater.set_status(AutoUpdateStatus::Updated("9.8.7".into()), cx);
+                assert!(
+                    updater
+                        .begin_operation(AutoUpdateStatus::Checking, cx)
+                        .is_none(),
+                    "the old running version must not reinstall an already installed update"
+                );
+            });
+        });
+    }
+
+    // SDTEST-2782 / SDUC-280, SDUC-283
+    #[test]
+    fn signed_manifest_for_another_platform_is_refused() {
+        let (release, key) = signed_release();
+        verify_release_for_platform(&release, &key, "linux-x86_64").unwrap();
+        assert!(verify_release_for_platform(&release, &key, "macos-aarch64").is_err());
+        assert!(verify_release_for_platform(&release, &key, "windows-x86_64").is_err());
     }
 
     // SDTEST-1222 — pin the complete, signed Worker response contract.

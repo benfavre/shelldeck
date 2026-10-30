@@ -115,6 +115,10 @@ jobs:
         run: cargo check --workspace
 
       - name: cargo test
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/shelldeck-tests/config
+          XDG_DATA_HOME: ${{ runner.temp }}/shelldeck-tests/data
+          XDG_CACHE_HOME: ${{ runner.temp }}/shelldeck-tests/cache
         run: cargo test --workspace
 
       - name: Verify production Agents CLI without GUI or profile side effects

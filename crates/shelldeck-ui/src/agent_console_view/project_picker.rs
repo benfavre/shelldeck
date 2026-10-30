@@ -162,7 +162,7 @@ impl AgentConsoleView {
                                 );
                             }
                         }
-                        let mut recent = view.sessions.sessions().iter().collect::<Vec<_>>();
+                        let mut recent = view.sessions.library_sessions(false);
                         recent.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
                         let recent = recent
                             .into_iter()
@@ -225,7 +225,13 @@ impl AgentConsoleView {
                                 .tooltip(format!("{}\n{}", label, session.context.workdir))
                                 .on_click(move |_, _, cx| {
                                     choose.update(cx, |view, cx| {
-                                        view.select_session(id, cx);
+                                        if view
+                                            .sessions
+                                            .get(id)
+                                            .is_some_and(|session| !session.archived)
+                                        {
+                                            view.select_session(id, cx);
+                                        }
                                     });
                                     let _ = dismiss.update(cx, |_, cx| cx.emit(DismissEvent));
                                 }),
@@ -275,7 +281,7 @@ impl AgentConsoleView {
                                 .icon(IconSource::from("plus"))
                                 .on_click(move |_, _, cx| {
                                     launch.update(cx, |_, cx| {
-                                        cx.emit(AgentConsoleEvent::OpenWorkspaceLauncher)
+                                        cx.emit(AgentConsoleEvent::OpenProjectSetup)
                                     });
                                     let _ = dismiss.update(cx, |_, cx| cx.emit(DismissEvent));
                                 }),

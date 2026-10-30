@@ -321,7 +321,7 @@ impl WorkspaceHubView {
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Sm)
                     .on_click(cx.listener(|view, _, _, cx| {
-                        view.dismiss_forms(cx);
+                        view.cancel_forms(cx);
                     })),
                 )
                 .child(

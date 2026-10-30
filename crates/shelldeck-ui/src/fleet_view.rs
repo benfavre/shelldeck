@@ -42,6 +42,7 @@ use crate::workspace::platform_attention::{
 
 #[path = "fleet_view/agents.rs"]
 mod agents;
+pub(crate) use agents::remote_session_title;
 mod tasks;
 use shelldeck_core::config::platform_tasks::PlatformTaskCommand;
 
@@ -52,6 +53,7 @@ const MAX_ATTENTION_ACTIVITY_ROWS: usize = 8;
 #[derive(Debug, Clone)]
 pub enum FleetViewEvent {
     Refresh,
+    CheckSession(ResourceCoordinate),
     TaskCommand(PlatformTaskCommand),
     AcknowledgeTasks(PlatformReviewTarget),
     Attach(ResourceCoordinate),
@@ -396,6 +398,13 @@ fn localized_external_review_coordinates(
 }
 
 pub struct FleetView {
+    remote_connections: BTreeMap<String, agents::RemoteConnection>,
+    pending_remote_resume: Option<PlatformFollowUp>,
+    checking_remote_session: Option<ResourceCoordinate>,
+    queued_remote_check: Option<ResourceCoordinate>,
+    directory_refresh_requested: bool,
+    directory_updated_at: Option<chrono::DateTime<chrono::Local>>,
+    directory_error: Option<String>,
     tasks: tasks::TaskUi,
     snapshot: Option<PlatformSnapshot>,
     review: Option<PlatformReviewLoad>,
@@ -418,7 +427,7 @@ pub struct FleetView {
     unresolved_review_actions: Vec<PlatformReviewActionPreview>,
     review_receipt: Option<(String, String)>,
     drafts: BTreeMap<String, String>,
-    selected_session: Option<String>,
+    selected_session: Option<ResourceCoordinate>,
     pending_action: Option<PlatformActionPreview>,
     refusal: Option<(String, String)>,
     loading: bool,
@@ -432,6 +441,13 @@ impl FleetView {
         let review_custody = PlatformReviewCustodyStore::open_default().ok();
         let review_notes = PlatformReviewNoteStore::open_default().ok();
         Self {
+            remote_connections: BTreeMap::new(),
+            pending_remote_resume: None,
+            checking_remote_session: None,
+            queued_remote_check: None,
+            directory_refresh_requested: false,
+            directory_updated_at: None,
+            directory_error: None,
             tasks: tasks::TaskUi::default(),
             snapshot: None,
             review: None,
@@ -465,8 +481,24 @@ impl FleetView {
     }
 
     pub fn set_snapshot(&mut self, snapshot: PlatformSnapshot) {
+        self.remote_connections.retain(|_, connection| {
+            snapshot
+                .sessions
+                .iter()
+                .any(|record| record.session.resource == connection.session)
+        });
+        if self.pending_remote_resume.as_ref().is_some_and(|preview| {
+            !snapshot
+                .sessions
+                .iter()
+                .any(|record| record.session.resource == preview.request.session)
+        }) {
+            self.pending_remote_resume = None;
+        }
         self.cockpit.retain_directory_sessions(&snapshot.sessions);
         self.snapshot = Some(snapshot);
+        self.directory_updated_at = Some(chrono::Local::now());
+        self.directory_error = None;
         self.cockpit.mark_online();
         self.loading = false;
         self.error = None;
@@ -640,15 +672,36 @@ impl FleetView {
     }
 
     pub fn retained_reads(&self) -> Vec<RetainedSessionRead> {
-        self.cockpit.retained_reads()
+        let mut reads = self.cockpit.retained_reads();
+        reads.extend(
+            self.remote_connections
+                .values()
+                .map(|connection| RetainedSessionRead {
+                    session: connection.session.clone(),
+                    after: connection.cursor,
+                }),
+        );
+        reads
     }
 
     pub fn pending_follow_ups(&self) -> Vec<PlatformFollowUp> {
-        self.cockpit.pending_follow_ups()
+        let mut pending = self.cockpit.pending_follow_ups();
+        pending.extend(
+            self.remote_connections
+                .values()
+                .filter_map(|connection| connection.pending.clone()),
+        );
+        pending
     }
 
     pub fn apply_retained_updates(&mut self, updates: Vec<RetainedSessionUpdate>) {
         for update in updates {
+            if let Some(connection) = self
+                .remote_connections
+                .get_mut(&resource_key(&update.session))
+            {
+                connection.apply(update.clone());
+            }
             self.cockpit.apply_retained_update(update);
         }
     }
@@ -665,13 +718,11 @@ impl FleetView {
                     shelldeck_core::config::platform::ReceiptOutcome::Accepted
                         | shelldeck_core::config::platform::ReceiptOutcome::Completed
                 ) {
-                    self.drafts.remove(follow_up.request.session.id.as_str());
-                    if self.selected_session.as_deref()
-                        == Some(follow_up.request.session.id.as_str())
-                    {
-                        self.composer_value.clear();
-                        self.composer_state.update(cx, |state, cx| state.reset(cx));
-                    }
+                    self.clear_accepted_draft(
+                        &follow_up.request.session,
+                        follow_up.request.text.as_str(),
+                        cx,
+                    );
                 }
             }
             PlatformFollowUpResult::Refused {
@@ -683,9 +734,32 @@ impl FleetView {
             }
             PlatformFollowUpResult::ReconciliationPending { .. } => {}
         }
+        self.apply_remote_follow_up_result(&result);
         self.cockpit.apply_follow_up_result(&result);
         self.operation_busy = false;
         self.loading = false;
+    }
+
+    fn clear_accepted_draft(
+        &mut self,
+        session: &ResourceCoordinate,
+        submitted: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let key = resource_key(session);
+        if self
+            .drafts
+            .get(&key)
+            .is_some_and(|draft| draft.trim() == submitted)
+        {
+            self.drafts.remove(&key);
+        }
+        if self.selected_session.as_ref() == Some(session)
+            && self.composer_value.trim() == submitted
+        {
+            self.composer_value.clear();
+            self.composer_state.update(cx, |state, cx| state.reset(cx));
+        }
     }
 
     pub fn prepare_selected_follow_up(
@@ -700,6 +774,11 @@ impl FleetView {
                     "no retained session is selected".to_string(),
                 )
             })?;
+        if self.selected_session.as_ref() != Some(&session) {
+            return Err(shelldeck_core::error::ShellDeckError::Connection(
+                "selected session does not match the retained control pane".to_string(),
+            ));
+        }
         self.cockpit
             .prepare_follow_up(&session, self.composer_value.trim().to_owned())
     }
@@ -707,13 +786,14 @@ impl FleetView {
     fn select_session(&mut self, session: &ResourceCoordinate, cx: &mut Context<Self>) {
         if let Some(current) = self.selected_session.as_ref() {
             self.drafts
-                .insert(current.clone(), self.composer_value.clone());
+                .insert(resource_key(current), self.composer_value.clone());
         }
-        self.selected_session = Some(session.id.as_str().to_owned());
+        self.pending_remote_resume = None;
+        self.selected_session = Some(session.clone());
         self.cockpit.select(session);
         self.composer_value = self
             .drafts
-            .get(session.id.as_str())
+            .get(&resource_key(session))
             .cloned()
             .unwrap_or_default();
         let value = self.composer_value.clone();
@@ -721,6 +801,7 @@ impl FleetView {
             state.content = value.into();
             cx.notify();
         });
+        cx.notify();
     }
 
     pub fn set_loading(&mut self, loading: bool) {
@@ -728,14 +809,25 @@ impl FleetView {
     }
 
     pub fn set_error(&mut self, message: impl Into<String>) {
-        self.error = Some(message.into());
+        let message = message.into();
+        self.directory_error = Some(message.clone());
+        self.error = Some(message);
         self.refusal = None;
+        self.remote_connections
+            .values_mut()
+            .for_each(|connection| connection.state = None);
+        self.pending_remote_resume = None;
         self.cockpit.mark_offline();
         self.invalidate_tasks();
         self.loading = false;
     }
 
     pub fn set_operation_error(&mut self, message: impl Into<String>) {
+        self.checking_remote_session = None;
+        self.remote_connections
+            .values_mut()
+            .for_each(|connection| connection.state = None);
+        self.pending_remote_resume = None;
         self.error = Some(message.into());
         self.refusal = None;
         self.operation_busy = false;
@@ -759,6 +851,7 @@ impl FleetView {
             snapshot.view.track_attachment(&attachment);
         }
         let session = attachment.session.clone();
+        self.remote_connections.remove(&resource_key(&session));
         self.cockpit.attach(attachment);
         self.select_session(&session, cx);
         self.operation_busy = false;
@@ -1245,6 +1338,13 @@ impl FleetView {
     }
 
     pub fn reset(&mut self) {
+        self.checking_remote_session = None;
+        self.queued_remote_check = None;
+        self.directory_refresh_requested = false;
+        self.directory_updated_at = None;
+        self.directory_error = None;
+        self.remote_connections.clear();
+        self.pending_remote_resume = None;
         self.tasks = tasks::TaskUi::default();
         self.snapshot = None;
         self.review = None;
@@ -1270,49 +1370,43 @@ impl FleetView {
         self.platform_attention.clear();
     }
 
-    pub fn open_session_by_id(&mut self, session_id: &str) -> bool {
-        let exists = self.snapshot.as_ref().is_some_and(|snapshot| {
+    pub fn open_session_by_id(&mut self, session_id: &str, cx: &mut Context<Self>) -> bool {
+        let matches: Vec<_> = self
+            .snapshot
+            .as_ref()
+            .into_iter()
+            .flat_map(|snapshot| &snapshot.sessions)
+            .filter(|session| session.session.resource.id.as_str() == session_id)
+            .map(|session| session.session.resource.clone())
+            .collect();
+        let [coordinate] = matches.as_slice() else {
+            return false;
+        };
+        self.select_session(coordinate, cx);
+        true
+    }
+
+    pub fn open_session_exact(
+        &mut self,
+        coordinate: &ResourceCoordinate,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let count = self.snapshot.as_ref().map_or(0, |snapshot| {
             snapshot
                 .sessions
                 .iter()
-                .any(|session| session.session.resource.id.as_str() == session_id)
+                .filter(|session| &session.session.resource == coordinate)
+                .count()
         });
-        if exists {
-            self.selected_session = Some(session_id.to_owned());
-            if let Some(session) = self.snapshot.as_ref().and_then(|snapshot| {
-                snapshot
-                    .sessions
-                    .iter()
-                    .find(|session| session.session.resource.id.as_str() == session_id)
-            }) {
-                self.cockpit.select(&session.session.resource);
-            }
-        }
-        exists
-    }
-
-    pub fn open_session_exact(&mut self, coordinate: &ResourceCoordinate) -> bool {
-        let matches = self
-            .snapshot
-            .as_ref()
-            .map(|snapshot| {
-                snapshot
-                    .sessions
-                    .iter()
-                    .filter(|session| &session.session.resource == coordinate)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let [session] = matches.as_slice() else {
+        if count != 1 {
             return false;
-        };
-        self.selected_session = Some(coordinate.id.as_str().to_owned());
-        self.cockpit.select(&session.session.resource);
+        }
+        self.select_session(coordinate, cx);
         true
     }
 
     pub(crate) fn session_is_open_exact(&self, coordinate: &ResourceCoordinate) -> bool {
-        self.selected_session.as_deref() == Some(coordinate.id.as_str())
+        self.selected_session.as_ref() == Some(coordinate)
             && self.snapshot.as_ref().is_some_and(|snapshot| {
                 snapshot
                     .sessions
@@ -3179,9 +3273,8 @@ impl FleetView {
         let pane = self.cockpit.pane(coordinate);
         let attached = pane.is_some();
         let lease = pane.and_then(|pane| pane.lease.as_ref());
-        let selected = self.selected_session.as_deref() == Some(coordinate.id.as_str());
+        let selected = self.selected_session.as_ref() == Some(coordinate);
         let entity = cx.entity();
-        let select_id = coordinate.id.as_str().to_owned();
         let session_coordinate = coordinate.clone();
         let observe_coordinate = coordinate.clone();
         let observe_entity = entity.clone();
@@ -3190,7 +3283,7 @@ impl FleetView {
         let mut row = div()
             .id(ElementId::from(SharedString::from(format!(
                 "platform-session-{}",
-                coordinate.id.as_str()
+                resource_key(coordinate)
             ))))
             .w_full()
             .flex()
@@ -3206,11 +3299,8 @@ impl FleetView {
             .cursor_pointer()
             .on_click(move |_, _, cx| {
                 entity.update(cx, |this, cx| {
-                    if attached {
-                        this.select_session(&session_coordinate, cx);
-                    } else {
-                        this.selected_session = Some(select_id.clone());
-                    }
+                    // Re-resolve current directory membership instead of trusting an old row.
+                    this.open_session_exact(&session_coordinate, cx);
                     cx.notify();
                 });
             })
@@ -3236,7 +3326,7 @@ impl FleetView {
                             .text_size(px(13.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(ShellDeckColors::text_primary())
-                            .child(session.session.summary.as_str().to_owned()),
+                            .child(remote_session_title(session)),
                     )
                     .child(
                         div()
@@ -3250,6 +3340,12 @@ impl FleetView {
                                 div().flex_shrink_0().child(
                                     Badge::new(if attached {
                                         t!("fleet.session.attached").to_string()
+                                    } else if self.agent_session_resume_pending(coordinate) {
+                                        t!("agents.remote.resuming").to_string()
+                                    } else if self.agent_session_resume_available(coordinate) {
+                                        t!("agents.remote.resume_available").to_string()
+                                    } else if !session.attachable {
+                                        t!("agents.remote.directory_only").to_string()
                                     } else {
                                         t!("fleet.session.observed").to_string()
                                     })
@@ -3303,7 +3399,7 @@ impl FleetView {
                     ),
             );
 
-        if session.attachable {
+        if session.attachable || attached {
             row = row.child(
                 Button::new(
                     ElementId::from(SharedString::from(format!("observe-{key}"))),
@@ -3315,7 +3411,10 @@ impl FleetView {
                 )
                 .variant(ButtonVariant::Outline)
                 .size(ButtonSize::Sm)
-                .disabled(self.operation_busy)
+                .disabled(
+                    self.operation_busy
+                        || (!attached && self.agent_session_resume_pending(coordinate)),
+                )
                 .on_click(move |_, _, cx| {
                     observe_entity.update(cx, |_this, cx| {
                         if attached {
@@ -3538,7 +3637,10 @@ impl FleetView {
                 .is_some_and(|selected| selected.attachment.session == coordinate);
             let tab_entity = entity.clone();
             let mut tab = Button::new(
-                ElementId::from(SharedString::from(format!("pane-{label}"))),
+                ElementId::from(SharedString::from(format!(
+                    "pane-{}",
+                    resource_key(&coordinate)
+                ))),
                 if pane.unread > 0 {
                     format!("{label} ({})", pane.unread)
                 } else {
@@ -3689,7 +3791,7 @@ impl FleetView {
             return div().p(px(12.0));
         };
         let session = &pane.attachment.session;
-        if self.selected_session.as_deref() != Some(session.id.as_str()) {
+        if self.selected_session.as_ref() != Some(session) {
             return div()
                 .flex_1()
                 .flex()
@@ -3953,6 +4055,8 @@ impl FleetView {
             && !self.composer_value.trim().is_empty()
             && !self.operation_busy;
         let send_entity = cx.entity();
+        let send_session = session.clone();
+        let input_session = session.clone();
         let composer = div()
             .flex()
             .flex_col()
@@ -3981,10 +4085,14 @@ impl FleetView {
                                 let entity = cx.entity();
                                 move |value, cx| {
                                     entity.update(cx, |this, cx| {
-                                        this.composer_value = value.to_string();
-                                        if let Some(session) = this.selected_session.as_ref() {
-                                            this.drafts.insert(session.clone(), value.to_string());
+                                        if this.selected_session.as_ref() != Some(&input_session) {
+                                            return;
                                         }
+                                        this.composer_value = value.to_string();
+                                        this.drafts.insert(
+                                            resource_key(&input_session),
+                                            value.to_string(),
+                                        );
                                         cx.notify();
                                     });
                                 }
@@ -3998,7 +4106,9 @@ impl FleetView {
                             .loading(self.operation_busy)
                             .on_click(move |_, _, cx| {
                                 send_entity.update(cx, |this, cx| {
-                                    if this.operation_busy {
+                                    if this.operation_busy
+                                        || this.selected_session.as_ref() != Some(&send_session)
+                                    {
                                         return;
                                     }
                                     match this.prepare_selected_follow_up() {
@@ -4699,5 +4809,132 @@ mod review_render_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod session_identity_tests {
+    use super::{resource_key, FleetView};
+    use automonique_protocol::platform::{Capabilities, ClientId, CursorTopic, Freshness};
+    use automonique_protocol::primitives::{EpochMillis, Revision};
+    use gpui::{AppContext, TestAppContext};
+    use shelldeck_core::config::platform::{
+        Attachment, FreshnessState, PlatformCursor, PlatformSnapshot, PlatformText, PlatformView,
+        ResourceAuthority, ResourceCoordinate, ResourceId, ResourceKind, ResourceRecord,
+        SessionRecord,
+    };
+
+    fn coordinate(authority: ResourceAuthority) -> ResourceCoordinate {
+        ResourceCoordinate::new(
+            authority,
+            ResourceKind::Session,
+            ResourceId::new("shared-id").unwrap(),
+        )
+    }
+    fn snapshot(coordinates: &[ResourceCoordinate]) -> PlatformSnapshot {
+        let cursor = PlatformCursor {
+            authority: ResourceAuthority::Automonique,
+            topic: CursorTopic::new("sessions").unwrap(),
+            sequence: Revision::FIRST,
+        };
+        PlatformSnapshot {
+            capabilities: Capabilities::platform_v1(),
+            resources: vec![],
+            cursor: cursor.clone(),
+            sessions_cursor: cursor,
+            view: PlatformView::default(),
+            sessions: coordinates
+                .iter()
+                .cloned()
+                .map(|resource| SessionRecord {
+                    session: ResourceRecord {
+                        resource,
+                        summary: PlatformText::new("open").unwrap(),
+                        freshness: Freshness {
+                            state: FreshnessState::Fresh,
+                            observed_at: EpochMillis::from_millis(1),
+                            revision: Revision::FIRST,
+                        },
+                    },
+                    run: None,
+                    attachable: true,
+                    controllable: false,
+                })
+                .collect(),
+        }
+    }
+
+    // SDTEST-2770 — same session IDs from different authorities never share selection/drafts/control.
+    #[test]
+    fn exact_session_navigation_isolates_authority_and_rejects_ambiguous_id() {
+        let mut app = TestAppContext::single();
+        let fleet = app.update(|cx| cx.new(FleetView::new));
+        fleet.update(&mut app, |view, cx| {
+            let first = coordinate(ResourceAuthority::Automonique);
+            let second = coordinate(ResourceAuthority::AiOperations);
+            view.set_snapshot(snapshot(&[first.clone(), second.clone()]));
+            assert!(!view.open_session_by_id("shared-id", cx));
+            assert!(view.open_session_exact(&first, cx));
+            view.composer_value = "first authority draft".into();
+            assert!(view.open_session_exact(&second, cx));
+            assert!(view.session_is_open_exact(&second));
+            assert!(!view.session_is_open_exact(&first));
+            assert!(view.composer_value.is_empty());
+            view.composer_value = "second authority draft".into();
+            assert!(view.open_session_exact(&first, cx));
+            assert_eq!(view.composer_value, "first authority draft");
+            assert_eq!(
+                view.composer_state.read(cx).content(),
+                "first authority draft"
+            );
+            let cursor = view.snapshot.as_ref().unwrap().cursor.clone();
+            view.cockpit.attach(Attachment {
+                session: first.clone(),
+                client: ClientId::new("fixture").unwrap(),
+                cursor,
+            });
+            assert!(view.open_session_exact(&second, cx));
+            assert!(view
+                .prepare_selected_follow_up()
+                .unwrap_err()
+                .to_string()
+                .contains("does not match"));
+            let selected = view.selected_session.clone();
+            view.set_snapshot(snapshot(&[first.clone(), first.clone()]));
+            assert!(!view.open_session_exact(&first, cx));
+            assert_eq!(view.selected_session, selected);
+        });
+    }
+
+    // SDTEST-2771 — delayed acceptance cannot erase another authority or a newly edited draft.
+    #[test]
+    fn accepted_follow_up_only_clears_matching_unchanged_draft() {
+        let mut app = TestAppContext::single();
+        let fleet = app.update(|cx| cx.new(FleetView::new));
+        fleet.update(&mut app, |view, cx| {
+            let first = coordinate(ResourceAuthority::Automonique);
+            let second = coordinate(ResourceAuthority::AiOperations);
+            view.set_snapshot(snapshot(&[first.clone(), second.clone()]));
+            view.open_session_exact(&first, cx);
+            view.composer_value = "submitted".into();
+            view.open_session_exact(&second, cx);
+            view.composer_value = "other draft".into();
+            view.clear_accepted_draft(&first, "submitted", cx);
+            assert_eq!(view.composer_value, "other draft");
+            assert!(!view.drafts.contains_key(&resource_key(&first)));
+            view.open_session_exact(&first, cx);
+            view.composer_value = "edited after send".into();
+            view.drafts
+                .insert(resource_key(&first), view.composer_value.clone());
+            view.clear_accepted_draft(&first, "submitted", cx);
+            assert_eq!(view.composer_value, "edited after send");
+            assert_eq!(
+                view.drafts.get(&resource_key(&first)).unwrap(),
+                "edited after send"
+            );
+            view.clear_accepted_draft(&first, "edited after send", cx);
+            assert!(view.composer_value.is_empty());
+            assert!(!view.drafts.contains_key(&resource_key(&first)));
+        });
     }
 }

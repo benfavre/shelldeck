@@ -12,79 +12,6 @@ pub struct PdfInfo {
     pub creator: Option<String>,
 }
 
-#[cfg(test)]
-mod external_tests {
-    use super::*;
-
-    fn document() -> EditorTab {
-        EditorTab::from_external(ExternalEditorDocument {
-            document_id: "ssh:target:/workspace/main.rs".into(),
-            filename: "main.rs".into(),
-            display_path: "/workspace/main.rs".into(),
-            provenance: "SSH target".into(),
-            text: "fn main() {}\n".into(),
-            read_only: false,
-        })
-    }
-
-    fn pending(tab: &mut EditorTab, close_after_save: bool) -> Uuid {
-        let request_id = Uuid::new_v4();
-        let text = tab.buffer().unwrap().text();
-        tab.external.as_mut().unwrap().pending_save = Some(PendingExternalSave {
-            request_id,
-            text,
-            close_after_save,
-        });
-        request_id
-    }
-
-    // SDTEST-2496 · SDUC-475
-    #[::core::prelude::v1::test]
-    fn sdtest_2496_external_save_preserves_edits_made_during_write_and_close() {
-        let mut tab = document();
-        assert!(
-            tab.path.is_none(),
-            "a remote display path must never become a local save target"
-        );
-        assert_eq!(tab.language(), Some(EditorLanguage::Rust));
-        tab.buffer_mut().unwrap().insert_str("// before\n");
-        let request_id = pending(&mut tab, true);
-        tab.buffer_mut().unwrap().insert_str("// during\n");
-        let newest = tab.buffer().unwrap().text();
-        assert!(!tab.complete_external_save(request_id, Ok(())));
-        assert!(tab.is_dirty());
-        assert_eq!(tab.buffer().unwrap().text(), newest);
-        let retry = pending(&mut tab, true);
-        assert!(tab.complete_external_save(retry, Ok(())));
-        assert!(!tab.is_dirty());
-    }
-
-    // SDTEST-2497 · SDUC-475
-    #[::core::prelude::v1::test]
-    fn sdtest_2497_external_save_rejects_stale_completion_and_retains_failed_text() {
-        let mut tab = document();
-        tab.buffer_mut().unwrap().insert_str("// edit\n");
-        let request_id = pending(&mut tab, true);
-        let text = tab.buffer().unwrap().text();
-        assert!(!tab.complete_external_save(Uuid::new_v4(), Ok(())));
-        assert!(tab.external.as_ref().unwrap().pending_save.is_some());
-        assert!(tab.is_dirty());
-        assert!(!tab.complete_external_save(request_id, Err("remote changed".into())));
-        assert!(tab.is_dirty());
-        assert_eq!(tab.buffer().unwrap().text(), text);
-        assert_eq!(
-            tab.external.as_ref().unwrap().save_error.as_deref(),
-            Some("remote changed")
-        );
-        let retry = pending(&mut tab, false);
-        assert!(!tab.complete_external_save(request_id, Ok(())));
-        assert!(tab.external.as_ref().unwrap().pending_save.is_some());
-        assert!(!tab.complete_external_save(retry, Ok(())));
-        assert!(!tab.is_dirty());
-        assert!(tab.external.as_ref().unwrap().save_error.is_none());
-    }
-}
-
 pub struct BinaryInfo {
     pub file_size: u64,
 }
@@ -385,5 +312,78 @@ impl EditorTab {
     pub(super) fn display_name(&self) -> String {
         let dirty = if self.is_dirty() { " *" } else { "" };
         format!("{}{}", self.filename, dirty)
+    }
+}
+
+#[cfg(test)]
+mod external_tests {
+    use super::*;
+
+    fn document() -> EditorTab {
+        EditorTab::from_external(ExternalEditorDocument {
+            document_id: "ssh:target:/workspace/main.rs".into(),
+            filename: "main.rs".into(),
+            display_path: "/workspace/main.rs".into(),
+            provenance: "SSH target".into(),
+            text: "fn main() {}\n".into(),
+            read_only: false,
+        })
+    }
+
+    fn pending(tab: &mut EditorTab, close_after_save: bool) -> Uuid {
+        let request_id = Uuid::new_v4();
+        let text = tab.buffer().unwrap().text();
+        tab.external.as_mut().unwrap().pending_save = Some(PendingExternalSave {
+            request_id,
+            text,
+            close_after_save,
+        });
+        request_id
+    }
+
+    // SDTEST-2496 · SDUC-475
+    #[::core::prelude::v1::test]
+    fn sdtest_2496_external_save_preserves_edits_made_during_write_and_close() {
+        let mut tab = document();
+        assert!(
+            tab.path.is_none(),
+            "a remote display path must never become a local save target"
+        );
+        assert_eq!(tab.language(), Some(EditorLanguage::Rust));
+        tab.buffer_mut().unwrap().insert_str("// before\n");
+        let request_id = pending(&mut tab, true);
+        tab.buffer_mut().unwrap().insert_str("// during\n");
+        let newest = tab.buffer().unwrap().text();
+        assert!(!tab.complete_external_save(request_id, Ok(())));
+        assert!(tab.is_dirty());
+        assert_eq!(tab.buffer().unwrap().text(), newest);
+        let retry = pending(&mut tab, true);
+        assert!(tab.complete_external_save(retry, Ok(())));
+        assert!(!tab.is_dirty());
+    }
+
+    // SDTEST-2497 · SDUC-475
+    #[::core::prelude::v1::test]
+    fn sdtest_2497_external_save_rejects_stale_completion_and_retains_failed_text() {
+        let mut tab = document();
+        tab.buffer_mut().unwrap().insert_str("// edit\n");
+        let request_id = pending(&mut tab, true);
+        let text = tab.buffer().unwrap().text();
+        assert!(!tab.complete_external_save(Uuid::new_v4(), Ok(())));
+        assert!(tab.external.as_ref().unwrap().pending_save.is_some());
+        assert!(tab.is_dirty());
+        assert!(!tab.complete_external_save(request_id, Err("remote changed".into())));
+        assert!(tab.is_dirty());
+        assert_eq!(tab.buffer().unwrap().text(), text);
+        assert_eq!(
+            tab.external.as_ref().unwrap().save_error.as_deref(),
+            Some("remote changed")
+        );
+        let retry = pending(&mut tab, false);
+        assert!(!tab.complete_external_save(request_id, Ok(())));
+        assert!(tab.external.as_ref().unwrap().pending_save.is_some());
+        assert!(!tab.complete_external_save(retry, Ok(())));
+        assert!(!tab.is_dirty());
+        assert!(tab.external.as_ref().unwrap().save_error.is_none());
     }
 }

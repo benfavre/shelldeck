@@ -759,23 +759,12 @@ impl<P: ItemExtentProvider + 'static> Element for VariableVirtualList<P> {
                 - point(border.right + padding.right, border.bottom + padding.bottom),
         );
 
-        let mut offset = self.scroll_handle.offset();
+        let offset = self.scroll_handle.offset();
         let viewport_len = content_bounds.size.along(self.axis);
 
         let total = self.engine.total_extent();
-        let min_scroll_offset = viewport_len - total;
-        if min_scroll_offset.as_f32() >= 0.0 {
-            offset.x = px(0.);
-            offset.y = px(0.);
-        }
-
-        if self.axis.is_vertical() {
-            if offset.y < min_scroll_offset {
-                offset.y = min_scroll_offset;
-            }
-        } else if offset.x < min_scroll_offset {
-            offset.x = min_scroll_offset;
-        }
+        // ShellDeck patch: SDPATCH-049 — short lists stay at the leading edge.
+        let offset = clamp_variable_list_offset(offset, self.axis, viewport_len, total);
 
         let start_px = -offset.along(self.axis);
         let end_px = start_px + viewport_len;
@@ -954,4 +943,45 @@ where
                 .collect::<Vec<_>>()
         },
     )
+}
+
+// ShellDeck patch: SDPATCH-049 — clamp both underfilled and overflowing lists.
+fn clamp_variable_list_offset(
+    mut offset: gpui::Point<Pixels>,
+    axis: Axis,
+    viewport: Pixels,
+    total: Pixels,
+) -> gpui::Point<Pixels> {
+    let minimum = (viewport - total).min(px(0.0));
+    if axis.is_vertical() {
+        offset.x = px(0.0);
+        offset.y = offset.y.clamp(minimum, px(0.0));
+    } else {
+        offset.x = offset.x.clamp(minimum, px(0.0));
+        offset.y = px(0.0);
+    }
+    offset
+}
+
+// ShellDeck patch: SDPATCH-049 — SDTEST-2791 covers resizing and filtering.
+#[cfg(test)]
+mod offset_tests {
+    use super::*;
+
+    #[test]
+    fn variable_list_offset_stays_in_scrollable_range() {
+        for axis in [Axis::Vertical, Axis::Horizontal] {
+            for total in [0.0, 120.0, 600.0] {
+                assert_eq!(
+                    clamp_variable_list_offset(point(px(-200.0), px(-200.0)), axis, px(600.0), px(total)),
+                    point(px(0.0), px(0.0))
+                );
+            }
+            let end = if axis.is_vertical() { point(px(0.0), px(-400.0)) } else { point(px(-400.0), px(0.0)) };
+            assert_eq!(clamp_variable_list_offset(point(px(-800.0), px(-800.0)), axis, px(600.0), px(1000.0)), end);
+            assert_eq!(clamp_variable_list_offset(point(px(20.0), px(20.0)), axis, px(600.0), px(1000.0)), point(px(0.0), px(0.0)));
+            let middle = if axis.is_vertical() { point(px(0.0), px(-100.0)) } else { point(px(-100.0), px(0.0)) };
+            assert_eq!(clamp_variable_list_offset(point(px(-100.0), px(-100.0)), axis, px(600.0), px(1000.0)), middle);
+        }
+    }
 }

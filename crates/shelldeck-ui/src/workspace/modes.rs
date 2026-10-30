@@ -1,5 +1,14 @@
 use super::*;
 
+pub(super) fn mode_label(mode: AppMode) -> String {
+    t!(match mode {
+        AppMode::User => "mode.transition.user",
+        AppMode::Support => "mode.transition.support",
+        AppMode::Dev => "mode.transition.dev",
+    })
+    .to_string()
+}
+
 impl Workspace {
     // --- App modes (User / Support / Dev) ---
 

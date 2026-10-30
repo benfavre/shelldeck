@@ -553,7 +553,7 @@ impl Render for PortForwardView {
                     .child(self.render_port_map()),
             )
             // Table
-            .child(
+            .children((!self.forwards.is_empty()).then(|| {
                 div()
                     .flex()
                     .flex_col()
@@ -563,8 +563,8 @@ impl Render for PortForwardView {
                     .border_color(ShellDeckColors::border())
                     .overflow_hidden()
                     .child(Self::render_header_row())
-                    .children(self.forwards.iter().map(|f| self.render_forward_row(f, cx))),
-            )
+                    .children(self.forwards.iter().map(|f| self.render_forward_row(f, cx)))
+            }))
     }
 }
 

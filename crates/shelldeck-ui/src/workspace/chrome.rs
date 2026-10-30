@@ -120,6 +120,7 @@ impl Workspace {
             navigation = navigation.child(
                 div()
                     .id("titlebar-menus")
+                    .flex_shrink_0()
                     .min_w(px(0.0))
                     .overflow_x_scroll()
                     .child(menu_bar),
@@ -277,7 +278,7 @@ impl Workspace {
                         .text_size(px(11.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(title_color)
-                        .child(current.label().to_string()),
+                        .child(super::modes::mode_label(current)),
                 )
                 .child(
                     svg()
@@ -625,7 +626,7 @@ impl Workspace {
                         } else {
                             ShellDeckColors::text_primary()
                         })
-                        .child(mode.label().to_string()),
+                        .child(super::modes::mode_label(mode)),
                 );
             if active {
                 row = row.child(

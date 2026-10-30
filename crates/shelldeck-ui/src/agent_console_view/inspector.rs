@@ -1,22 +1,16 @@
 use super::*;
 
 impl AgentConsoleView {
-    pub(super) fn render_inspector(
-        &mut self,
-        session: &AgentSession,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let remote = matches!(session.context.target, AgentTarget::Ssh { .. });
-        let files = inspector_files(session);
-        let changed_count = files.iter().filter(|file| file.diff.is_some()).count();
+    pub(super) fn render_inspector_tabs(&self, cx: &mut Context<Self>) -> Div {
         let files_selected = self.inspector_tab == AgentInspectorTab::Files;
         let changes_selected = self.inspector_tab == AgentInspectorTab::Changes;
-
-        let tabs = div()
-            .h(px(42.0))
+        div()
+            .min_h(px(42.0))
+            .flex_shrink_0()
+            .flex_wrap()
             .flex()
             .items_center()
-            .gap(px(4.0))
+            .gap(px(6.0))
             .px(px(8.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
@@ -51,6 +45,7 @@ impl AgentConsoleView {
                 .icon(IconSource::from("git-branch"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.inspector_tab = AgentInspectorTab::Changes;
+                    this.refresh_review(cx);
                     cx.notify();
                 })),
             )
@@ -65,7 +60,21 @@ impl AgentConsoleView {
                         this.tools.panel_visible = false;
                         cx.notify();
                     })),
-            );
+            )
+    }
+
+    pub(super) fn render_inspector(
+        &mut self,
+        session: &AgentSession,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let remote = matches!(session.context.target, AgentTarget::Ssh { .. });
+        let files = inspector_files(session);
+        let changed_count = files.iter().filter(|file| file.diff.is_some()).count();
+        let files_selected = self.inspector_tab == AgentInspectorTab::Files;
+        let changes_selected = self.inspector_tab == AgentInspectorTab::Changes;
+
+        let tabs = self.render_inspector_tabs(cx);
 
         if files_selected {
             let explorer = self.render_file_explorer(session, cx);
@@ -131,7 +140,7 @@ impl AgentConsoleView {
                 .hover(|style| style.bg(ShellDeckColors::hover_bg()))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.focused_trace = Some(trace_id);
-                    pin_to_latest(&this.scroll);
+                    this.pending_trace_reveal = Some(trace_id);
                     cx.notify();
                 }))
                 .child(

@@ -570,7 +570,8 @@ impl Runtime {
         };
         let settings = BrowserSettings {
             windowless_frame_rate: 30,
-            background_color: 0xff181820,
+            // Match a normal browser canvas for pages without a CSS background.
+            background_color: 0xffffffff,
             ..Default::default()
         };
         let mut client = callbacks::make_client(shared.clone());
@@ -728,7 +729,8 @@ fn run_with_sandbox(sandbox_info: *mut u8) -> Result<i32, Box<dyn std::error::Er
         log_severity: LogSeverity::WARNING,
         // No remote debugging socket: the private pipe is the only host control path.
         remote_debugging_port: 0,
-        background_color: 0xff181820,
+        // Match a normal browser canvas for pages without a CSS background.
+        background_color: 0xffffffff,
         ..Default::default()
     };
     #[cfg(not(target_os = "macos"))]

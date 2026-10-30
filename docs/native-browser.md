@@ -1,6 +1,6 @@
 # Embedded Chromium browser
 
-ShellDeck renders a real Chromium browser in its native GPUI center pane. A
+ShellDeck renders a real Chromium browser in a resizable native GPUI pane beside the conversation. A
 separate `shelldeck-browser` helper owns CEF and its native event loop. GPUI does
 not link CEF or share its `NSApplication`; this also prevents Chromium lifecycle
 failures from taking down the terminal UI.
@@ -47,14 +47,21 @@ The runtime never starts a provider or makes an agent task implicitly.
 
 ## Using the browser
 
-Choose Browser in an agent session’s middle pane and enter a URL. Conversation,
-Editor and Browser retain their contents when switching. Local Codex, Claude
+Choose the globe in an agent session’s header and enter a URL. The browser opens
+beside the conversation and composer; drag the divider to resize either pane.
+Narrow windows stack the two panes. The globe hides/reopens the retained browser;
+the browser pane’s top-right close button closes its tabs and releases its runtime.
+Conversation and Editor keep their own navigation. Local Codex, Claude
 Code and Automonique runs can observe the shared tabs; enable “Allow agent
 control” with writable run permissions before the next prompt to permit actions.
 Turning control off revokes it immediately. SSH-hosted agents do not receive a
 capability to control the local browser.
 
 ## Building and staging
+
+For routine development, `scripts/run-dev.sh --main` builds and stages the matching
+browser helper before launching the desktop app. A bare `cargo build -p shelldeck`
+builds only the app and browser client, not the optional Chromium runtime.
 
 On Linux set `PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig` for Cargo as
 usual. Ninja and CMake are required for CEF's C++ wrapper. Set `CEF_PATH` to a
@@ -149,3 +156,16 @@ submission, related popup IDs and immediate revocation. Profiles are additionall
 namespaced by the authenticated Manage origin/account, so signing in as a different
 account cannot reuse a previous account's browser cookies through a saved session.
 [Native preview and verification](testing/native-browser-qa-2026-10-15.md).
+
+## Ubuntu development sandbox prerequisite
+
+Ubuntu may restrict user namespaces for an unregistered development executable.
+A matching runtime can then abort with a misleading SUID-helper error even
+though its libraries are present. Do not add `--no-sandbox`, change global
+sysctls, or make the bundled helper setuid. With explicit administrator approval,
+an AppArmor profile can allow `userns` for the exact trusted browser executable;
+see [Chromium’s development-build guidance](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md).
+The local 0.13.0 development helper was approved and configured on 2026-10-30.
+Its rule is restricted to that exact build path; a relocated or differently
+versioned executable needs its own administrator review. No policy is silently
+installed by `run-dev.sh`.

@@ -15,7 +15,16 @@ pub async fn download_and_verify(release: &ReleaseInfo, dest: &Path) -> Result<(
 async fn download_verified_payload(release: &ReleaseInfo, dest: &Path) -> Result<()> {
     tracing::info!("Downloading update from {}", release.url);
 
-    let mut response = reqwest::get(&release.url)
+    anyhow::ensure!(
+        release.size > 0,
+        "Update manifest has an empty payload size"
+    );
+    let mut response = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(10 * 60))
+        .build()?
+        .get(&release.url)
+        .send()
         .await
         .context("Failed to download update")?;
 
@@ -26,8 +35,14 @@ async fn download_verified_payload(release: &ReleaseInfo, dest: &Path) -> Result
         );
     }
 
-    let partial = dest.with_extension("part");
-    let _ = tokio::fs::remove_file(&partial).await;
+    let partial = tempfile::Builder::new()
+        .prefix(".shelldeck-update-")
+        .tempfile_in(
+            dest.parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new(".")),
+        )?
+        .into_temp_path();
     let mut file = tokio::fs::File::create(&partial)
         .await
         .context("Failed to create temporary update file")?;
@@ -41,8 +56,7 @@ async fn download_verified_payload(release: &ReleaseInfo, dest: &Path) -> Result
         downloaded = downloaded
             .checked_add(chunk.len() as u64)
             .context("Update payload size overflow")?;
-        if release.size > 0 && downloaded > release.size {
-            let _ = tokio::fs::remove_file(&partial).await;
+        if downloaded > release.size {
             anyhow::bail!(
                 "Update payload exceeds signed size: expected {} bytes",
                 release.size
@@ -56,8 +70,7 @@ async fn download_verified_payload(release: &ReleaseInfo, dest: &Path) -> Result
     file.flush().await?;
     drop(file);
 
-    if release.size > 0 && downloaded != release.size {
-        let _ = tokio::fs::remove_file(&partial).await;
+    if downloaded != release.size {
         anyhow::bail!(
             "Update size mismatch: expected {}, got {}",
             release.size,
@@ -68,7 +81,6 @@ async fn download_verified_payload(release: &ReleaseInfo, dest: &Path) -> Result
     let digest = format!("{:x}", hasher.finalize());
 
     if !digest.eq_ignore_ascii_case(&release.sha256) {
-        let _ = tokio::fs::remove_file(&partial).await;
         anyhow::bail!(
             "SHA-256 mismatch: expected {}, got {}",
             release.sha256,
@@ -494,6 +506,54 @@ mod tests {
             pub_date: "2026-07-23T12:00:00Z".into(),
             signature: String::new(),
         }
+    }
+
+    // SDTEST-2781 / SDUC-283
+    #[tokio::test]
+    async fn interrupted_download_cleans_partial_and_preserves_existing_destination() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let count = stream.read(&mut request).await.unwrap();
+            assert!(std::str::from_utf8(&request[..count])
+                .unwrap()
+                .starts_with("GET /update "));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 32\r\nConnection: close\r\n\r\nshort",
+                )
+                .await
+                .unwrap();
+        });
+        let root = tempfile::tempdir().unwrap();
+        let dest = root.path().join("update.tar.gz");
+        std::fs::write(&dest, b"previous verified archive").unwrap();
+        let release = ReleaseInfo {
+            platform: "linux-x86_64".into(),
+            version: "1.2.3".into(),
+            url: format!("http://{address}/update"),
+            sha256: "a".repeat(64),
+            size: 32,
+            pub_date: "2026-10-30T00:00:00Z".into(),
+            signature: String::new(),
+        };
+        assert!(download_verified_payload(&release, &dest).await.is_err());
+        server.await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"previous verified archive");
+        assert_eq!(
+            std::fs::read_dir(root.path()).unwrap().count(),
+            1,
+            "failed network transfer left a partial archive"
+        );
+        let mut empty = release;
+        empty.size = 0;
+        assert!(download_verified_payload(&empty, &dest)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("empty payload size"));
     }
 
     // SDTEST-2588 — SDUC-557

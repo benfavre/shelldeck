@@ -652,7 +652,7 @@ impl Workspace {
                 self.open_fleet(cx)
                     && self
                         .fleet_view
-                        .update(cx, |view, _| view.open_session_exact(session))
+                        .update(cx, |view, cx| view.open_session_exact(session, cx))
                     && platform_attention_surface_verified(
                         self.effective_mode(),
                         self.mode_transition.is_some(),

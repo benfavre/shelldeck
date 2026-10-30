@@ -16,6 +16,7 @@ pub(super) struct AgentLibraryUi {
     pub error: Option<String>,
     pub notice: Option<String>,
     pub rename_session: Option<Uuid>,
+    pub undo_archive: Option<Uuid>,
     pub rename_state: Entity<InputState>,
     store: AgentSessionStore,
     loading: bool,
@@ -33,6 +34,7 @@ impl AgentLibraryUi {
             error: None,
             notice: None,
             rename_session: None,
+            undo_archive: None,
             rename_state: input_state(cx, String::new()),
             store: AgentSessionStore::default(),
             loading: false,
@@ -49,6 +51,10 @@ impl AgentLibraryUi {
 }
 
 impl AgentConsoleView {
+    pub(super) fn draft_store(&self) -> AgentSessionStore {
+        self.library.store.clone()
+    }
+
     pub(super) fn connection_repair_storage_ready(&self) -> bool {
         !self.library.loading && self.library.writable
     }
@@ -82,6 +88,13 @@ impl AgentConsoleView {
                                 .session_ui
                                 .values()
                                 .all(|ui| ui.prompt.read(cx).content().is_empty());
+                        let existing_ids = this
+                            .sessions
+                            .sessions()
+                            .iter()
+                            .map(|session| session.id)
+                            .collect::<std::collections::HashSet<_>>();
+                        let mut restore_drafts = Vec::new();
                         if !snapshot.collection.sessions().is_empty() {
                             if untouched {
                                 this.sessions = snapshot.collection;
@@ -94,7 +107,10 @@ impl AgentConsoleView {
                                     .session_ui
                                     .entry(session.id)
                                     .or_insert_with(|| AgentSessionUi::new(cx));
-                                if ui.prompt.read(cx).content().is_empty() {
+                                if (untouched || !existing_ids.contains(&session.id))
+                                    && ui.prompt.read(cx).content().is_empty()
+                                {
+                                    restore_drafts.push(session.id);
                                     if let Some(draft) = snapshot.drafts.get(&session.id) {
                                         ui.prompt.update(cx, |state, cx| {
                                             state.replace_content(draft.clone(), cx)
@@ -103,8 +119,23 @@ impl AgentConsoleView {
                                 }
                             }
                         }
+                        for id in restore_drafts {
+                            if let Some(bundle) = snapshot.draft_bundles.get(&id) {
+                                if this
+                                    .validate_native_context_transition(id, &bundle.context)
+                                    .is_ok()
+                                {
+                                    if let Some(session) = this.sessions.get_mut(id) {
+                                        let _ =
+                                            session.set_context(bundle.context.clone(), now_ms());
+                                    }
+                                }
+                                this.restore_composer_bundle(id, bundle);
+                            }
+                        }
                         if untouched {
                             this.library.preferences = snapshot.preferences;
+                            this.restore_ssh_preferences(cx);
                             this.tools.navigator_visible =
                                 this.library.preferences.navigator_visible;
                             this.tools.panel_visible = this.library.preferences.inspector_visible;
@@ -162,9 +193,24 @@ impl AgentConsoleView {
             AgentInspectorTab::Changes => "changes",
         }
         .into();
+        let draft_bundles = self
+            .sessions
+            .sessions()
+            .iter()
+            .map(|session| {
+                let context = if self.sessions.selected_id() == Some(session.id) {
+                    self.context_from_controls(cx)
+                        .unwrap_or_else(|_| session.context.clone())
+                } else {
+                    session.context.clone()
+                };
+                (session.id, self.saved_composer_bundle(session.id, context))
+            })
+            .collect();
         AgentSessionSnapshot {
             collection: self.sessions.clone(),
             drafts,
+            draft_bundles,
             preferences,
             warnings: Vec::new(),
         }
@@ -192,18 +238,27 @@ impl AgentConsoleView {
                 .spawn(async move {
                     let _guard = write_lock.lock();
                     if generation.load(Ordering::SeqCst) != revision {
-                        return Ok(());
+                        return Ok(Default::default());
                     }
-                    store.save(&snapshot)
+                    store.save_with_drafts(&snapshot)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.library.generation.load(Ordering::SeqCst) != revision {
                     return;
                 }
-                if let Err(error) = result {
-                    this.library.error =
-                        Some(format!("{}: {error}", t!("agents.library.save_failed")));
+                match result {
+                    Ok(report) => {
+                        this.promote_saved_images(&report);
+                        this.library.error = None;
+                        if !report.warnings.is_empty() {
+                            this.library.notice = Some(report.warnings.join("\n"));
+                        }
+                    }
+                    Err(error) => {
+                        this.library.error =
+                            Some(format!("{}: {error}", t!("agents.library.save_failed")))
+                    }
                 }
                 cx.notify();
             });
@@ -228,7 +283,22 @@ impl AgentConsoleView {
                 .store
                 .load(now_ms())
                 .map_err(|error| error.to_string())?;
-            let has_current_work = !snapshot.drafts.is_empty()
+            let has_current_work = snapshot
+                .collection
+                .selected_id()
+                .and_then(|id| {
+                    snapshot
+                        .draft_bundles
+                        .get(&id)
+                        .zip(snapshot.collection.get(id))
+                })
+                .is_some_and(|(bundle, session)| bundle.context != session.context)
+                || !snapshot.drafts.is_empty()
+                || snapshot.draft_bundles.values().any(|bundle| {
+                    !bundle.attachments.is_empty()
+                        || !bundle.followups.is_empty()
+                        || bundle.effort.is_some()
+                })
                 || snapshot
                     .collection
                     .sessions()
@@ -240,17 +310,27 @@ impl AgentConsoleView {
                 for (id, draft) in restored.drafts {
                     snapshot.drafts.entry(id).or_insert(draft);
                 }
+                for (id, bundle) in restored.draft_bundles {
+                    snapshot.draft_bundles.entry(id).or_insert(bundle);
+                }
             } else {
                 snapshot = restored;
             }
         }
-        self.library
+        let report = self
+            .library
             .store
-            .save(&snapshot)
-            .map_err(|error| error.to_string())
+            .save_with_drafts(&snapshot)
+            .map_err(|error| error.to_string())?;
+        drop(_guard);
+        self.promote_saved_images(&report);
+        if !report.warnings.is_empty() {
+            self.library.notice = Some(report.warnings.join("\n"));
+        }
+        Ok(())
     }
 
-    fn rename_library_session(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn rename_library_session(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.library.rename_session else {
             return;
         };
@@ -272,16 +352,18 @@ impl AgentConsoleView {
         cx.notify();
     }
 
-    fn fork_library_session(&mut self, id: Uuid, cx: &mut Context<Self>) {
+    pub(super) fn fork_library_session(&mut self, id: Uuid, cx: &mut Context<Self>) {
         let Some(session) = self.sessions.get(id) else {
             return;
         };
         let base = session.name.chars().take(24).collect::<String>();
         let name = t!("agents.library.copy_name", name = base).to_string();
+        self.retain_draft_context(cx);
         match self.sessions.duplicate(id, name, now_ms()) {
             Ok(id) => {
                 self.session_ui.insert(id, AgentSessionUi::new(cx));
                 self.select_session(id, cx);
+                self.apply_selected_context(cx);
                 self.schedule_library_save(cx);
             }
             Err(error) => self.library.error = Some(error.to_string()),
@@ -295,11 +377,25 @@ impl AgentConsoleView {
         archived: bool,
         cx: &mut Context<Self>,
     ) {
+        let selected_before = self.sessions.selected_id();
+        let was_archived = self
+            .sessions
+            .get(id)
+            .is_some_and(|session| session.archived);
+        if selected_before == Some(id) {
+            self.retain_draft_context(cx);
+        }
         match self.sessions.archive(id, archived, now_ms()) {
             Ok(()) => {
+                self.library.error = None;
+                if archived && !was_archived {
+                    self.library.undo_archive = Some(id);
+                } else if !archived && self.library.undo_archive == Some(id) {
+                    self.library.undo_archive = None;
+                }
                 if self.sessions.selected_id().is_none() {
                     self.new_session(cx);
-                } else {
+                } else if self.sessions.selected_id() != selected_before {
                     self.apply_selected_context(cx);
                 }
                 self.schedule_library_save(cx);
@@ -309,7 +405,23 @@ impl AgentConsoleView {
         cx.notify();
     }
 
-    fn export_library_session(&mut self, id: Uuid, json: bool, cx: &mut Context<Self>) {
+    pub(super) fn undo_library_archive(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.library.undo_archive else {
+            return;
+        };
+        if self
+            .sessions
+            .get(id)
+            .is_some_and(|session| session.archived)
+        {
+            self.archive_library_session(id, false, cx);
+        } else {
+            self.library.undo_archive = None;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn export_library_session(&mut self, id: Uuid, json: bool, cx: &mut Context<Self>) {
         let Some(session) = self.sessions.get(id) else {
             return;
         };
@@ -597,5 +709,74 @@ impl AgentConsoleView {
             );
         }
         shell.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod durable_draft_tests {
+    use super::*;
+    use shelldeck_core::agent_session::storage::{
+        AgentDraftAttachment, AgentDraftBundle, AgentQueuedDraft, AGENT_DRAFT_SCHEMA_VERSION,
+    };
+    // SDTEST-2839 / SDUC-564 — shutdown flush persists the last keystroke and
+    // complete scoped draft; explicit removal stays removed on the next reload.
+    #[::core::prelude::v1::test]
+    fn flush_preserves_complete_draft_without_waiting_for_debounce() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = AgentSessionStore::new(temporary.path().join("sessions.json"));
+        let mut app = gpui::TestAppContext::single();
+        let entity = app.new(AgentConsoleView::new);
+        entity.update(&mut app, |view, cx| {
+            view.library = AgentLibraryUi::new(cx);
+            view.library.store = store.clone();
+            let id = view.sessions.selected_id().unwrap();
+            let context = view.sessions.get(id).unwrap().context.clone();
+            let bundle = AgentDraftBundle {
+                version: AGENT_DRAFT_SCHEMA_VERSION,
+                context: context.clone(),
+                attachments: vec![AgentDraftAttachment {
+                    path: PathBuf::new(),
+                    name: "Clipboard text".into(),
+                    text: Some("Exact quoted context".into()),
+                    image_digest: None,
+                    capture_image: false,
+                }],
+                effort: Some(shelldeck_core::agent_runtime::AgentReasoningEffort::High),
+                followups: vec![AgentQueuedDraft {
+                    context: context.clone(),
+                    prompt: "Do later".into(),
+                    attachments: vec![],
+                    effort: None,
+                }],
+            };
+            view.restore_composer_bundle(id, &bundle);
+            view.session_ui[&id]
+                .prompt
+                .update(cx, |state, cx| state.replace_content("Final keystroke", cx));
+            view.flush_library(cx).unwrap();
+            let saved = store.load(2).unwrap();
+            assert_eq!(saved.drafts[&id], "Final keystroke");
+            assert_eq!(saved.draft_bundles[&id], bundle);
+            assert!(view.run_sessions.is_empty());
+            view.clear_composer_context(id);
+            view.session_ui[&id]
+                .prompt
+                .update(cx, |state, cx| state.reset(cx));
+            view.flush_library(cx).unwrap();
+            let saved = store.load(3).unwrap();
+            assert!(!saved.drafts.contains_key(&id));
+            assert!(saved.draft_bundles[&id].attachments.is_empty());
+            // Send/Queue clear attachments, but the user's model/effort choice
+            // stays selected for the next turn. Removing context is not Auto.
+            assert_eq!(saved.draft_bundles[&id].effort, bundle.effort);
+            assert_eq!(saved.draft_bundles[&id].followups[0].prompt, "Do later");
+            // Selecting Automatic in the effort picker explicitly clears it.
+            view.composer_ui.effort.remove(&id);
+            view.flush_library(cx).unwrap();
+            let saved = store.load(4).unwrap();
+            assert!(saved.draft_bundles[&id].effort.is_none());
+            assert!(saved.draft_bundles[&id].attachments.is_empty());
+            assert_eq!(saved.draft_bundles[&id].followups[0].prompt, "Do later");
+        });
     }
 }

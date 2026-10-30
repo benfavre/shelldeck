@@ -413,16 +413,21 @@ impl Workspace {
                 note,
                 attachments,
             } => {
+                let sent = crate::support_view::SentSupportDraft::new(
+                    text.clone(),
+                    attachments.clone(),
+                    note,
+                );
                 if id == crate::support_view::SUPPORT_TICKET_SHOWCASE_ID {
                     self.support.update(cx, |view, cx| {
                         if view.append_ticket_showcase_message(&id, text, note, attachments, cx) {
-                            view.clear_ticket_draft_after_send(&id, cx);
+                            view.clear_ticket_draft_after_send(&id, &sent, cx);
                         }
                     });
                     return;
                 }
                 let sent_ticket_id = id.clone();
-                self.support_action(cx, Some(sent_ticket_id), move |base, token| {
+                self.support_action(cx, Some((sent_ticket_id, sent)), move |base, token| {
                     if attachments.is_empty() && note {
                         ms::support_note(&base, &token, &id, &text)
                     } else if attachments.is_empty() {
@@ -590,7 +595,7 @@ impl Workspace {
     pub(super) fn support_action<F>(
         &mut self,
         cx: &mut Context<Self>,
-        sent_ticket_id: Option<String>,
+        sent_ticket: Option<(String, crate::support_view::SentSupportDraft)>,
         f: F,
     ) where
         F: FnOnce(String, String) -> shelldeck_core::Result<manage_support::SupportTicket>
@@ -625,8 +630,8 @@ impl Workspace {
                             {
                                 v.set_detail(t, cx);
                             }
-                            if let Some(id) = sent_ticket_id.as_deref() {
-                                v.clear_ticket_draft_after_send(id, cx);
+                            if let Some((id, sent)) = sent_ticket.as_ref() {
+                                v.clear_ticket_draft_after_send(id, sent, cx);
                             }
                             cx.notify();
                         });

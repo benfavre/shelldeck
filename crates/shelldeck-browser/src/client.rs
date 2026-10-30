@@ -717,6 +717,21 @@ pub(crate) fn test_client() -> (BrowserClient, mpsc::Receiver<Command>) {
     (client, receiver)
 }
 
+fn insert_popup(inner: &Inner, browser_id: BrowserId, rect: Rect) {
+    if inner.owned.lock().contains(&browser_id) {
+        inner.popups.lock().insert(browser_id, rect);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_receive(
+    client: &BrowserClient,
+    event: Event,
+    payload: Vec<u8>,
+) -> io::Result<()> {
+    receive(&client.inner, event, payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -949,19 +964,4 @@ mod tests {
             .contains("timed out"));
         assert!(client.inner.pending.lock().is_empty());
     }
-}
-
-fn insert_popup(inner: &Inner, browser_id: BrowserId, rect: Rect) {
-    if inner.owned.lock().contains(&browser_id) {
-        inner.popups.lock().insert(browser_id, rect);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn test_receive(
-    client: &BrowserClient,
-    event: Event,
-    payload: Vec<u8>,
-) -> io::Result<()> {
-    receive(&client.inner, event, payload)
 }

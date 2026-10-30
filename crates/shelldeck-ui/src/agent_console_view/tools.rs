@@ -148,7 +148,13 @@ impl AgentConsoleView {
             "terminal" => cx.emit(AgentConsoleEvent::OpenTerminal {
                 context: self.displayed_context(cx),
             }),
-            "browser" => self.show_live_browser(None, cx),
+            "browser" => {
+                if self.live_browser_visible(cx) {
+                    self.hide_live_browser(cx);
+                } else {
+                    self.show_live_browser(None, cx);
+                }
+            }
             "library" => {
                 self.tools.active = Some(AgentToolSurface::Library);
                 self.tools.panel_visible = true;
@@ -176,6 +182,7 @@ impl AgentConsoleView {
             ("files", "file-text", "agents.inspector.files"),
             ("review", "git-branch", "agents.inspector.changes"),
             ("terminal", "terminal", "agents.parity.terminal"),
+            ("browser", "globe", "agents.live_browser.title"),
         ] {
             row = row.child(
                 Button::new(SharedString::from(format!("agent-quick-{id}")), "")
@@ -222,11 +229,7 @@ impl AgentConsoleView {
             .border_b_1()
             .border_color(ShellDeckColors::border());
         for (id, icon, key) in [
-            ("files", "file-text", "agents.inspector.files"),
-            ("review", "git-branch", "agents.inspector.changes"),
-            ("terminal", "terminal", "agents.parity.terminal"),
-            ("browser", "globe", "agents.browser.title"),
-            ("sources", "globe", "agents.parity.sources"),
+            ("sources", "link", "agents.parity.sources"),
             ("instructions", "list-checks", "agents.parity.instructions"),
             ("library", "messages-square", "agents.parity.sessions"),
             ("workflows", "calendar", "agents.workflows.title"),

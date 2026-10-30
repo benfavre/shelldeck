@@ -13,10 +13,12 @@ use automonique_platform_client::platform_v2_client::{
     NegotiationResult, PlatformV2Client, PlatformV2ClientError, ReviewCapabilitiesResult,
     ReviewReadResult, ReviewReceiptResult, WorkContextQueryResult,
 };
-pub use automonique_platform_client::{ActionResult, ControlClaimResult, PlatformView};
+pub use automonique_platform_client::{
+    ActionResult, ControlClaimResult, PlatformView, SessionCommandStateResult,
+};
 use automonique_platform_client::{
-    BearerToken, HttpsTransport, PlatformClient, SessionCommandStateResult, SessionHistoryResult,
-    SessionListResult, SubscriptionApply, SubscriptionResult,
+    BearerToken, HttpsTransport, PlatformClient, SessionHistoryResult, SubscriptionApply,
+    SubscriptionResult,
 };
 pub use automonique_protocol::platform::{
     ActionReceipt, Attachment, Capabilities, ClientId, ControlLease, ControlLeaseId,
@@ -818,6 +820,10 @@ impl PlatformConnection {
         }
     }
 
+    pub fn capabilities(&self) -> Result<Capabilities> {
+        self.client()?.capabilities().map_err(platform_error)
+    }
+
     pub fn snapshot(&self) -> Result<PlatformSnapshot> {
         let mut client = self.client()?;
         let capabilities = client.capabilities().map_err(platform_error)?;
@@ -845,6 +851,7 @@ impl PlatformConnection {
     ) -> Result<PlatformRefresh> {
         let mut client = self.client()?;
         let mut snapshot = previous.clone();
+        snapshot.capabilities = client.capabilities().map_err(platform_error)?;
         let mut events = 0_usize;
         let mut resynchronized = false;
 
@@ -874,65 +881,14 @@ impl PlatformConnection {
             }
         }
 
-        let directory_cursor = snapshot.sessions_cursor.clone();
-        match client
-            .subscribe_recoverable(Some(directory_cursor.clone()))
-            .map_err(platform_error)?
-        {
-            SubscriptionResult::Page(page) => {
-                let changed = !page.events.is_empty();
-                match snapshot.view.apply_subscription(page) {
-                    SubscriptionApply::ResyncRequired => {
-                        let sessions = client
-                            .list_sessions(ResourceAuthority::Automonique, None)
-                            .map_err(platform_error)?;
-                        snapshot.view.apply_session_list(&sessions);
-                        snapshot.sessions = sessions.sessions;
-                        snapshot.sessions_cursor = sessions.cursor;
-                        resynchronized = true;
-                    }
-                    SubscriptionApply::Applied {
-                        events: directory_events,
-                    } => {
-                        events = events.saturating_add(directory_events);
-                        snapshot.sessions_cursor = snapshot
-                            .view
-                            .cursor(&directory_cursor)
-                            .cloned()
-                            .unwrap_or(directory_cursor);
-                        if changed {
-                            let sessions = match client
-                                .list_sessions_recoverable(
-                                    ResourceAuthority::Automonique,
-                                    Some(snapshot.sessions_cursor.clone()),
-                                )
-                                .map_err(platform_error)?
-                            {
-                                SessionListResult::Sessions(sessions) => sessions,
-                                SessionListResult::ResyncRequired { .. } => {
-                                    resynchronized = true;
-                                    client
-                                        .list_sessions(ResourceAuthority::Automonique, None)
-                                        .map_err(platform_error)?
-                                }
-                            };
-                            snapshot.view.apply_session_list(&sessions);
-                            snapshot.sessions = sessions.sessions;
-                            snapshot.sessions_cursor = sessions.cursor;
-                        }
-                    }
-                }
-            }
-            SubscriptionResult::ResyncRequired { .. } => {
-                let sessions = client
-                    .list_sessions(ResourceAuthority::Automonique, None)
-                    .map_err(platform_error)?;
-                snapshot.view.apply_session_list(&sessions);
-                snapshot.sessions = sessions.sessions;
-                snapshot.sessions_cursor = sessions.cursor;
-                resynchronized = true;
-            }
-        }
+        // Directory changes are not guaranteed to produce resource events.
+        // Always fetch the authoritative list, including removals, on refresh.
+        let sessions = client
+            .list_sessions(ResourceAuthority::Automonique, None)
+            .map_err(platform_error)?;
+        snapshot.view.apply_session_list(&sessions);
+        snapshot.sessions = sessions.sessions;
+        snapshot.sessions_cursor = sessions.cursor;
 
         let mut attachment_refreshes = Vec::with_capacity(attachments.len());
         for attachment in attachments {
@@ -1976,7 +1932,7 @@ mod tests {
         view.apply_session_list(&session_list);
         let pending = receipt(ReceiptOutcome::Accepted, 2);
         view.apply_receipt(pending.clone());
-        let previous = PlatformSnapshot {
+        let mut previous = PlatformSnapshot {
             capabilities: Capabilities::platform_v1(),
             resources: view.resources().cloned().collect(),
             cursor: cursor("resources", 5),
@@ -1984,13 +1940,17 @@ mod tests {
             sessions_cursor: session_list.cursor,
             view,
         };
+        previous
+            .capabilities
+            .methods
+            .retain(|method| *method != PlatformMethod::SessionFollowUp);
         let attachment = attachment(session.clone(), 10);
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let pending_for_server = pending.clone();
         let server = thread::spawn(move || {
-            for index in 0..4 {
+            for index in 0..5 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let (headers, body) = read_http_request(&mut stream);
                 assert!(headers
@@ -1998,21 +1958,33 @@ mod tests {
                     .contains("authorization: bearer fixture-token\r\n"));
                 let request = PlatformRequestMessage::from_canonical_bytes(&body).unwrap();
                 let response = match (index, request.request()) {
-                    (0, PlatformRequest::Subscribe(request)) => {
+                    (0, PlatformRequest::Capabilities) => {
+                        PlatformResponse::Capabilities(Capabilities::platform_v1())
+                    }
+                    (1, PlatformRequest::Subscribe(request)) => {
                         assert_eq!(request.cursor.as_ref().unwrap().topic.as_str(), "resources");
                         PlatformResponse::Subscription(Subscription {
                             events: Vec::new(),
                             cursor: cursor("resources", 5),
                         })
                     }
-                    (1, PlatformRequest::Subscribe(request)) => {
-                        assert_eq!(request.cursor.as_ref().unwrap().topic.as_str(), "sessions");
-                        PlatformResponse::Subscription(Subscription {
-                            events: Vec::new(),
-                            cursor: cursor("sessions", 10),
+                    (2, PlatformRequest::ListSessions(request)) => {
+                        assert_eq!(request.authority, ResourceAuthority::Automonique);
+                        assert!(
+                            request.cursor.is_none(),
+                            "refresh must request the full directory"
+                        );
+                        PlatformResponse::Sessions(SessionList {
+                            sessions: vec![SessionRecord {
+                                session: record(self::session("new-remote-session"), 1, "open"),
+                                run: None,
+                                attachable: false,
+                                controllable: false,
+                            }],
+                            cursor: cursor("sessions", 12),
                         })
                     }
-                    (2, PlatformRequest::Subscribe(request)) => {
+                    (3, PlatformRequest::Subscribe(request)) => {
                         assert_eq!(request.cursor.as_ref().unwrap().sequence.get(), 10);
                         PlatformResponse::Subscription(Subscription {
                             events: vec![PlatformEvent {
@@ -2022,7 +1994,7 @@ mod tests {
                             cursor: cursor("sessions", 11),
                         })
                     }
-                    (3, PlatformRequest::GetReceipt(request)) => {
+                    (4, PlatformRequest::GetReceipt(request)) => {
                         assert_eq!(request.id.as_ref(), Some(&pending_for_server.id));
                         PlatformResponse::Receipt(receipt(ReceiptOutcome::Completed, 3))
                     }
@@ -2037,6 +2009,17 @@ mod tests {
                 .unwrap();
         let refresh = connection.refresh(&previous, &[attachment]).unwrap();
         assert!(!refresh.resynchronized);
+        assert!(refresh
+            .snapshot
+            .capabilities
+            .methods
+            .contains(&PlatformMethod::SessionFollowUp));
+        assert_eq!(refresh.snapshot.sessions.len(), 1);
+        assert_eq!(
+            refresh.snapshot.sessions[0].session.resource.id.as_str(),
+            "new-remote-session"
+        );
+        assert_eq!(refresh.snapshot.sessions_cursor.sequence.get(), 12);
         assert_eq!(refresh.events, 1);
         assert!(matches!(
             refresh.attachments.as_slice(),

@@ -78,45 +78,22 @@ impl Workspace {
             super::agents::ActiveAgentRun::live_codex(commands, cancel, thread),
         );
         let console = self.agent_console.downgrade();
+        let mut pump = super::agent_stream::AgentEventPump::new(event_rx, done_rx);
         cx.spawn(async move |this, cx: &mut AsyncApp| loop {
             cx.background_executor()
-                .timer(std::time::Duration::from_millis(30))
+                .timer(super::agent_stream::FRAME_INTERVAL)
                 .await;
-            let events = event_rx.try_iter().collect::<Vec<_>>();
+            let (events, completion) = pump.poll();
             if !events.is_empty() {
                 let _ = console.update(cx, |view, cx| {
-                    for event in events {
-                        view.push_stream_event_for(run_id, event, cx);
-                    }
+                    view.push_stream_events_for(run_id, events, cx)
                 });
             }
-            match done_rx.try_recv() {
-                Ok((exit, error)) => {
-                    let trailing = event_rx.try_iter().collect::<Vec<_>>();
-                    if !trailing.is_empty() {
-                        let _ = console.update(cx, |view, cx| {
-                            for event in trailing {
-                                view.push_stream_event_for(run_id, event, cx);
-                            }
-                        });
-                    }
-                    let _ = this.update(cx, |this, cx| {
-                        this.complete_agent_run(run_id, exit, error, cx)
-                    });
-                    break;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    let _ = this.update(cx, |this, cx| {
-                        this.complete_agent_run(
-                            run_id,
-                            None,
-                            Some("Codex worker channel closed".to_string()),
-                            cx,
-                        )
-                    });
-                    break;
-                }
+            if let Some((exit_code, error)) = completion {
+                let _ = this.update(cx, |workspace, cx| {
+                    workspace.complete_agent_run(run_id, exit_code, error, cx)
+                });
+                break;
             }
         })
         .detach();

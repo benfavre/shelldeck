@@ -1,9 +1,13 @@
 use gpui::prelude::*;
 use gpui::*;
+use shelldeck_core::agent_runtime::{
+    configure_local_process, terminate_local_process, LocalProcessTree,
+};
 use shelldeck_core::ai::{create_client, parse_generated_script_draft, AiContext, AiSurface};
 use shelldeck_core::config::activity::{ActivityAction, ActivityEntry, ActivityKind};
 use shelldeck_core::config::cloud_account::AppMode;
 use shelldeck_core::models::connection::Connection;
+use shelldeck_core::models::execution::ExecutionRecord;
 use shelldeck_core::models::script::{ScriptLanguage, ScriptTarget};
 use shelldeck_core::models::script_runner::build_command;
 use shelldeck_core::models::templates::all_templates;
@@ -21,7 +25,255 @@ use crate::variable_prompt::{VariablePrompt, VariablePromptEvent};
 
 use super::{ActiveScript, Workspace};
 
+// Every poller owns one execution, not merely one reusable script ID.
+fn script_run_is_current(
+    script_id: Uuid,
+    execution_id: Uuid,
+    running_script: Option<Uuid>,
+    latest_record: Option<&ExecutionRecord>,
+) -> bool {
+    running_script == Some(script_id)
+        && latest_record.is_some_and(|record| {
+            record.id == execution_id && record.script_id == script_id && record.is_running()
+        })
+}
+
+fn fail_script_start(
+    running_script: &mut Option<Uuid>,
+    history: &mut [ExecutionRecord],
+    script_id: Uuid,
+    execution_id: Uuid,
+) -> bool {
+    if !script_run_is_current(script_id, execution_id, *running_script, history.last()) {
+        return false;
+    }
+    history
+        .last_mut()
+        .expect("current execution exists")
+        .finish(-1);
+    *running_script = None;
+    true
+}
+
+async fn await_script_connection<T>(
+    connection: impl std::future::Future<Output = T>,
+    shutdown: &mut tokio::sync::mpsc::Receiver<()>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = shutdown.recv() => None,
+        result = connection => Some(result),
+    }
+}
+
+fn remote_script_completion(
+    exit_code: Option<i32>,
+    name: &str,
+    host: &str,
+) -> (String, String, ToastLevel) {
+    match exit_code {
+        Some(0) => (
+            t!("activity.script.completed_on", name = name, host = host).to_string(),
+            t!("toast.script.completed_on", name = name, host = host).to_string(),
+            ToastLevel::Success,
+        ),
+        Some(code) => (
+            t!(
+                "activity.script.exited_on",
+                name = name,
+                code = code,
+                host = host
+            )
+            .to_string(),
+            t!(
+                "toast.script.exited_on",
+                name = name,
+                code = code,
+                host = host
+            )
+            .to_string(),
+            ToastLevel::Error,
+        ),
+        None => (
+            t!("activity.script.failed", name = name).to_string(),
+            t!("toast.script.failed_to_execute", name = name).to_string(),
+            ToastLevel::Error,
+        ),
+    }
+}
+
+// Workers publish completion only after all output writers have finished.
+// Observe completion first, then drain output: checking done after draining
+// could discard a final chunk queued in between those two observations.
+fn poll_script_channels(
+    output: &std::sync::mpsc::Receiver<String>,
+    poll_completion: impl FnOnce() -> Result<Option<i32>, std::sync::mpsc::TryRecvError>,
+) -> (
+    Vec<String>,
+    Result<Option<i32>, std::sync::mpsc::TryRecvError>,
+) {
+    let completion = poll_completion();
+    (output.try_iter().collect(), completion)
+}
+
+fn spawn_local_script(
+    script_id: Uuid,
+    binary: String,
+    args: Vec<String>,
+    env_vars: Vec<(String, String)>,
+    mut shutdown_rx: tokio::sync::mpsc::Receiver<()>,
+    stream_tx: std::sync::mpsc::Sender<String>,
+    done_tx: std::sync::mpsc::Sender<Option<i32>>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    std::thread::Builder::new()
+        .name(format!("script-local-{}", script_id))
+        .spawn(move || {
+            if !matches!(
+                shutdown_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ) {
+                let _ = done_tx.send(Some(-1));
+                return;
+            }
+            let mut cmd = Command::new(&binary);
+            cmd.args(&args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            for (k, v) in &env_vars {
+                cmd.env(k, v);
+            }
+            configure_local_process(&mut cmd);
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = stream_tx.send(format!("Error: {}", e));
+                    let _ = done_tx.send(None);
+                    return;
+                }
+            };
+
+            let mut process_tree = match LocalProcessTree::capture(child.id()) {
+                Ok(tree) => tree,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stream_tx.send(format!("Error: failed to supervise script: {error}"));
+                    let _ = done_tx.send(None);
+                    return;
+                }
+            };
+
+            // Spawn reader threads for stdout and stderr
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            let stream_tx2 = stream_tx.clone();
+
+            let stdout_thread = std::thread::spawn(move || {
+                if let Some(stdout) = stdout {
+                    for line in BufReader::new(stdout).lines() {
+                        match line {
+                            Ok(l) => {
+                                let _ = stream_tx.send(l);
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                }
+            });
+
+            let stderr_thread = std::thread::spawn(move || {
+                if let Some(stderr) = stderr {
+                    let mut first = true;
+                    for line in BufReader::new(stderr).lines() {
+                        match line {
+                            Ok(l) => {
+                                if first {
+                                    let _ = stream_tx2.send("--- stderr ---".to_string());
+                                    first = false;
+                                }
+                                let _ = stream_tx2.send(l);
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                }
+            });
+
+            // Poll for completion or cancellation
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        // A background descendant may still hold either pipe.
+                        // End this script's owned tree before joining readers.
+                        process_tree.terminate();
+                        let _ = stdout_thread.join();
+                        let _ = stderr_thread.join();
+                        let _ = done_tx.send(status.code());
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let _ = terminate_local_process(&mut child, &mut process_tree);
+                        let _ = stdout_thread.join();
+                        let _ = stderr_thread.join();
+                        let _ = done_tx.send(None);
+                        tracing::error!("Error waiting for child process: {}", e);
+                        return;
+                    }
+                }
+
+                // Check shutdown (non-blocking)
+                match shutdown_rx.try_recv() {
+                    Ok(()) => {
+                        let _ = terminate_local_process(&mut child, &mut process_tree);
+                        let _ = stdout_thread.join();
+                        let _ = stderr_thread.join();
+                        let _ = done_tx.send(Some(-1));
+                        return;
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        // Sender dropped — treat as cancellation
+                        let _ = terminate_local_process(&mut child, &mut process_tree);
+                        let _ = stdout_thread.join();
+                        let _ = stderr_thread.join();
+                        let _ = done_tx.send(Some(-1));
+                        return;
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        })
+}
+
 impl Workspace {
+    fn settle_script_start_failure(
+        &mut self,
+        script_id: Uuid,
+        execution_id: Uuid,
+        cx: &mut Context<Self>,
+    ) {
+        let failed = self.scripts.update(cx, |editor, cx| {
+            let failed = fail_script_start(
+                &mut editor.running_script_id,
+                &mut editor.history,
+                script_id,
+                execution_id,
+            );
+            if failed {
+                cx.notify();
+            }
+            failed
+        });
+        if failed {
+            self.finish_ai_script_run(script_id, "failed", cx);
+            self.update_dashboard_stats(cx);
+        }
+    }
+
     pub(super) fn handle_script_event(&mut self, event: &ScriptEvent, cx: &mut Context<Self>) {
         if !self.can_access_mode(AppMode::Dev) {
             return;
@@ -393,120 +645,29 @@ impl Workspace {
         script_id: Uuid,
         cx: &mut Context<Self>,
     ) {
-        use std::io::{BufRead, BufReader};
-        use std::process::{Command, Stdio};
+        let Some(execution_id) = self.scripts.read(cx).history.last().map(|record| record.id)
+        else {
+            return;
+        };
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
         let (stream_tx, stream_rx) = std::sync::mpsc::channel::<String>();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<Option<i32>>();
 
-        let thread_handle = std::thread::Builder::new()
-            .name(format!("script-local-{}", script_id))
-            .spawn(move || {
-                let mut cmd = Command::new(&binary);
-                cmd.args(&args)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                for (k, v) in &env_vars {
-                    cmd.env(k, v);
-                }
-                let mut child = match cmd.spawn() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let _ = stream_tx.send(format!("Error: {}", e));
-                        let _ = done_tx.send(None);
-                        return;
-                    }
-                };
-
-                // Spawn reader threads for stdout and stderr
-                let stdout = child.stdout.take();
-                let stderr = child.stderr.take();
-                let stream_tx2 = stream_tx.clone();
-
-                let stdout_thread = std::thread::spawn(move || {
-                    if let Some(stdout) = stdout {
-                        for line in BufReader::new(stdout).lines() {
-                            match line {
-                                Ok(l) => {
-                                    let _ = stream_tx.send(l);
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                    }
-                });
-
-                let stderr_thread = std::thread::spawn(move || {
-                    if let Some(stderr) = stderr {
-                        let mut first = true;
-                        for line in BufReader::new(stderr).lines() {
-                            match line {
-                                Ok(l) => {
-                                    if first {
-                                        let _ = stream_tx2.send("--- stderr ---".to_string());
-                                        first = false;
-                                    }
-                                    let _ = stream_tx2.send(l);
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                    }
-                });
-
-                // Create a blocking receiver for the shutdown signal
-                let mut shutdown_rx = shutdown_rx;
-
-                // Poll for completion or cancellation
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            let _ = stdout_thread.join();
-                            let _ = stderr_thread.join();
-                            let _ = done_tx.send(status.code());
-                            return;
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            let _ = stdout_thread.join();
-                            let _ = stderr_thread.join();
-                            let _ = done_tx.send(None);
-                            tracing::error!("Error waiting for child process: {}", e);
-                            return;
-                        }
-                    }
-
-                    // Check shutdown (non-blocking)
-                    match shutdown_rx.try_recv() {
-                        Ok(()) => {
-                            // Kill the child process
-                            let _ = child.kill();
-                            let _ = child.wait(); // reap
-                            let _ = stdout_thread.join();
-                            let _ = stderr_thread.join();
-                            let _ = done_tx.send(Some(-1));
-                            return;
-                        }
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
-                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                            // Sender dropped — treat as cancellation
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            let _ = stdout_thread.join();
-                            let _ = stderr_thread.join();
-                            let _ = done_tx.send(Some(-1));
-                            return;
-                        }
-                    }
-
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-            });
+        let thread_handle = spawn_local_script(
+            script_id,
+            binary,
+            args,
+            env_vars,
+            shutdown_rx,
+            stream_tx,
+            done_tx,
+        );
         let thread_handle = match thread_handle {
             Ok(h) => h,
             Err(e) => {
                 tracing::error!("Failed to spawn local script thread: {}", e);
+                self.settle_script_start_failure(script_id, execution_id, cx);
                 self.show_toast(
                     t!("toast.script.start_failed", error = e.to_string()).to_string(),
                     ToastLevel::Error,
@@ -533,11 +694,23 @@ impl Workspace {
                     .timer(std::time::Duration::from_millis(50))
                     .await;
 
-                // Drain output lines
-                let mut lines = Vec::new();
-                while let Ok(line) = stream_rx.try_recv() {
-                    lines.push(line);
+                // A cancelled run may finish after a new run has started.
+                // It must not consume the new run's output/history/active handle.
+                let current = scripts_handle
+                    .update(cx, |editor, _| {
+                        script_run_is_current(
+                            script_id,
+                            execution_id,
+                            editor.running_script_id,
+                            editor.history.last(),
+                        )
+                    })
+                    .unwrap_or(false);
+                if !current {
+                    break;
                 }
+
+                let (lines, completion) = poll_script_channels(&stream_rx, || done_rx.try_recv());
 
                 if !lines.is_empty() {
                     let _ = scripts_handle.update(cx, |editor, cx| {
@@ -556,7 +729,7 @@ impl Workspace {
                 }
 
                 // Check if done
-                match done_rx.try_recv() {
+                match completion {
                     Ok(exit_code) => {
                         let _ = scripts_handle.update(cx, |editor, cx| {
                             editor.running_script_id = None;
@@ -658,6 +831,9 @@ impl Workspace {
                         // Thread exited without sending done — clean up
                         let _ = scripts_handle.update(cx, |editor, cx| {
                             editor.running_script_id = None;
+                            if let Some(record) = editor.history.last_mut() {
+                                record.finish(-1);
+                            }
                             editor
                                 .execution_output
                                 .push("[Script thread exited unexpectedly]".to_string());
@@ -684,6 +860,11 @@ impl Workspace {
         connection: Connection,
         cx: &mut Context<Self>,
     ) {
+        let Some(execution_id) = self.scripts.read(cx).history.last().map(|record| record.id)
+        else {
+            return;
+        };
+
         let host_display = connection.display_name().to_string();
 
         self.scripts.update(cx, |editor, _| {
@@ -692,7 +873,7 @@ impl Workspace {
                 .push(format!("[remote: {}]", host_display));
         });
 
-        let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
         let (stream_tx, stream_rx) = std::sync::mpsc::channel::<String>();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<Option<i32>>();
 
@@ -714,9 +895,18 @@ impl Workspace {
 
                 rt.block_on(async move {
                     let client = SshClient::new();
-                    let session = match client.connect(&connection).await {
-                        Ok(s) => s,
-                        Err(e) => {
+                    let session = match await_script_connection(
+                        client.connect(&connection),
+                        &mut shutdown_rx,
+                    )
+                    .await
+                    {
+                        Some(Ok(s)) => s,
+                        None => {
+                            let _ = done_tx.send(None);
+                            return;
+                        }
+                        Some(Err(e)) => {
                             let _ = stream_tx.send(format!("Error: SSH connection failed: {}", e));
                             let _ = done_tx.send(None);
                             return;
@@ -760,6 +950,7 @@ impl Workspace {
             Ok(h) => h,
             Err(e) => {
                 tracing::error!("Failed to spawn remote script thread: {}", e);
+                self.settle_script_start_failure(script_id, execution_id, cx);
                 self.show_toast(
                     t!("toast.script.start_remote_failed", error = e.to_string()).to_string(),
                     ToastLevel::Error,
@@ -786,11 +977,23 @@ impl Workspace {
                     .timer(std::time::Duration::from_millis(50))
                     .await;
 
-                // Drain output lines
-                let mut lines = Vec::new();
-                while let Ok(line) = stream_rx.try_recv() {
-                    lines.push(line);
+                // A cancelled run may finish after a new run has started.
+                // It must not consume the new run's output/history/active handle.
+                let current = scripts_handle
+                    .update(cx, |editor, _| {
+                        script_run_is_current(
+                            script_id,
+                            execution_id,
+                            editor.running_script_id,
+                            editor.history.last(),
+                        )
+                    })
+                    .unwrap_or(false);
+                if !current {
+                    break;
                 }
+
+                let (lines, completion) = poll_script_channels(&stream_rx, || done_rx.try_recv());
 
                 if !lines.is_empty() {
                     let _ = scripts_handle.update(cx, |editor, cx| {
@@ -808,7 +1011,7 @@ impl Workspace {
                 }
 
                 // Check if done
-                match done_rx.try_recv() {
+                match completion {
                     Ok(exit_code) => {
                         let _ = scripts_handle.update(cx, |editor, cx| {
                             editor.running_script_id = None;
@@ -832,21 +1035,11 @@ impl Workspace {
                             );
                             ws.update_dashboard_stats(cx);
                             let code = exit_code.unwrap_or(-1);
-                            let activity_message = match exit_code {
-                                Some(0) | None => t!(
-                                    "activity.script.completed_on",
-                                    name = script_name_done.as_str(),
-                                    host = host_display.as_str()
-                                )
-                                .to_string(),
-                                Some(code) => t!(
-                                    "activity.script.exited_on",
-                                    name = script_name_done.as_str(),
-                                    code = code,
-                                    host = host_display.as_str()
-                                )
-                                .to_string(),
-                            };
+                            let (activity_message, toast_message, level) = remote_script_completion(
+                                exit_code,
+                                &script_name_done,
+                                &host_display,
+                            );
                             ws.add_activity_entry(
                                 ActivityEntry::new(ActivityKind::Script, activity_message)
                                     .with_target(script_id.to_string(), script_name_done.clone())
@@ -856,33 +1049,7 @@ impl Workspace {
                                     .with_action(ActivityAction::OpenScript),
                                 cx,
                             );
-                            match exit_code {
-                                Some(0) | None => {
-                                    ws.show_toast(
-                                        t!(
-                                            "toast.script.completed_on",
-                                            name = script_name_done.as_str(),
-                                            host = host_display.as_str()
-                                        )
-                                        .to_string(),
-                                        ToastLevel::Success,
-                                        cx,
-                                    );
-                                }
-                                Some(code) => {
-                                    ws.show_toast(
-                                        t!(
-                                            "toast.script.exited_on",
-                                            name = script_name_done.as_str(),
-                                            code = code,
-                                            host = host_display.as_str()
-                                        )
-                                        .to_string(),
-                                        ToastLevel::Error,
-                                        cx,
-                                    );
-                                }
-                            }
+                            ws.show_toast(toast_message, level, cx);
                         });
                         break;
                     }
@@ -890,6 +1057,9 @@ impl Workspace {
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         let _ = scripts_handle.update(cx, |editor, cx| {
                             editor.running_script_id = None;
+                            if let Some(record) = editor.history.last_mut() {
+                                record.finish(-1);
+                            }
                             editor
                                 .execution_output
                                 .push("[Remote script thread exited unexpectedly]".to_string());
@@ -1401,5 +1571,293 @@ impl Workspace {
             }
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::poll_script_channels;
+    use super::{
+        await_script_connection, fail_script_start, remote_script_completion,
+        script_run_is_current, spawn_local_script,
+    };
+    use crate::toast::ToastLevel;
+    use shelldeck_core::models::execution::ExecutionRecord;
+    use uuid::Uuid;
+
+    // SDTEST-2762 · SDUC-067: cancellation/restart of the same script has a new owner.
+    #[test]
+    fn sdtest_2762_cancelled_script_poller_cannot_own_restarted_execution() {
+        let script = Uuid::new_v4();
+        let mut first = ExecutionRecord::new(script, None);
+        let first_id = first.id;
+        assert!(script_run_is_current(
+            script,
+            first_id,
+            Some(script),
+            Some(&first)
+        ));
+        first.finish(-1);
+        assert!(!script_run_is_current(script, first_id, None, Some(&first)));
+        let mut restarted = ExecutionRecord::new(script, None);
+        restarted.append_output("new run output");
+        assert!(!script_run_is_current(
+            script,
+            first_id,
+            Some(script),
+            Some(&restarted)
+        ));
+        assert!(script_run_is_current(
+            script,
+            restarted.id,
+            Some(script),
+            Some(&restarted)
+        ));
+        assert!(!script_run_is_current(
+            Uuid::new_v4(),
+            restarted.id,
+            Some(script),
+            Some(&restarted)
+        ));
+        restarted.finish(0);
+        assert!(!script_run_is_current(
+            script,
+            restarted.id,
+            Some(script),
+            Some(&restarted)
+        ));
+    }
+
+    // SDTEST-2763 · SDUC-067: connection failure/absent status is never success.
+    #[test]
+    fn sdtest_2763_remote_completion_requires_confirmed_zero_status() {
+        let successful = remote_script_completion(Some(0), "script", "host");
+        assert_eq!(successful.2, ToastLevel::Success);
+        for exit in [None, Some(1), Some(127)] {
+            let failed = remote_script_completion(exit, "script", "host");
+            assert_eq!(failed.2, ToastLevel::Error);
+            assert_ne!(failed.0, successful.0);
+            assert_ne!(failed.1, successful.1);
+        }
+    }
+    // SDTEST-2764 · SDUC-047: cancelling connection setup drops pending work.
+    #[tokio::test]
+    async fn sdtest_2764_script_connection_cancels_without_dispatch() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = Dropped(dropped.clone());
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (cancel, mut shutdown) = tokio::sync::mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            await_script_connection(
+                async move {
+                    let _guard = guard;
+                    let _ = started.send(());
+                    std::future::pending::<()>().await;
+                },
+                &mut shutdown,
+            )
+            .await
+        });
+        ready.await.expect("connection polled");
+        cancel.send(()).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), task)
+                .await
+                .unwrap()
+                .unwrap(),
+            None
+        );
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "pending connection released"
+        );
+        let (cancel, mut shutdown) = tokio::sync::mpsc::channel(1);
+        cancel.send(()).await.unwrap();
+        let result = await_script_connection(
+            async { panic!("pre-cancelled connection must never start") },
+            &mut shutdown,
+        )
+        .await;
+        assert_eq!(result, None::<()>);
+    }
+
+    // SDTEST-2765 · SDUC-067: failure to create a worker settles only its run.
+    #[test]
+    fn sdtest_2765_thread_start_failure_settles_only_owned_history() {
+        let script = Uuid::new_v4();
+        let first = ExecutionRecord::new(script, None);
+        let first_id = first.id;
+        let mut history = vec![first];
+        let mut running = Some(script);
+        assert!(fail_script_start(
+            &mut running,
+            &mut history,
+            script,
+            first_id
+        ));
+        assert!(running.is_none());
+        assert!(history[0].failed());
+        assert!(!history[0].is_running());
+        history.push(ExecutionRecord::new(script, None));
+        running = Some(script);
+        assert!(!fail_script_start(
+            &mut running,
+            &mut history,
+            script,
+            first_id
+        ));
+        assert_eq!(running, Some(script));
+        assert!(history[1].is_running());
+    }
+    // SDTEST-2766 · SDUC-047, SDUC-067: stopping a script owns its descendants.
+    #[cfg(unix)]
+    #[test]
+    fn sdtest_2766_local_script_cancel_closes_descendant_output_pipes() {
+        use std::time::Duration;
+        struct UnrelatedChild(std::process::Child);
+        impl Drop for UnrelatedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut unrelated = UnrelatedChild(
+            std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        );
+        let (cancel, shutdown) = tokio::sync::mpsc::channel(1);
+        let (output, lines) = std::sync::mpsc::channel();
+        let (done, completed) = std::sync::mpsc::channel();
+        let worker = spawn_local_script(
+            Uuid::new_v4(),
+            "sh".into(),
+            vec![
+                "-c".into(),
+                "sleep 30 & printf 'child-ready\n'; wait".into(),
+            ],
+            vec![],
+            shutdown,
+            output,
+            done,
+        )
+        .unwrap();
+        assert_eq!(
+            lines.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "child-ready"
+        );
+        cancel.try_send(()).unwrap();
+        // done is published only after reader joins: the sleeping grandchild
+        // must have released its inherited stdout/stderr, not just its parent.
+        assert_eq!(
+            completed.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Some(-1)
+        );
+        assert!(
+            unrelated.0.try_wait().unwrap().is_none(),
+            "unrelated child remains alive"
+        );
+        worker.join().unwrap();
+    }
+
+    // SDTEST-2767 · SDUC-067: parent exit cannot hang readers behind a descendant.
+    #[cfg(unix)]
+    #[test]
+    fn sdtest_2767_local_script_completion_closes_background_descendants() {
+        use std::time::Duration;
+        let (_cancel, shutdown) = tokio::sync::mpsc::channel(1);
+        let (output, lines) = std::sync::mpsc::channel();
+        let (done, completed) = std::sync::mpsc::channel();
+        let worker = spawn_local_script(
+            Uuid::new_v4(),
+            "sh".into(),
+            vec!["-c".into(), "sleep 30 & printf 'finished\n'; exit 7".into()],
+            vec![],
+            shutdown,
+            output,
+            done,
+        )
+        .unwrap();
+        assert_eq!(
+            completed.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Some(7)
+        );
+        assert_eq!(
+            lines.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "finished"
+        );
+        worker.join().unwrap();
+    }
+
+    // SDTEST-2768 · SDUC-047, SDUC-067: the same script worker uses Windows Job custody.
+    #[cfg(windows)]
+    #[test]
+    fn sdtest_2768_windows_script_cancel_closes_owned_job_pipes() {
+        use std::time::Duration;
+        let (cancel, shutdown) = tokio::sync::mpsc::channel(1);
+        let (output, lines) = std::sync::mpsc::channel();
+        let (done, completed) = std::sync::mpsc::channel();
+        let worker = spawn_local_script(
+            Uuid::new_v4(),
+            "cmd.exe".into(),
+            vec![
+                "/C".into(),
+                "start \"\" /B /WAIT cmd.exe /C \"echo child-ready& ping.exe -n 30 127.0.0.1 >NUL\"".into(),
+            ],
+            vec![],
+            shutdown,
+            output,
+            done,
+        )
+        .unwrap();
+        assert_eq!(
+            lines.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "child-ready"
+        );
+        cancel.try_send(()).unwrap();
+        assert_eq!(
+            completed.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Some(-1)
+        );
+        worker.join().unwrap();
+    }
+    // SDTEST-2769 · SDUC-067: output arriving at completion is never discarded.
+    #[test]
+    fn sdtest_2769_script_completion_keeps_output_queued_at_done_observation() {
+        let (output_tx, output_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        output_tx.send("first".into()).unwrap();
+        // Deterministically enqueue the tail at the completion observation.
+        // A drain-before-done poller loses this chunk when it exits on done.
+        let (lines, completion) = poll_script_channels(&output_rx, || {
+            output_tx.send("last é ✅".into()).unwrap();
+            done_tx.send(Some(7)).unwrap();
+            done_rx.try_recv()
+        });
+        assert_eq!(lines, ["first", "last é ✅"]);
+        assert_eq!(completion, Ok(Some(7)));
+        assert!(output_rx.try_recv().is_err());
+
+        output_tx.send("still running".into()).unwrap();
+        let (lines, completion) = poll_script_channels(&output_rx, || done_rx.try_recv());
+        assert_eq!(lines, ["still running"]);
+        assert_eq!(completion, Err(std::sync::mpsc::TryRecvError::Empty));
+
+        output_tx.send("last error diagnostic".into()).unwrap();
+        drop(done_tx);
+        let (lines, completion) = poll_script_channels(&output_rx, || done_rx.try_recv());
+        assert_eq!(lines, ["last error diagnostic"]);
+        assert_eq!(completion, Err(std::sync::mpsc::TryRecvError::Disconnected));
     }
 }

@@ -85,6 +85,40 @@ impl SupportComposerDraft {
     }
 }
 
+/// Exact submitted content, retained until the server confirms this send.
+/// It must not clear edits made while that request was in flight.
+#[derive(Clone)]
+pub(crate) struct SentSupportDraft {
+    text: String,
+    attachments: Vec<AttachmentDraft>,
+    note: bool,
+}
+
+impl SentSupportDraft {
+    pub(crate) fn new(text: String, attachments: Vec<AttachmentDraft>, note: bool) -> Self {
+        Self {
+            text,
+            attachments,
+            note,
+        }
+    }
+
+    pub(crate) fn matches(&self, text: &str, attachments: &[AttachmentDraft], note: bool) -> bool {
+        self.text.trim() == text.trim()
+            && self.note == note
+            && self.attachments.len() == attachments.len()
+            && self
+                .attachments
+                .iter()
+                .zip(attachments)
+                .all(|(sent, current)| {
+                    sent.filename == current.filename
+                        && sent.content_type == current.content_type
+                        && sent.bytes == current.bytes
+                })
+    }
+}
+
 #[derive(Default)]
 struct SupportDraftStore(HashMap<SupportDraftTarget, SupportComposerDraft>);
 
@@ -1141,23 +1175,52 @@ impl SupportView {
         }
     }
 
-    fn clear_draft_after_send(&mut self, target: SupportDraftTarget, cx: &mut Context<Self>) {
-        self.composer_drafts.remove(&target);
+    fn clear_draft_after_send(
+        &mut self,
+        target: SupportDraftTarget,
+        sent: &SentSupportDraft,
+        cx: &mut Context<Self>,
+    ) {
         if self.active_draft_target().as_ref() == Some(&target) {
-            self.reset_composer(cx);
-            self.clear_attachment_drafts(cx);
-            self.compose_note = false;
+            let matches = sent.matches(
+                self.composer_state.read(cx).content(),
+                &self.attachment_drafts,
+                self.compose_note,
+            );
+            if matches {
+                self.composer_drafts.remove(&target);
+                self.reset_composer(cx);
+                self.clear_attachment_drafts(cx);
+                self.compose_note = false;
+            }
+            self.attachment_busy = false;
+        } else if self
+            .composer_drafts
+            .get(&target)
+            .is_some_and(|draft| sent.matches(&draft.text, &draft.attachments, draft.compose_note))
+        {
+            self.composer_drafts.remove(&target);
         }
         self.loading = false;
         cx.notify();
     }
 
-    pub fn clear_ticket_draft_after_send(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.clear_draft_after_send(SupportDraftTarget::Ticket(id.to_string()), cx);
+    pub(crate) fn clear_ticket_draft_after_send(
+        &mut self,
+        id: &str,
+        sent: &SentSupportDraft,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_draft_after_send(SupportDraftTarget::Ticket(id.to_string()), sent, cx);
     }
 
-    pub fn clear_issue_draft_after_send(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.clear_draft_after_send(SupportDraftTarget::Issue(id.to_string()), cx);
+    pub(crate) fn clear_issue_draft_after_send(
+        &mut self,
+        id: &str,
+        sent: &SentSupportDraft,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_draft_after_send(SupportDraftTarget::Issue(id.to_string()), sent, cx);
     }
 
     fn reset_composer(&self, cx: &mut Context<Self>) {
@@ -2227,5 +2290,85 @@ mod tests {
         assert_eq!(reconciled_issue_total(487, 200), 487);
         assert_eq!(reconciled_issue_total(2, 4), 4);
         assert_eq!(reconciled_issue_total(0, 0), 0);
+    }
+}
+
+#[cfg(test)]
+mod submitted_draft_tests {
+    use super::{
+        SentSupportDraft, SupportComposerDraft, SupportDraftTarget, SupportSection, SupportView,
+    };
+    use crate::issue_attachments::AttachmentDraft;
+    use gpui::AppContext;
+
+    // SDTEST-2754 — successful sends cannot erase newer text, files or note mode.
+    #[test]
+    fn submitted_draft_only_matches_unchanged_content() {
+        let image = AttachmentDraft::from_bytes(
+            "one.png",
+            vec![
+                137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0,
+                1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 0,
+                1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+            ],
+        )
+        .unwrap();
+        let sent = SentSupportDraft::new("sent message".into(), vec![image.clone()], false);
+        assert!(sent.matches("sent message", std::slice::from_ref(&image), false));
+        assert!(!sent.matches("next unsent message", std::slice::from_ref(&image), false));
+        assert!(!sent.matches("sent message", std::slice::from_ref(&image), true));
+        assert!(!sent.matches("sent message", &[], false));
+        let mut replaced = image.clone();
+        replaced.filename = "different.png".into();
+        assert!(!sent.matches("sent message", &[replaced], false));
+        let text_only = SentSupportDraft::new("sent".into(), vec![], false);
+        assert!(text_only.matches("sent", &[], false));
+        assert!(!text_only.matches("sent", std::slice::from_ref(&image), false));
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            let view = cx.new(SupportView::new);
+            view.update(cx, |view, cx| {
+                view.section = SupportSection::Tickets;
+                view.selected_id = Some("ticket".into());
+                view.attachment_drafts = vec![image.clone()];
+                view.attachment_busy = true;
+                view.composer_state
+                    .update(cx, |input, cx| input.replace_content("new draft", cx));
+                view.clear_ticket_draft_after_send("ticket", &sent, cx);
+                assert_eq!(view.composer_state.read(cx).content(), "new draft");
+                assert_eq!(view.attachment_drafts.len(), 1);
+                assert!(!view.attachment_busy);
+                view.composer_state
+                    .update(cx, |input, cx| input.replace_content("sent message", cx));
+                view.clear_ticket_draft_after_send("ticket", &sent, cx);
+                assert!(view.composer_state.read(cx).content().is_empty());
+                assert!(view.attachment_drafts.is_empty());
+
+                // Navigating away while the request is pending must protect
+                // the separately saved newer draft as well.
+                let target = SupportDraftTarget::Ticket("other".into());
+                view.composer_drafts.save(
+                    target.clone(),
+                    SupportComposerDraft {
+                        text: "later edit".into(),
+                        ..Default::default()
+                    },
+                );
+                view.clear_ticket_draft_after_send("other", &text_only, cx);
+                assert_eq!(
+                    view.composer_drafts.get(&target).unwrap().text,
+                    "later edit"
+                );
+                view.composer_drafts.save(
+                    target.clone(),
+                    SupportComposerDraft {
+                        text: "sent".into(),
+                        ..Default::default()
+                    },
+                );
+                view.clear_ticket_draft_after_send("other", &text_only, cx);
+                assert!(view.composer_drafts.get(&target).is_none());
+            });
+        });
     }
 }

@@ -281,6 +281,16 @@ impl SshSession {
         })
     }
 
+    /// Execute a read request with bounded stdout/stderr. Caller owns the timeout.
+    pub async fn exec_bounded(
+        &self,
+        command: &str,
+        output_limit: usize,
+    ) -> crate::Result<ExecResult> {
+        self.exec_with_input_bounded(command, &[], 0, output_limit, 8192)
+            .await
+    }
+
     /// Send bounded stdin while collecting bounded stdout/stderr on a non-PTY
     /// channel. Input and output progress concurrently so an untrusted remote
     /// cannot deadlock a large request merely by writing before reading.
@@ -417,7 +427,7 @@ impl SshSession {
                 Some(ChannelMsg::ExitStatus { exit_status }) => {
                     exit_code = Some(exit_status);
                 }
-                Some(ChannelMsg::Eof) | None => break,
+                Some(ChannelMsg::Close) | None => break,
                 _ => {}
             }
         }
@@ -435,19 +445,32 @@ impl SshSession {
         output_tx: mpsc::UnboundedSender<Vec<u8>>,
         mut shutdown_rx: mpsc::Receiver<()>,
     ) -> crate::Result<Option<u32>> {
-        let handle = self.handle.lock().await;
-        let mut channel = handle
-            .channel_open_session()
-            .await
-            .map_err(|e| SshError::Channel(e.to_string()))?;
-
-        channel
-            .exec(true, command)
-            .await
-            .map_err(|e| SshError::Channel(e.to_string()))?;
-
-        // Drop the handle lock before reading
-        drop(handle);
+        // Cancellation is checked before channel admission, including while
+        // another operation holds the session handle. Never start a queued
+        // command after its owner has already stopped it.
+        let mut channel = tokio::select! {
+            biased;
+            _ = shutdown_rx.recv() => return Ok(None),
+            result = async {
+                let handle = self.handle.lock().await;
+                handle.channel_open_session().await
+                    .map_err(|e| SshError::Channel(e.to_string()))
+            } => result?,
+        };
+        tokio::select! {
+            biased;
+            _ = shutdown_rx.recv() => {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    let _ = channel.signal(russh::Sig::TERM).await;
+                    let _ = channel.eof().await;
+                    let _ = channel.close().await;
+                }).await;
+                return Ok(None);
+            }
+            result = channel.exec(true, command) => {
+                result.map_err(|e| SshError::Channel(e.to_string()))?;
+            }
+        }
 
         let mut exit_code = None;
 
@@ -464,13 +487,21 @@ impl SshSession {
                         Some(ChannelMsg::ExitStatus { exit_status }) => {
                             exit_code = Some(exit_status);
                         }
-                        Some(ChannelMsg::Eof) | None => break,
+                        // Output EOF may precede the exit-status packet.
+                        Some(ChannelMsg::Close) | None => break,
                         _ => {}
                     }
                 }
                 _ = shutdown_rx.recv() => {
-                    // Cancellation requested — close the SSH channel
-                    let _ = channel.eof().await;
+                    // EOF alone only closes stdin: a remote command that
+                    // ignores stdin can otherwise keep running. Request TERM
+                    // and close this exact channel; the server owns process
+                    // termination and may refuse the signal.
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                        let _ = channel.signal(russh::Sig::TERM).await;
+                        let _ = channel.eof().await;
+                        let _ = channel.close().await;
+                    }).await;
                     break;
                 }
             }
@@ -759,6 +790,7 @@ mod in_memory_ssh_tests {
         },
         Data(Vec<u8>),
         ChannelEof,
+        Signal(String),
         ChannelClose,
     }
 
@@ -866,6 +898,16 @@ mod in_memory_ssh_tests {
         ) -> Result<(), Self::Error> {
             let _ = self.events.send(ServerEvent::Resize { cols, rows });
             session.channel_success(channel)?;
+            Ok(())
+        }
+
+        async fn signal(
+            &mut self,
+            _channel: ChannelId,
+            signal: russh::Sig,
+            _session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let _ = self.events.send(ServerEvent::Signal(format!("{signal:?}")));
             Ok(())
         }
 
@@ -1113,8 +1155,73 @@ mod in_memory_ssh_tests {
             .expect("cancellable exec task panicked")
             .expect("cancellable exec failed");
         assert_eq!(exit_code, None);
+        assert_eq!(
+            next_event(&mut events).await,
+            ServerEvent::Signal("TERM".to_string())
+        );
         assert_eq!(next_event(&mut events).await, ServerEvent::ChannelEof);
+        assert_eq!(next_event(&mut events).await, ServerEvent::ChannelClose);
 
+        server_task.abort();
+    }
+
+    // SDTEST-2760 · SDUC-046, SDUC-047
+    #[tokio::test]
+    async fn sdtest_2760_cancellable_exec_retains_status_after_eof() {
+        for (code, cancellable) in [(0, true), (23, true), (0, false), (23, false)] {
+            let (session, _events, server_task) = start_session(ExecBehavior::Complete {
+                stdout: b"output".to_vec(),
+                stderr: vec![],
+                exit_code: code,
+                eof_before_status: true,
+            })
+            .await;
+            let (output, mut received) = mpsc::unbounded_channel();
+            let (_cancel, cancelled) = mpsc::channel(1);
+            let result = timeout(Duration::from_secs(2), async {
+                if cancellable {
+                    session.exec_cancellable("command", output, cancelled).await
+                } else {
+                    session.exec_streaming("command", output).await
+                }
+            })
+            .await
+            .expect("bounded completion")
+            .expect("exec");
+            assert_eq!(result, Some(code));
+            assert_eq!(received.recv().await.unwrap(), b"output");
+            server_task.abort();
+        }
+    }
+
+    // SDTEST-2761 · SDUC-047
+    #[tokio::test]
+    async fn sdtest_2761_cancelled_exec_never_starts_while_waiting_for_handle() {
+        let (session, mut events, server_task) =
+            start_session(ExecBehavior::WaitForCancellation).await;
+        let shared = session.shared_handle();
+        let held = shared.lock().await;
+        let (output, _received) = mpsc::unbounded_channel();
+        let (cancel, cancelled) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            session
+                .exec_cancellable("must not run", output, cancelled)
+                .await
+        });
+        cancel.send(()).await.unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            None
+        );
+        drop(held);
+        assert!(
+            events.try_recv().is_err(),
+            "cancelled command must never reach server"
+        );
         server_task.abort();
     }
 

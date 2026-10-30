@@ -100,7 +100,7 @@ welcome screen, which is the first thing a new user sees.
   the Dev sidebar toggle. `MENU_BAR_HEIGHT` sizes their triggers only; it does
   not reserve another content row. Terminal geometry subtracts the scaled
   titlebar once, regardless of menu visibility. Keep interactive controls
-  outside the draggable title area. Narrow windows scroll the menu titles.
+  outside the draggable title area. Below 1000 logical pixels, the same authorized menu specification becomes one Menu trigger with grouped entries in the shared bounded, scrollable dropdown. The breakpoint follows UI scale; no command inventory is duplicated.
 - Menu labels live in `locales/{fr,en}.toml` under `menu.*`. Note the TOML
   dotted-key trap: `menu.file` cannot be both a string and a table, which is
   why the titles are namespaced `menu.title.file`.

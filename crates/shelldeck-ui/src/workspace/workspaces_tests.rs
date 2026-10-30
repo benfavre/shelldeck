@@ -2,6 +2,171 @@ use super::*;
 
 #[cfg(test)]
 mod tests {
+    // SDTEST-2822 — SDUC-564: adding an existing location opens its saved
+    // project without duplicate catalog entries, metadata changes or a process.
+    #[::core::prelude::v1::test]
+    fn sdtest_2822_onboarding_reopens_exact_location_without_duplicate_projects() {
+        let mut app = TestAppContext::single();
+        let (catalog, ..) = fixture_catalog();
+        let catalog_store = tempfile::tempdir().unwrap();
+        let catalog_path = catalog_store.path().join("project-catalog.json");
+        let before = catalog
+            .projects()
+            .flat_map(|project| project.checkouts())
+            .count();
+        let first = shelldeck_core::models::Connection::new_manual(
+            "Server A".into(),
+            "a.invalid".into(),
+            "qa".into(),
+        );
+        let second = shelldeck_core::models::Connection::new_manual(
+            "Server B".into(),
+            "b.invalid".into(),
+            "qa".into(),
+        );
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| {
+                WorkspaceHubView::new(
+                    Ok(catalog),
+                    &[first.clone(), second.clone()],
+                    terminal.clone(),
+                    cx,
+                )
+            })
+        });
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = opened.clone();
+        let _subscription = app.update(|cx| {
+            cx.subscribe(&hub, move |_, event, _| {
+                if let super::WorkspaceHubEvent::OpenProjectAgents(checkout) = event {
+                    observed.borrow_mut().push(*checkout);
+                }
+            })
+        });
+        let local = tempfile::tempdir().unwrap();
+        let local_root = local.path().canonicalize().unwrap().display().to_string();
+        for (connection, original, equivalent) in [
+            (
+                Some(first.id),
+                "/srv/repeated project ".to_owned(),
+                "/srv/repeated project /".to_owned(),
+            ),
+            (
+                None,
+                local_root.clone(),
+                local.path().join(".").display().to_string(),
+            ),
+        ] {
+            for (path, name) in [
+                (original, "Original project"),
+                (equivalent, "Do not overwrite"),
+            ] {
+                hub.update(&mut app, |hub, cx| {
+                    hub.show_onboarding(cx);
+                    hub.onboarding_ssh = connection.is_some();
+                    hub.onboarding_connection = connection;
+                    hub.onboarding_root
+                        .update(cx, |input, cx| input.replace_content(path, cx));
+                    hub.onboarding_project
+                        .update(cx, |input, cx| input.replace_content(name.to_owned(), cx));
+                    hub.submit_onboarding_with_persist(
+                        |catalog| {
+                            catalog
+                                .save_to(&catalog_path)
+                                .map_err(|error| error.to_string())
+                        },
+                        cx,
+                    );
+                    assert!(hub.error.is_none(), "{:?}", hub.error);
+                    assert!(hub.pending_requests.is_empty());
+                    assert_eq!(terminal.read(cx).tab_count(), 0);
+                });
+            }
+            let ids = opened.borrow();
+            assert_eq!(ids[ids.len() - 1], ids[ids.len() - 2]);
+        }
+        hub.update(&mut app, |hub, cx| {
+            assert_eq!(
+                hub.catalog
+                    .projects()
+                    .flat_map(|project| project.checkouts())
+                    .count(),
+                before + 2
+            );
+            assert!(!hub
+                .catalog
+                .projects()
+                .any(|project| project.name() == "Do not overwrite"));
+            hub.show_onboarding(cx);
+            hub.onboarding_ssh = true;
+            hub.onboarding_connection = Some(second.id);
+            hub.onboarding_root.update(cx, |input, cx| {
+                input.replace_content("/srv/repeated project ", cx)
+            });
+            hub.submit_onboarding_with_persist(
+                |catalog| {
+                    catalog
+                        .save_to(&catalog_path)
+                        .map_err(|error| error.to_string())
+                },
+                cx,
+            );
+            assert!(hub.error.is_none());
+            assert_eq!(
+                hub.catalog
+                    .projects()
+                    .flat_map(|project| project.checkouts())
+                    .count(),
+                before + 3
+            );
+            assert_eq!(terminal.read(cx).tab_count(), 0);
+        });
+    }
+
+    // SDTEST-2790 — adding a project from Agents never launches a workspace; Cancel returns once.
+    #[test]
+    fn agent_project_setup_stays_onboarding_with_existing_checkout_and_returns_once() {
+        let mut app = TestAppContext::single();
+        let (catalog, ..) = fixture_catalog();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal.clone(), cx))
+        });
+        let returned = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = returned.clone();
+        let _subscription = app.update(|cx| {
+            cx.subscribe(&hub, move |_, event, _| {
+                if matches!(event, super::WorkspaceHubEvent::ReturnToAgents) {
+                    observed.set(observed.get() + 1);
+                }
+            })
+        });
+        hub.update(&mut app, |hub, cx| {
+            hub.show_agent_project_setup(cx);
+            assert!(hub.onboarding_open && !hub.launcher_open);
+            assert!(hub.pending_requests.is_empty());
+            assert_eq!(terminal.read(cx).tab_count(), 0);
+            hub.cancel_forms(cx);
+        });
+        assert_eq!(returned.get(), 1);
+        hub.update(&mut app, |hub, cx| hub.cancel_forms(cx));
+        assert_eq!(returned.get(), 1);
+        hub.update(&mut app, |hub, cx| {
+            hub.show_agent_project_setup(cx);
+            hub.show_launcher(cx);
+            assert!(hub.launcher_open && !hub.onboarding_open);
+            hub.cancel_forms(cx);
+            hub.show_onboarding(cx);
+            hub.cancel_forms(cx);
+        });
+        assert_eq!(
+            returned.get(),
+            1,
+            "ordinary Workspaces navigation stays in Workspaces"
+        );
+    }
+
     // SDTEST-2733 — Add project saves its checkout then opens Agents, never a terminal.
     #[test]
     fn onboarding_opens_agents_with_saved_local_or_ssh_checkout_without_launching() {
@@ -16,7 +181,12 @@ mod tests {
         let terminal = app.update(|cx| cx.new(TerminalView::new));
         let hub = app.update(|cx| {
             cx.new(|cx| {
-                WorkspaceHubView::new(Ok(catalog), &[connection.clone()], terminal.clone(), cx)
+                WorkspaceHubView::new(
+                    Ok(catalog),
+                    std::slice::from_ref(&connection),
+                    terminal.clone(),
+                    cx,
+                )
             })
         });
         let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -57,7 +227,7 @@ mod tests {
             hub.read_with(&app, |hub, _| {
                 let groups = crate::workspace::agents::agent_project_groups(
                     &hub.catalog,
-                    &[connection.clone()],
+                    std::slice::from_ref(&connection),
                 );
                 let option = groups
                     .iter()
@@ -255,7 +425,9 @@ mod tests {
         );
         let terminal = app.update(|cx| cx.new(TerminalView::new));
         let hub = app.update(|cx| {
-            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[connection.clone()], terminal, cx))
+            cx.new(|cx| {
+                WorkspaceHubView::new(Ok(catalog), std::slice::from_ref(&connection), terminal, cx)
+            })
         });
         hub.update(&mut app, |hub, cx| {
             hub.show_onboarding(cx);

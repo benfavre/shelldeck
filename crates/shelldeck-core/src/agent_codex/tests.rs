@@ -56,7 +56,6 @@ impl Script {
             mcp_servers,
             reasoning_effort: Some(AgentReasoningEffort::High),
             image_paths: vec![std::env::temp_dir().join("selected screenshot.png")],
-            ..Default::default()
         };
         let (incoming, in_rx) = mpsc::channel();
         let (out_tx, outgoing) = mpsc::channel();

@@ -133,6 +133,16 @@ impl AgentConsoleView {
     }
 
     pub(super) fn finish_review_run(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+        // Remote and read-only runs do not capture repository baselines. Do not invent
+        // a failed comparison for a capability that was never requested.
+        if !self.sessions.get(session_id).is_some_and(|session| {
+            shelldeck_core::agent_review::requires_turn_snapshot(
+                &session.context.target,
+                session.context.access,
+            )
+        }) {
+            return;
+        }
         let state = self.review.sessions.entry(session_id).or_default();
         state.loading = false;
         let before = state.before.take();
@@ -534,6 +544,7 @@ impl AgentConsoleView {
         session: &AgentSession,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let tabs = self.render_inspector_tabs(cx);
         let session_id = session.id;
         let context = self.displayed_context(cx);
         let context_matches = self
@@ -579,64 +590,57 @@ impl AgentConsoleView {
             );
         }
         let disabled = loading || session.status.is_active();
-        let header = div()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .px(px(10.0))
-            .py(px(8.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(t!("agents.review.title").to_string()),
-            )
-            .child(
-                Button::new("agent-review-wrap", t!("agents.review.wrap").to_string())
-                    .size(ButtonSize::Sm)
-                    .variant(if wrap_lines {
-                        ButtonVariant::Secondary
-                    } else {
-                        ButtonVariant::Ghost
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.review.wrap_lines = !this.review.wrap_lines;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new(
-                    "agent-review-refresh",
-                    t!("agents.review.refresh").to_string(),
+        let header = div().flex().flex_col().flex_shrink_0().child(tabs).child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(6.0))
+                .px(px(8.0))
+                .py(px(6.0))
+                .border_b_1()
+                .border_color(ShellDeckColors::border())
+                .child(
+                    Button::new("agent-review-wrap", t!("agents.review.wrap").to_string())
+                        .size(ButtonSize::Sm)
+                        .variant(if wrap_lines {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Ghost
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.review.wrap_lines = !this.review.wrap_lines;
+                            cx.notify();
+                        })),
                 )
-                .icon(IconSource::from("refresh-cw"))
-                .size(ButtonSize::Sm)
-                .variant(ButtonVariant::Ghost)
-                .disabled(loading)
-                .on_click(cx.listener(|this, _, _, cx| this.refresh_review(cx))),
-            )
-            .child(
-                Button::new("agent-review-close", "")
-                    .size(ButtonSize::Icon)
+                .child(
+                    Button::new(
+                        "agent-review-refresh",
+                        t!("agents.review.refresh").to_string(),
+                    )
+                    .icon(IconSource::from("refresh-cw"))
+                    .size(ButtonSize::Sm)
                     .variant(ButtonVariant::Ghost)
-                    .icon(IconSource::from("x"))
-                    .tooltip(t!("agents.parity.close_panel").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tools.panel_visible = false;
-                        this.schedule_library_save(cx);
-                        cx.notify();
-                    })),
-            );
+                    .disabled(loading)
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_review(cx))),
+                ),
+        );
         if !matches!(context.target, AgentTarget::Local) {
             body = body.child(inspector_empty_state(
                 "server",
                 t!("agents.review.remote").to_string(),
             ));
         } else {
+            if let Some(error) = &state.baseline_error {
+                body = body.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::warning())
+                        .child(
+                            t!("agents.review.baseline_unavailable", reason = error).to_string(),
+                        ),
+                );
+            }
             if loading {
                 body = body.child(
                     div()
@@ -645,13 +649,20 @@ impl AgentConsoleView {
                         .child(t!("agents.review.loading").to_string()),
                 );
             }
-            if let Some(error) = error {
-                body = body.child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::error())
-                        .child(error),
-                );
+            if let Some(error) = &error {
+                if error.starts_with("git failed: fatal: not a git repository") {
+                    body = body.child(inspector_empty_state(
+                        "folder",
+                        t!("agents.review.not_repository").to_string(),
+                    ));
+                } else {
+                    body = body.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::error())
+                            .child(error.clone()),
+                    );
+                }
             }
             if let Some(snapshot) = snapshot {
                 body = body.child(
@@ -891,7 +902,7 @@ impl AgentConsoleView {
                             ),
                     );
                 }
-            } else if !loading {
+            } else if !loading && error.is_none() {
                 body = body.child(inspector_empty_state(
                     "git-branch",
                     t!("agents.review.load_hint").to_string(),
@@ -1063,14 +1074,6 @@ impl AgentConsoleView {
         let Some(state) = self.review.sessions.get(&session.id) else {
             return cards.into_any_element();
         };
-        if let Some(error) = &state.baseline_error {
-            cards = cards.child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::warning())
-                    .child(t!("agents.review.baseline_unavailable", reason = error).to_string()),
-            );
-        }
         for turn in &state.turns {
             if turn.changes.is_empty() {
                 continue;
@@ -1308,5 +1311,48 @@ mod tests {
         assert_eq!((lines[5].old_line, lines[5].new_line), (Some(11), Some(21)));
         assert_eq!((lines[6].old_line, lines[6].new_line), (None, None));
         assert_eq!((lines[8].old_line, lines[8].new_line), (None, Some(1)));
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    // SDTEST-2742 — SDUC-499: SSH chat never fabricates a failed local comparison;
+    // an actual local snapshot failure remains available in Changes.
+    #[::core::prelude::v1::test]
+    fn ssh_completion_skips_local_baseline_and_local_failures_remain_inspectable() {
+        let mut app = TestAppContext::single();
+        let view = app.update(|cx| cx.new(AgentConsoleView::new));
+        view.update(&mut app, |view, cx| {
+            let id = view.sessions.selected_id().unwrap();
+            // Read-only completion creates no review failure or snapshot task.
+            view.finish_review_run(id, cx);
+            assert!(!view.review.sessions.contains_key(&id));
+            view.sessions.get_mut(id).unwrap().context.access = AgentAccessMode::WorkspaceWrite;
+            view.set_review_before_run(id, Err("fixture snapshot refused".into()), cx);
+            view.finish_review_run(id, cx);
+            assert_eq!(
+                view.review
+                    .sessions
+                    .get(&id)
+                    .unwrap()
+                    .baseline_error
+                    .as_deref(),
+                Some("fixture snapshot refused")
+            );
+            view.review.sessions.remove(&id);
+            let session = view.sessions.get_mut(id).unwrap();
+            let mut context = session.context.clone();
+            context.target = AgentTarget::Ssh {
+                connection_id: Uuid::new_v4(),
+                connection_label: "Fixture host".into(),
+            };
+            context.workdir = "/fixture/project".into();
+            session.set_context(context, 1).unwrap();
+            view.finish_review_run(id, cx);
+            assert!(!view.review.sessions.contains_key(&id));
+        });
     }
 }

@@ -366,6 +366,10 @@ fn http_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(4))
         .timeout(Duration::from_secs(10))
+        // Login includes a password in its body: 307/308 must not replay it
+        // at a redirect target. Authenticated reads and logout stay on the
+        // configured endpoint too.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| ShellDeckError::Connection(format!("failed to build HTTP client: {}", e)))
 }
@@ -919,7 +923,10 @@ mod tests {
         use ApiFailure::*;
         let cases = [
             // Texte exact produit par reqwest quand le portail est injoignable.
-            ("support list failed: error sending request for url (http://127.0.0.1:8899/api/manage/shelldeck/support?action=list)", Unreachable),
+            (
+                "support list failed: error sending request for url (http://127.0.0.1:8899/api/manage/shelldeck/support?action=list)",
+                Unreachable,
+            ),
             ("failed to build HTTP client: builder error", Unreachable),
             ("whoami request failed: operation timed out", Timeout),
             ("session token rejected (401)", AuthRejected),
@@ -959,6 +966,70 @@ mod tests {
         assert!(!is_auth_rejected(&ShellDeckError::Connection(
             "login request failed: dns error".into()
         )));
+    }
+
+    // SDTEST-2751 — authentication never follows redirects with credentials.
+    #[test]
+    fn auth_redirects_do_not_replay_password_or_bearer() {
+        for (status, login) in [(307, true), (308, true), (302, false)] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let request = read_http_request(&mut stream);
+                if login {
+                    assert!(request.starts_with("POST /api/manage/shelldeck/auth "));
+                    let body = request.split_once("\r\n\r\n").unwrap().1;
+                    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+                    assert_eq!(body["password"], "fixture-password");
+                } else {
+                    assert!(request.starts_with("GET /api/manage/shelldeck/auth?action=whoami "));
+                    assert!(request
+                        .to_lowercase()
+                        .contains("authorization: bearer fixture-token"));
+                }
+                write!(stream, "HTTP/1.1 {status} Redirect\r\nLocation: /unexpected-target\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                drop(stream);
+                listener.set_nonblocking(true).unwrap();
+                let deadline = Instant::now() + Duration::from_millis(250);
+                loop {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream
+                                .set_read_timeout(Some(Duration::from_secs(2)))
+                                .unwrap();
+                            let forwarded = read_http_request(&mut stream);
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            );
+                            return Some(forwarded);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= deadline {
+                                return None;
+                            }
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("accept redirect: {error}"),
+                    }
+                }
+            });
+            let result = if login {
+                login_password(&base, "fixture@example.test", "fixture-password", "fixture")
+                    .map(|_| ())
+            } else {
+                whoami(&base, "fixture-token").map(|_| ())
+            };
+            assert!(result.is_err());
+            assert!(
+                server.join().unwrap().is_none(),
+                "credentials were replayed to a redirect target"
+            );
+        }
     }
 
     fn send_callback(port: u16, request_target: &str) {

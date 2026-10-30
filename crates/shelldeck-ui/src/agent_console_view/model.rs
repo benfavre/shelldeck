@@ -22,6 +22,35 @@ impl AgentModelDiscoveryUi {
             error: None,
         }
     }
+
+    fn begin(&mut self, scope: &str) -> Option<Uuid> {
+        if self.loading && self.scope.as_deref() == Some(scope) {
+            return None;
+        }
+        if self.scope.as_deref() != Some(scope) {
+            self.catalog = None;
+        }
+        let id = Uuid::new_v4();
+        self.scope = Some(scope.to_owned());
+        self.request_id = Some(id);
+        self.loading = true;
+        self.error = None;
+        Some(id)
+    }
+
+    fn finish(&mut self, id: Uuid, result: Result<CodexModelCatalog, String>) {
+        if self.request_id != Some(id) {
+            return;
+        }
+        self.loading = false;
+        match result {
+            Ok(catalog) => {
+                self.catalog = Some(catalog);
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
+        }
+    }
 }
 
 impl AgentConsoleView {
@@ -62,19 +91,13 @@ impl AgentConsoleView {
 
     fn discover_local_codex_models(&mut self, cx: &mut Context<Self>) {
         let context = self.displayed_context(cx);
-        if context.provider != AgentProvider::Codex
-            || context.target != AgentTarget::Local
-            || self.model_discovery.loading
-        {
+        if context.provider != AgentProvider::Codex || context.target != AgentTarget::Local {
             return;
         }
-        let request_id = Uuid::new_v4();
         let scope = context.workdir;
-        self.model_discovery.scope = Some(scope.clone());
-        self.model_discovery.request_id = Some(request_id);
-        self.model_discovery.loading = true;
-        self.model_discovery.error = None;
-        self.model_discovery.catalog = None;
+        let Some(request_id) = self.model_discovery.begin(&scope) else {
+            return;
+        };
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -93,14 +116,7 @@ impl AgentConsoleView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                if view.model_discovery.request_id != Some(request_id) {
-                    return;
-                }
-                view.model_discovery.loading = false;
-                match result {
-                    Ok(catalog) => view.model_discovery.catalog = Some(catalog),
-                    Err(error) => view.model_discovery.error = Some(error),
-                }
+                view.model_discovery.finish(request_id, result);
                 cx.notify();
             });
         })
@@ -135,6 +151,7 @@ impl AgentConsoleView {
                 self.composer_ui.effort.remove(&id);
             }
         }
+        self.schedule_library_save(cx);
         cx.notify();
     }
 
@@ -161,7 +178,7 @@ impl AgentConsoleView {
             .selected_id()
             .and_then(|id| self.composer_ui.effort.get(&id).copied());
         let supports_effort = context.provider.capabilities().reasoning_effort;
-        let label = if supports_effort {
+        let label = if supports_effort && effort.is_some() {
             format!(
                 "{} · {}",
                 compact_model_name(&display, 20),
@@ -196,6 +213,16 @@ impl AgentConsoleView {
             .anchor(Corner::BottomRight)
             .trigger(trigger)
             .content(move |window, cx| {
+                // Opening the picker is an explicit request for available models.
+                parent.update(cx, |view, cx| {
+                    let context = view.displayed_context(cx);
+                    if view.model_discovery.scope.as_deref() != Some(context.workdir.as_str())
+                        || (view.model_discovery.catalog.is_none()
+                            && view.model_discovery.error.is_none())
+                    {
+                        view.discover_local_codex_models(cx);
+                    }
+                });
                 let parent = parent.clone();
                 cx.new(move |content_cx| {
                     let observed = parent.clone();
@@ -424,32 +451,29 @@ impl AgentConsoleView {
                                     format!("{} ({effort})", t!("agents.model.effort_auto"))
                                 })
                                 .unwrap_or_else(|| reasoning_label(None));
-                            let mut efforts = vec![(None, automatic)];
-                            if let Some(model) = selected_model {
-                                efforts.extend(
-                                    model
-                                        .supported_reasoning_efforts
-                                        .iter()
-                                        .filter_map(|option| {
-                                            option.executable_effort().map(|effort| {
-                                                (Some(effort), reasoning_label(Some(effort)))
-                                            })
-                                        }),
-                                );
-                            } else {
-                                efforts.extend(
-                                    [
-                                        AgentReasoningEffort::Low,
-                                        AgentReasoningEffort::Medium,
-                                        AgentReasoningEffort::High,
-                                        AgentReasoningEffort::Xhigh,
-                                    ]
+                            let efforts =
+                                available_reasoning_efforts(selected_model, current_effort)
                                     .into_iter()
-                                    .map(|effort| (Some(effort), reasoning_label(Some(effort)))),
+                                    .map(|effort| {
+                                        (
+                                            effort,
+                                            if effort.is_none() {
+                                                automatic.clone()
+                                            } else {
+                                                reasoning_label(effort)
+                                            },
+                                        )
+                                    });
+                            if selected_model.is_none() {
+                                content = content.child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(t!("agents.model.effort_unverified").to_string()),
                                 );
                             }
                             let mut choices = div().flex().flex_wrap().gap(px(4.0));
-                            for (index, (effort, label)) in efforts.into_iter().enumerate() {
+                            for (index, (effort, label)) in efforts.enumerate() {
                                 let effort_parent = observed.clone();
                                 let effort_context = context.clone();
                                 choices = choices.child(
@@ -475,6 +499,7 @@ impl AgentConsoleView {
                                                         view.composer_ui.effort.remove(&id);
                                                     }
                                                 }
+                                                view.schedule_library_save(cx);
                                                 cx.notify();
                                             });
                                         }),
@@ -603,4 +628,88 @@ fn model_matches_search(
         || [&model.model, &model.display_name, &model.description]
             .iter()
             .any(|value| value.to_lowercase().contains(query))
+}
+
+/// The selected model's advertised options are authoritative. An existing
+/// explicit choice remains visible when discovery is unavailable, but no
+/// speculative capability list is offered for Automatic or a custom model.
+fn available_reasoning_efforts(
+    model: Option<&shelldeck_core::agent_codex::model_discovery::CodexDiscoveredModel>,
+    current: Option<AgentReasoningEffort>,
+) -> Vec<Option<AgentReasoningEffort>> {
+    let mut choices = vec![None];
+    if let Some(model) = model {
+        for option in &model.supported_reasoning_efforts {
+            if let Some(effort) = option.executable_effort() {
+                if !choices.contains(&Some(effort)) {
+                    choices.push(Some(effort));
+                }
+            }
+        }
+    } else if let Some(current) = current {
+        choices.push(Some(current));
+    }
+    choices
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shelldeck_core::agent_codex::model_discovery::{
+        CodexDiscoveredModel, CodexReasoningOption,
+    };
+    use std::prelude::v1::test;
+
+    // SDTEST-2826 / SDUC-564
+    #[test]
+    fn model_picker_preserves_known_choices_and_rejects_obsolete_discovery() {
+        let model = CodexDiscoveredModel {
+            id: "real-model".into(),
+            model: "real-model".into(),
+            display_name: "Real model".into(),
+            description: String::new(),
+            is_default: false,
+            default_reasoning_effort: Some("low".into()),
+            supported_reasoning_efforts: vec![
+                CodexReasoningOption {
+                    effort: "low".into(),
+                    description: String::new(),
+                },
+                CodexReasoningOption {
+                    effort: "future-value".into(),
+                    description: String::new(),
+                },
+            ],
+            input_modalities: vec!["text".into()],
+        };
+        assert_eq!(available_reasoning_efforts(None, None), vec![None]);
+        assert_eq!(
+            available_reasoning_efforts(Some(&model), None),
+            vec![None, Some(AgentReasoningEffort::Low)]
+        );
+        assert_eq!(
+            available_reasoning_efforts(None, Some(AgentReasoningEffort::High)),
+            vec![None, Some(AgentReasoningEffort::High)]
+        );
+        let mut state = AgentModelDiscoveryUi::new();
+        let first = state.begin("/first").unwrap();
+        assert!(state.begin("/first").is_none());
+        let catalog = CodexModelCatalog {
+            models: vec![model],
+            truncated: false,
+        };
+        state.finish(first, Ok(catalog.clone()));
+        let refresh = state.begin("/first").unwrap();
+        state.finish(refresh, Err("offline".into()));
+        assert_eq!(state.catalog.as_ref(), Some(&catalog));
+        let old = state.begin("/first").unwrap();
+        let current = state.begin("/second").unwrap();
+        state.finish(old, Ok(catalog.clone()));
+        assert!(state.loading);
+        assert!(state.catalog.is_none());
+        state.finish(current, Ok(catalog));
+        assert!(!state.loading);
+        assert!(state.error.is_none());
+        assert_eq!(state.scope.as_deref(), Some("/second"));
+    }
 }

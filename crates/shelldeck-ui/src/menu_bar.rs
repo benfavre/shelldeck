@@ -84,6 +84,10 @@ pub enum MenuCommand {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MenuEntry {
     Separator,
+    Section {
+        id: &'static str,
+        label: String,
+    },
     Command {
         id: &'static str,
         label: String,
@@ -163,6 +167,40 @@ pub struct MenuBarContext {
 /// `crates/shelldeck/src/actions.rs`.
 pub(crate) fn accel(keys: &str) -> String {
     display_accelerator(keys)
+}
+
+/// Collapse the menu titles before they compete with account/window controls.
+/// Width is logical, so enlarged interface text gets the same reachable menu.
+pub(crate) fn compact_menu_bar(logical_width: f32) -> bool {
+    logical_width < 1000.0
+}
+
+/// Both presentations use the same authorized command inventory and dispatcher.
+/// The shared Menu widget provides bounded scrolling for the compact form.
+pub(crate) fn menu_bar_presentation(ctx: MenuBarContext, compact: bool) -> Vec<MenuSpec> {
+    present_menu_specs(menu_bar_spec(ctx), compact)
+}
+
+fn present_menu_specs(menus: Vec<MenuSpec>, compact: bool) -> Vec<MenuSpec> {
+    if !compact {
+        return menus;
+    }
+    let mut entries = Vec::new();
+    for menu in menus {
+        if !entries.is_empty() {
+            entries.push(MenuEntry::Separator);
+        }
+        entries.push(MenuEntry::Section {
+            id: menu.id,
+            label: menu.label,
+        });
+        entries.extend(menu.entries);
+    }
+    vec![MenuSpec {
+        id: "menu-compact",
+        label: crate::t!("menu.title.compact").to_string(),
+        entries,
+    }]
 }
 
 /// Build the menu bar for the given application state.
@@ -661,7 +699,7 @@ mod tests {
             .flat_map(|m| &m.entries)
             .filter_map(|e| match e {
                 MenuEntry::Command { command, .. } => Some(*command),
-                MenuEntry::Separator => None,
+                MenuEntry::Separator | MenuEntry::Section { .. } => None,
             })
             .collect()
     }
@@ -836,6 +874,49 @@ mod tests {
             .collect();
 
         assert_eq!(checked, vec![MenuCommand::GoBextCloud]);
+    }
+
+    // SDTEST-2785 — responsive menu preserves every authorized command and its metadata.
+    #[test]
+    fn compact_menu_preserves_commands_shortcuts_and_capability_gates() {
+        assert!(compact_menu_bar(620.0));
+        assert!(!compact_menu_bar(1000.0));
+        // A 1240px viewport at 2x text scale has the same logical budget.
+        assert!(compact_menu_bar(1240.0 / 2.0));
+        for mode in [AppMode::User, AppMode::Support, AppMode::Dev] {
+            for signed_in in [false, true] {
+                let mut context = ctx(mode, signed_in);
+                context.dev_capable = signed_in && mode == AppMode::Dev;
+                context.has_monique = true;
+                context.has_fleet = true;
+                context.ai_configured = true;
+                context.active_go = Some(MenuCommand::GoFleet);
+                // Build labels once: other tests may change the global locale.
+                // Compare the actual presentation transform on identical input.
+                let full = menu_bar_spec(context);
+                let compact = present_menu_specs(full.clone(), true);
+                assert_eq!(compact.len(), 1);
+                let only_commands = |menus: &[MenuSpec]| {
+                    menus
+                        .iter()
+                        .flat_map(|menu| menu.entries.iter())
+                        .filter(|entry| matches!(entry, MenuEntry::Command { .. }))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(only_commands(&compact), only_commands(&full));
+                assert_eq!(
+                    compact[0]
+                        .entries
+                        .iter()
+                        .filter(|entry| matches!(entry, MenuEntry::Section { .. }))
+                        .count(),
+                    full.len()
+                );
+                assert_eq!(commands(&compact).contains(&MenuCommand::About), signed_in);
+                assert!(commands(&compact).contains(&MenuCommand::Documentation));
+            }
+        }
     }
 
     // SDTEST-1205 — `accel` renders bindings the way the platform spells

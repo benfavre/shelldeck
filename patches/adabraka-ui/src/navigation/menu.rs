@@ -19,9 +19,8 @@ const MENU_DEFAULT_MAX_HEIGHT: f32 = 400.0;
 const MENU_MIN_HEIGHT: f32 = 96.0;
 
 fn menu_max_height(viewport_height: Pixels, anchor_bottom: Pixels) -> Pixels {
-    let available = viewport_height.to_f64() as f32
-        - anchor_bottom.to_f64() as f32
-        - MENU_VIEWPORT_MARGIN;
+    let available =
+        viewport_height.to_f64() as f32 - anchor_bottom.to_f64() as f32 - MENU_VIEWPORT_MARGIN;
     px(available.clamp(MENU_MIN_HEIGHT, MENU_DEFAULT_MAX_HEIGHT))
 }
 
@@ -140,6 +139,8 @@ pub struct Menu {
     // ShellDeck patch: SDPATCH-045 — an externally-owned handle survives the
     // second frame needed to resolve child bounds for active-row scrolling.
     scroll_handle: ScrollHandle,
+    // ShellDeck patch: SDPATCH-048 — grouped compact menus preserve user scroll.
+    reveal_active: bool,
     style: StyleRefinement,
 }
 
@@ -152,8 +153,29 @@ impl Menu {
             // ShellDeck patch: SDPATCH-045 — standalone menus still scroll;
             // retained hosts can replace this handle through `track_scroll`.
             scroll_handle: ScrollHandle::new(),
+            // ShellDeck patch: SDPATCH-048 — retain active-row reveal for existing menus.
+            reveal_active: true,
             style: StyleRefinement::default(),
         }
+    }
+
+    // ShellDeck patch: SDPATCH-048 — compact hosts can opt out of checked-row scrolling.
+    pub fn reveal_active(mut self, reveal: bool) -> Self {
+        self.reveal_active = reveal;
+        self
+    }
+
+    // ShellDeck patch: SDPATCH-048 — no reveal means rendering never overrides user scroll.
+    fn active_item_to_reveal(&self) -> Option<usize> {
+        if !self.reveal_active {
+            return None;
+        }
+        self.items.iter().position(|item| {
+            matches!(
+                &item.kind,
+                MenuItemKind::Checkbox { checked: true } | MenuItemKind::Radio { checked: true }
+            )
+        })
     }
 
     pub fn min_width(mut self, width: Pixels) -> Self {
@@ -183,17 +205,12 @@ impl Styled for Menu {
 impl RenderOnce for Menu {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let theme = use_theme();
+        // ShellDeck patch: SDPATCH-048 — respect the host's scroll ownership before moving style.
+        let active_item = self.active_item_to_reveal();
         let user_style = self.style;
         // ShellDeck patch: SDPATCH-045 — a max-height without scroll merely
         // clips long menus. Track the checked/active row so opening a bounded
         // navigation menu also reveals the current destination automatically.
-        let active_item = self.items.iter().position(|item| {
-            matches!(
-                &item.kind,
-                MenuItemKind::Checkbox { checked: true }
-                    | MenuItemKind::Radio { checked: true }
-            )
-        });
         let scroll = self.scroll_handle;
         if let Some(index) = active_item {
             scroll.scroll_to_item(index);
@@ -352,6 +369,8 @@ pub struct MenuBar {
     dropdown_scroll: ScrollHandle,
     // ShellDeck patch: SDPATCH-047 — embed menus in host-owned window chrome.
     embedded: bool,
+    // ShellDeck patch: SDPATCH-048 — forward the host's active-row reveal policy.
+    reveal_active: bool,
 }
 
 impl MenuBar {
@@ -367,6 +386,8 @@ impl MenuBar {
             dropdown_scroll: ScrollHandle::new(),
             // ShellDeck patch: SDPATCH-047 — preserve standalone styling by default.
             embedded: false,
+            // ShellDeck patch: SDPATCH-048 — existing bars retain checked-row reveal.
+            reveal_active: true,
         }
     }
 
@@ -394,6 +415,15 @@ impl MenuBar {
     pub fn embedded(mut self, embedded: bool) -> Self {
         self.embedded = embedded;
         self
+    }
+
+    // ShellDeck patch: SDPATCH-048 — switch presentation once; repeated rebuilds retain scroll.
+    pub fn set_reveal_active(&mut self, reveal: bool) {
+        if self.reveal_active != reveal {
+            self.reveal_active = reveal;
+            self.active_menu = None;
+            self.dropdown_scroll.set_offset(point(px(0.0), px(0.0)));
+        }
     }
 
     /// Minimum width of the dropdown panel. Defaults to 200px.
@@ -583,16 +613,16 @@ impl Render for MenuBar {
                             .position(position)
                             .snap_to_window_with_margin(Edges::all(px(8.0)))
                             .child(
-                                div()
-                                    .occlude()
-                                    .child(
-                                        Menu::new(items)
-                                            .min_width(self.menu_min_width)
-                                            .max_height(Some(max_height))
-                                            // ShellDeck patch: SDPATCH-045 — pass the retained
-                                            // bar handle to each ephemeral dropdown.
-                                            .track_scroll(&self.dropdown_scroll),
-                                    ),
+                                div().occlude().child(
+                                    Menu::new(items)
+                                        // ShellDeck patch: SDPATCH-048 — compact menus never re-anchor while scrolling.
+                                        .reveal_active(self.reveal_active)
+                                        .min_width(self.menu_min_width)
+                                        .max_height(Some(max_height))
+                                        // ShellDeck patch: SDPATCH-045 — pass the retained
+                                        // bar handle to each ephemeral dropdown.
+                                        .track_scroll(&self.dropdown_scroll),
+                                ),
                             ),
                     )
                     .with_priority(1),
@@ -643,5 +673,45 @@ mod tests {
         assert_eq!(menu_max_height(px(810.0), px(80.0)), px(400.0));
         assert_eq!(menu_max_height(px(400.0), px(73.0)), px(319.0));
         assert_eq!(menu_max_height(px(120.0), px(80.0)), px(96.0));
+    }
+}
+
+// ShellDeck patch: SDPATCH-048 — pin initial reveal and retained scroll policy across rebuilds.
+#[cfg(test)]
+mod compact_scroll_tests {
+    use super::{Menu, MenuBar, MenuBarItem, MenuItem};
+    use gpui::{point, px};
+
+    // SDTEST-2786 — compact menus open at top and do not fight manual scrolling.
+    #[test]
+    fn compact_menu_keeps_user_scroll_instead_of_revealing_checked_row() {
+        let items = vec![
+            MenuItem::new("file", "File"),
+            MenuItem::checkbox("selected", "Selected", true),
+        ];
+        assert_eq!(Menu::new(items.clone()).active_item_to_reveal(), Some(1));
+        assert_eq!(
+            Menu::new(items.clone())
+                .reveal_active(false)
+                .active_item_to_reveal(),
+            None
+        );
+        let mut bar = MenuBar::new(vec![
+            MenuBarItem::new("wide", "Wide").with_items(items.clone())
+        ]);
+        bar.set_open_index(Some(0));
+        bar.dropdown_scroll.set_offset(point(px(0.0), px(-96.0)));
+        bar.set_reveal_active(false);
+        assert_eq!(bar.open_index(), None);
+        assert_eq!(bar.dropdown_scroll.offset(), point(px(0.0), px(0.0)));
+        bar.set_open_index(Some(0));
+        bar.dropdown_scroll.set_offset(point(px(0.0), px(-192.0)));
+        // Mirrors the host's render-time rebuild of the same compact menu.
+        bar.set_reveal_active(false);
+        let open = bar.open_index();
+        bar.set_items(vec![MenuBarItem::new("compact", "Menu").with_items(items)]);
+        bar.set_open_index(open);
+        assert_eq!(bar.open_index(), Some(0));
+        assert_eq!(bar.dropdown_scroll.offset(), point(px(0.0), px(-192.0)));
     }
 }

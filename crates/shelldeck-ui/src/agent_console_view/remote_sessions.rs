@@ -1,6 +1,6 @@
 //! A navigator over the shared Platform directory, never a second session store.
 use super::*;
-use crate::fleet_view::FleetView;
+use crate::fleet_view::{remote_session_title, FleetView};
 use shelldeck_core::config::platform::{FreshnessState, SessionRecord};
 
 #[derive(Default)]
@@ -10,11 +10,13 @@ pub(super) struct RemoteAgentSessionsUi {
     pub(super) available: bool,
     pub(super) active: bool,
     pub(super) surface_visible: bool,
+    visible_limit: usize,
+    page_query: String,
 }
 
 fn matching_sessions<'a>(sessions: &'a [SessionRecord], query: &str) -> Vec<&'a SessionRecord> {
     let query = query.trim().to_lowercase();
-    sessions
+    let mut matches = sessions
         .iter()
         .filter(|record| {
             query.is_empty()
@@ -31,25 +33,94 @@ fn matching_sessions<'a>(sessions: &'a [SessionRecord], query: &str) -> Vec<&'a 
                     .as_str()
                     .to_lowercase()
                     .contains(&query)
+                || record.session.resource.authority.as_str().contains(&query)
+                || remote_session_title(record).to_lowercase().contains(&query)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    matches.sort_by(|a, b| {
+        b.session
+            .freshness
+            .observed_at
+            .as_millis()
+            .cmp(&a.session.freshness.observed_at.as_millis())
+            .then_with(|| {
+                a.session
+                    .resource
+                    .id
+                    .as_str()
+                    .cmp(b.session.resource.id.as_str())
+            })
+            .then_with(|| {
+                a.session
+                    .resource
+                    .authority
+                    .as_str()
+                    .cmp(b.session.resource.authority.as_str())
+            })
+    });
+    matches
+}
+
+fn remote_page_limit(page_query: &str, query: &str, visible_limit: usize) -> usize {
+    if page_query == query {
+        visible_limit.max(20)
+    } else {
+        20
+    }
+}
+
+fn remote_session_description(record: &SessionRecord, resumable: bool, pending: bool) -> String {
+    let access = if pending {
+        t!("agents.remote.resuming")
+    } else if resumable {
+        t!("agents.remote.resume_available")
+    } else if record.attachable {
+        t!("agents.remote.available")
+    } else {
+        t!("agents.remote.directory_only")
+    };
+    let freshness = match record.session.freshness.state {
+        FreshnessState::Fresh => t!("agents.remote.fresh"),
+        FreshnessState::Stale => t!("agents.remote.stale"),
+        FreshnessState::Unknown => t!("agents.remote.unknown"),
+    };
+    match record
+        .session
+        .summary
+        .as_str()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "open" => format!("{} · {access}", t!("agents.remote.open")),
+        "closed" => format!("{} · {access}", t!("agents.remote.closed")),
+        _ => format!("{access} · {freshness}"),
+    }
+}
+
+// GPUI owns hover timing and places this above the clipped navigator;
+// adabraka Tooltip currently uses an always-mounted child overlay.
+struct RemoteSessionTooltip(String);
+impl Render for RemoteSessionTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .p(px(8.0))
+            .max_w(px(420.0))
+            .rounded(px(5.0))
+            .bg(ShellDeckColors::bg_surface())
+            .text_color(ShellDeckColors::text_primary())
+            .text_size(px(11.0))
+            .child(self.0.clone())
+    }
 }
 
 impl AgentConsoleView {
-    pub(crate) fn set_remote_session_source(
-        &mut self,
-        source: Entity<FleetView>,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_remote_session_source(&mut self, source: Entity<FleetView>, cx: &mut Context<Self>) {
         self.remote_sessions._subscription = Some(cx.observe(&source, |_, _, cx| cx.notify()));
         self.remote_sessions.source = Some(source);
     }
 
-    pub(crate) fn set_remote_sessions_available(
-        &mut self,
-        available: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_remote_sessions_available(&mut self, available: bool, cx: &mut Context<Self>) {
         self.remote_sessions.available = available;
         if !available && self.remote_sessions.active {
             // Access can disappear before Workspace updates host visibility.
@@ -60,11 +131,16 @@ impl AgentConsoleView {
         cx.notify();
     }
 
-    pub(crate) fn set_remote_session_active(&mut self, active: bool, cx: &mut Context<Self>) {
+    pub fn set_remote_session_active(&mut self, active: bool, cx: &mut Context<Self>) {
         self.close_navigator_overlay(cx);
+        if active {
+            self.clear_ssh_session_preview();
+        }
         self.remote_sessions.active = active && self.remote_sessions.available;
         self.sessions.set_surface_visible(
-            self.remote_sessions.surface_visible && !self.remote_sessions.active,
+            self.remote_sessions.surface_visible
+                && !self.remote_sessions.active
+                && self.ssh_sessions.preview.is_none(),
         );
         cx.notify();
     }
@@ -78,10 +154,25 @@ impl AgentConsoleView {
             return list.into_any_element();
         };
         let source = source.read(cx);
-        let sessions = matching_sessions(
-            source.agent_sessions(),
-            self.navigator_search.read(cx).content(),
+        let query = self
+            .navigator_search
+            .read(cx)
+            .content()
+            .trim()
+            .to_lowercase();
+        let mut sessions = matching_sessions(source.agent_sessions(), &query);
+        let total = sessions.len();
+        let available_only = self.library.preferences.remote_sessions_available_only;
+        if available_only {
+            sessions.retain(|record| record.attachable);
+        }
+        let expanded = self.library.preferences.remote_sessions_expanded || !query.is_empty();
+        let limit = remote_page_limit(
+            &self.remote_sessions.page_query,
+            &query,
+            self.remote_sessions.visible_limit,
         );
+        let shown = sessions.len().min(limit);
         list = list.child(
             div()
                 .flex()
@@ -90,17 +181,42 @@ impl AgentConsoleView {
                 .px(px(6.0))
                 .pt(px(6.0))
                 .pb(px(3.0))
-                .child(lucide_icon("cloud", 12.0, ShellDeckColors::text_muted()))
                 .child(
-                    div()
+                    Button::new("agent-remote-toggle", t!("agents.remote.title").to_string())
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
                         .flex_1()
                         .min_w(px(0.0))
-                        .truncate()
-                        .text_size(px(10.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(t!("agents.remote.title").to_string()),
+                        .justify_start()
+                        .disabled(!query.is_empty())
+                        .icon(IconSource::from(if expanded {
+                            "chevron-down"
+                        } else {
+                            "chevron-right"
+                        }))
+                        .tooltip(
+                            t!(if expanded {
+                                "agents.remote.collapse"
+                            } else {
+                                "agents.remote.expand"
+                            })
+                            .to_string(),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.library.preferences.remote_sessions_expanded =
+                                !this.library.preferences.remote_sessions_expanded;
+                            this.schedule_library_save(cx);
+                            cx.notify();
+                        })),
                 )
-                .child(Badge::new(sessions.len().to_string()).variant(BadgeVariant::Secondary))
+                .child(
+                    Badge::new(if available_only {
+                        format!("{}/{total}", sessions.len())
+                    } else {
+                        total.to_string()
+                    })
+                    .variant(BadgeVariant::Secondary),
+                )
                 .child(
                     Button::new("agent-remote-refresh", "")
                         .variant(ButtonVariant::Ghost)
@@ -115,16 +231,79 @@ impl AgentConsoleView {
                         })),
                 ),
         );
+        if !expanded {
+            return list.into_any_element();
+        }
+        let sync_status = if source.agent_sessions_loading() {
+            t!("agents.remote.refreshing_directory").to_string()
+        } else if let Some(at) = source.agent_sessions_updated_at() {
+            t!("agents.remote.directory_updated", time = at).to_string()
+        } else {
+            t!("agents.remote.directory_unchecked").to_string()
+        };
+        list = list.child(
+            div()
+                .px(px(8.0))
+                .py(px(3.0))
+                .text_size(px(10.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(sync_status),
+        );
+        list = list.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .px(px(6.0))
+                .child(
+                    Button::new("agent-remote-all", t!("agents.remote.all").to_string())
+                        .variant(if available_only {
+                            ButtonVariant::Ghost
+                        } else {
+                            ButtonVariant::Secondary
+                        })
+                        .size(ButtonSize::Sm)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.library.preferences.remote_sessions_available_only = false;
+                            this.remote_sessions.visible_limit = 20;
+                            this.schedule_library_save(cx);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new(
+                        "agent-remote-available",
+                        t!("agents.remote.available").to_string(),
+                    )
+                    .variant(if available_only {
+                        ButtonVariant::Secondary
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .size(ButtonSize::Sm)
+                    .tooltip(t!("agents.remote.available_hint").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.library.preferences.remote_sessions_available_only = true;
+                        this.remote_sessions.visible_limit = 20;
+                        this.schedule_library_save(cx);
+                        cx.notify();
+                    })),
+                ),
+        );
         if let Some(error) = source.agent_sessions_error() {
             list = list.child(
-                div()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .px(px(8.0))
-                    .py(px(6.0))
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::error())
-                    .child(error.to_owned()),
+                Button::new(
+                    "agent-remote-error",
+                    t!("agents.remote.connection_unavailable").to_string(),
+                )
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("cloud-off"))
+                .tooltip(error.to_owned())
+                .disabled(source.agent_sessions_loading())
+                .on_click(
+                    cx.listener(|_, _, _, cx| cx.emit(AgentConsoleEvent::RefreshRemoteSessions)),
+                ),
             );
         } else if sessions.is_empty() {
             let label = if source.agent_sessions_loading() {
@@ -141,8 +320,13 @@ impl AgentConsoleView {
                     .child(label.to_string()),
             );
         }
-        for record in sessions {
+        for record in sessions.iter().take(shown) {
             let coordinate = record.session.resource.clone();
+            let identity = format!(
+                "{} · {}",
+                coordinate.authority.as_str(),
+                coordinate.id.as_str()
+            );
             let selected = self.remote_sessions.active && source.session_is_open_exact(&coordinate);
             let color = match record.session.freshness.state {
                 FreshnessState::Fresh => ShellDeckColors::success(),
@@ -164,6 +348,7 @@ impl AgentConsoleView {
                 .px(px(8.0))
                 .rounded(px(5.0))
                 .cursor_pointer()
+                .tooltip(move |_, cx| cx.new(|_| RemoteSessionTooltip(identity.clone())).into())
                 .child(div().size(px(6.0)).flex_shrink_0().rounded_full().bg(color))
                 .child(
                     div()
@@ -176,14 +361,18 @@ impl AgentConsoleView {
                             div()
                                 .truncate()
                                 .text_size(px(11.0))
-                                .child(record.session.summary.as_str().to_owned()),
+                                .child(remote_session_title(record)),
                         )
                         .child(
                             div()
                                 .truncate()
                                 .text_size(px(9.0))
                                 .text_color(ShellDeckColors::text_muted())
-                                .child(coordinate.id.as_str().to_owned()),
+                                .child(remote_session_description(
+                                    record,
+                                    source.agent_session_resume_available(&coordinate),
+                                    source.agent_session_resume_pending(&coordinate),
+                                )),
                         ),
                 )
                 .on_click(cx.listener(move |_, _, _, cx| {
@@ -196,6 +385,27 @@ impl AgentConsoleView {
             }
             list = list.child(row);
         }
+        if sessions.len() > shown {
+            let page_query = query.clone();
+            list = list.child(
+                Button::new(
+                    "agent-remote-more",
+                    t!(
+                        "agents.remote.show_more",
+                        shown = shown,
+                        total = sessions.len()
+                    )
+                    .to_string(),
+                )
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.remote_sessions.page_query = page_query.clone();
+                    this.remote_sessions.visible_limit = shown.saturating_add(20);
+                    cx.notify();
+                })),
+            );
+        }
         list.pb(px(7.0))
             .mb(px(4.0))
             .border_b_1()
@@ -207,6 +417,7 @@ impl AgentConsoleView {
         self.surface_focus_requested = false;
         let mut root = div()
             .id("agent-remote-cockpit")
+            .relative()
             .key_context("AgentConsole")
             .on_action(cx.listener(|this, _: &AgentNewChat, _, cx| this.new_session(cx)))
             .on_action(
@@ -218,11 +429,14 @@ impl AgentConsoleView {
             .min_h(px(0.0))
             .bg(ShellDeckColors::bg_primary())
             .text_color(ShellDeckColors::text_primary());
-        if self.tools.navigator_visible {
+        if self.tools.navigator_wide && self.tools.navigator_visible {
             root = root.child(self.render_navigator(cx));
         }
         if let Some(source) = self.remote_sessions.source.clone() {
             root = root.child(source.update(cx, |view, cx| view.render_agent_session(cx)));
+        }
+        if !self.tools.navigator_wide && self.tools.navigator_overlay {
+            root = root.child(self.render_navigator_overlay(cx));
         }
         root.into_any_element()
     }
@@ -231,8 +445,8 @@ impl AgentConsoleView {
 #[cfg(test)]
 mod tests {
     use super::{
-        matching_sessions, AgentConsoleView, AgentStreamEvent, FleetView, FreshnessState,
-        SessionRecord, Uuid,
+        matching_sessions, remote_page_limit, remote_session_title, AgentConsoleView,
+        AgentStreamEvent, FleetView, FreshnessState, SessionRecord, Uuid,
     };
     use automonique_protocol::platform::{Capabilities, CursorTopic, Freshness};
     use automonique_protocol::primitives::{EpochMillis, Revision};
@@ -310,6 +524,48 @@ mod tests {
             "Infra"
         );
         assert!(matching_sessions(&directory, "unrelated").is_empty());
+    }
+
+    // SDTEST-2746 / SDUC-559
+    #[test]
+    fn sdtest_2746_remote_directory_pages_searches_and_labels_lifecycle_records() {
+        let mut directory = (0..119)
+            .map(|i| {
+                session(
+                    &format!("session_bear_{i:04}_abcdef{i:04}"),
+                    "open",
+                    FreshnessState::Unknown,
+                    i % 2 == 0,
+                )
+            })
+            .collect::<Vec<_>>();
+        directory[100].session.freshness.observed_at = EpochMillis::from_millis(1000);
+        let matches = matching_sessions(&directory, "");
+        assert_eq!(
+            matches.len(),
+            119,
+            "observation-only entries stay reachable"
+        );
+        assert_eq!(matches[0].session.resource, directory[100].session.resource);
+        assert_eq!(remote_page_limit("", "", 0), 20);
+        assert_eq!(remote_page_limit("", "", 40), 40);
+        assert_eq!(remote_page_limit("", "bear", 40), 20);
+        assert_eq!(matching_sessions(&directory, "_0118_").len(), 1);
+        assert_eq!(matching_sessions(&directory, "automonique").len(), 119);
+        let label = remote_session_title(&directory[0]);
+        assert!(label.contains("bear"));
+        assert_eq!(matching_sessions(&directory, "session bear").len(), 119);
+        assert_eq!(
+            directory
+                .iter()
+                .map(remote_session_title)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            119
+        );
+        assert_ne!(label, "open");
+        let titled = session("named", "Fix SSH routing", FreshnessState::Fresh, true);
+        assert_eq!(remote_session_title(&titled), "Fix SSH routing");
     }
 
     // SDTEST-2646 / SDUC-559

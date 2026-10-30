@@ -1,6 +1,7 @@
 //! Per-session browser lifetimes and ephemeral provider tool grants.
 use super::*;
 use crate::native_browser::{NativeBrowserEvent, NativeBrowserView};
+use adabraka_ui::components::split_pane::{SplitDirection, SplitPane, SplitPaneState};
 use shelldeck_browser::mcp::{self, BrowserGrant, BrowserPermission};
 use shelldeck_core::agent_browser_tools::AgentMcpServerLaunch;
 use shelldeck_core::agent_runtime::AgentInputOptions;
@@ -28,6 +29,7 @@ pub(super) struct AgentLiveBrowsersUi {
     grants: HashMap<Uuid, RunBrowserGrant>,
     pub(super) error: Option<String>,
     account_namespace: Option<Uuid>,
+    split: Option<Entity<SplitPaneState>>,
 }
 
 impl AgentConsoleView {
@@ -43,10 +45,6 @@ impl AgentConsoleView {
     pub(super) fn live_browser_visible(&self, cx: &App) -> bool {
         self.live_browser_index(cx)
             .is_some_and(|i| self.live_browsers.instances[i].visible)
-    }
-
-    pub(super) fn has_live_browser(&self, cx: &App) -> bool {
-        self.live_browser_index(cx).is_some()
     }
 
     pub(super) fn focus_visible_browser(&self, cx: &mut Context<Self>) -> bool {
@@ -92,15 +90,18 @@ impl AgentConsoleView {
                 session_id,
                 &context,
             );
-            let control_available = context.access != AgentAccessMode::ReadOnly
-                && matches!(context.target, AgentTarget::Local)
+            let observation_available = matches!(context.target, AgentTarget::Local)
                 && matches!(
                     context.provider,
                     AgentProvider::Claude | AgentProvider::Codex | AgentProvider::Automonique
                 );
             let view = cx.new(|cx| {
                 let mut view = NativeBrowserView::new(scope, cx);
-                view.set_agent_control_available(control_available, cx);
+                view.set_agent_observation_available(observation_available, cx);
+                view.set_agent_control_available(
+                    observation_available && context.access != AgentAccessMode::ReadOnly,
+                    cx,
+                );
                 view
             });
             let expected_context = context.clone();
@@ -117,10 +118,15 @@ impl AgentConsoleView {
                         url: _,
                         title: _,
                     } => {
-                        if !this
-                            .sessions
-                            .get(session_id)
-                            .is_some_and(|s| s.context == expected_context)
+                        if !this.browser_screenshot_context_is_current(
+                            session_id,
+                            &expected_context,
+                            cx,
+                        ) || !this
+                            .live_browsers
+                            .instances
+                            .iter()
+                            .any(|instance| instance.view == view)
                         {
                             this.live_browsers.error =
                                 Some(t!("agents.editor.context_changed").to_string());
@@ -140,8 +146,14 @@ impl AgentConsoleView {
                             this.show_agent_conversation(cx);
                         }
                     }
-                    NativeBrowserEvent::Error(error) => {
-                        this.live_browsers.error = Some(error.clone())
+                    // Runtime failures belong to the browser's retry banner only.
+                    NativeBrowserEvent::Error(_) => {}
+                    NativeBrowserEvent::CloseRequested
+                        if this
+                            .live_browser_index(cx)
+                            .is_some_and(|i| this.live_browsers.instances[i].view == view) =>
+                    {
+                        this.close_current_browser(cx);
                     }
                     _ => {}
                 }
@@ -158,9 +170,8 @@ impl AgentConsoleView {
         };
         self.live_browsers.error = None;
         self.live_browsers.instances[index].visible = true;
-        if !self.tools.inspector_wide {
-            self.tools.panel_visible = false;
-        }
+        self.tools.panel_visible = false;
+        self.tools.toolbar_expanded = false;
         let view = self.live_browsers.instances[index].view.clone();
         if let Some(url) = url {
             view.update(cx, |view, cx| view.navigate(url, cx));
@@ -171,33 +182,93 @@ impl AgentConsoleView {
         cx.notify();
     }
 
-    pub(super) fn render_live_browser(&self, cx: &App) -> AnyElement {
-        let mut pane = div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .min_w_0()
-            .overflow_hidden();
-        if let Some(i) = self.live_browser_index(cx) {
-            let instance = &self.live_browsers.instances[i];
-            if !matches!(instance.context.target, AgentTarget::Local)
-                || !matches!(
-                    instance.context.provider,
-                    AgentProvider::Codex | AgentProvider::Claude | AgentProvider::Automonique
-                )
-            {
-                pane = pane.child(
-                    div()
-                        .p(px(8.0))
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("agents.live_browser.local_tools").to_string()),
+    fn browser_screenshot_context_is_current(
+        &self,
+        session_id: Uuid,
+        context: &AgentExecutionContext,
+        cx: &App,
+    ) -> bool {
+        // The visible draft may have unsent target/provider/workdir changes.
+        // Saved execution context alone is not authority for a screenshot share.
+        self.sessions.selected_id() == Some(session_id) && self.displayed_context(cx) == *context
+    }
+
+    pub(super) fn render_browser_split(
+        &mut self,
+        conversation: impl IntoElement,
+        available_width: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let direction = if available_width >= 860.0 {
+            SplitDirection::Horizontal
+        } else {
+            SplitDirection::Vertical
+        };
+        let state = self
+            .live_browsers
+            .split
+            .get_or_insert_with(|| {
+                cx.new(|cx| {
+                    let mut state = SplitPaneState::new(cx);
+                    state.set_min_first(360.0, cx);
+                    state.set_min_second(360.0, cx);
+                    state.set_ratio(0.44, cx);
+                    state
+                })
+            })
+            .clone();
+        if state.read(cx).direction() != direction {
+            state.update(cx, |state, cx| {
+                state.set_direction(direction, cx);
+                state.set_min_first(
+                    if direction == SplitDirection::Horizontal {
+                        360.0
+                    } else {
+                        280.0
+                    },
+                    cx,
                 );
-            }
-            pane = pane.child(instance.view.clone());
+                state.set_min_second(
+                    if direction == SplitDirection::Horizontal {
+                        360.0
+                    } else {
+                        200.0
+                    },
+                    cx,
+                );
+                state.set_ratio(
+                    if direction == SplitDirection::Horizontal {
+                        0.44
+                    } else {
+                        0.5
+                    },
+                    cx,
+                );
+            });
         }
-        pane.into_any_element()
+        let browser = self
+            .live_browser_index(cx)
+            .map(|i| self.live_browsers.instances[i].view.clone());
+        SplitPane::new(state)
+            .first(
+                div()
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(conversation),
+            )
+            .second(
+                div()
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .children(browser),
+            )
+            .into_any_element()
     }
 
     /// Called only after the normal run admission/permission path. Capabilities
@@ -361,5 +432,62 @@ mod tests {
             browser_scope(account, a, &context)
         );
         assert!(original.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'));
+    }
+
+    // SDTEST-2798 — a companion browser never replaces the conversation draft.
+    #[test]
+    fn companion_browser_keeps_conversation_draft_and_closes_only_its_runtime() {
+        let mut app = TestAppContext::single();
+        let view = app.update(|cx| cx.new(AgentConsoleView::new));
+        view.update(&mut app, |view, cx| {
+            let session_id = view.sessions.selected_id().unwrap();
+            let context = view.displayed_context(cx);
+            let browser = cx.new(|cx| NativeBrowserView::new("isolated-no-engine".into(), cx));
+            let subscription = cx.subscribe(&browser, |_, _, _, _| {});
+            view.live_browsers.instances.push(BrowserInstance {
+                session_id,
+                context: context.clone(),
+                view: browser.clone(),
+                visible: true,
+                _subscription: subscription,
+            });
+            let prompt = view.session_ui.get(&session_id).unwrap().prompt.clone();
+            prompt.update(cx, |input, cx| input.replace_content("Keep this draft", cx));
+            view.show_agent_conversation(cx);
+            assert!(view.live_browser_visible(cx));
+            assert_eq!(prompt.read(cx).content(), "Keep this draft");
+            view.hide_live_browser(cx);
+            assert!(!view.live_browser_visible(cx));
+            assert_eq!(view.live_browsers.instances[0].view, browser);
+            view.close_current_browser(cx);
+            assert!(view.live_browsers.instances.is_empty());
+            assert_eq!(view.sessions.selected_id(), Some(session_id));
+            assert_eq!(view.displayed_context(cx), context);
+            assert_eq!(prompt.read(cx).content(), "Keep this draft");
+        });
+    }
+
+    // SDTEST-2772 — screenshot sharing follows the visible draft, not stale persisted context.
+    #[test]
+    fn browser_screenshot_rejects_stale_draft_context_without_launching_browser() {
+        let mut app = TestAppContext::single();
+        let view = app.update(|cx| cx.new(AgentConsoleView::new));
+        view.update(&mut app, |view, cx| {
+            let session_id = view.sessions.selected_id().unwrap();
+            let saved = view.sessions.selected().unwrap().context.clone();
+            assert!(view.browser_screenshot_context_is_current(session_id, &saved, cx));
+            let other_root = std::env::temp_dir()
+                .join("shelldeck-unsent-browser-context")
+                .display()
+                .to_string();
+            view.workdir_state
+                .update(cx, |input, cx| input.replace_content(other_root, cx));
+            let displayed = view.displayed_context(cx);
+            assert_ne!(saved, displayed);
+            assert_eq!(view.sessions.selected().unwrap().context, saved);
+            assert!(!view.browser_screenshot_context_is_current(session_id, &saved, cx));
+            assert!(view.browser_screenshot_context_is_current(session_id, &displayed, cx));
+            assert!(!view.browser_screenshot_context_is_current(Uuid::new_v4(), &displayed, cx));
+        });
     }
 }

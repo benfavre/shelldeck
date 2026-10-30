@@ -8,8 +8,10 @@ impl Workspace {
     /// the alternative — invalidating on each of the a dozen inputs it reads
     /// (mode, sign-in, sidebar, Monique/Fleet availability, AI config) — is a
     /// standing source of stale-menu bugs.
-    pub(super) fn rebuild_menu_bar(&mut self, cx: &mut Context<Self>) {
-        use crate::menu_bar::{menu_bar_spec, MenuBarContext, MenuCommand, MenuEntry};
+    pub(super) fn rebuild_menu_bar(&mut self, logical_width: f32, cx: &mut Context<Self>) {
+        use crate::menu_bar::{
+            compact_menu_bar, menu_bar_presentation, MenuBarContext, MenuCommand, MenuEntry,
+        };
 
         let mode = self.effective_mode();
         let active_go = if mode == AppMode::Dev {
@@ -47,7 +49,7 @@ impl Workspace {
             active_go,
         };
 
-        let items = menu_bar_spec(ctx)
+        let items = menu_bar_presentation(ctx, compact_menu_bar(logical_width))
             .into_iter()
             .map(|menu| {
                 let entries = menu
@@ -55,6 +57,9 @@ impl Workspace {
                     .into_iter()
                     .map(|entry| match entry {
                         MenuEntry::Separator => AdabrakaMenuItem::separator(),
+                        MenuEntry::Section { id, label } => {
+                            AdabrakaMenuItem::new(id, label).disabled(true)
+                        }
                         MenuEntry::Command {
                             id,
                             label,
@@ -92,6 +97,7 @@ impl Workspace {
             .collect::<Vec<_>>();
 
         self.menu_bar.update(cx, |bar, _| {
+            bar.set_reveal_active(!compact_menu_bar(logical_width));
             // Preserve the open menu across the rebuild: `set_items` closes
             // it, and this runs on every render — including the render the
             // click that *opened* a menu triggered.
@@ -201,7 +207,12 @@ impl Workspace {
             Cmd::Documentation => {
                 let _ = cloud_account::open_in_browser("https://shelldeck.1clic.pro");
             }
-            Cmd::About => self.open_settings(cx),
+            Cmd::About => {
+                self.settings.update(cx, |settings, cx| {
+                    settings.set_active_tab(crate::settings::SettingsTab::About, cx);
+                });
+                self.open_settings(cx);
+            }
         }
         cx.notify();
     }

@@ -765,6 +765,9 @@ impl RenderOnce for Input {
             .gap(px(4.0))
             .child({
                 let input_container = div()
+                    // ShellDeck patch: SDPATCH-050 — give the input row a definite width.
+                    .w_full()
+                    .flex()
                     .id(("input", self.state.entity_id()))
                     .key_context("Input")
                     .track_focus(

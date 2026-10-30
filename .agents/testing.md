@@ -154,6 +154,9 @@ PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig \
 cargo test --locked -p shelldeck-ui --lib -- --test-threads=1
 ```
 
+Linux Workspace tests now refuse construction without all three absolute XDG overrides
+outside the normal desktop profile directories. CI sets disposable roots too.
+
 Keep failure artifacts there for inspection and remove only that temporary
 directory afterward. Set the same three XDG overrides when running application
 tests or a workspace-wide sweep on a machine with a real ShellDeck profile.

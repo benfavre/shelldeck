@@ -29,6 +29,7 @@ pub enum NativeBrowserEvent {
     /// The helper is connected; the same client is available through control().
     Ready,
     ActiveTabChanged,
+    CloseRequested,
     /// Explicit user consent, initially false and never persisted across app restarts.
     ControlChanged {
         allowed: bool,
@@ -116,6 +117,7 @@ pub struct NativeBrowserView {
     pointer_inside: bool,
     agent_control_allowed: bool,
     agent_control_available: bool,
+    agent_observation_available: bool,
     error: Option<String>,
     status: Option<String>,
     engine_version: Option<String>,
@@ -179,6 +181,7 @@ impl NativeBrowserView {
             pointer_inside: false,
             agent_control_allowed: false,
             agent_control_available: true,
+            agent_observation_available: true,
             error: None,
             status: None,
             engine_version: None,
@@ -223,6 +226,11 @@ impl NativeBrowserView {
 
     pub fn agent_control_allowed(&self) -> bool {
         self.agent_control_allowed
+    }
+
+    pub fn set_agent_observation_available(&mut self, available: bool, cx: &mut Context<Self>) {
+        self.agent_observation_available = available;
+        cx.notify();
     }
 
     pub fn set_agent_control_available(&mut self, available: bool, cx: &mut Context<Self>) {
@@ -368,7 +376,15 @@ impl NativeBrowserView {
                         // Keep addresses for an explicit retry. No external
                         // process or snapshot fallback is selected here.
                         view.set_error(
-                            format!("{}\n{}", t!("native_browser.unavailable"), error),
+                            format!(
+                                "{}\n{}",
+                                t!(if error.kind() == std::io::ErrorKind::NotFound {
+                                    "native_browser.unavailable"
+                                } else {
+                                    "native_browser.start_failed"
+                                }),
+                                error
+                            ),
                             cx,
                         );
                     }
@@ -789,7 +805,7 @@ impl NativeBrowserView {
             self.page_dialog = None;
             self.request_tasks.clear();
             self.set_error(
-                format!("{}\n{}", t!("native_browser.unavailable"), error),
+                format!("{}\n{}", t!("native_browser.start_failed"), error),
                 cx,
             );
             cx.emit(NativeBrowserEvent::ActiveTabChanged);
@@ -1310,6 +1326,14 @@ impl Render for NativeBrowserView {
                     view.focus_address(window, cx);
                 })),
         );
+        strip = strip.child(div().flex_1()).child(
+            Button::new("native-browser-close-pane", "")
+                .icon("x")
+                .tooltip(t!("agents.live_browser.close").to_string())
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Ghost)
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(NativeBrowserEvent::CloseRequested))),
+        );
         let tab = self.selected_tab();
         let can_back = tab.is_some_and(|tab| tab.state.can_go_back);
         let can_forward = tab.is_some_and(|tab| tab.state.can_go_forward);
@@ -1623,48 +1647,52 @@ impl Render for NativeBrowserView {
                         } else {
                             t!(if loading {
                                 "native_browser.loading"
+                            } else if !self.agent_observation_available {
+                                "native_browser.manual_only"
                             } else {
                                 "native_browser.shared_page"
                             })
                             .to_string()
                         }),
                 )
-                .child(
-                    Button::new(
-                        "native-browser-control",
-                        t!(if self.agent_control_allowed {
-                            "native_browser.revoke_control"
+                .when(self.agent_observation_available, |footer| {
+                    footer.child(
+                        Button::new(
+                            "native-browser-control",
+                            t!(if self.agent_control_allowed {
+                                "native_browser.revoke_control"
+                            } else {
+                                "native_browser.allow_control"
+                            })
+                            .to_string(),
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(if self.agent_control_allowed {
+                            ButtonVariant::Secondary
                         } else {
-                            "native_browser.allow_control"
+                            ButtonVariant::Ghost
                         })
-                        .to_string(),
+                        .disabled(self.client.is_none() || !self.agent_control_available)
+                        .tooltip(
+                            t!(if self.agent_control_available {
+                                "native_browser.control_info"
+                            } else {
+                                "native_browser.control_unavailable"
+                            })
+                            .to_string(),
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            if !view.agent_control_available {
+                                return;
+                            }
+                            view.agent_control_allowed = !view.agent_control_allowed;
+                            cx.emit(NativeBrowserEvent::ControlChanged {
+                                allowed: view.agent_control_allowed,
+                            });
+                            cx.notify();
+                        })),
                     )
-                    .size(ButtonSize::Sm)
-                    .variant(if self.agent_control_allowed {
-                        ButtonVariant::Secondary
-                    } else {
-                        ButtonVariant::Ghost
-                    })
-                    .disabled(self.client.is_none() || !self.agent_control_available)
-                    .tooltip(
-                        t!(if self.agent_control_available {
-                            "native_browser.control_info"
-                        } else {
-                            "native_browser.control_unavailable"
-                        })
-                        .to_string(),
-                    )
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        if !view.agent_control_available {
-                            return;
-                        }
-                        view.agent_control_allowed = !view.agent_control_allowed;
-                        cx.emit(NativeBrowserEvent::ControlChanged {
-                            allowed: view.agent_control_allowed,
-                        });
-                        cx.notify();
-                    })),
-                )
+                })
                 .child(
                     Button::new("native-browser-share", "")
                         .icon("paperclip")

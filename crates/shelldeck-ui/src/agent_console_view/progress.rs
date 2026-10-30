@@ -3,6 +3,16 @@ use super::*;
 use shelldeck_core::agent_runtime::{AgentApprovalOptionKind, AgentPlanStepStatus};
 
 impl AgentConsoleView {
+    fn current_approval_matches(&self, session_id: Uuid, run_id: Uuid, request_id: &str) -> bool {
+        self.sessions.selected_id() == Some(session_id)
+            && self.session_ui.get(&session_id).and_then(|ui| ui.run_id) == Some(run_id)
+            && self
+                .sessions
+                .get(session_id)
+                .and_then(|session| session.approval.as_ref())
+                .is_some_and(|approval| approval.id == request_id)
+    }
+
     pub(super) fn render_run_progress(
         &self,
         session: &AgentSession,
@@ -10,21 +20,48 @@ impl AgentConsoleView {
     ) -> AnyElement {
         let mut column = div().flex().flex_col().min_w(px(0.0)).gap(px(8.0));
         if let Some(plan) = &session.plan {
-            let mut card = div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .p(px(12.0))
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .rounded(px(8.0));
+            let completed = plan
+                .steps
+                .iter()
+                .filter(|step| step.status == AgentPlanStepStatus::Completed)
+                .count();
+            let expanded = self
+                .session_ui
+                .get(&session.id)
+                .is_some_and(|ui| ui.plan_expanded);
+            let id = session.id;
+            let mut card = div().flex().flex_col().min_w(px(0.0)).gap(px(6.0));
             card = card.child(
-                div()
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(t!("agents.progress.plan").to_string()),
+                div().flex().child(
+                    Button::new(
+                        "agent-plan-disclosure",
+                        t!(
+                            "agents.activity.plan_summary",
+                            completed = completed,
+                            total = plan.steps.len()
+                        )
+                        .to_string(),
+                    )
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from(if expanded {
+                        "chevron-down"
+                    } else {
+                        "chevron-right"
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(ui) = this.session_ui.get_mut(&id) {
+                            ui.plan_expanded = !ui.plan_expanded;
+                        }
+                        cx.notify();
+                    })),
+                ),
             );
-            for step in &plan.steps {
+            for step in plan
+                .steps
+                .iter()
+                .filter(|step| expanded || step.status == AgentPlanStepStatus::InProgress)
+            {
                 let (icon, color) = match step.status {
                     AgentPlanStepStatus::Completed => ("check", ShellDeckColors::success()),
                     AgentPlanStepStatus::InProgress => ("refresh-cw", ShellDeckColors::primary()),
@@ -35,12 +72,14 @@ impl AgentConsoleView {
                         .flex()
                         .items_start()
                         .gap(px(8.0))
+                        .pl(px(12.0))
                         .child(lucide_icon(icon, 13.0, color))
                         .child(
                             div()
                                 .flex_1()
                                 .min_w(px(0.0))
                                 .text_size(px(11.0))
+                                .whitespace_normal()
                                 .child(step.text.clone()),
                         ),
                 );
@@ -77,12 +116,41 @@ impl AgentConsoleView {
             }
         }
         if !info.is_empty() {
+            let id = session.id;
+            let expanded = self
+                .session_ui
+                .get(&id)
+                .is_some_and(|ui| ui.run_details_expanded);
             column = column.child(
-                div()
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(info.join(" · ")),
+                div().flex().child(
+                    Button::new(
+                        "agent-run-details",
+                        t!("agents.progress.details").to_string(),
+                    )
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from(if expanded {
+                        "chevron-down"
+                    } else {
+                        "chevron-right"
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(ui) = this.session_ui.get_mut(&id) {
+                            ui.run_details_expanded = !ui.run_details_expanded;
+                        }
+                        cx.notify();
+                    })),
+                ),
             );
+            if expanded {
+                column = column.child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .whitespace_normal()
+                        .child(info.join(" · ")),
+                );
+            }
         }
         if let Some(question) = &session.question {
             let mut card = div()
@@ -96,6 +164,8 @@ impl AgentConsoleView {
                 .child(div().text_size(px(12.0)).child(question.prompt.clone()));
             for (index, option) in question.options.iter().enumerate() {
                 let answer = option.label.clone();
+                let session_id = session.id;
+                let expected_question = question.id.clone();
                 let live_question = question.response_supported.then(|| question.id.clone());
                 let run_id = self.session_ui.get(&session.id).and_then(|ui| ui.run_id);
                 card = card.child(
@@ -109,6 +179,17 @@ impl AgentConsoleView {
                             }),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.sessions.selected_id() != Some(session_id)
+                                || this
+                                    .sessions
+                                    .get(session_id)
+                                    .and_then(|session| session.question.as_ref())
+                                    .is_none_or(|question| question.id != expected_question)
+                                || this.session_ui.get(&session_id).and_then(|ui| ui.run_id)
+                                    != run_id
+                            {
+                                return;
+                            }
                             if let (Some(question_id), Some(run_id)) = (&live_question, run_id) {
                                 if !this.reserve_live_input(
                                     run_id,
@@ -127,7 +208,13 @@ impl AgentConsoleView {
                             if let Some(id) = this.sessions.selected_id() {
                                 if let Some(ui) = this.session_ui.get(&id) {
                                     ui.prompt.update(cx, |state, cx| {
-                                        state.replace_content(answer.clone(), cx)
+                                        let draft = state.content().trim();
+                                        let text = if draft.is_empty() {
+                                            answer.clone()
+                                        } else {
+                                            format!("{draft}\n\n{answer}")
+                                        };
+                                        state.replace_content(text, cx)
                                     });
                                 }
                             }
@@ -169,6 +256,7 @@ impl AgentConsoleView {
                         .child(t!("agents.progress.permission").to_string()),
                 )
                 .child(div().text_size(px(12.0)).child(approval.title.clone()));
+            let session_id = session.id;
             let mut choices = div().flex().flex_wrap().gap(px(8.0));
             for (index, option) in approval.options.iter().enumerate() {
                 let request_id = approval.id.clone();
@@ -182,7 +270,10 @@ impl AgentConsoleView {
                     Button::new(("agent-permission", index), option.label.clone())
                         .variant(variant)
                         .size(ButtonSize::Sm)
-                        .on_click(cx.listener(move |_, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.current_approval_matches(session_id, run_id, &request_id) {
+                                return;
+                            }
                             cx.emit(AgentConsoleEvent::ApprovalDecision {
                                 run_id,
                                 request_id: request_id.clone(),
@@ -200,7 +291,10 @@ impl AgentConsoleView {
                 )
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Sm)
-                .on_click(cx.listener(move |_, _, _, cx| {
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.current_approval_matches(session_id, run_id, &request_id) {
+                        return;
+                    }
                     cx.emit(AgentConsoleEvent::ApprovalDecision {
                         run_id,
                         request_id: request_id.clone(),

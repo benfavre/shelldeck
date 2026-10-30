@@ -26,51 +26,6 @@ pub struct FileEntry {
     pub depth: usize,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // SDTEST-2498 · SDUC-475
-    #[::core::prelude::v1::test]
-    fn sdtest_2498_hidden_project_files_remain_separate_from_git_and_build_output() {
-        let root = tempfile::tempdir().unwrap();
-        for directory in [".config", ".git", "target", "node_modules", "src"] {
-            std::fs::create_dir(root.path().join(directory)).unwrap();
-        }
-        std::fs::write(root.path().join(".env"), "secret").unwrap();
-        std::fs::write(root.path().join(".config/config.toml"), "enabled=true").unwrap();
-        std::fs::write(root.path().join("src/main.rs"), "fn main() {}").unwrap();
-        let mut browser = FileBrowserPanel::new();
-        browser.set_root(root.path().into());
-        browser.toggle_dir(&root.path().join(".config"));
-        browser.toggle_dir(&root.path().join("src"));
-        let names = |entries: Vec<FileEntry>| {
-            entries
-                .into_iter()
-                .map(|entry| entry.name)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(names(browser.visible_entries()), ["src", "main.rs"]);
-
-        assert_eq!(
-            names(browser.visible_entries_with_hidden(true)),
-            [".config", "config.toml", "src", "main.rs", ".env"]
-        );
-        assert_eq!(names(browser.visible_entries()), ["src", "main.rs"]);
-
-        let large = root.path().join("large");
-        std::fs::create_dir(&large).unwrap();
-        for index in 0..=MAX_VISIBLE_ENTRIES {
-            std::fs::write(large.join(format!("file-{index:05}.rs")), "").unwrap();
-        }
-        browser.set_root(large);
-        let listing = browser.visible_listing_with_hidden(false);
-        assert!(listing.truncated);
-        assert_eq!(listing.entries.len(), MAX_VISIBLE_ENTRIES);
-        assert_eq!(listing.entries.first().unwrap().name, "file-00000.rs");
-    }
-}
-
 /// File browser panel state. Manages a tree of directories/files.
 pub struct FileBrowserPanel {
     root: PathBuf,
@@ -256,5 +211,50 @@ impl FileBrowserPanel {
                 depth: entry_depth,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // SDTEST-2498 · SDUC-475
+    #[::core::prelude::v1::test]
+    fn sdtest_2498_hidden_project_files_remain_separate_from_git_and_build_output() {
+        let root = tempfile::tempdir().unwrap();
+        for directory in [".config", ".git", "target", "node_modules", "src"] {
+            std::fs::create_dir(root.path().join(directory)).unwrap();
+        }
+        std::fs::write(root.path().join(".env"), "secret").unwrap();
+        std::fs::write(root.path().join(".config/config.toml"), "enabled=true").unwrap();
+        std::fs::write(root.path().join("src/main.rs"), "fn main() {}").unwrap();
+        let mut browser = FileBrowserPanel::new();
+        browser.set_root(root.path().into());
+        browser.toggle_dir(&root.path().join(".config"));
+        browser.toggle_dir(&root.path().join("src"));
+        let names = |entries: Vec<FileEntry>| {
+            entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(browser.visible_entries()), ["src", "main.rs"]);
+
+        assert_eq!(
+            names(browser.visible_entries_with_hidden(true)),
+            [".config", "config.toml", "src", "main.rs", ".env"]
+        );
+        assert_eq!(names(browser.visible_entries()), ["src", "main.rs"]);
+
+        let large = root.path().join("large");
+        std::fs::create_dir(&large).unwrap();
+        for index in 0..=MAX_VISIBLE_ENTRIES {
+            std::fs::write(large.join(format!("file-{index:05}.rs")), "").unwrap();
+        }
+        browser.set_root(large);
+        let listing = browser.visible_listing_with_hidden(false);
+        assert!(listing.truncated);
+        assert_eq!(listing.entries.len(), MAX_VISIBLE_ENTRIES);
+        assert_eq!(listing.entries.first().unwrap().name, "file-00000.rs");
     }
 }

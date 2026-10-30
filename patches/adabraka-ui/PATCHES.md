@@ -4,10 +4,10 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **179**
-(the previous total of 148 was stale: 175 markers preceded SDPATCH-046;
-SDPATCH-046 adds four markers. The per-entry `Markers` lists remain the inventory; SDPATCH-008 is an adapter and
-carries no marker of its own — see its entry).
+Total markers in code: **195**
+(175 preceded SDPATCH-046; SDPATCH-046 adds four, SDPATCH-047 adds six,
+and SDPATCH-048 adds ten. The per-entry `Markers` lists remain the inventory;
+SDPATCH-008 is an adapter and carries no marker of its own — see its entry).
 
 ## Patches
 
@@ -1120,3 +1120,49 @@ carries no marker of its own — see its entry).
   trigger height with the interface. Titles keep their width in a scrolling
   host; deferred dropdowns keep their existing viewport anchoring.
 - **Upstream status**: not filed yet — opt-in presentation API.
+
+### SDPATCH-048 — Compact menus preserve manual scrolling
+
+- **Files / symbols**: `src/navigation/menu.rs` — `Menu::reveal_active`,
+  `Menu::active_item_to_reveal`, `MenuBar::set_reveal_active`, dropdown render.
+- **Markers**:
+  - `src/navigation/menu.rs:142` — `// ShellDeck patch: SDPATCH-048 — grouped compact menus preserve user scroll.`
+  - `src/navigation/menu.rs:156` — `// ShellDeck patch: SDPATCH-048 — retain active-row reveal for existing menus.`
+  - `src/navigation/menu.rs:162` — `// ShellDeck patch: SDPATCH-048 — compact hosts can opt out of checked-row scrolling.`
+  - `src/navigation/menu.rs:168` — `// ShellDeck patch: SDPATCH-048 — no reveal means rendering never overrides user scroll.`
+  - `src/navigation/menu.rs:208` — `// ShellDeck patch: SDPATCH-048 — respect the host's scroll ownership before moving style.`
+  - `src/navigation/menu.rs:372` — `// ShellDeck patch: SDPATCH-048 — forward the host's active-row reveal policy.`
+  - `src/navigation/menu.rs:389` — `// ShellDeck patch: SDPATCH-048 — existing bars retain checked-row reveal.`
+  - `src/navigation/menu.rs:420` — `// ShellDeck patch: SDPATCH-048 — switch presentation once; repeated rebuilds retain scroll.`
+  - `src/navigation/menu.rs:618` — `// ShellDeck patch: SDPATCH-048 — compact menus never re-anchor while scrolling.`
+  - `src/navigation/menu.rs:679` — `// ShellDeck patch: SDPATCH-048 — pin initial reveal and retained scroll policy across rebuilds.`
+- **Why**: A compact application menu contains all authorized groups, including
+  checked View toggles. Re-revealing those toggles on every render both opens
+  halfway down the command inventory and fights scrolling toward Help. Hosts
+  can disable active-row reveal while retaining checks and the shared bounded
+  menu. Changing presentation closes the old dropdown and resets its offset;
+  repeated render-time rebuilds preserve the user's scroll position.
+- **Validation**: SDTEST-2786 covers default reveal, compact opt-out, presentation
+  reset and retained scroll across rebuilding. SDTEST-2785 checks application
+  command/capability equivalence. Native narrow-window QA remains required.
+- **Upstream status**: not filed yet — backward-compatible opt-in API.
+
+### SDPATCH-049 — Keep short variable lists at their leading edge
+
+- **Files / symbols**: `src/virtual_list.rs` — variable list prepaint, `clamp_variable_list_offset`, offset tests.
+- **Markers**:
+  - `src/virtual_list.rs:766` — `// ShellDeck patch: SDPATCH-049 — short lists stay at the leading edge.`
+  - `src/virtual_list.rs:948` — `// ShellDeck patch: SDPATCH-049 — clamp both underfilled and overflowing lists.`
+  - `src/virtual_list.rs:966` — `// ShellDeck patch: SDPATCH-049 — SDTEST-2791 covers resizing and filtering.`
+- **Why**: A positive lower scroll bound pushed underfilled lists to the bottom/right after resetting their offset to zero. Clamp the bound to zero and clamp offsets on both sides, preserving valid scroll positions. This was visible in Recent Activity with only two entries.
+- **Validation**: SDTEST-2791 covers empty, short, exact-fit and overflowing lists on both axes, including stale scroll positions after filtering/resizing. Native Recent Activity check covers the actual rendered alignment.
+- **Upstream status**: not filed yet.
+
+### SDPATCH-050 — Keep input text visible inside nested flexible panels
+
+- **Files / symbols**: `src/components/input.rs` — `Input::render` input container.
+- **Markers**:
+  - `src/components/input.rs:768` — `// ShellDeck patch: SDPATCH-050 — give the input row a definite width.`
+- **Why**: The unstyled intermediate container could give its percentage-width row a zero-width text area inside nested flexible panels, despite painting a full-width border. Explicit full-width flex layout passes the available width to the row so text and its clear control occupy the intended space.
+- **Validation**: Native Scripts search typing, replacement and clear; Recent Activity search and narrow layouts.
+- **Upstream status**: not filed yet.

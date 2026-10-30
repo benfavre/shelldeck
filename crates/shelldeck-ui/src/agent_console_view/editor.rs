@@ -179,7 +179,6 @@ impl AgentConsoleView {
     }
 
     pub(super) fn show_agent_conversation(&mut self, cx: &mut Context<Self>) {
-        self.hide_live_browser(cx);
         if let Some(i) = self.editor_index(cx) {
             self.editors.instances[i].visible = false;
         }
@@ -434,7 +433,6 @@ impl AgentConsoleView {
 
     pub(super) fn render_middle_switcher(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let active = self.agent_editor_visible(cx);
-        let browser_active = self.live_browser_visible(cx);
         let index = self.editor_index(cx);
         let count = index
             .map(|i| {
@@ -448,9 +446,8 @@ impl AgentConsoleView {
             })
             .unwrap_or(0);
         // Conversation is the default surface; tabs earn space only once another
-        // document or browser is open. Files and Browser remain in the toolbox.
-        if count == 0 && !active && !self.has_live_browser(cx) && self.live_browsers.error.is_none()
-        {
+        // document is open. The browser has its own companion pane.
+        if count == 0 && !active && self.live_browsers.error.is_none() {
             return div().into_any_element();
         }
         let mut row = div()
@@ -469,7 +466,7 @@ impl AgentConsoleView {
                     "agent-middle-chat",
                     t!("agents.editor.conversation").to_string(),
                 )
-                .variant(if active || browser_active {
+                .variant(if active {
                     ButtonVariant::Ghost
                 } else {
                     ButtonVariant::Secondary
@@ -521,32 +518,6 @@ impl AgentConsoleView {
                     }
                 })),
             );
-        row = row.child(
-            Button::new(
-                "agent-middle-browser",
-                t!("agents.live_browser.title").to_string(),
-            )
-            .variant(if browser_active {
-                ButtonVariant::Secondary
-            } else {
-                ButtonVariant::Ghost
-            })
-            .size(ButtonSize::Sm)
-            .icon(IconSource::from("globe"))
-            .on_click(cx.listener(|this, _, _, cx| this.show_live_browser(None, cx))),
-        );
-        if browser_active {
-            row = row.child(
-                Button::new(
-                    "agent-close-browser",
-                    t!("agents.live_browser.close").to_string(),
-                )
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::Sm)
-                .icon(IconSource::from("x"))
-                .on_click(cx.listener(|this, _, _, cx| this.close_current_browser(cx))),
-            );
-        }
         if let Some(error) = &self.live_browsers.error {
             row = row.child(
                 div()

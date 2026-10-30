@@ -135,7 +135,9 @@ impl Render for Workspace {
         // The menu row reads a dozen pieces of state (mode, sign-in, sidebar,
         // Monique/Fleet availability, AI); rebuilding it here keeps it honest
         // without a subscription per input.
-        self.rebuild_menu_bar(_cx);
+        let logical_width = _window.viewport_size().width.to_f64() as f32 * crate::scale::REM_BASE
+            / _window.rem_size().to_f64() as f32;
+        self.rebuild_menu_bar(logical_width, _cx);
         // Same reasoning: the contextual panel reads several live entities
         // with no shared change signal.
         if self.effective_mode() == AppMode::Dev && !agents_presentation {
@@ -573,7 +575,7 @@ impl Render for Workspace {
         }
 
         // Custom titlebar with drag area + window controls
-        let compact_titlebar = _window.window_bounds().get_bounds().size.width < gpui::px(760.0);
+        let compact_titlebar = logical_width < 760.0;
         let titlebar = Self::render_titlebar(
             is_maximized,
             compact_titlebar,

@@ -296,7 +296,7 @@ Existing: **0 tests**.
 | SDTEST-1682 | `platform.rs::cockpit_keeps_pane_cursors_unread_and_control_loss_independent` | SDUC-201, SDUC-476 | Green | Two attachments sharing the `sessions` topic advance independently; only the unfocused pane gains unread events, and disconnect drops a held control lease without erasing the pane. |
 | SDTEST-1683 | shared SDK `platform_view_tracks_independent_attachments_and_reconciles_receipts` | SDUC-201, SDUC-476 | Green | The pinned shared reducer keys cursors by exact session/client attachment and reconciles monotonic receipts; Automonique CI runs the standalone SDK suite. |
 | SDTEST-1684 | shared SDK `session_refresh_and_mutation_keep_typed_refusals` | SDUC-200, SDUC-201 | Green | Cursor expiry and mutation conflicts remain typed outcomes instead of private client retry/error rules; Automonique CI runs the standalone SDK suite. |
-| SDTEST-1685 | `platform.rs::refresh_uses_cursors_per_surface_and_reconciles_pending_receipts` | SDUC-200, SDUC-201, SDUC-476 | Green | A canonical fake server proves steady-state refresh sends resource, directory and pane subscriptions—no snapshot—and reconciles an accepted receipt by ID. |
+| SDTEST-1685 | `platform.rs::refresh_uses_cursors_per_surface_and_reconciles_pending_receipts` | SDUC-200, SDUC-201, SDUC-476 | Green | A canonical fake server proves steady-state refresh updates capabilities, requests the full current directory even without resource change events, preserves pane subscriptions and reconciles an accepted receipt by ID. Added and removed sessions replace the old directory. |
 | SDTEST-1686 | Automonique `platform_live.rs::platform_capabilities_snapshot_and_controller_are_live_and_durable` | SDUC-201, SDUC-476 | Green | The shared live socket fixture projects a pending approval, executes a revision-bound grant, returns a completed receipt, marks the resolved resource stale, and links a session to its controllable run. |
 | SDTEST-1706 | `platform.rs::sdtest_1706_ambiguous_execute_reconciles_with_the_retained_idempotency_key` | SDUC-201 | Green | When an execute response is lost after submission, ShellDeck queries the durable receipt with the exact key prepared before the mutation instead of issuing a new mutation identity. |
 | SDTEST-1726 | `platform.rs::sdtest_1726_follow_up_requires_exact_control_and_advancing_session_revision` | SDUC-201, SDUC-487 | Green | A dedicated follow-up carries the exact attached session, controller client, text, revision, and durable key; a second mutation remains fenced until command state advances beyond the admitted revision. |
@@ -715,3 +715,42 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2727 | `config::workspace_catalog::tests::remove_empty_project_preserves_files_and_workspace_ownership` | SDUC-488 | Green | Explicit unused-project removal preserves files and revision rules; persisted workspaces block removal. Passed focused core regression on 2026-10-29. |
 
 | SDTEST-2736 | `config::workspace_catalog::tests::ssh_checkout_rebind_preserves_path_and_refuses_stale_or_bound_authority` | SDUC-488, SDUC-499 | Green | Explicit saved-connection repair preserves folder bytes and other checkouts; stale expected connection and persisted workspace bindings refuse without mutation. Passed the focused core regression on 2026-10-29. |
+
+| SDTEST-2744 | `agent_session::storage::tests::navigator_preferences_round_trip_default_and_bound_collapsed_project_ids` | SDUC-550 | Green | Saved project collapse and remote-section choices survive disk roundtrip; older libraries default to expanded local groups and collapsed/unfiltered remote sessions; invalid, duplicated and oversized collapse IDs are discarded and the latest 256 remain. Validated in the five-test storage suite (2026-10-29). |
+
+| SDTEST-2751 | `config::cloud_account::tests::auth_redirects_do_not_replay_password_or_bearer` | SDUC-140, SDUC-141 | Green | Loopback auth redirects 307/308 cannot replay login credentials; 302 cannot forward bearer reads. Passed in the full workspace suite (2026-10-30). |
+| SDTEST-2752 | `config::cloud_sync::tests::merge_uuid_collision_preserves_local_profiles_across_later_prune` | SDUC-104 | Green | Same-UUID remote profiles cannot modify Manual/SSH-config authority or make them eligible for a later cloud prune. Passed in the full workspace suite (2026-10-30). |
+| SDTEST-2753 | `config::cloud_sync::tests::sync_payload_requires_explicit_connections_before_pruning` | SDUC-100, SDUC-103 | Green | Malformed/error-shaped payloads without an explicit connections collection cannot prune saved cloud profiles; an explicit empty collection remains authoritative. Passed in the full workspace suite (2026-10-30). |
+
+| SDTEST-2792 | `agent_review::chat_snapshot_tests::chat_snapshot_policy_preserves_local_mutation_boundaries` | SDUC-475, SDUC-499 | Green | Read-only and SSH turns skip eager local Git snapshots; both local mutation modes retain them. Linux core agent suite passed (2026-10-30). |
+
+| SDTEST-2797 | `agent_runtime::jcode_ndjson_regression::deepseek_current_ndjson_text_and_final_snapshot_are_answers` | SDUC-475 | Green | Actual Jcode v0.79.35 `text_delta/text` and `done/text` records normalize to streamed/final answers and preserve the session ID for both Jcode and DeepSeek. Passed 2026-10-30. |
+
+| SDTEST-2799 | `agent_runtime::jcode_ndjson_regression::jcode_chat_replay_keeps_transport_out_of_prose_and_replaces_snapshots` | SDUC-475 | Green | Real Jcode lifecycle replay keeps transport labels and tool JSON out of answers, correlates tool completion, applies text replacement/final snapshots once, parses actual model/usage, prioritizes errors and resets details on a new run. |
+| SDTEST-2800 | `agent_session::storage::tests::run_metadata_survives_only_with_matching_turn_and_context` | SDUC-475, SDUC-550 | Green | Durable metadata retains its originating turn; legacy unproven metadata is cleared and provider changes cannot retain stale model/usage. |
+
+| SDTEST-2806 | `agent_remote_sessions::tests::remote_inventory_preserves_provider_identity_and_partial_discovery` | SDUC-562 | Green | Validates and sorts bounded native inventory, keeping provider identity and partial-result warnings. |
+| SDTEST-2807 | `agent_remote_sessions::tests::remote_inventory_rejects_unsafe_resume_authority_and_oversized_output` | SDUC-562 | Green | Rejects unsafe IDs, malformed paths, unsupported providers and oversized/untrusted results. |
+| SDTEST-2808 | `agent_session::tests::sdtest_2808_remote_import_resumes_native_cli_and_fences_context_changes` | SDUC-562 | Green | Native resume flags target the original conversation; context changes clear authority and restore never persists its token. |
+| SDTEST-2809 | `agent_session::tests::sdtest_2809_remote_reconnect_focuses_existing_run_without_cross_server_reuse` | SDUC-562 | Green | Reconnect focuses exact existing session without rerunning; another SSH target does not reuse its identity. |
+| SDTEST-2810 | `scripts/test-remote-session-discovery.py` | SDUC-562 | Green | Executes the actual remote Python discovery against temporary Claude/Codex/Jcode stores; excludes subagents, symlinks and unsafe identities, reports size limits. |
+
+
+## Complete native SSH conversation history — 2026-10-30
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2813 | `agent_remote_history::tests::history_command_carries_shell_safe_identity_and_parser_validates_page` | SDUC-563 | Green | Static read-only Python command carries exact provider/native ID/folder as base64 data; validated Unicode transcript and unsafe identity refusal. |
+| SDTEST-2814 | `agent_remote_history::tests::history_rejects_foreign_snapshots_identity_gaps_and_oversized_messages` | SDUC-563 | Green | Foreign provider/session/folder/snapshot, invalid page boundaries, oversized entries and malformed responses refuse; stale-history errors retain a reload action. |
+| SDTEST-2815 | `crates/shelldeck-core/src/agent_remote_history_test.py` | SDUC-563 | Green | Executes the actual reader against temporary Claude/Codex/Jcode stores. Complete multipage Unicode and tool reconstruction, >8MiB streaming Jcode with trailing identity, append-compatible snapshots, mutation/foreign-cursor refusal, attachment markers, reasoning normalization, older-than-inventory lookup and symlink refusal. Run with `python3 crates/shelldeck-core/src/agent_remote_history_test.py`. |
+| SDTEST-2816 | `agent_session::tests::sdtest_2816_passive_remote_history_survives_restart_without_resume_authority` | SDUC-563 | Green | Passive origin/snapshot survive restart without executable resume authority; verified reconnect reuses the original local conversation; archive and changed execution context cannot transfer authority. |
+| SDTEST-2817 | `agent_session::storage::tests::sdtest_2817_invalid_remote_references_preserve_local_transcript` | SDUC-563 | Green | Invalid optional remote-history pointers are discarded without losing local messages or restoring remote execution authority. |
+
+| SDTEST-2823 | SDUC-564 | Native inventory continuation cursor validates at the wire and shell boundary | `agent_remote_sessions::tests` | Green |
+| SDTEST-2824 | SDUC-564 | 451 native sessions page without duplicates across active-file writes and newly arriving sessions; foreign cursor refused | `scripts/test-remote-session-discovery.py` | Green |
+| SDTEST-2825 | SDUC-564 | Large Jcode metadata after transcript is discoverable; nested metadata spoof and malformed files do not invent sessions | `scripts/test-remote-session-discovery.py` | Green |
+
+| SDTEST-2830 | SDUC-564 | Parallel streams and read transitions preserve pinned/creation navigation order | `agent_session::tests` | Green |
+
+| SDTEST-2836 | SDUC-564 | Version 1 draft migration and complete draft bundles retain context, queued text and private image snapshots | `agent_session::storage::tests::durable_draft_bundles_roundtrip_and_capture_private_images` | Green |
+| SDTEST-2837 | SDUC-564 | Saved image references reject escape, missing and changed content without granting arbitrary reads | `agent_session::storage::tests::restored_draft_images_reject_escape_missing_and_changed_content` | Green |

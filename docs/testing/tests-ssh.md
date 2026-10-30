@@ -203,3 +203,10 @@ Existing: **0 tests.**
 | SDTEST-2730 | `session::folder_shell::tests::folder_script_holds_exact_directory_until_resume_and_restores_modes` | SDUC-488, SDUC-491 | Green | Unix-only disposable fixture executes the production POSIX script with controlled shell/stty: quotes, newline and trailing spaces remain path data; a renamed folder remains cwd; no shell before resume, on wrong token, EOF or missing folder. Saved-mode restoration is checked through fixture stty; native QA covers a real PTY. No real SSH host or installed helper. |
 
 | SDTEST-2740 | `session::folder_shell::tests::folder_release_attempts_close_after_eof_failure_or_timeout` | SDUC-491 | Green | Bounded EOF failure/timeout still attempts Close, and a blocked Close has its own deadline. Release retains channel Drop custody until cleanup succeeds. Passed in the complete SSH library suite: 67 passed, one intentional live test ignored (2026-10-29). |
+
+## Script transport lifecycle audit — 2026-10-30
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2760 | `session::in_memory_ssh_tests::sdtest_2760_cancellable_exec_retains_status_after_eof` | SDUC-046, SDUC-047 | Green | In-memory SSH emits output EOF before success/failure exit status; both streaming entry points retain the actual result. Passed in the complete SSH library suite: 69 passed, one intentional live test ignored. |
+| SDTEST-2761 | `session::in_memory_ssh_tests::sdtest_2761_cancelled_exec_never_starts_while_waiting_for_handle` | SDUC-047 | Green | Cancellation while the shared handle is occupied returns without admitting a remote command. Passed in the complete SSH library suite: 69 passed, one intentional live test ignored. |

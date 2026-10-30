@@ -3,6 +3,10 @@ use super::*;
 use crate::attachment_annotator::AttachmentAnnotator;
 use crate::issue_attachments::{AttachmentDraft, AttachmentLightbox, LightboxItem};
 use shelldeck_core::agent_runtime::{AgentInputOptions, AgentReasoningEffort};
+use shelldeck_core::agent_session::storage::{
+    AgentDraftAttachment, AgentDraftBundle, AgentQueuedDraft, AGENT_DRAFT_SCHEMA_VERSION,
+    MAX_SAVED_AGENT_FOLLOWUPS,
+};
 use shelldeck_core::ai::{
     AiAttachment, AI_ATTACHMENT_IMAGE_MAX_BYTES, AI_ATTACHMENT_MAX_COUNT,
     AI_ATTACHMENT_TEXT_MAX_BYTES,
@@ -20,6 +24,9 @@ struct AgentAttachment {
     name: String,
     text: Option<String>,
     preview: Option<Arc<Image>>,
+    needs_review: bool,
+    managed: bool,
+    image_digest: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -79,6 +86,8 @@ fn queued_edit_image_context(
 pub(super) struct AgentComposerUi {
     attachments: HashMap<Uuid, Vec<AgentAttachment>>,
     queues: HashMap<Uuid, VecDeque<PendingRun>>,
+    paused_queues: HashMap<Uuid, VecDeque<AgentQueuedDraft>>,
+    image_digests: HashMap<PathBuf, String>,
     pub(super) effort: HashMap<Uuid, AgentReasoningEffort>,
     run_options: HashMap<Uuid, AgentInputOptions>,
     pub(super) errors: HashMap<Uuid, String>,
@@ -93,6 +102,8 @@ impl AgentComposerUi {
         Self {
             attachments: HashMap::new(),
             queues: HashMap::new(),
+            paused_queues: HashMap::new(),
+            image_digests: HashMap::new(),
             effort: HashMap::new(),
             run_options: HashMap::new(),
             errors: HashMap::new(),
@@ -113,6 +124,351 @@ impl Drop for AgentComposerUi {
 }
 
 impl AgentConsoleView {
+    fn attachment_descriptor(item: &AgentAttachment) -> AgentDraftAttachment {
+        AgentDraftAttachment {
+            path: item.path.clone(),
+            name: item.name.clone(),
+            text: item.text.clone(),
+            image_digest: item.image_digest.clone(),
+            capture_image: item.text.is_none() && !item.needs_review && !item.managed,
+        }
+    }
+
+    fn restored_attachment(item: &AgentDraftAttachment) -> AgentAttachment {
+        AgentAttachment {
+            path: item.path.clone(),
+            name: item.name.clone(),
+            text: item.text.clone(),
+            preview: None,
+            needs_review: item.text.is_none(),
+            managed: true,
+            image_digest: item.image_digest.clone(),
+        }
+    }
+
+    pub(super) fn promote_saved_images(
+        &mut self,
+        report: &shelldeck_core::agent_session::storage::AgentSessionSaveReport,
+    ) {
+        for items in self.composer_ui.attachments.values_mut() {
+            for item in items {
+                if item.text.is_none() && !item.needs_review && !item.managed {
+                    if report.unresolved_images.contains(&item.path) {
+                        item.path = PathBuf::new();
+                        item.needs_review = true;
+                        item.managed = true;
+                        item.preview = None;
+                    } else if let Some(path) = report.captured_images.get(&item.path) {
+                        item.path = path.clone();
+                        item.managed = true;
+                    }
+                }
+            }
+        }
+        for queue in self.composer_ui.queues.values_mut() {
+            for pending in queue {
+                for path in &mut pending.options.image_paths {
+                    if !report.unresolved_images.contains(path) {
+                        if let Some(captured) = report.captured_images.get(path) {
+                            *path = captured.clone();
+                        }
+                    }
+                }
+            }
+        }
+        for (id, queue) in &mut self.composer_ui.queues {
+            let mut keep = VecDeque::new();
+            while let Some(pending) = queue.pop_front() {
+                if pending
+                    .options
+                    .image_paths
+                    .iter()
+                    .any(|path| report.unresolved_images.contains(path))
+                {
+                    self.composer_ui
+                        .paused_queues
+                        .entry(*id)
+                        .or_default()
+                        .push_back(AgentQueuedDraft {
+                            context: pending.context,
+                            prompt: pending.prompt,
+                            effort: pending.options.reasoning_effort,
+                            attachments: pending
+                                .options
+                                .image_paths
+                                .iter()
+                                .map(|path| AgentDraftAttachment {
+                                    path: if report.unresolved_images.contains(path) {
+                                        PathBuf::new()
+                                    } else {
+                                        path.clone()
+                                    },
+                                    name: path
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .into(),
+                                    text: None,
+                                    image_digest: None,
+                                    capture_image: false,
+                                })
+                                .collect(),
+                        });
+                } else {
+                    keep.push_back(pending);
+                }
+            }
+            *queue = keep;
+        }
+    }
+
+    pub(super) fn saved_composer_bundle(
+        &self,
+        id: Uuid,
+        context: AgentExecutionContext,
+    ) -> AgentDraftBundle {
+        let mut followups = self
+            .composer_ui
+            .paused_queues
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        followups.extend(
+            self.composer_ui
+                .queues
+                .get(&id)
+                .into_iter()
+                .flatten()
+                .map(|pending| AgentQueuedDraft {
+                    context: pending.context.clone(),
+                    prompt: pending.prompt.clone(),
+                    effort: pending.options.reasoning_effort,
+                    attachments: pending
+                        .options
+                        .image_paths
+                        .iter()
+                        .map(|path| AgentDraftAttachment {
+                            path: path.clone(),
+                            name: path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into(),
+                            text: None,
+                            image_digest: self.composer_ui.image_digests.get(path).cloned(),
+                            capture_image: !self.draft_store().owns_draft_image_path(path),
+                        })
+                        .collect(),
+                }),
+        );
+        AgentDraftBundle {
+            version: AGENT_DRAFT_SCHEMA_VERSION,
+            context,
+            attachments: self
+                .composer_ui
+                .attachments
+                .get(&id)
+                .into_iter()
+                .flatten()
+                .map(Self::attachment_descriptor)
+                .collect(),
+            effort: self.composer_ui.effort.get(&id).copied(),
+            followups,
+        }
+    }
+
+    pub(super) fn restore_composer_bundle(&mut self, id: Uuid, bundle: &AgentDraftBundle) {
+        self.composer_ui.attachments.insert(
+            id,
+            bundle
+                .attachments
+                .iter()
+                .map(Self::restored_attachment)
+                .collect(),
+        );
+        if let Some(effort) = bundle.effort {
+            self.composer_ui.effort.insert(id, effort);
+        }
+        // Deliberately never put saved items back in the live completion-triggered queue.
+        self.composer_ui
+            .paused_queues
+            .insert(id, bundle.followups.clone().into());
+    }
+
+    fn has_unreviewed_attachments(&self, id: Uuid) -> bool {
+        self.composer_ui
+            .attachments
+            .get(&id)
+            .is_some_and(|items| items.iter().any(|item| item.needs_review))
+    }
+
+    fn review_saved_followup(&mut self, id: Uuid, index: usize, cx: &mut Context<Self>) {
+        if self.sessions.selected_id() != Some(id)
+            || self.composer_context_loading(id)
+            || self
+                .sessions
+                .get(id)
+                .is_none_or(|session| session.status.is_active())
+        {
+            return;
+        }
+        if self.has_unsent_draft(id, cx) {
+            self.composer_ui
+                .errors
+                .insert(id, t!("agents.composer.queue_edit_draft_busy").to_string());
+            cx.notify();
+            return;
+        }
+        let Some(saved) = self
+            .composer_ui
+            .paused_queues
+            .get(&id)
+            .and_then(|queue| queue.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        if self.context_from_controls(cx).ok().as_ref() != Some(&saved.context) {
+            self.composer_ui
+                .errors
+                .insert(id, t!("agents.composer.saved_context_changed").to_string());
+            cx.notify();
+            return;
+        }
+        self.composer_ui.attachments.insert(
+            id,
+            saved
+                .attachments
+                .iter()
+                .map(Self::restored_attachment)
+                .collect(),
+        );
+        match saved.effort {
+            Some(effort) => {
+                self.composer_ui.effort.insert(id, effort);
+            }
+            None => {
+                self.composer_ui.effort.remove(&id);
+            }
+        }
+        self.session_ui[&id]
+            .prompt
+            .update(cx, |state, cx| state.replace_content(saved.prompt, cx));
+        self.composer_ui
+            .paused_queues
+            .get_mut(&id)
+            .unwrap()
+            .remove(index);
+        self.composer_ui.errors.remove(&id);
+        self.schedule_library_save(cx);
+        cx.notify();
+    }
+
+    fn review_saved_attachments(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        if self.composer_context_loading(id) || self.sessions.selected_id() != Some(id) {
+            return;
+        }
+        let Some(context) = self.attachment_context(id, cx) else {
+            return;
+        };
+        let captured = self
+            .composer_ui
+            .attachments
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+        if !captured.iter().any(|item| item.needs_review) {
+            return;
+        }
+        let descriptors = captured
+            .iter()
+            .map(Self::attachment_descriptor)
+            .collect::<Vec<_>>();
+        let store = self.draft_store();
+        self.composer_ui.loading.insert(id);
+        cx.spawn(async move |this, cx| {
+            let restored = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut restored = captured;
+                    for item in &mut restored {
+                        if item.needs_review {
+                            let bytes = store
+                                .read_draft_image(&item.path)
+                                .map_err(|error| format!("{}: {error}", item.name))?;
+                            let draft = AttachmentDraft::from_bytes(item.name.clone(), bytes)?;
+                            item.preview = Some(draft.image);
+                            item.needs_review = false;
+                        }
+                    }
+                    Ok::<_, String>(restored)
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.composer_ui.loading.remove(&id);
+                if !view.admit_attachment_context(id, &context, cx)
+                    || view
+                        .composer_ui
+                        .attachments
+                        .get(&id)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .map(Self::attachment_descriptor)
+                                .collect::<Vec<_>>()
+                        })
+                        .as_ref()
+                        != Some(&descriptors)
+                {
+                    return;
+                }
+                match restored {
+                    Ok(items) => {
+                        view.composer_ui.attachments.insert(id, items);
+                        view.composer_ui.errors.remove(&id);
+                    }
+                    Err(error) => {
+                        view.composer_ui.errors.insert(
+                            id,
+                            format!("{} {error}", t!("agents.composer.saved_attachment_help")),
+                        );
+                    }
+                }
+                view.schedule_library_save(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(super) fn has_unsent_draft(&self, session_id: Uuid, cx: &App) -> bool {
+        self.session_ui
+            .get(&session_id)
+            .is_some_and(|ui| !ui.prompt.read(cx).content().trim().is_empty())
+            || self
+                .composer_ui
+                .attachments
+                .get(&session_id)
+                .is_some_and(|items| !items.is_empty())
+    }
+
+    pub(super) fn composer_context_loading(&self, id: Uuid) -> bool {
+        self.composer_ui.loading.contains(&id)
+    }
+
+    /// Copy user-authored draft context only; queues and run authority stay on the source.
+    pub(super) fn copy_composer_draft_context(&mut self, source: Uuid, target: Uuid) {
+        if let Some(items) = self.composer_ui.attachments.get(&source).cloned() {
+            self.composer_ui.attachments.insert(target, items);
+        }
+        if let Some(effort) = self.composer_ui.effort.get(&source).copied() {
+            self.composer_ui.effort.insert(target, effort);
+        }
+    }
+
     pub(super) fn prepare_composer_prompt(
         &self,
         session_id: Uuid,
@@ -121,6 +477,9 @@ impl AgentConsoleView {
     ) -> Result<String, String> {
         if self.composer_ui.loading.contains(&session_id) {
             return Err(t!("agents.composer.loading").to_string());
+        }
+        if self.has_unreviewed_attachments(session_id) {
+            return Err(t!("agents.composer.saved_attachment_help").to_string());
         }
         let mut expanded = prompt.to_string();
         for attachment in self
@@ -147,6 +506,9 @@ impl AgentConsoleView {
         &self,
         session_id: Uuid,
     ) -> Result<AgentInputOptions, String> {
+        if self.has_unreviewed_attachments(session_id) {
+            return Err(t!("agents.composer.saved_attachment_help").to_string());
+        }
         let image_paths: Vec<_> = self
             .composer_ui
             .attachments
@@ -200,8 +562,23 @@ impl AgentConsoleView {
             Ok(mut pending) => {
                 pending.source_draft = None;
                 let session_id = pending.session_id;
+                if let Some(items) = self.composer_ui.attachments.get(&session_id) {
+                    for item in items {
+                        if let Some(digest) = &item.image_digest {
+                            self.composer_ui
+                                .image_digests
+                                .entry(item.path.clone())
+                                .or_insert_with(|| digest.clone());
+                        }
+                    }
+                }
+                let paused_count = self
+                    .composer_ui
+                    .paused_queues
+                    .get(&session_id)
+                    .map_or(0, VecDeque::len);
                 let queue = self.composer_ui.queues.entry(session_id).or_default();
-                if queue.len() >= 8 {
+                if queue.len() + paused_count >= MAX_SAVED_AGENT_FOLLOWUPS {
                     self.composer_ui
                         .errors
                         .insert(session_id, t!("agents.composer.queue_full").to_string());
@@ -220,6 +597,7 @@ impl AgentConsoleView {
                 }
             }
         }
+        self.schedule_library_save(cx);
         cx.notify();
         true
     }
@@ -237,22 +615,92 @@ impl AgentConsoleView {
         let Some(pending) = self
             .composer_ui
             .queues
-            .get_mut(&session_id)
-            .and_then(VecDeque::pop_front)
+            .get(&session_id)
+            .and_then(|queue| queue.front())
         else {
             return;
         };
+        let captured = QueuedEditSnapshot::from_pending(pending);
         let entity = cx.entity().downgrade();
         cx.defer(move |cx| {
             let _ = entity.update(cx, move |view, cx| {
-                if pending.context.access == AgentAccessMode::ReadOnly {
-                    view.start_pending(pending, cx);
-                } else {
-                    view.pending_confirm = Some(pending);
-                    cx.notify();
-                }
+                view.admit_queued_message(session_id, &captured, cx)
             });
         });
+    }
+
+    fn admit_queued_message(
+        &mut self,
+        session_id: Uuid,
+        captured: &QueuedEditSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        // Completion can race navigation, another turn, or queue edits.
+        // Retain the original queued input until admission succeeds.
+        if !self
+            .sessions
+            .get(session_id)
+            .is_some_and(|session| session.status == AgentSessionStatus::Completed)
+            || self.pending_confirm.is_some()
+            || self.composer_ui.loading.contains(&session_id)
+            || !self
+                .composer_ui
+                .queues
+                .get(&session_id)
+                .and_then(|queue| queue.front())
+                .is_some_and(|front| captured.matches(front))
+        {
+            return;
+        }
+        if self.attachment_context(session_id, cx).as_ref() != Some(&captured.context) {
+            self.composer_ui.errors.insert(
+                session_id,
+                t!("agents.composer.queue_edit_context_changed").to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let pending = PendingRun {
+            session_id,
+            context: captured.context.clone(),
+            prompt: captured.prompt.clone(),
+            options: captured.options.clone(),
+            source_draft: None,
+        };
+        if pending.context.access == AgentAccessMode::ReadOnly {
+            self.start_pending(pending, cx);
+            if !self
+                .sessions
+                .get(session_id)
+                .is_some_and(|session| session.status.is_active())
+            {
+                return;
+            }
+        } else {
+            self.pending_confirm = Some(pending);
+        }
+        cx.notify();
+    }
+
+    /// Called only after the exact queued request passes UI admission. Until
+    /// then the queue owns its text/options, including while confirmation is open.
+    pub(super) fn consume_admitted_queued(&mut self, request: &AgentRunRequest) {
+        let Some(session_id) = self.run_sessions.get(&request.id).copied() else {
+            return;
+        };
+        let Some(options) = self.composer_ui.run_options.get(&request.id) else {
+            return;
+        };
+        let Some(queue) = self.composer_ui.queues.get_mut(&session_id) else {
+            return;
+        };
+        if queue.front().is_some_and(|pending| {
+            pending.context == AgentExecutionContext::from_request(request)
+                && pending.prompt == request.prompt
+                && pending.options == *options
+        }) {
+            queue.pop_front();
+        }
     }
 
     fn edit_queued_message(&mut self, session_id: Uuid, index: usize, cx: &mut Context<Self>) {
@@ -367,6 +815,40 @@ impl AgentConsoleView {
         .detach();
     }
 
+    fn attachment_context(
+        &self,
+        session_id: Uuid,
+        cx: &Context<Self>,
+    ) -> Option<AgentExecutionContext> {
+        let session = self.sessions.get(session_id)?;
+        Some(
+            if self.sessions.selected_id() == Some(session_id) && !session.status.is_active() {
+                self.displayed_context(cx)
+            } else {
+                session.context.clone()
+            },
+        )
+    }
+
+    fn admit_attachment_context(
+        &mut self,
+        session_id: Uuid,
+        expected: &AgentExecutionContext,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.attachment_context(session_id, cx).as_ref() == Some(expected) {
+            return true;
+        }
+        if self.sessions.get(session_id).is_some() {
+            self.composer_ui.errors.insert(
+                session_id,
+                t!("agents.composer.attachment_context_changed").to_string(),
+            );
+            cx.notify();
+        }
+        false
+    }
+
     pub(super) fn pick_agent_attachment(
         &mut self,
         scoped: bool,
@@ -374,6 +856,9 @@ impl AgentConsoleView {
         cx: &mut Context<Self>,
     ) {
         let Some(session_id) = self.sessions.selected_id() else {
+            return;
+        };
+        let Some(expected) = self.attachment_context(session_id, cx) else {
             return;
         };
         let root = self
@@ -400,7 +885,13 @@ impl AgentConsoleView {
                 return;
             };
             let _ = this.update(cx, |view, cx| {
-                view.import_agent_paths(session_id, paths, if scoped { root } else { None }, cx)
+                view.import_agent_paths_at_context(
+                    session_id,
+                    paths,
+                    if scoped { root } else { None },
+                    expected,
+                    cx,
+                )
             });
         })
         .detach();
@@ -413,6 +904,23 @@ impl AgentConsoleView {
         scope: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) {
+        let Some(expected) = self.attachment_context(session_id, cx) else {
+            return;
+        };
+        self.import_agent_paths_at_context(session_id, paths, scope, expected, cx);
+    }
+
+    fn import_agent_paths_at_context(
+        &mut self,
+        session_id: Uuid,
+        paths: Vec<PathBuf>,
+        scope: Option<PathBuf>,
+        expected: AgentExecutionContext,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.admit_attachment_context(session_id, &expected, cx) {
+            return;
+        }
         if self.composer_ui.loading.contains(&session_id) {
             return;
         }
@@ -430,8 +938,8 @@ impl AgentConsoleView {
             cx.notify();
             return;
         }
-        let allow_images =
-            self.provider.capabilities().image_attachments && self.selected_connection.is_none();
+        let allow_images = expected.provider.capabilities().image_attachments
+            && expected.target == AgentTarget::Local;
         self.composer_ui.loading.insert(session_id);
         cx.spawn(async move |this, cx| {
             let loaded = cx
@@ -440,6 +948,9 @@ impl AgentConsoleView {
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.composer_ui.loading.remove(&session_id);
+                if !view.admit_attachment_context(session_id, &expected, cx) {
+                    return;
+                }
                 match loaded {
                     Ok(attachments) => {
                         view.composer_ui
@@ -453,6 +964,7 @@ impl AgentConsoleView {
                         view.composer_ui.errors.insert(session_id, error);
                     }
                 }
+                view.schedule_library_save(cx);
                 cx.notify();
             });
         })
@@ -521,9 +1033,13 @@ impl AgentConsoleView {
                             &text,
                         )),
                         preview: None,
+                        needs_review: false,
+                        managed: false,
+                        image_digest: None,
                     });
             }
         }
+        self.schedule_library_save(cx);
         cx.notify();
     }
 
@@ -533,6 +1049,19 @@ impl AgentConsoleView {
         draft: AttachmentDraft,
         cx: &mut Context<Self>,
     ) {
+        let Some(expected) = self.attachment_context(session_id, cx) else {
+            return;
+        };
+        if !expected.provider.capabilities().image_attachments
+            || expected.target != AgentTarget::Local
+        {
+            self.composer_ui.errors.insert(
+                session_id,
+                t!("agents.composer.image_unsupported").to_string(),
+            );
+            cx.notify();
+            return;
+        }
         if self.composer_ui.loading.contains(&session_id) {
             self.composer_ui
                 .errors
@@ -571,13 +1100,22 @@ impl AgentConsoleView {
                     file.write_all(draft.bytes.as_slice())
                         .map_err(|e| e.to_string())?;
                     let (_, path) = file.keep().map_err(|e| e.to_string())?;
-                    Ok::<_, String>((path, draft.filename, draft.image))
+                    let digest = shelldeck_core::agent_session::storage::draft_image_digest(
+                        draft.bytes.as_slice(),
+                    );
+                    Ok::<_, String>((path, draft.filename, draft.image, digest))
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.composer_ui.loading.remove(&session_id);
+                if !view.admit_attachment_context(session_id, &expected, cx) {
+                    if let Ok((path, _, _, _)) = saved {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    return;
+                }
                 match saved {
-                    Ok((path, name, preview)) => {
+                    Ok((path, name, preview, digest)) => {
                         view.composer_ui.temporary_paths.push(path.clone());
                         view.composer_ui
                             .attachments
@@ -588,12 +1126,16 @@ impl AgentConsoleView {
                                 name,
                                 text: None,
                                 preview: Some(preview),
+                                needs_review: false,
+                                managed: false,
+                                image_digest: Some(digest),
                             });
                     }
                     Err(error) => {
                         view.composer_ui.errors.insert(session_id, error);
                     }
                 }
+                view.schedule_library_save(cx);
                 cx.notify();
             });
         })
@@ -604,6 +1146,18 @@ impl AgentConsoleView {
         let Some(id) = self.sessions.selected_id() else {
             return;
         };
+        let Some(expected) = self.attachment_context(id, cx) else {
+            return;
+        };
+        if !expected.provider.capabilities().image_attachments
+            || expected.target != AgentTarget::Local
+        {
+            self.composer_ui
+                .errors
+                .insert(id, t!("agents.composer.image_unsupported").to_string());
+            cx.notify();
+            return;
+        }
         if self.composer_ui.loading.contains(&id) {
             return;
         }
@@ -615,6 +1169,9 @@ impl AgentConsoleView {
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.composer_ui.loading.remove(&id);
+                if !view.admit_attachment_context(id, &expected, cx) {
+                    return;
+                }
                 match captured {
                     Ok(draft) => {
                         let cancel = cx.entity().downgrade();
@@ -634,7 +1191,9 @@ impl AgentConsoleView {
                                     if let Some(parent) = apply.upgrade() {
                                         parent.update(cx, |view, cx| {
                                             view.composer_ui.annotator = None;
-                                            view.stage_agent_image(id, draft, cx);
+                                            if view.admit_attachment_context(id, &expected, cx) {
+                                                view.stage_agent_image(id, draft, cx);
+                                            }
                                         });
                                     }
                                 },
@@ -736,9 +1295,19 @@ impl AgentConsoleView {
                 .get(&id)
                 .is_some_and(|ui| ui.run_id.is_some());
         let text = prompt.read(cx).content();
-        let ready = !text.trim().is_empty()
+        let ready = !self.has_unreviewed_attachments(id)
+            && self
+                .validate_native_context_transition(id, &self.displayed_context(cx))
+                .is_ok()
+            && !self
+                .native_history
+                .get(&id)
+                .is_some_and(|state| state.fresh_view)
+            && !text.trim().is_empty()
             && !self.composer_ui.loading.contains(&id)
-            && (!missing_target || answering);
+            && ((!missing_target
+                && !Self::native_context_needs_reconnect(session, &self.displayed_context(cx)))
+                || answering);
         let mut composer = Composer::new(format!("agent-composer-{id}"), &prompt)
             .placeholder(
                 t!(if session.status.is_active() {
@@ -748,7 +1317,7 @@ impl AgentConsoleView {
                 })
                 .to_string(),
             )
-            .min_rows(3)
+            .min_rows(2)
             .max_rows(8)
             .commit_enabled(ready)
             .on_commit(move |cx| parent.update(cx, |view, cx| view.submit(cx)))
@@ -782,6 +1351,7 @@ impl AgentConsoleView {
                                 items.remove(index);
                             }
                         }
+                        this.schedule_library_save(cx);
                         cx.notify();
                     })),
             );
@@ -865,10 +1435,134 @@ impl AgentConsoleView {
             );
         }
         let mut result = div().w_full().flex().flex_col().gap(px(6.0));
+        if let Some(change) = self.render_native_context_change(session, cx) {
+            result = result.child(change);
+        }
+        if self.has_unreviewed_attachments(id) {
+            result =
+                result.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .whitespace_normal()
+                                .child(t!("agents.composer.saved_attachment_help").to_string()),
+                        )
+                        .child(
+                            Button::new(
+                                "check-saved-attachments",
+                                t!("agents.composer.check_saved_attachments").to_string(),
+                            )
+                            .size(ButtonSize::Sm)
+                            .disabled(self.composer_context_loading(id))
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| this.review_saved_attachments(id, cx),
+                            )),
+                        ),
+                );
+        }
+        let has_queued = self
+            .composer_ui
+            .paused_queues
+            .get(&id)
+            .is_some_and(|queue| !queue.is_empty())
+            || self
+                .composer_ui
+                .queues
+                .get(&id)
+                .is_some_and(|queue| !queue.is_empty());
+        // Queue controls have their own bounded list; the transcript remains the
+        // sole conversation scroll owner and the composer keeps its usable height.
+        let mut queued_controls = div()
+            .id(("agent-queued-controls", uuid_key(id)))
+            .w_full()
+            .min_w_0()
+            .max_h(px(120.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(6.0));
+        if let Some(queue) = self.composer_ui.paused_queues.get(&id) {
+            if !queue.is_empty() {
+                queued_controls = queued_controls.child(
+                    div()
+                        .text_size(px(11.0))
+                        .whitespace_normal()
+                        .child(t!("agents.composer.saved_followups_paused").to_string()),
+                );
+            }
+            for (index, saved) in queue.iter().enumerate() {
+                queued_controls = queued_controls.child(
+                    div()
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_size(px(11.0))
+                                .child(saved.prompt.lines().next().unwrap_or_default().to_string()),
+                        )
+                        .child(
+                            Button::new(("copy-saved-followup", index), "")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Icon)
+                                .icon(IconSource::from("copy"))
+                                .tooltip(t!("agents.composer.copy").to_string())
+                                .on_click({
+                                    let text = saved.prompt.clone();
+                                    move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            text.clone(),
+                                        ))
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new(
+                                ("review-saved-followup", index),
+                                t!("agents.composer.review_saved_followup").to_string(),
+                            )
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .disabled(
+                                session.status.is_active() || self.composer_context_loading(id),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| this.review_saved_followup(id, index, cx),
+                            )),
+                        )
+                        .child(
+                            Button::new(("remove-saved-followup", index), "")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Icon)
+                                .icon(IconSource::from("x"))
+                                .tooltip(t!("agents.composer.remove_followup").to_string())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(queue) = this.composer_ui.paused_queues.get_mut(&id)
+                                    {
+                                        queue.remove(index);
+                                    }
+                                    this.schedule_library_save(cx);
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            }
+        }
         if let Some(queue) = self.composer_ui.queues.get(&id) {
             for (index, pending) in queue.iter().enumerate() {
-                result = result.child(
+                queued_controls = queued_controls.child(
                     div()
+                        .flex_shrink_0()
                         .flex()
                         .items_center()
                         .gap(px(8.0))
@@ -898,18 +1592,24 @@ impl AgentConsoleView {
                             )),
                         )
                         .child(
-                            Button::new(("agent-queue-remove", index), "×")
+                            Button::new(("agent-queue-remove", index), "")
                                 .variant(ButtonVariant::Ghost)
-                                .size(ButtonSize::Sm)
+                                .size(ButtonSize::Icon)
+                                .icon(IconSource::from("x"))
+                                .tooltip(t!("agents.composer.remove_followup").to_string())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if let Some(queue) = this.composer_ui.queues.get_mut(&id) {
                                         queue.remove(index);
                                     }
+                                    this.schedule_library_save(cx);
                                     cx.notify();
                                 })),
                         ),
                 );
             }
+        }
+        if has_queued {
+            result = result.child(queued_controls);
         }
         if let Some(error) = self.composer_ui.errors.get(&id) {
             result = result.child(
@@ -1080,12 +1780,18 @@ fn load_agent_attachments(
             if meta.len() > MAX_IMAGE_BYTES {
                 return Err(t!("agents.composer.attachment_too_large").to_string());
             }
+            let image_digest = Some(shelldeck_core::agent_session::storage::draft_image_digest(
+                &bytes,
+            ));
             let draft = AttachmentDraft::from_bytes(name.clone(), bytes)?;
             result.push(AgentAttachment {
                 path,
                 name,
                 text: None,
                 preview: Some(draft.image),
+                needs_review: false,
+                managed: false,
+                image_digest,
             });
         } else {
             if meta.len() > MAX_TEXT_ATTACHMENT_BYTES {
@@ -1101,6 +1807,9 @@ fn load_agent_attachments(
                     &attachment.payload,
                 )),
                 preview: None,
+                needs_review: false,
+                managed: false,
+                image_digest: None,
             });
         }
     }
@@ -1111,6 +1820,173 @@ fn load_agent_attachments(
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+
+    // SDTEST-2838 / SDUC-564 — saved queues never drain automatically; recovery
+    // preserves current drafts, blocks unresolved images, and retains exact context.
+    #[test]
+    fn saved_followups_require_review_and_missing_images_block_send() {
+        let mut app = gpui::TestAppContext::single();
+        let entity = app.new(AgentConsoleView::new);
+        entity.update(&mut app, |view, cx| {
+            view.library = AgentLibraryUi::new(cx);
+            let id = view.sessions.selected_id().unwrap();
+            let context = view.sessions.get(id).unwrap().context.clone();
+            let saved = AgentQueuedDraft {
+                context: context.clone(),
+                prompt: "Saved follow-up".into(),
+                effort: Some(AgentReasoningEffort::High),
+                attachments: vec![AgentDraftAttachment {
+                    path: PathBuf::from("/missing/saved.image"),
+                    name: "Screenshot.png".into(),
+                    text: None,
+                    image_digest: None,
+                    capture_image: false,
+                }],
+            };
+            let bundle = AgentDraftBundle {
+                version: AGENT_DRAFT_SCHEMA_VERSION,
+                context: context.clone(),
+                attachments: vec![],
+                effort: None,
+                followups: vec![saved],
+            };
+            view.restore_composer_bundle(id, &bundle);
+            view.sessions.get_mut(id).unwrap().status = AgentSessionStatus::Completed;
+            view.drain_queued(id, cx);
+            assert!(view.run_sessions.is_empty());
+            assert!(view
+                .composer_ui
+                .queues
+                .get(&id)
+                .is_none_or(VecDeque::is_empty));
+            assert_eq!(view.composer_ui.paused_queues[&id].len(), 1);
+            view.session_ui[&id]
+                .prompt
+                .update(cx, |state, cx| state.replace_content("Keep new typing", cx));
+            view.review_saved_followup(id, 0, cx);
+            assert_eq!(
+                view.session_ui[&id].prompt.read(cx).content(),
+                "Keep new typing"
+            );
+            assert_eq!(view.composer_ui.paused_queues[&id].len(), 1);
+            view.session_ui[&id]
+                .prompt
+                .update(cx, |state, cx| state.reset(cx));
+            view.change_draft_access(AgentAccessMode::FullAccess, cx);
+            view.review_saved_followup(id, 0, cx);
+            assert_eq!(view.composer_ui.paused_queues[&id].len(), 1);
+            view.apply_selected_context(cx);
+            view.review_saved_followup(id, 0, cx);
+            assert!(view.composer_ui.paused_queues[&id].is_empty());
+            assert_eq!(
+                view.session_ui[&id].prompt.read(cx).content(),
+                "Saved follow-up"
+            );
+            assert!(view
+                .prepare_composer_prompt(id, "Saved follow-up", cx)
+                .is_err());
+            assert!(view.composer_input_options(id).is_err());
+            assert!(view.run_sessions.is_empty());
+            // Remove is an explicit choice to send without the unavailable image.
+            view.composer_ui.attachments.remove(&id);
+            assert!(view
+                .prepare_composer_prompt(id, "Saved follow-up", cx)
+                .is_ok());
+            // Capture failure also pauses live followups rather than silently dropping images.
+            let path = PathBuf::from("/missing/live.png");
+            view.composer_ui
+                .queues
+                .entry(id)
+                .or_default()
+                .push_back(PendingRun {
+                    session_id: id,
+                    context,
+                    prompt: "Keep queued image".into(),
+                    source_draft: None,
+                    options: AgentInputOptions {
+                        image_paths: vec![path.clone()],
+                        ..Default::default()
+                    },
+                });
+            let mut report =
+                shelldeck_core::agent_session::storage::AgentSessionSaveReport::default();
+            report.unresolved_images.insert(path);
+            view.promote_saved_images(&report);
+            assert!(view.composer_ui.queues[&id].is_empty());
+            assert_eq!(
+                view.composer_ui.paused_queues[&id][0].prompt,
+                "Keep queued image"
+            );
+            assert!(view.run_sessions.is_empty());
+        });
+    }
+
+    // SDTEST-2841 / SDUC-564 — reusing a path for a different image must not
+    // rewrite an earlier queued approval; both drafts remain reviewable.
+    #[test]
+    fn queued_image_digest_preserves_first_approval_for_reused_path() {
+        use shelldeck_core::agent_session::storage::{
+            draft_image_digest, AgentSessionSnapshot, AgentSessionStore,
+        };
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("changing.png");
+        std::fs::write(&path, b"image B").unwrap();
+        let store = AgentSessionStore::new(temporary.path().join("sessions.json"));
+        let mut app = gpui::TestAppContext::single();
+        let entity = app.new(AgentConsoleView::new);
+        entity.update(&mut app, |view, cx| {
+            view.library = AgentLibraryUi::new(cx);
+            let mut context = view.sessions.selected().unwrap().context.clone();
+            context.provider = AgentProvider::Codex;
+            let id = view
+                .create_session("Two image follow-ups", context.clone(), cx)
+                .unwrap();
+            view.sessions.get_mut(id).unwrap().status = AgentSessionStatus::Running;
+            for (prompt, bytes) in [("First image", b"image A"), ("Second image", b"image B")] {
+                view.composer_ui.attachments.insert(
+                    id,
+                    vec![AgentAttachment {
+                        path: path.clone(),
+                        name: "changing.png".into(),
+                        text: None,
+                        preview: None,
+                        needs_review: false,
+                        managed: false,
+                        image_digest: Some(draft_image_digest(bytes)),
+                    }],
+                );
+                view.session_ui[&id]
+                    .prompt
+                    .update(cx, |state, cx| state.replace_content(prompt, cx));
+                assert!(view.queue_active_draft(cx));
+            }
+            assert_eq!(view.composer_ui.queues[&id].len(), 2);
+            assert_eq!(
+                view.composer_ui.image_digests[&path],
+                draft_image_digest(b"image A")
+            );
+            let mut snapshot = AgentSessionSnapshot {
+                collection: view.sessions.clone(),
+                ..Default::default()
+            };
+            snapshot
+                .draft_bundles
+                .insert(id, view.saved_composer_bundle(id, context));
+            let report = store.save_with_drafts(&snapshot).unwrap();
+            assert!(report.unresolved_images.contains(&path));
+            assert!(report.captured_images.is_empty());
+            view.promote_saved_images(&report);
+            assert!(view.composer_ui.queues[&id].is_empty());
+            assert_eq!(
+                view.composer_ui.paused_queues[&id]
+                    .iter()
+                    .map(|draft| draft.prompt.as_str())
+                    .collect::<Vec<_>>(),
+                ["First image", "Second image"]
+            );
+            assert!(view.run_sessions.is_empty());
+        });
+    }
 
     fn queued_message() -> PendingRun {
         PendingRun {
@@ -1138,6 +2014,9 @@ mod tests {
             name: "screenshot.png".into(),
             text: None,
             preview: None,
+            needs_review: false,
+            managed: false,
+            image_digest: None,
         }
     }
 
@@ -1195,5 +2074,144 @@ mod tests {
         queued.context = snapshot.context.clone();
         queued.prompt.push_str("changed while loading");
         assert!(!snapshot.matches(&queued));
+    }
+
+    // SDTEST-2827 / SDUC-564
+    #[test]
+    fn attachment_intake_keeps_original_session_and_rejects_changed_context() {
+        let mut app = gpui::TestAppContext::single();
+        let view = app.update(|cx| cx.new(AgentConsoleView::new));
+        view.update(&mut app, |view, cx| {
+            let first = view.sessions.selected_id().unwrap();
+            let expected = view.attachment_context(first, cx).unwrap();
+            let second = view.create_session("Other", expected.clone(), cx).unwrap();
+            // A delayed file chooser result still belongs to the old draft.
+            assert!(view.admit_attachment_context(first, &expected, cx));
+            assert_eq!(view.sessions.selected_id(), Some(second));
+            let mut changed = expected.clone();
+            changed.provider = if changed.provider == AgentProvider::Codex {
+                AgentProvider::Claude
+            } else {
+                AgentProvider::Codex
+            };
+            view.sessions
+                .get_mut(first)
+                .unwrap()
+                .set_context(changed, 1)
+                .unwrap();
+            assert!(!view.admit_attachment_context(first, &expected, cx));
+            assert!(view.composer_ui.errors.contains_key(&first));
+            assert!(!view.composer_ui.errors.contains_key(&second));
+            view.sessions.remove(first).unwrap();
+            view.composer_ui.errors.remove(&first);
+            assert!(!view.admit_attachment_context(first, &expected, cx));
+            assert!(!view.composer_ui.errors.contains_key(&first));
+        });
+    }
+
+    // SDTEST-2828 / SDUC-564
+    #[test]
+    fn queued_followup_survives_admission_failure_and_does_not_duplicate_dispatch() {
+        let mut app = gpui::TestAppContext::single();
+        let view = app.update(|cx| cx.new(AgentConsoleView::new));
+        view.update(&mut app, |view, cx| {
+            let connection_id = Uuid::new_v4();
+            let context = AgentExecutionContext {
+                provider: AgentProvider::Codex,
+                target: AgentTarget::Ssh {
+                    connection_id,
+                    connection_label: "remote".into(),
+                },
+                access: AgentAccessMode::ReadOnly,
+                workdir: "/srv/project".into(),
+                model: None,
+            };
+            let session_id = view.create_session("Queued", context.clone(), cx).unwrap();
+            view.sessions.get_mut(session_id).unwrap().status = AgentSessionStatus::Completed;
+            let queued = PendingRun {
+                session_id,
+                context: context.clone(),
+                prompt: "Preserve this follow-up".into(),
+                options: AgentInputOptions::default(),
+                source_draft: None,
+            };
+            let snapshot = QueuedEditSnapshot::from_pending(&queued);
+            view.composer_ui
+                .queues
+                .entry(session_id)
+                .or_default()
+                .push_back(queued);
+            // No saved SSH target: admission must not eat the queued text/options.
+            view.admit_queued_message(session_id, &snapshot, cx);
+            assert!(view.composer_ui.queues[&session_id]
+                .front()
+                .is_some_and(|pending| snapshot.matches(pending)));
+            assert!(view.run_sessions.is_empty());
+            view.set_connections(
+                vec![AgentConnectionOption {
+                    id: connection_id,
+                    label: "remote".into(),
+                    host: "fixture.invalid".into(),
+                }],
+                cx,
+            );
+            view.apply_selected_context(cx);
+            view.admit_queued_message(session_id, &snapshot, cx);
+            assert!(view.composer_ui.queues[&session_id].is_empty());
+            assert_eq!(view.run_sessions.len(), 1);
+            view.admit_queued_message(session_id, &snapshot, cx);
+            assert_eq!(view.run_sessions.len(), 1);
+            assert_eq!(view.sessions.get(session_id).unwrap().messages.len(), 1);
+
+            // Write-enabled follow-ups remain queued through confirmation too.
+            view.sessions
+                .finish(session_id, AgentSessionStatus::Completed, 4)
+                .unwrap();
+            let writable = AgentExecutionContext {
+                access: AgentAccessMode::WorkspaceWrite,
+                ..context
+            };
+            view.sessions
+                .get_mut(session_id)
+                .unwrap()
+                .set_context(writable.clone(), 5)
+                .unwrap();
+            view.apply_selected_context(cx);
+            let queued = PendingRun {
+                session_id,
+                context: writable,
+                prompt: "Confirmed change".into(),
+                options: AgentInputOptions::default(),
+                source_draft: None,
+            };
+            let snapshot = QueuedEditSnapshot::from_pending(&queued);
+            view.composer_ui
+                .queues
+                .get_mut(&session_id)
+                .unwrap()
+                .push_back(queued);
+            view.admit_queued_message(session_id, &snapshot, cx);
+            assert!(view.pending_confirm.is_some());
+            assert_eq!(view.composer_ui.queues[&session_id].len(), 1);
+            view.set_connections(Vec::new(), cx);
+            let confirmed = view.pending_confirm.take().unwrap();
+            view.start_pending(confirmed, cx);
+            assert_eq!(view.composer_ui.queues[&session_id].len(), 1);
+            assert_eq!(view.run_sessions.len(), 1);
+            view.set_connections(
+                vec![AgentConnectionOption {
+                    id: connection_id,
+                    label: "remote".into(),
+                    host: "fixture.invalid".into(),
+                }],
+                cx,
+            );
+            view.apply_selected_context(cx);
+            view.admit_queued_message(session_id, &snapshot, cx);
+            let confirmed = view.pending_confirm.take().unwrap();
+            view.start_pending(confirmed, cx);
+            assert!(view.composer_ui.queues[&session_id].is_empty());
+            assert_eq!(view.run_sessions.len(), 2);
+        });
     }
 }

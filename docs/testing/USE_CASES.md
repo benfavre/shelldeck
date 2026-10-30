@@ -264,13 +264,16 @@ the server closes the channel.
 ### SDUC-046 — Streaming execution
 
 `SshSession::exec_streaming` yields stdout / stderr chunks as they
-arrive without buffering the whole output.
+arrive without buffering the whole output. Output EOF does not discard a later
+exit status before channel closure.
 
 ### SDUC-047 — Cancellable execution
 
 `SshSession::exec_cancellable` cooperates with a cancellation token so
 a long-running remote command is interrupted client-side and the
-remote process is signalled where possible.
+remote process is signalled where possible. Cancellation while waiting for the
+session handle prevents command admission. Once admitted, cancellation requests
+TERM and closes the exact channel; remote termination remains server-owned.
 
 ### SDUC-048 — Legacy connect pool (not wired)
 
@@ -380,6 +383,17 @@ categories. `to_script()` produces a valid `Script`.
 text; `finish(exit_code)` transitions to done; `succeeded()` matches
 the exit code; `duration_secs()` is `None` while running and
 monotonic-positive after finish.
+
+Script completion and streamed output belong to an execution UUID, so cancelling
+and restarting the same script cannot let the old poller overwrite the new run.
+Only a confirmed zero remote exit status produces a success notification; missing
+status or connection failure is reported as failure. Failure to create the worker
+settles that execution instead of leaving it running; stopping during SSH connection
+setup drops the pending connection before command execution. Local scripts reuse
+the owned Unix process-group / Windows Job Object supervisor: cancellation and
+parent completion end descendants before joining inherited output pipes. Pollers
+observe completion before their final output drain, retaining output queued at the
+completion boundary.
 
 ---
 
@@ -565,7 +579,9 @@ timestamp, port-forward customisations, tag additions) are preserved.
 ### SDUC-103 — Merge: removes vanished cloud profiles
 
 A cloud profile that stops appearing in the payload is deleted from
-the local store on the next sync.
+the local store on the next sync. The payload must explicitly contain its
+`connections` collection; omitted/null collections are malformed responses,
+not an authoritative empty directory.
 
 ### SDUC-104bis — Connection accessors (display_name / connection_string)
 
@@ -674,7 +690,8 @@ UI thread.
 
 `login_password(email, password)` POSTs `{"action":"login", …}`, returns
 `AccountInfo` with `token`, `email`, and `is_superadmin` (defaulted to
-false if missing).
+false if missing). Authentication requests refuse HTTP redirects, including
+307/308 redirects that would otherwise replay the password body.
 
 ### SDUC-141 — Whoami
 
@@ -766,7 +783,8 @@ profiles merged.
 ### SDUC-154 — Startup account check refreshes silently
 
 `check_account_on_startup` runs whoami in the background and refreshes the
-Workspace and Settings identity together. A current 401 from whoami, sync,
+Workspace and Settings identity together. Server capabilities and roles always
+replace the prior values, even when display name/email are omitted. A current 401 from whoami, sync,
 sites, requests or Support invalidates credentials, clears account state and
 stops authenticated polls. A 403 remains a permission failure; transient
 network/server failures retain the session for retry. Old-session responses
@@ -1234,8 +1252,9 @@ composer. The shared composer retains one in-memory draft per surface and
 record id: text, pending attachments, attachment-panel state, and the Ticket
 reply/internal-note destination survive list navigation, section switches, and
 mode switches without leaking into another Ticket or Request. Only a successful
-send clears that record's draft; failures preserve it, and logout clears the
-whole Support draft session.
+send clears that record's draft only if its text, attachments and reply/note
+mode still match the submitted content. Edits made while sending and failed
+sends preserve the draft; logout clears the whole Support draft session.
 
 ### SDUC-459 — A request thread preserves every semantic message state
 
@@ -1416,8 +1435,9 @@ must agree).
 
 ### SDUC-281 — Poll cadence hourly
 
-`AutoUpdater::start_polling` fires the first check on start and then
-every hour; user-triggered `check_for_update` is separate.
+`AutoUpdater::start_polling` fires the first check after a 10-second startup delay and then
+every hour. Checks and installation are serialized; an installed update remains
+pending restart rather than downloading the same version again.
 
 ### SDUC-282 — Release info parses
 
@@ -1428,7 +1448,9 @@ tag, per-platform URL + SHA-256).
 
 `installer::download_and_verify` streams the archive, computes SHA-256,
 compares against the expected hash, and Errs on mismatch (never
-installs an unverified binary).
+installs an unverified binary). Signed manifests must target the current platform
+and declare a positive size. Requests have connection/total deadlines and any
+failed stream removes its partial archive while preserving the prior destination.
 
 ### SDUC-284 — Install replaces binary safely per platform
 
@@ -2337,8 +2359,11 @@ configuration are present. Commands route through the same handler the command
 palette and the keyboard shortcuts use. The row can be hidden from View → Menu
 Bar; the preference persists without changing the content height. In Dev mode,
 a sidebar toggle sits before the menus and follows the same Ctrl+B action.
-On narrow windows the menu titles scroll horizontally, leaving window controls
-available; dropdowns remain anchored and bounded to the viewport.
+Below 1000 logical pixels (including interface scale), one Menu trigger exposes
+the same authorized commands grouped by their original menus. Its dropdown
+scrolls within the viewport, preserving shortcuts and toggles without clipping
+Terminal or Help behind account/window controls. Wider windows keep the named
+menu row. Mode chip and palette labels follow the selected interface language.
 
 ### SDUC-443 — The Dev sidebar is an activity rail plus a contextual panel
 
@@ -2405,7 +2430,8 @@ A global shortcut whose registration is refused reports it instead of looking
 like a shortcut that merely "rarely works": once as a toast on the transition
 into failure, and durably as a status badge next to the combination in
 Settings. Repeat publications of the same failure stay silent, and the two
-shortcuts report independently.
+shortcuts report independently. A missing Wayland Global Shortcuts portal is a stable
+desktop capability: it remains explained in Settings without duplicate startup toasts.
 
 The reason reaches the user in their own language when it is one ShellDeck can
 explain. A Wayland session whose portal stack does not implement
@@ -3286,6 +3312,8 @@ Existing local and plain SSH terminals retain their native split behavior.
 Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
+
+- **2026-10-30** — Amended SDUC-046/047/067: retain streaming exit status after EOF, cancel queued/connecting execution, bind script UI updates to execution UUID, and report missing status/start failure truthfully (SDTEST-2760–2769), including local owned-process-tree cleanup.
 
 - **2026-10-29** — SDUC-551: searchable project chooser, explicit agent/permissions/model controls, retained model search, reasoning labels and a shared context-intake menu. Draft choices survive project navigation. Native coverage remains tracked in SDTEST-2480.
 - **2026-10-29** — SDUC-558: the full Dev shell also lands on Agents after startup/session restoration and focused-to-full navigation; Agents is second in the sidebar after Connections.
@@ -4397,13 +4425,22 @@ snapshots are not supported. No live push or PR mutation is part of the test sui
 
 ### SDUC-557 — Shared native Chromium browser and scoped computer use
 
-Conversation, the native editor, and a live Chromium browser share the agent
-middle pane. Up to four session/execution-context browser instances retain eight
+2026-10-30: Browser opens as a resizable companion to the conversation and
+composer, stacking below it in narrow windows. The header globe hides/reopens
+retained tabs; the pane close action releases that session’s browser and grants
+without clearing the chat draft. Engine failures appear once, in the browser
+pane. The expanded toolbox does not repeat primary header actions. Development
+launches use `scripts/run-dev.sh --main` to include the Chromium runtime.
+
+
+Conversation and the native editor share the main work pane; a live Chromium
+browser opens alongside the conversation. Up to four session/execution-context browser instances retain eight
 tabs each, including forms, navigation, cookies and local storage in separate
 ShellDeck profiles. Native input includes pointer/drag/scroll, keyboard, UTF-16
 IME, clipboard text, find, HTML popup menus, page dialogs, file choosers and
 explicit download destinations. Related browser windows retain opener messaging.
-The browser can attach a screenshot to the matching conversation draft.
+The browser can attach a screenshot only to the selected conversation and exact
+currently displayed draft context; unsent context changes supersede saved context.
 
 The CEF helper renders live BGRA frames into GPUI; no external Chrome install,
 snapshot fallback, X11 child window, or public debugging port is involved. A
@@ -4477,7 +4514,9 @@ explicit attach/claim actions and server-issued permissions; selecting a row doe
 not attach or acquire control. Hidden local sessions keep unread output until
 they are selected again. Directory replacement removes vanished entries; account
 reset clears the shared directory and remote selection is retired when access is
-lost. No email-specific role override or second session store is introduced.
+lost. Selection and drafts use the complete authority/kind/id coordinate. An
+ID-only link refuses ambiguous matches, and delayed follow-up receipts preserve
+newly edited text. No email-specific role override or second session store is introduced.
 
 ### SDUC-560 — Durable verified task supervision
 
@@ -4523,3 +4562,151 @@ these deterministic client tests.
 - **2026-10-29** — Routed the shell sidebar toggle to the Agents session navigator, including focused launch and narrow local conversation overlays (SDUC-308/499, SDTEST-2739).
 
 - **2026-10-29** — SDUC-558 retains the primary lock through listener lifetime, with deterministic delayed-start coverage (SDTEST-2741) and an explicit parent-controlled shutdown gate in concurrent-start fixture SDTEST-2643.
+
+- **2026-10-29** — SDUC-499: conversation uses compact lifecycle activity and expandable run usage; local comparison diagnostics live in Changes, and SSH completion does not fabricate local snapshot failure. Single-checkout project navigation avoids duplicate labels; chat and composer share one readable width (SDTEST-2742).
+
+- **2026-10-29** — SDUC-444 keeps absent Wayland portal guidance in Settings instead of two startup banners (SDTEST-1418); SDUC-153 protects saved account identity by refusing UI tests without an isolated profile (SDTEST-2743).
+
+- 2026-10-29: SDUC-559 remote navigation now follows local projects, defaults collapsed with persisted choices, pages 20 records, supports attachable filtering and search across the complete directory, and separates lifecycle status from session identity. SDUC-499 project groups collapse independently; search temporarily reveals children.
+
+- **2026-10-30** — Hardened exact remote-session selection/draft isolation and screenshot sharing after unsent context changes (SDUC-487/557/559, SDTEST-2770..2772).
+
+- 2026-10-30: SDUC-281/283/285 updater audit serializes checks/downloads/installs, fences disabled pending operations, preserves an in-progress atomic swap, bounds network requests and cleans interrupted downloads; SDTEST-2780–2782 cover the regressions.
+
+### UX review clarification — 2026-10-30
+
+- SDUC-488 / SDUC-551: the Agents project picker's Add project action always
+  opens project registration, not the New workspace launcher. Its destination
+  rail is selected and Cancel returns to the existing Agents conversation.
+  Opening a project succeeds into Agents as before; ordinary Workspaces forms
+  cancel back to Workspaces.
+- SDUC-067: script search uses the shared text input, with caret, selection,
+  standard editing and an explicit clear control. Typing in the inline code
+  editor does not edit the search query.
+- SDUC-551: automatic reasoning stays implicit in the compact model trigger;
+  explicit reasoning remains visible and full defaults remain in the tooltip
+  and picker. New project conversations start as New session instead of
+  repeating the project name.
+
+Follow-up native review (2026-10-30): Files and Changes retain the same tab
+navigation and close action; opening Changes refreshes its contents and ordinary
+non-Git folders get an explanatory empty state. Recent Activity keeps short and
+filtered lists at the leading edge (SDUC-409). Script draft editing exposes one
+Save/Cancel toolbar and requires leaving editing before Run; Stop remains
+available for an execution already in progress.
+
+Chat latency clarification (2026-10-30, SDUC-475/499): local read-only chat
+starts/completes without eager Git snapshots; Changes is available on demand.
+Local write-enabled runs retain pre/post snapshots. Stream delivery uses bounded
+ordered batches, with completion held behind trailing output. Background runs
+do not request scrolling of another conversation. Rejected starts release run
+inputs, refresh context controls and persist their failed state.
+
+DeepSeek setup recovery (2026-10-30, SDUC-475): when Jcode refuses to reuse
+OpenCode's existing DeepSeek credentials without consent, the failed turn shows
+an explicit setup card, target identity, copyable `jcode repl --provider deepseek
+--no-update --no-selfdev`, and Open target terminal. Opening the terminal never
+runs the setup command or approves credential reuse automatically. The operator
+responds to Jcode's prompt and explicitly resends the failed request. The guidance
+also works for restored conversations and is scoped to the latest failed turn.
+
+2026-10-30 — SDUC-475 Jcode chat normalization: connection/message-boundary/token
+bookkeeping stays outside chat, tokens/model populate run details, tool JSON is
+never answer text, and cumulative replacements/final answers update the existing
+answer. Run metadata carries turn provenance; new runs/context changes reset it,
+and old unproven labels are discarded on reload. Legacy Jcode bookkeeping is
+hidden in presentation while retained history remains intact.
+
+### SDUC-561 — Connect and resume a retained remote conversation
+
+Select a remote directory entry in Agents to check it automatically; **Check connection** retries it. ShellDeck
+reads its retained conversation and current command state without starting a
+provider or claiming control. A supported, fresh server response exposes a draft
+and **Review and resume**. Confirmation sends the exact session/revision through
+the existing idempotent follow-up lane; the original server workspace and
+permissions remain authoritative. History continues to poll and page independently
+of live attachment. Refused/offline sessions retain guidance and a retry action.
+Live Attach/Claim controls remain separate. Disconnect view stops local polling without stopping the remote session and preserves the draft. Logout clears retained state.
+
+Automated: SDTEST-2802, SDTEST-2803, SDTEST-2804. Native fixture:
+`SHELLDECK_PREVIEW_REMOTE=1 SHELLDECK_PREVIEW_CONNECT=1` on
+`agent_console_preview`, with isolated XDG homes. No real remote run is started.
+
+### SDUC-562 — Discover and reconnect native conversations over SSH
+
+Agents offers a searchable saved-server picker and **Connect and refresh**.
+Read-only SSH discovery groups recent Claude Code, Codex and Jcode conversations
+by server/provider, with timestamps, search, collapse, pagination and explicit
+partial-results warnings. Refresh failures retain previous rows marked stale.
+Selecting a conversation shows its original server, native ID, folder and model;
+**Reconnect in chat** rechecks SSH access, folder and current native metadata.
+No provider starts until Send. The next turn uses native resume in that exact
+folder, defaults to read-only and bypasses catalog path translation. A changed
+SSH destination blocks Send until reconnection. Native history is read from the original server and shown through the paged
+transcript described in SDUC-563. Resume IDs are not
+persisted: rediscovery/reconnection is required after app restart. Automonique
+remains a separate typed Platform directory and refreshes independently.
+
+Automated: SDTEST-2806, SDTEST-2807, SDTEST-2808, SDTEST-2809, SDTEST-2810,
+SDTEST-2811, SDTEST-2812; SDTEST-1905 covers resume path mapping exclusion.
+Native fixture: `SHELLDECK_PREVIEW_SSH=1` on `agent_console_preview`.
+
+
+### SDUC-563 — Restore complete native SSH history before continuing
+
+**Reconnect in chat** verifies the exact saved server, provider, native session ID
+and original folder, then loads the latest page of the native conversation.
+Claude Code JSONL, Codex rollout JSONL and Jcode JSON stores are read directly;
+reading history never launches a provider, installs a helper, or writes to the
+server. Exact-session lookup is independent of the recent-session inventory,
+so old sessions and large Jcode stores remain readable.
+
+The saved transcript includes user and assistant messages, tool arguments/results,
+visible reasoning summaries and attachment notices. Transport bookkeeping and
+encrypted reasoning payloads are not conversation text. **Load older** and
+**Load newer** navigate all retained entries in bounded pages; long text is split
+into labelled parts without discarding content. The initial snapshot pins a
+normalized prefix: later appended turns do not invalidate paging. If earlier
+stored content changes, a separate refreshed-history view reads the current
+server snapshot without altering the original cutoff or local replies. Return
+to the conversation to send; pagination and retries remain available in either view.
+Missing files, changed identities and malformed history remain explicit errors.
+
+Passive history identity and the snapshot may survive application restart;
+executable resume authority does not. Restoring or browsing saved history cannot
+start an agent. A fresh verified reconnect restores the exact native resume
+binding, while existing local messages remain intact. Changing the current chat
+context does not silently retarget its retained history source.
+
+Automated: SDTEST-2813, SDTEST-2814, SDTEST-2815, SDTEST-2816, SDTEST-2817, SDTEST-2818.
+Native fixture: `SHELLDECK_PREVIEW_SSH=1` on `agent_console_preview`, with
+isolated XDG homes. Each synthetic remote conversation returns 160 entries in
+three pages, covering user/assistant text and tool results without network or
+provider calls. Read-only live validation on 2026-10-30 covered all three native
+formats, including a 57.8 MB Jcode file and an older page from that file. The
+reader imposes a 128 MiB single-record safety limit, reported explicitly; it does
+not impose that limit on a streamed conversation file.
+
+### SDUC-564 — Complete Agents workflows remain coherent across navigation and recovery
+
+The acceptance journeys in `AGENTS_ACCEPTANCE.md` connect project entry, session
+management, native discovery, context selection and queued execution. Project
+search and opening respect hierarchy and archive state; saved SSH choices refresh
+without redundant setup; older/large native conversations remain discoverable;
+failed context, catalog or queue operations preserve recoverable user work.
+Each change records regression and native-interaction evidence separately from
+live provider coverage. The pinned T3 Code reference informs behavior, without
+implying support for every feature in that independent product.
+
+T3 reference follow-up: navigation order remains stable during parallel streams;
+collapsed groups retain count/attention, row states distinguish approval/input
+from work, and unsent drafts remain visible. Editing an imported native context
+requires explicit new-conversation intent instead of silently losing continuity.
+Provider-specific access labels describe the mode actually passed to the CLI.
+
+Further T3 parity: completed technical work expands inline without losing output;
+live work, failures and pending decisions stay visible. Plans retain current-step
+visibility with complete details on demand. Sidebar conversation actions share
+the Library handlers, and archiving has a persistent undo without deleting work.
+Draft restoration includes attachments, context, reasoning choice and paused
+queued follow-ups; restoration must never launch a provider or replay a queue.

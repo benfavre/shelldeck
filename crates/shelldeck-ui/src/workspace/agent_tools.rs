@@ -27,13 +27,25 @@ impl Workspace {
                 broker.cancel_pending();
             }
         }
-        let Some(session) = session else { return };
-        if matches!(session.context.target, AgentTarget::Local) {
+        let Some(session) = session else {
+            self.active_agent_runs.remove(&run_id);
+            return;
+        };
+        if shelldeck_core::agent_review::requires_turn_snapshot(
+            &session.context.target,
+            session.context.access,
+        ) {
             let root = std::path::PathBuf::from(&session.context.workdir);
             let task = cx.background_executor().spawn(async move {
-                shelldeck_core::agent_review::AgentReviewBackend::default()
+                let started = std::time::Instant::now();
+                let result = shelldeck_core::agent_review::AgentReviewBackend::default()
                     .observe(&root)
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string());
+                tracing::debug!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "agent post-run repository snapshot finished"
+                );
+                result
             });
             cx.spawn(async move |this, cx| {
                 let after = task.await;
@@ -109,7 +121,7 @@ impl Workspace {
         request: shelldeck_core::agent_runtime::AgentRunRequest,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(request.target, AgentTarget::Local) {
+        if !shelldeck_core::agent_review::requires_turn_snapshot(&request.target, request.access) {
             self.start_agent_run(request, cx);
             return;
         }
@@ -118,9 +130,15 @@ impl Workspace {
         };
         let root = std::path::PathBuf::from(&request.workdir);
         let task = cx.background_executor().spawn(async move {
-            shelldeck_core::agent_review::AgentReviewBackend::default()
+            let started = std::time::Instant::now();
+            let result = shelldeck_core::agent_review::AgentReviewBackend::default()
                 .observe(&root)
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string());
+            tracing::debug!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "agent pre-run repository snapshot finished"
+            );
+            result
         });
         cx.spawn(async move |this, cx| {
             let snapshot = task.await;
@@ -204,7 +222,13 @@ impl Workspace {
     pub(super) fn open_agent_workspace_launcher(&mut self, cx: &mut Context<Self>) {
         self.workspace_hub
             .update(cx, |hub, cx| hub.show_launcher(cx));
-        self.set_active_view(ActiveView::Workspaces, cx);
+        self.activate_dev_section(SidebarSection::Workspaces, cx);
+    }
+
+    pub(super) fn open_agent_project_setup(&mut self, cx: &mut Context<Self>) {
+        self.workspace_hub
+            .update(cx, |hub, cx| hub.show_agent_project_setup(cx));
+        self.activate_dev_section(SidebarSection::Workspaces, cx);
     }
 
     pub(super) fn open_remote_agent_file(

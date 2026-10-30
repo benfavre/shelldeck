@@ -18,6 +18,30 @@ enum ComposerChoice {
     Capture,
 }
 
+pub(super) fn provider_access_label(provider: AgentProvider, access: AgentAccessMode) -> String {
+    match (provider, access) {
+        (AgentProvider::Claude, AgentAccessMode::ReadOnly) => {
+            t!("agents.access.claude_plan").to_string()
+        }
+        (AgentProvider::Jcode | AgentProvider::DeepSeek, AgentAccessMode::ReadOnly) => {
+            t!("agents.access.read_tools").to_string()
+        }
+        _ => access_label(access),
+    }
+}
+
+fn provider_access_description(provider: AgentProvider, access: AgentAccessMode) -> String {
+    match (provider, access) {
+        (AgentProvider::Claude, AgentAccessMode::ReadOnly) => {
+            t!("agents.access.claude_plan_help").to_string()
+        }
+        (AgentProvider::Jcode | AgentProvider::DeepSeek, AgentAccessMode::ReadOnly) => {
+            t!("agents.access.read_tools_help").to_string()
+        }
+        _ => provider_access_label(provider, access),
+    }
+}
+
 impl AgentConsoleView {
     pub(super) fn render_composer_menu(
         &self,
@@ -34,7 +58,7 @@ impl AgentConsoleView {
             ),
             ComposerMenu::Access => (
                 "agent-permissions-picker",
-                access_label(context.access),
+                provider_access_label(context.provider, context.access),
                 match context.access {
                     AgentAccessMode::ReadOnly => "lock",
                     AgentAccessMode::WorkspaceWrite => "pencil",
@@ -58,7 +82,11 @@ impl AgentConsoleView {
             })
             .h(px(30.0))
             .icon(IconSource::from(icon))
-            .tooltip(title.clone());
+            .tooltip(if matches!(menu, ComposerMenu::Access) {
+                provider_access_description(context.provider, context.access)
+            } else {
+                title.clone()
+            });
         let parent = cx.entity();
         Popover::new(SharedString::from(format!("{id}-popover")))
             .anchor(Corner::BottomLeft)
@@ -99,7 +127,7 @@ impl AgentConsoleView {
                                 ] {
                                     choices.push((
                                         ComposerChoice::Access(access),
-                                        access_label(access),
+                                        provider_access_label(context.provider, access),
                                         icon,
                                         access == context.access,
                                     ));
@@ -151,10 +179,42 @@ impl AgentConsoleView {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(title.clone()),
                             );
+                        if matches!(menu, ComposerMenu::Access) {
+                            content = content.child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .whitespace_normal()
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(provider_access_description(
+                                        context.provider,
+                                        context.access,
+                                    )),
+                            );
+                        }
                         for (index, (choice, label, icon, selected)) in
                             choices.into_iter().enumerate()
                         {
                             let parent = parent.clone();
+                            let expected_context = context.clone();
+                            let unavailable = match choice {
+                                ComposerChoice::Agent(AgentProvider::Automonique)
+                                    if context.target != AgentTarget::Local =>
+                                {
+                                    Some("agents.error.automonique_ssh_boundary")
+                                }
+                                ComposerChoice::Mention if context.target != AgentTarget::Local => {
+                                    Some("agents.composer.remote_mention")
+                                }
+                                _ => None,
+                            };
+                            let tooltip = unavailable
+                                .map(|key| t!(key).to_string())
+                                .unwrap_or_else(|| match choice {
+                                    ComposerChoice::Access(access) => {
+                                        provider_access_description(context.provider, access)
+                                    }
+                                    _ => label.clone(),
+                                });
                             content = content.child(
                                 Button::new(("agent-composer-choice", index), label)
                                     .variant(ButtonVariant::Ghost)
@@ -163,10 +223,18 @@ impl AgentConsoleView {
                                     .justify_start()
                                     .icon(IconSource::from(icon))
                                     .selected(selected)
-                                    .disabled(locked && !matches!(menu, ComposerMenu::Attachments))
+                                    .disabled(
+                                        unavailable.is_some()
+                                            || (locked
+                                                && !matches!(menu, ComposerMenu::Attachments)),
+                                    )
+                                    .tooltip(tooltip)
                                     .on_click(cx.listener(move |_, _, window, cx| {
                                         parent.update(cx, |view, cx| {
-                                            if view.sessions.selected_id() != session_id {
+                                            if view.sessions.selected_id() != session_id
+                                                || view.displayed_context(cx) != expected_context
+                                                || unavailable.is_some()
+                                            {
                                                 return;
                                             }
                                             match choice {
