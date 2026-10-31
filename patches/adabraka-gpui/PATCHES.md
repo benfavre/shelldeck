@@ -8,11 +8,61 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total marker occurrences in code: **179**
+Total marker occurrences in code: **199**
 (`rg "ShellDeck patch:" src/`; SDPATCH-103, SDPATCH-119, and SDPATCH-121 are
 Cargo.toml-only and outside the src-scoped marker convention.)
 
 ## Patches
+
+### SDPATCH-127 — Safe high-refresh Windows timing fallback
+
+- **Files / symbols**: `src/platform.rs`, `src/platform/refresh_interval.rs`, `src/platform/windows/vsync.rs` — refresh interval conversion
+- **Markers**:
+  - `src/platform.rs` — `// ShellDeck patch: SDPATCH-127 — share refresh-ratio conversion with cross-platform regression tests.`
+  - `src/platform/refresh_interval.rs` — `// ShellDeck patch: SDPATCH-127 — divide the full ratio instead of truncating sub-MHz frequencies to zero.`
+  - `src/platform/windows/vsync.rs` — `// ShellDeck patch: SDPATCH-127 — preserve fractional/high refresh rates without integer division by zero.`
+- **Why**: DWM's fallback reports a rational refresh rate, whose frequency often falls below one MHz. Integer conversion to ticks per microsecond truncated this divisor to zero and panicked. Convert the full ratio with checked duration conversion, preserving 120/144/240 Hz and fractional rates. Invalid values use the existing error/default path. The pure converter runs in the Linux UI regression suite; Windows CI checks the DWM call site.
+- **Upstream status**: not filed yet.
+
+### SDPATCH-126 — Preserve cached scene identity after GPU batch sorting
+
+- **Files / symbols**: `src/scene.rs` — `Scene::finish`, `sort_for_batching`, replay regression fixture
+- **Markers**:
+  - `src/scene.rs` — `// ShellDeck patch: SDPATCH-126 — keep cached paint-operation indexes valid after batch sorting.`
+  - `src/scene.rs` — `// ShellDeck patch: SDPATCH-126 — remap replay references and permute primitives in place.`
+  - `src/scene.rs` — `// ShellDeck patch: SDPATCH-126 — pin glyph and quad identity across repeated cached frames.`
+- **Why**: Scene batching sorts primitive arrays, but replay operations originally retained their insertion indexes. Replaying a cached row then substituted unrelated glyphs or quads. Remap operation indexes through the sorting permutation before rearranging primitives. The production scene regression replays a glyph range across eight differently sorted frames and checks quad identity too.
+- **Upstream status**: not filed yet.
+
+### SDPATCH-124 — Opt-in frame phases and input-to-submit timing
+
+- **Files / symbols**: `src/window.rs`, `src/gpui.rs`
+- **Markers**:
+  - `src/gpui.rs` — `// ShellDeck patch: SDPATCH-124 — let profiling fixtures reject test-support rendering semantics.`
+  - `src/window.rs` — `// ShellDeck patch: SDPATCH-124 — retain the first pending input for opt-in submit latency.`
+  - `src/window.rs` — `// ShellDeck patch: SDPATCH-124 — opt-in frame phase timings separate CPU work from presentation waits.`
+  - `src/window.rs` — `// ShellDeck patch: SDPATCH-124 — no pending latency sample before native input.`
+  - `src/window.rs` — `// ShellDeck patch: SDPATCH-124 — input dispatch to GPU submission excludes compositor scanout.`
+  - `src/window.rs` — `// ShellDeck patch: SDPATCH-124 — latency instrumentation is dormant without explicit opt-in.`
+- **Why**: Separate CPU layout/paint from GPU presentation and arena cleanup under the existing ZED_MEASUREMENTS opt-in. First pending native input is recorded only when enabled, then measured at GPU submission; compositor/scanout latency is excluded.
+- **Validation**: SDTEST-2875/2876 and the shared list interaction suite; native short/large/active frame benchmarks and cross-platform CI fixture compilation.
+- **Upstream status**: not filed; opt-in extension in the existing fork.
+
+### SDPATCH-125 — Size-aware virtual-list row rendering
+
+- **Files / symbols**: `src/elements/list.rs`
+- **Markers**:
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-125 — pass known row size without re-borrowing intrusive list state.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-125 — retain the original list callback contract.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-125 — opt-in size-aware rendering for retained row views.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-125 — forward the current measurement to visible row rendering.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-125 — preserve natural sizing when filling upward.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-125 — forward leading overdraw measurement.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-125 — retain focused-row measurement when rendering it offscreen.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-125 — autoscroll measures unknown rows naturally.`
+- **Why**: Expose already-known row measurements to an opt-in renderer without re-borrowing ListState while layout holds its intrusive state. Existing list callbacks retain their original contract. Unknown or width-invalidated rows receive no measurement and lay out naturally.
+- **Validation**: SDTEST-2875/2876 and the shared list interaction suite; native short/large/active frame benchmarks and cross-platform CI fixture compilation.
+- **Upstream status**: not filed; opt-in extension in the existing fork.
 
 ### SDPATCH-123 — Estimated heights for virtual conversation rows
 
@@ -681,6 +731,8 @@ Cargo.toml-only and outside the src-scoped marker convention.)
 - **Upstream status**: not filed yet.
 
 ## Sync log
+
+- **2026-10-31** — Added SDPATCH-124–127: production frame profiling, measured row callbacks, replay index remapping and safe Windows refresh ratios. 20 markers added; source total 199 including shader markers.
 
 - **2026-08-28** — Added SDPATCH-121: upgraded `stacksafe` from 0.1 to 1,
   removing the `proc-macro-error2` dependency path. No source marker was added

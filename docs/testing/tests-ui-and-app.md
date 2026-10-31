@@ -976,3 +976,17 @@ full shell. Pending signed-out requests do not auto-open a login modal.
 | SDTEST-2873 | SDUC-475, SDUC-564 | Expanding hundreds of completed operations switches to bounded virtual rows without jumping to the end, and floating collapse reveals the original group while preserving its payloads | `agent_console_view/interaction_tests` | Green — rendered production layout/input; native fixture evidence in AGENTS_ACCEPTANCE.md |
 
 | SDTEST-2874 | SDUC-563, SDUC-564 | Large native history pages render viewport entries lazily; original copy, actual paging, page-top reset, source identity and drafts remain intact | `agent_console_view/interaction_tests` | Green — rendered production layout/input; native fixture evidence in AGENTS_ACCEPTANCE.md |
+
+| SDTEST-2875 | SDUC-475, SDUC-564 | Unchanged visible transcript rows reuse measured layout/paint across unrelated redraws; actual copy, streaming replacement, disclosure, typography/width changes and source switches remain current | `agent_console_view/interaction_tests` | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
+| SDTEST-2876 | SDUC-564 | Native performance fixture resolves the production GPUI feature set and refuses test-support redraw semantics; opt-in frame phases and first-input-to-submit measurements accompany short/large/streaming native benchmarks | `scripts/test-agent-frame-benchmark.py`, native fixture | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
+
+| SDTEST-2877 | SDUC-475, SDUC-564 | Cached scene ranges preserve exact glyph and quad identities after primitive sorting and across repeated frame replay; native paint remains complete | GPUI scene test-support fixture, UI suite and native walkthrough | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
+
+| SDTEST-2878 | SDUC-564 | Windows DWM fallback converts full refresh ratios at 60/120/144/240 Hz and fractional rates without division by zero; invalid ratios use the existing fallback | UI suite pure converter; Windows CI compile gate | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
+
+| SDTEST-2879 | SDUC-564 | Actual pointer motion across content, corner and resize edges updates window chrome while preserving cached content paint | `window_chrome::tests::window_resize_pointer_updates_preserve_cached_content` | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
+
+| SDTEST-2880 | SDUC-475, SDUC-564 | A single long reply renders only viewport Markdown blocks, retains full copy actions and the exact block/offset across same-length snapshots, draft edits and resize in light/dark narrow/wide layouts | `agent_console_view/interaction_tests` | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
+| SDTEST-2881 | SDUC-475, SDUC-564 | Full-document references, code and table blocks survive prose partitioning; parsed ASTs are bounded and encoded payloads retain their disclosure path | `agent_console_view/timeline/markdown` | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
+
+| SDTEST-2882 | SDUC-551, SDUC-564 | Actual wheel motion and selected text deltas reuse sidebar paint; its cached search hitbox remains interactive and live transcript search matches refresh during streaming without changing drafts | `agent_console_view/interaction_tests` | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |

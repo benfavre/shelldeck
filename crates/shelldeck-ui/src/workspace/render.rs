@@ -563,9 +563,7 @@ impl Render for Workspace {
             // Window-edge resize hit-testing works in real screen pixels.
             root = root
                 .child(crate::window_chrome::resize_cursor_layer())
-                .on_mouse_move(|_e, window, _cx| {
-                    window.refresh();
-                })
+                .on_mouse_move(crate::window_chrome::resize_cursor_updates(_window, _cx))
                 .on_mouse_down(MouseButton::Left, move |e, window, _cx| {
                     let size = window.window_bounds().get_bounds().size;
                     if let Some(edge) = resize_edge(e.position, gpui::px(5.0), size) {

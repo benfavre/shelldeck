@@ -159,38 +159,50 @@ impl Scene {
         }
     }
 
+    // ShellDeck patch: SDPATCH-126 — keep cached paint-operation indexes valid after batch sorting.
     pub fn finish(&mut self) {
-        // Primitives are typically inserted in draw order during painting.
-        // Skip the O(n log n) sort when data is already sorted (common case).
-        if !self.shadows.is_sorted_by_key(|s| s.order) {
-            self.shadows.sort_unstable_by_key(|s| s.order);
-        }
-        if !self.quads.is_sorted_by_key(|q| q.order) {
-            self.quads.sort_unstable_by_key(|q| q.order);
-        }
-        if !self.paths.is_sorted_by_key(|p| p.order) {
-            self.paths.sort_unstable_by_key(|p| p.order);
-        }
-        if !self.underlines.is_sorted_by_key(|u| u.order) {
-            self.underlines.sort_unstable_by_key(|u| u.order);
-        }
-        if !self
-            .monochrome_sprites
-            .is_sorted_by_key(|s| (s.order, s.tile.tile_id))
-        {
-            self.monochrome_sprites
-                .sort_unstable_by_key(|s| (s.order, s.tile.tile_id));
-        }
-        if !self
-            .polychrome_sprites
-            .is_sorted_by_key(|s| (s.order, s.tile.tile_id))
-        {
-            self.polychrome_sprites
-                .sort_unstable_by_key(|s| (s.order, s.tile.tile_id));
-        }
-        if !self.surfaces.is_sorted_by_key(|s| s.order) {
-            self.surfaces.sort_unstable_by_key(|s| s.order);
-        }
+        sort_for_batching(
+            &mut self.shadows,
+            &mut self.paint_operations,
+            PrimitiveKind::Shadow,
+            |item| item.order,
+        );
+        sort_for_batching(
+            &mut self.quads,
+            &mut self.paint_operations,
+            PrimitiveKind::Quad,
+            |item| item.order,
+        );
+        sort_for_batching(
+            &mut self.paths,
+            &mut self.paint_operations,
+            PrimitiveKind::Path,
+            |item| item.order,
+        );
+        sort_for_batching(
+            &mut self.underlines,
+            &mut self.paint_operations,
+            PrimitiveKind::Underline,
+            |item| item.order,
+        );
+        sort_for_batching(
+            &mut self.monochrome_sprites,
+            &mut self.paint_operations,
+            PrimitiveKind::MonochromeSprite,
+            |item| (item.order, item.tile.tile_id),
+        );
+        sort_for_batching(
+            &mut self.polychrome_sprites,
+            &mut self.paint_operations,
+            PrimitiveKind::PolychromeSprite,
+            |item| (item.order, item.tile.tile_id),
+        );
+        sort_for_batching(
+            &mut self.surfaces,
+            &mut self.paint_operations,
+            PrimitiveKind::Surface,
+            |item| item.order,
+        );
     }
 
     #[cfg_attr(
@@ -933,4 +945,113 @@ impl PathVertex<Pixels> {
             content_mask: self.content_mask.scale(factor),
         }
     }
+}
+
+// ShellDeck patch: SDPATCH-126 — remap replay references and permute primitives in place.
+fn sort_for_batching<T, K: Ord>(
+    items: &mut [T],
+    operations: &mut [PaintOperation],
+    kind: PrimitiveKind,
+    mut key: impl FnMut(&T) -> K,
+) {
+    if items.is_sorted_by_key(&mut key) {
+        return;
+    }
+    let mut order = (0..items.len()).collect::<Vec<_>>();
+    order.sort_by_key(|index| key(&items[*index]));
+    let mut destination = vec![0; items.len()];
+    for (new, old) in order.into_iter().enumerate() {
+        destination[old] = new;
+    }
+    for operation in operations {
+        if let PaintOperation::Primitive(operation_kind, index) = operation {
+            if *operation_kind == kind {
+                *index = destination[*index];
+            }
+        }
+    }
+    for index in 0..items.len() {
+        while destination[index] != index {
+            let next = destination[index];
+            items.swap(index, next);
+            destination.swap(index, next);
+        }
+    }
+}
+
+/// Exercise cached scene replay across real batch reordering without a native GPU.
+/// This test-support fixture is called by ShellDeck's ordinary UI regression suite.
+// ShellDeck patch: SDPATCH-126 — pin glyph and quad identity across repeated cached frames.
+#[cfg(feature = "test-support")]
+pub fn verify_scene_replay_preserves_sorted_primitives() {
+    use crate::{AtlasTextureKind, TileId, size};
+    let bounds = |x: f32| Bounds {
+        origin: point(ScaledPixels::from(x), ScaledPixels::from(0.0)),
+        size: size(ScaledPixels::from(8.0), ScaledPixels::from(8.0)),
+    };
+    let mask = ContentMask {
+        bounds: Bounds {
+            origin: point(ScaledPixels::from(0.0), ScaledPixels::from(0.0)),
+            size: size(ScaledPixels::from(128.0), ScaledPixels::from(128.0)),
+        },
+    };
+    let sprite = |tile, x| MonochromeSprite {
+        order: 0,
+        pad: 0,
+        bounds: bounds(x),
+        content_mask: mask.clone(),
+        color: Hsla::default(),
+        tile: AtlasTile {
+            texture_id: AtlasTextureId {
+                index: 0,
+                kind: AtlasTextureKind::Monochrome,
+            },
+            tile_id: TileId(tile),
+            padding: 0,
+            bounds: Bounds::default(),
+        },
+        transformation: TransformationMatrix::unit(),
+    };
+    let mut source = Scene::default();
+    for (tile, x) in [(7, 0.0), (2, 12.0), (5, 24.0)] {
+        source.insert_primitive(sprite(tile, x));
+    }
+    source.finish();
+    let mut range = 1..2;
+    for frame in 0..8 {
+        let mut next = Scene::default();
+        next.insert_primitive(sprite(9, 0.0));
+        let start = next.len();
+        next.replay(range, &source);
+        let end = next.len();
+        assert_eq!(
+            next.monochrome_sprites[1].tile.tile_id,
+            TileId(2),
+            "cached glyph changed in frame {frame}"
+        );
+        assert_eq!(next.monochrome_sprites[1].bounds, bounds(12.0));
+        next.insert_primitive(sprite(1, 32.0));
+        next.finish();
+        source = next;
+        range = start..end;
+    }
+    let mut source = Scene::default();
+    for x in [0.0, 12.0, 24.0] {
+        source.insert_primitive(Quad {
+            bounds: bounds(x),
+            content_mask: mask.clone(),
+            ..Default::default()
+        });
+    }
+    source.quads[0].order = 3;
+    source.quads[1].order = 1;
+    source.quads[2].order = 2;
+    source.finish();
+    let mut replay = Scene::default();
+    replay.replay(1..2, &source);
+    assert_eq!(
+        replay.quads[0].bounds,
+        bounds(12.0),
+        "cached quad changed after order sorting"
+    );
 }

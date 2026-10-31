@@ -74,6 +74,7 @@ mod native_history;
 mod navigation_groups;
 #[path = "agent_console_view/navigator.rs"]
 mod navigator;
+mod panes;
 #[path = "agent_console_view/progress.rs"]
 mod progress;
 #[path = "agent_console_view/project_picker.rs"]
@@ -344,6 +345,8 @@ pub struct AgentConsoleView {
     model_state: Entity<InputState>,
     model_discovery: model::AgentModelDiscoveryUi,
     navigator_search: Entity<InputState>,
+    navigator_pane: Entity<panes::NavigatorPane>,
+    timeline_pane: Entity<panes::TimelinePane>,
     sessions: AgentSessionCollection,
     remote_sessions: remote_sessions::RemoteAgentSessionsUi,
     ssh_sessions: ssh_sessions::SshSessionsUi,
@@ -384,6 +387,8 @@ pub struct AgentConsoleView {
     timeline: timeline::TimelineUi,
     #[cfg(test)]
     rendered_transcripts: std::cell::Cell<usize>,
+    #[cfg(test)]
+    rendered_navigators: std::cell::Cell<usize>,
     explorer: explorer::AgentExplorerUi,
     workflows: AgentWorkflowsUi,
     delivery: AgentDeliveryUi,
@@ -531,6 +536,9 @@ impl AgentConsoleView {
         let mut inspector_local_browser = FileBrowserPanel::new();
         inspector_local_browser.set_root(PathBuf::from(&default_workdir));
         let scroll = ScrollHandle::new();
+        let parent = cx.entity().downgrade();
+        let navigator_pane = cx.new(|cx| panes::NavigatorPane::new(parent.clone(), cx));
+        let timeline_pane = cx.new(|cx| panes::TimelinePane::new(parent, cx));
         let mut view = Self {
             provider: AgentProvider::Claude,
             access: AgentAccessMode::ReadOnly,
@@ -544,6 +552,8 @@ impl AgentConsoleView {
             model_state: input_state(cx, String::new()),
             model_discovery: model::AgentModelDiscoveryUi::new(),
             navigator_search: input_state(cx, String::new()),
+            navigator_pane,
+            timeline_pane,
             sessions,
             remote_sessions: remote_sessions::RemoteAgentSessionsUi::default(),
             ssh_sessions: Default::default(),
@@ -563,6 +573,8 @@ impl AgentConsoleView {
             timeline: timeline::TimelineUi::default(),
             #[cfg(test)]
             rendered_transcripts: std::cell::Cell::new(0),
+            #[cfg(test)]
+            rendered_navigators: std::cell::Cell::new(0),
             focused_trace_anchor: ScrollAnchor::for_handle(scroll.clone()),
             pending_trace_reveal: None,
             surface_focus_requested: false,
@@ -1041,13 +1053,43 @@ impl AgentConsoleView {
         events: impl IntoIterator<Item = AgentStreamEvent>,
         cx: &mut Context<Self>,
     ) {
+        // Existing reply text does not change navigator labels, ordering or
+        // actions. Search results and background unread/attention still repaint it.
+        let selected = self.sessions.selected_id();
+        let source = self.run_sessions.get(&run_id).copied();
+        let existing_reply = source == selected
+            && source
+                .and_then(|id| self.sessions.get(id))
+                .is_some_and(|session| {
+                    session.messages.iter().any(|message| {
+                        message.role == AgentMessageRole::Agent
+                            && message.turn_id == session.current_turn_id()
+                    })
+                });
+        let before = source
+            .and_then(|id| self.sessions.get(id))
+            .map(|session| (session.status, session.attention, session.unread_count));
+        let mut text_only = existing_reply
+            && self.sessions.surface_visible()
+            && self.navigator_search.read(cx).content().is_empty();
         let mut changed = false;
         for event in events {
+            text_only &= matches!(
+                event,
+                AgentStreamEvent::TextDelta(_) | AgentStreamEvent::TextSnapshot(_)
+            );
             changed |= self.apply_stream_event_for(run_id, event, cx);
         }
         if changed {
             self.schedule_library_save(cx);
-            cx.notify();
+            let after = source
+                .and_then(|id| self.sessions.get(id))
+                .map(|session| (session.status, session.attention, session.unread_count));
+            if text_only && before == after {
+                self.timeline_pane.update(cx, |_, cx| cx.notify());
+            } else {
+                cx.notify();
+            }
         }
     }
 
@@ -2055,6 +2097,7 @@ impl Render for AgentConsoleView {
             self.focused_trace,
             window.rem_size(),
             self.native_history.get(&session_id),
+            &window.text_style(),
         );
         let has_content = !timeline.is_empty() || self.timeline.virtualized;
         let context_expanded = self.context_expanded;
@@ -2305,7 +2348,7 @@ impl Render for AgentConsoleView {
             }
         }
         let output = if self.timeline.virtualized {
-            self.render_virtual_timeline(wide, cx)
+            self.timeline_pane.clone().into_any_element()
         } else {
             output.into_any_element()
         };
@@ -2418,7 +2461,14 @@ impl Render for AgentConsoleView {
             .bg(ShellDeckColors::bg_primary())
             .text_color(ShellDeckColors::text_primary());
         if wide && self.tools.navigator_visible {
-            root = root.child(self.render_navigator(cx));
+            root = root.child(
+                AnyView::from(self.navigator_pane.clone()).cached(
+                    StyleRefinement::default()
+                        .w(px(f32::from(self.library.preferences.navigator_width)))
+                        .h_full()
+                        .flex_shrink_0(),
+                ),
+            );
         }
         if self.live_browser_visible(cx) {
             let available_width = width / window.rem_size().to_f64() as f32 * 16.0

@@ -507,6 +507,7 @@ impl AgentConsoleView {
                                 if this.sessions.selected_id() == Some(id) {
                                     if let Some(state) = this.native_history.get_mut(&id) {
                                         if state.toggle_entry(&snapshot, index) {
+                                            this.timeline.pause_following();
                                             cx.notify();
                                         }
                                     }

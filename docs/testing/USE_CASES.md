@@ -3329,6 +3329,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-31** — SDUC-475/564: reuse unchanged visible row layout/paint with bounded retained views; invalidate on content, source, typography/locale and width changes. Correct native benchmarking to exclude GPUI test-support and per-frame font discovery; record frame phases and input-to-submit separately (SDTEST-2875/2876, AGENTS_PERFORMANCE.md).
+
 - **2026-10-31** — SDUC-475/563/564: readable operation summaries, visible status motion and floating group collapse; large local/native timelines render viewport rows lazily while preserving drafts, reading anchors, source identity, exact copying and paging (SDTEST-2868–2874).
 
 - **2026-10-31** — SDUC-557: Claude Code and Codex runs over SSH can share the desktop browser through a scoped reverse forward and private temporary MCP adapter. SDTEST-2862–2867 cover transport, launch configuration, lifecycle and native CEF.
@@ -4759,6 +4761,11 @@ management, native discovery, context selection and queued execution. Project
 search and opening respect hierarchy and archive state; saved SSH choices refresh
 without redundant setup; older/large native conversations remain discoverable;
 failed context, catalog or queue operations preserve recoverable user work.
+Unchanged visible rows reuse measured layout and paint across unrelated notifications,
+while stream, source, locale, typography and width changes stay current. Native
+performance measurements use the production dependency graph, report CPU frame
+budgets separately from displayed FPS and keep input-to-submit limits explicit.
+Long agent prose is partitioned at complete Markdown block boundaries after full-document parsing, preserving references, code fences, tables and whole-message copy. Parsed document copies are bounded independently of source retention.
 Large conversations must keep visible transcript work bounded during scrolling,
 including expanded operation groups and imported pages. Stream and retention
 updates preserve the reader's surviving row and offset; explicit reveal/collapse

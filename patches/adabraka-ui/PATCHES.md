@@ -4,11 +4,20 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **206**
+Total markers in code: **208**
 (`rg "ShellDeck patch:" src/`; the per-entry `Markers` lists remain the
 inventory. SDPATCH-008 is an adapter and carries no marker of its own.)
 
 ## Patches
+
+### SDPATCH-128 — Share complete-document Markdown parsing with virtual prose
+
+- **Files / symbols**: `src/display/markdown.rs` — `parse_markdown_with_urls`; `src/display/rich_text.rs` — `render_blocks_compact_range`
+- **Markers**:
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-128 — preserve document-wide references while virtualizing long prose.`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-128 — range rendering keeps complete blocks and document spacing intact.`
+- **Why**: Parsing raw text chunks independently loses reference links and can split code/list/table syntax. Expose the existing parser so the conversation can render ranges of complete top-level blocks from the same document, using the existing rich-text renderer and URL policy.
+- **Upstream status**: not filed yet.
 
 ### SDPATCH-001 — `InputState::set_value` no-op when selection is empty
 
@@ -953,6 +962,8 @@ inventory. SDPATCH-008 is an adapter and carries no marker of its own.)
   suitable for upstreaming.
 
 ## Sync log
+
+- **2026-10-31** — Added SDPATCH-128: full-document parsing and compact block-range rendering for virtual prose. 2 markers added; source total 208.
 
 - **2026-07-07** — initial inventory. Marker count 13 = 1+1+1+3+1+4+2
   (SDPATCH-008 carries none by design). No sync yet.

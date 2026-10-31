@@ -18,12 +18,25 @@ use refineable::Refineable as _;
 use std::{cell::RefCell, ops::Range, rc::Rc};
 use sum_tree::{Bias, Dimensions, SumTree};
 
-type RenderItemFn = dyn FnMut(usize, &mut Window, &mut App) -> AnyElement + 'static;
+// ShellDeck patch: SDPATCH-125 — pass known row size without re-borrowing intrusive list state.
+type RenderItemFn = dyn FnMut(usize, Option<Size<Pixels>>, &mut Window, &mut App) -> AnyElement + 'static;
 
 /// Construct a new list element
 pub fn list(
     state: ListState,
-    render_item: impl FnMut(usize, &mut Window, &mut App) -> AnyElement + 'static,
+    mut render_item: impl FnMut(usize, &mut Window, &mut App) -> AnyElement + 'static,
+) -> List {
+    // ShellDeck patch: SDPATCH-125 — retain the original list callback contract.
+    list_with_cached_sizes(state, move |index, _, window, cx| render_item(index, window, cx))
+}
+
+/// A variable-height list whose renderer may reuse a measured row. The size is
+/// absent after width changes or explicit row invalidation, so cached views can
+/// fall back to natural layout. Clients must splice rows when their content changes.
+// ShellDeck patch: SDPATCH-125 — opt-in size-aware rendering for retained row views.
+pub fn list_with_cached_sizes(
+    state: ListState,
+    render_item: impl FnMut(usize, Option<Size<Pixels>>, &mut Window, &mut App) -> AnyElement + 'static,
 ) -> List {
     List {
         state,
@@ -614,7 +627,8 @@ impl StateInner {
             // If we're within the visible area or the height wasn't cached, render and measure the item's element
             if visible_height < available_height || size.is_none() {
                 let item_index = scroll_top.item_ix + ix;
-                let mut element = render_item(item_index, window, cx);
+                // ShellDeck patch: SDPATCH-125 — forward the current measurement to visible row rendering.
+                let mut element = render_item(item_index, item.size(), window, cx);
                 let element_size = element.layout_as_root(available_item_space, window, cx);
                 size = Some(element_size);
                 if visible_height < available_height {
@@ -651,7 +665,8 @@ impl StateInner {
                 cursor.prev();
                 if let Some(item) = cursor.item() {
                     let item_index = cursor.start().0;
-                    let mut element = render_item(item_index, window, cx);
+                    // ShellDeck patch: SDPATCH-125 — preserve natural sizing when filling upward.
+                    let mut element = render_item(item_index, item.size(), window, cx);
                     let element_size = element.layout_as_root(available_item_space, window, cx);
                     let focus_handle = item.focus_handle();
                     rendered_height += element_size.height;
@@ -702,7 +717,8 @@ impl StateInner {
                 let size = if let ListItem::Measured { size, .. } = item {
                     *size
                 } else {
-                    let mut element = render_item(cursor.start().0, window, cx);
+                    // ShellDeck patch: SDPATCH-125 — forward leading overdraw measurement.
+                    let mut element = render_item(cursor.start().0, item.size(), window, cx);
                     element.layout_as_root(available_item_space, window, cx)
                 };
 
@@ -737,7 +753,8 @@ impl StateInner {
             while let Some(item) = cursor.item() {
                 if item.contains_focused(window, cx) {
                     let item_index = cursor.start().0;
-                    let mut element = render_item(cursor.start().0, window, cx);
+                    // ShellDeck patch: SDPATCH-125 — retain focused-row measurement when rendering it offscreen.
+                    let mut element = render_item(cursor.start().0, item.size(), window, cx);
                     let size = element.layout_as_root(available_item_space, window, cx);
                     item_layouts.push_back(ItemLayout {
                         index: item_index,
@@ -810,7 +827,8 @@ impl StateInner {
                                 let Some(item) = cursor.item() else { break };
 
                                 let size = item.size().unwrap_or_else(|| {
-                                    let mut item = render_item(cursor.start().0, window, cx);
+                                    // ShellDeck patch: SDPATCH-125 — autoscroll measures unknown rows naturally.
+                                    let mut item = render_item(cursor.start().0, None, window, cx);
                                     let item_available_size =
                                         size(bounds.size.width.into(), AvailableSpace::MinContent);
                                     item.layout_as_root(item_available_size, window, cx)
