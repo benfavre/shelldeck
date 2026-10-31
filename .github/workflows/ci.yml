@@ -150,6 +150,11 @@ jobs:
           cargo build --locked -p shelldeck --bin shelldeck
           python3 scripts/test-agents-cli.py target/debug/shelldeck
 
+      - name: Verify production performance fixture
+        run: |
+          python3 scripts/test-agent-frame-benchmark.py
+          cargo check --locked -p shelldeck --features agent-preview --bin agent-console-preview
+
       - name: cargo clippy
         # `--no-deps` skips lints from vendored path deps under `patches/`
         # (adabraka-gpui / adabraka-ui): we don't own that code and per
@@ -277,9 +282,11 @@ jobs:
       - name: Verify SSH key formats and signed authentication
         run: cargo test --locked -p shelldeck-ssh --lib sdtest_2710
 
-      # `shelldeck-update` owns the binary-replacement paths, which differ per
-      # platform and are the ones that can leave a user without an executable.
-      # No GPUI, so it builds as cheaply as core here.
+      # Compile native rendering and DWM high-refresh timing on both platforms.
+      - name: Check production performance fixture
+        run: cargo check --locked -p shelldeck --features agent-preview --bin agent-console-preview
+
+      # Binary replacement differs per platform and must remain recoverable.
       - name: Test shelldeck-update
         run: cargo test -p shelldeck-update
 

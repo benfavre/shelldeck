@@ -434,6 +434,36 @@ pub fn render_blocks_compact(
     render_blocks_with_density(blocks, base_size, on_link_click, id_prefix, true)
 }
 
+/// Render a viewport range with the original document's leading/trailing spacing.
+// ShellDeck patch: SDPATCH-128 — range rendering keeps complete blocks and document spacing intact.
+pub fn render_blocks_compact_range(
+    blocks: &[RichBlock],
+    range: std::ops::Range<usize>,
+    base_size: Pixels,
+    on_link_click: &Option<LinkClickHandler>,
+    id_prefix: &str,
+) -> Vec<AnyElement> {
+    let mut block_idx = 0;
+    blocks
+        .iter()
+        .enumerate()
+        .take(range.end)
+        .skip(range.start)
+        .map(|(position, block)| {
+            render_block(
+                block,
+                base_size,
+                on_link_click,
+                id_prefix,
+                &mut block_idx,
+                true,
+                position == 0,
+                position + 1 == blocks.len(),
+            )
+        })
+        .collect()
+}
+
 fn render_blocks_with_density(
     blocks: &[RichBlock],
     base_size: Pixels,

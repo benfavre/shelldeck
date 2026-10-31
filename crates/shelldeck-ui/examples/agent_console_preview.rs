@@ -15,7 +15,11 @@ use shelldeck_ui::agent_console_view::{
 use std::{borrow::Cow, path::PathBuf, time::Duration};
 
 struct Assets;
-struct PreviewRoot(Entity<AgentConsoleView>, Option<PreviewProfile>);
+struct PreviewRoot(
+    Entity<AgentConsoleView>,
+    Option<PreviewProfile>,
+    SharedString,
+);
 
 // Opt-in native frame-cadence measurement; never touches provider or desktop input.
 struct PreviewProfile {
@@ -67,9 +71,8 @@ impl Render for PreviewRoot {
         // The production Workspace supplies the UI font; standalone fixtures must too.
         div()
             .size_full()
-            .font_family(shelldeck_ui::settings::normalize_ui_font_family(
-                "Inter", cx,
-            ))
+            // Match Workspace: resolve the OS font catalogue once, not per frame.
+            .font_family(self.2.clone())
             .child(self.0.clone())
     }
 }
@@ -87,7 +90,11 @@ impl AssetSource for Assets {
         Ok(Vec::new())
     }
 }
-fn main() -> anyhow::Result<()> {
+pub fn main() -> anyhow::Result<()> {
+    anyhow::ensure!(
+        std::env::var_os("SHELLDECK_PREVIEW_PROFILE").is_none() || !gpui::TEST_SUPPORT_ENABLED,
+        "Native frame profiling requires production GPUI semantics. Build with: cargo build -p shelldeck --features agent-preview --bin agent-console-preview"
+    );
     for key in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"] {
         let value = std::env::var_os(key)
             .ok_or_else(|| anyhow::anyhow!("{key} must name a disposable profile"))?;
@@ -198,6 +205,11 @@ fn main() -> anyhow::Result<()> {
     if std::env::var_os("SHELLDECK_PREVIEW_PERF").is_some() {
         let session = collection.get_mut(first).unwrap();
         session.rename("Large conversation performance", 10)?;
+        let paragraphs = std::env::var("SHELLDECK_PREVIEW_BODY_PARAGRAPHS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(12)
+            .clamp(1, 512);
         for index in 0..80 {
             session.begin_run(format!("Inspect fixture exchange {index}"), 20 + index * 4)?;
             session.apply_stream_event(
@@ -213,7 +225,7 @@ fn main() -> anyhow::Result<()> {
                 21 + index * 4,
                 true,
             );
-            session.apply_stream_event(AgentStreamEvent::Text(format!("### Result {index}\n\n{}", "Readable source and **retained context** with `inline code` and a useful explanation.\n\n".repeat(12))),22+index*4,true);
+            session.apply_stream_event(AgentStreamEvent::Text(format!("### Result {index}\n\n{}", "Readable source and **retained context** with `inline code` and a useful explanation.\n\n".repeat(paragraphs))),22+index*4,true);
             session.finish(AgentSessionStatus::Completed, 23 + index * 4, true)?;
         }
     }
@@ -335,6 +347,23 @@ fn main() -> anyhow::Result<()> {
                     .unwrap()
                     .to_path_buf();
                 cx.subscribe(&view, move |view, event: &AgentConsoleEvent, cx| {
+                    if std::env::var_os("SHELLDECK_PREVIEW_STREAM").is_some() {
+                        if let AgentConsoleEvent::Run(request) = event {
+                            view.update(cx, |view,cx| {
+                                view.begin_run(request.clone(),cx);
+                                view.push_stream_events_for(request.id,[AgentStreamEvent::Ready,AgentStreamEvent::Text("## Streaming fixture\n\n".to_string()+&"A readable streaming paragraph with **context** and `source`.\n\n".repeat(80))],cx);
+                            });
+                            let stream = view.downgrade();
+                            let run = request.id;
+                            cx.spawn(async move |cx| {
+                                for index in 0..180 {
+                                    cx.background_executor().timer(Duration::from_millis(16)).await;
+                                    if stream.update(cx, |view,cx|view.push_stream_event_for(run,AgentStreamEvent::TextDelta(format!(" Increment {index}.")),cx)).is_err() {return;}
+                                }
+                                let _=stream.update(cx,|view,cx|view.finish_run(run,Some(0),None,cx));
+                            }).detach();
+                        }
+                    }
                     if std::env::var_os("SHELLDECK_PREVIEW_ACTIVITY").is_some() {
                         if let AgentConsoleEvent::Run(request) = event {
                             view.update(cx, |view,cx| {
@@ -469,7 +498,7 @@ fn main() -> anyhow::Result<()> {
                         });
                     }).detach();
                 }
-                cx.new(|_| PreviewRoot(view, std::env::var_os("SHELLDECK_PREVIEW_PROFILE").map(|_| PreviewProfile::new())))
+                cx.new(|cx| PreviewRoot(view, std::env::var_os("SHELLDECK_PREVIEW_PROFILE").map(|_| PreviewProfile::new()), shelldeck_ui::settings::normalize_ui_font_family("Inter",cx).into()))
             },
         )
         .unwrap();

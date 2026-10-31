@@ -6,6 +6,11 @@
 
 extern crate self as gpui;
 
+/// Whether test-only eager redraw semantics are enabled in this GPUI build.
+/// Native performance fixtures must disable this feature before measuring frames.
+// ShellDeck patch: SDPATCH-124 — let profiling fixtures reject test-support rendering semantics.
+pub const TEST_SUPPORT_ENABLED: bool = cfg!(any(test, feature = "test-support"));
+
 #[macro_use]
 mod action;
 mod app;

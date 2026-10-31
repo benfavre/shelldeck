@@ -1,4 +1,8 @@
 mod app_menu;
+// ShellDeck patch: SDPATCH-127 — share refresh-ratio conversion with cross-platform regression tests.
+#[cfg(any(target_os = "windows", feature = "test-support"))]
+#[doc(hidden)]
+pub mod refresh_interval;
 mod keyboard;
 mod keystroke;
 /// Cross-platform single instance enforcement using Unix domain sockets and Windows named mutexes.

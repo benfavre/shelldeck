@@ -466,7 +466,10 @@ fn rendered_streaming_preserves_reading_position_and_fixed_composer() {
         assert_eq!(ui.composer(), composer);
         ui.wheel(250.0);
         assert!(!ui.at_end(), "a real wheel event must leave the end");
-        let before = ui.view.read_with(&ui.app, |view, _| view.scroll.offset());
+        let before = ui.view.read_with(&ui.app, |view, _| {
+            let top = view.timeline.list.logical_scroll_top();
+            (view.timeline.rows[top.item_ix].id, top.offset_in_item)
+        });
         ui.view.update(&mut ui.app, |view, cx| {
             view.push_stream_event_for(
                 run,
@@ -477,7 +480,10 @@ fn rendered_streaming_preserves_reading_position_and_fixed_composer() {
             )
         });
         ui.redraw();
-        let after = ui.view.read_with(&ui.app, |view, _| view.scroll.offset());
+        let after = ui.view.read_with(&ui.app, |view, _| {
+            let top = view.timeline.list.logical_scroll_top();
+            (view.timeline.rows[top.item_ix].id, top.offset_in_item)
+        });
         assert_eq!(
             after, before,
             "streaming cannot steal the reader's position"
@@ -1237,8 +1243,12 @@ fn rendered_warning_cards_and_expanded_work_do_not_crop_output() {
                 for expanded in [false, true] {
                     if expanded {
                         let selector = format!("agent-work-{completed}");
+                        ui.wheel(100000.0);
                         for _ in 0..8 {
-                            let control = ui.bounds(&selector).unwrap();
+                            let Some(control) = ui.bounds(&selector) else {
+                                ui.wheel(-100.0);
+                                continue;
+                            };
                             let viewport = ui.bounds("agent-timeline-scroll").unwrap();
                             if viewport.contains(&control.center()) {
                                 break;
@@ -1250,6 +1260,9 @@ fn rendered_warning_cards_and_expanded_work_do_not_crop_output() {
                         assert!(viewport.contains(&control.center()),"{width}x{height}, output={with_output}: control={control:?}, viewport={viewport:?}");
                         ui.click(&selector);
                     }
+                    // Expanded work can place the footer outside the virtual
+                    // viewport. Reach the warning and footer as a reader does.
+                    ui.wheel(-100000.0);
                     let card = ui.bounds(&format!("agent-trace-{warning}")).unwrap();
                     let content = ui
                         .bounds(&format!("agent-trace-{warning}-content"))
@@ -2312,9 +2325,10 @@ fn rendered_large_operation_group_virtualizes_children_without_losing_its_summar
             .id
     });
     assert!(
-        !ui.view
-            .read_with(&ui.app, |view, _| view.timeline.virtualized),
-        "a collapsed group is already inexpensive"
+        ui.view
+            .read_with(&ui.app, |view, _| view.timeline.rows.len())
+            < 16,
+        "collapsed operations must not materialize their hidden children"
     );
     let composer = ui.composer();
     ui.view
@@ -2504,4 +2518,346 @@ fn rendered_large_native_history_keeps_paging_copy_and_drafts_with_bounded_work(
         .borrow()
         .iter()
         .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+}
+
+// SDTEST-2875 — real redraws reuse unchanged rows without freezing actual controls.
+#[::core::prelude::v1::test]
+fn rendered_cached_rows_skip_unchanged_transcripts_and_keep_live_actions_current() {
+    let mut ui = Cockpit::new(ThemePreference::Dark, 900.0, 700.0, false);
+    seed_large_conversation(&mut ui);
+    ui.redraw();
+    ui.wheel(-100000.0);
+    ui.redraw();
+    let (message, original) = ui.view.read_with(&ui.app, |view, _| {
+        let message = view
+            .sessions
+            .get(ui.session)
+            .unwrap()
+            .messages
+            .last()
+            .unwrap();
+        (message.id, message.text.clone())
+    });
+    let copy_position = ui
+        .bounds(&format!("agent-message-copy-{message}"))
+        .unwrap()
+        .center();
+    ui.view
+        .read_with(&ui.app, |view, _| view.rendered_transcripts.set(0));
+    for _ in 0..5 {
+        ui.view.update(&mut ui.app, |_, cx| cx.notify());
+        ui.window.run_until_parked();
+    }
+    assert_eq!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.rendered_transcripts.get()),
+        0,
+        "unrelated notifications cannot rebuild immutable visible Markdown"
+    );
+    // Cached prepaint reuses native hitboxes; the test-only selector map is
+    // intentionally frame-local. Dispatch at the real measured control position.
+    ui.window
+        .simulate_mouse_move(copy_position, None, Modifiers::none());
+    ui.window.simulate_click(copy_position, Modifiers::none());
+    ui.redraw();
+    assert_eq!(
+        ui.app.read_from_clipboard().unwrap().text().unwrap(),
+        original
+    );
+    let run = ui.start();
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_event_for(
+            run,
+            AgentStreamEvent::Text("A current streaming answer.".into()),
+            cx,
+        )
+    });
+    ui.redraw();
+    let current = ui.view.read_with(&ui.app, |view, _| {
+        view.sessions
+            .get(ui.session)
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
+            .id
+    });
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_event_for(
+            run,
+            AgentStreamEvent::TextSnapshot("A replaced streaming body.".into()),
+            cx,
+        )
+    });
+    ui.redraw();
+    ui.app
+        .update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("not copied".into())));
+    ui.click(&format!("agent-message-copy-{current}"));
+    assert_eq!(
+        ui.app.read_from_clipboard().unwrap().text().unwrap(),
+        "A replaced streaming body."
+    );
+    ui.window
+        .update(|window, _| window.set_rem_size(gpui::px(20.0)));
+    ui.window
+        .simulate_resize(size(gpui::px(620.0), gpui::px(560.0)));
+    ui.redraw();
+    let composer = ui.composer();
+    ui.wheel(240.0);
+    ui.wheel(-100000.0);
+    assert_eq!(ui.composer(), composer);
+    ui.app
+        .update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("not copied".into())));
+    ui.click(&format!("agent-message-copy-{current}"));
+    assert_eq!(
+        ui.app.read_from_clipboard().unwrap().text().unwrap(),
+        "A replaced streaming body."
+    );
+    rust_i18n::set_locale("fr");
+    ShellDeckColors::set_theme(&ThemePreference::SolarizedLight);
+    ui.app.update(|cx| {
+        adabraka_ui::theme::install_theme(cx, crate::theme::adabraka_theme_from_palette());
+        cx.refresh_windows();
+    });
+    ui.redraw();
+    ui.wheel(-100000.0);
+    ui.app.update(|cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            "not copied after theme switch".into(),
+        ))
+    });
+    ui.click(&format!("agent-message-copy-{current}"));
+    assert_eq!(
+        ui.app.read_from_clipboard().unwrap().text().unwrap(),
+        "A replaced streaming body."
+    );
+    ui.type_draft("Retain this draft while rebuilding caches");
+    ui.view.update(&mut ui.app, |view, cx| {
+        let context = view.sessions.selected().unwrap().context.clone();
+        view.create_session("A separate cache source", context, cx)
+            .unwrap();
+    });
+    ui.redraw();
+    assert!(ui
+        .bounds(&format!("agent-message-copy-{current}"))
+        .is_none());
+    ui.view
+        .update(&mut ui.app, |view, cx| view.select_session(ui.session, cx));
+    ui.redraw();
+    assert_eq!(ui.draft(), "Retain this draft while rebuilding caches");
+    assert!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.timeline.row_cache_len())
+            <= 64
+    );
+}
+
+// SDTEST-2877 — cached native scenes retain the exact glyph and quad after sorting.
+#[::core::prelude::v1::test]
+fn cached_scene_replay_preserves_glyph_and_quad_identity_after_batch_sorting() {
+    gpui::verify_scene_replay_preserves_sorted_primitives();
+}
+
+// SDTEST-2878 / SDUC-564 — DWM fallback ratios must retain high-refresh timing without a panic.
+#[::core::prelude::v1::test]
+fn display_refresh_ratios_retain_high_and_fractional_rates() {
+    use gpui::refresh_interval::duration_from_ratio;
+    for (counts, frequency) in [
+        (1, 60),
+        (1, 120),
+        (1, 144),
+        (1, 240),
+        (1001, 60000),
+        (83333, 10000000),
+    ] {
+        let actual = duration_from_ratio(counts, frequency)
+            .unwrap()
+            .as_secs_f64();
+        assert!((actual - counts as f64 / frequency as f64).abs() < 1e-9);
+    }
+    assert!(duration_from_ratio(0, 120).is_none());
+    assert!(duration_from_ratio(1, 0).is_none());
+    assert!(duration_from_ratio(u64::MAX, 1).is_none());
+}
+
+// SDTEST-2880 / SDUC-475, SDUC-564 — long prose bounds layout within a single reply.
+#[::core::prelude::v1::test]
+fn rendered_long_prose_virtualizes_blocks_and_keeps_exact_actions_and_anchors() {
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        for (width, height) in [(900.0, 700.0), (620.0, 560.0)] {
+            let mut ui = Cockpit::new(theme.clone(), width, height, false);
+            let run = ui.start();
+            let original = format!("# Retained document\n\n{}\n[reference]: https://example.test/target\n",
+                "Retained **context** with `source` and a [reference link][reference] stays readable · é🌍.\n\n".repeat(200));
+            ui.view.update(&mut ui.app, |view, cx| {
+                view.push_stream_event_for(
+                    run,
+                    AgentStreamEvent::TextSnapshot(original.clone()),
+                    cx,
+                )
+            });
+            ui.redraw();
+            let message = ui.view.read_with(&ui.app, |view, _| {
+                let message = view
+                    .sessions
+                    .get(ui.session)
+                    .unwrap()
+                    .messages
+                    .last()
+                    .unwrap()
+                    .id;
+                assert!(
+                    view.timeline
+                        .rows
+                        .iter()
+                        .filter(|row| matches!(row.kind, timeline::Kind::MessagePart(_, _)))
+                        .count()
+                        > 20
+                );
+                message
+            });
+            let composer = ui.composer();
+            ui.click(&format!("agent-message-copy-{message}"));
+            assert_eq!(
+                ui.app.read_from_clipboard().unwrap().text().unwrap(),
+                original
+            );
+            ui.type_draft("Keep this instruction while reading a long reply");
+            ui.view
+                .read_with(&ui.app, |view, _| view.timeline.take_markdown_work());
+            for _ in 0..5 {
+                ui.wheel(180.0);
+                let work = ui
+                    .view
+                    .read_with(&ui.app, |view, _| view.timeline.take_markdown_work());
+                assert!(
+                    work > 0 && work < 128,
+                    "three harness draws must render viewport blocks rather than all 201: {work}"
+                );
+            }
+            let anchor = |ui: &Cockpit| {
+                ui.view.read_with(&ui.app, |view, _| {
+                    let top = view.timeline.list.logical_scroll_top();
+                    (
+                        view.timeline.rows[top.item_ix].id,
+                        view.timeline.rows[top.item_ix].kind.clone(),
+                        top.offset_in_item,
+                    )
+                })
+            };
+            let before = anchor(&ui);
+            let replacement = original.replace("Retained", "Updated!");
+            assert_eq!(replacement.len(), original.len());
+            ui.view.update(&mut ui.app, |view, cx| {
+                view.push_stream_event_for(
+                    run,
+                    AgentStreamEvent::TextSnapshot(replacement.clone()),
+                    cx,
+                )
+            });
+            ui.redraw();
+            assert!(
+                anchor(&ui) == before,
+                "same-length snapshots preserve the exact block and reading offset"
+            );
+            ui.window
+                .simulate_resize(size(gpui::px(620.0), gpui::px(560.0)));
+            ui.redraw();
+            ui.wheel(-100000.0);
+            ui.click(&format!("agent-message-copy-{message}"));
+            assert_eq!(
+                ui.app.read_from_clipboard().unwrap().text().unwrap(),
+                replacement
+            );
+            assert_eq!(
+                ui.draft(),
+                "Keep this instruction while reading a long reply"
+            );
+            if width == 620.0 {
+                assert_eq!(ui.composer(), composer);
+            }
+        }
+    }
+}
+
+// SDTEST-2882 / SDUC-551, SDUC-564 — transcript repaint does not rebuild or disable the sidebar.
+#[::core::prelude::v1::test]
+fn rendered_timeline_motion_reuses_navigator_and_search_stays_live() {
+    let mut ui = Cockpit::new(ThemePreference::Dark, 1100.0, 800.0, false);
+    seed_large_conversation(&mut ui);
+    ui.open_navigator();
+    let run = ui.start();
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_events_for(
+            run,
+            [
+                AgentStreamEvent::Ready,
+                AgentStreamEvent::Text("An existing streaming reply.".into()),
+            ],
+            cx,
+        )
+    });
+    ui.type_draft("Keep this unsent instruction");
+    ui.wheel(180.0);
+    let search = ui.bounds("agent-nav-search").unwrap().center();
+    let position = ui.bounds("agent-timeline-scroll").unwrap().center();
+    ui.window
+        .simulate_mouse_move(position, None, Modifiers::none());
+    ui.window.run_until_parked();
+    ui.view
+        .read_with(&ui.app, |view, _| view.rendered_navigators.set(0));
+    for _ in 0..5 {
+        ui.window.simulate_event(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Pixels(point(gpui::px(0.0), gpui::px(120.0))),
+            touch_phase: TouchPhase::Moved,
+            ..Default::default()
+        });
+        ui.window.run_until_parked();
+    }
+    assert_eq!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.rendered_navigators.get()),
+        0,
+        "scrolling must reuse the cached navigator"
+    );
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_event_for(
+            run,
+            AgentStreamEvent::TextDelta(" More readable context.".into()),
+            cx,
+        )
+    });
+    ui.window.run_until_parked();
+    assert_eq!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.rendered_navigators.get()),
+        0,
+        "selected reply deltas with empty search do not change navigator content"
+    );
+    // Hit the pre-cache control using its actual retained hitbox.
+    ui.window.simulate_click(search, Modifiers::none());
+    ui.window.simulate_input("freshneedle");
+    ui.window.run_until_parked();
+    assert!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.rendered_navigators.get())
+            > 0
+    );
+    ui.view
+        .read_with(&ui.app, |view, _| view.rendered_navigators.set(0));
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_event_for(run, AgentStreamEvent::TextDelta(" freshneedle".into()), cx)
+    });
+    ui.window.run_until_parked();
+    assert!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.rendered_navigators.get())
+            > 0,
+        "active transcript searches must refresh as streamed text starts matching"
+    );
+    assert!(ui
+        .bounds(&format!("agent-nav-session-{}", ui.session))
+        .is_some());
+    assert_eq!(ui.draft(), "Keep this unsent instruction");
 }
