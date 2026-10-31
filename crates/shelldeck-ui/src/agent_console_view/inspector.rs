@@ -1,6 +1,18 @@
 use super::*;
 
 impl AgentConsoleView {
+    pub(super) fn reveal_trace(&mut self, trace_id: Uuid, cx: &mut Context<Self>) {
+        if !self
+            .sessions
+            .selected()
+            .is_some_and(|session| session.trace.iter().any(|trace| trace.id == trace_id))
+        {
+            return;
+        }
+        self.focused_trace = Some(trace_id);
+        self.pending_trace_reveal = Some(trace_id);
+        cx.notify();
+    }
     pub(super) fn render_inspector_tabs(&self, cx: &mut Context<Self>) -> Div {
         let files_selected = self.inspector_tab == AgentInspectorTab::Files;
         let changes_selected = self.inspector_tab == AgentInspectorTab::Changes;
@@ -69,7 +81,7 @@ impl AgentConsoleView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let remote = matches!(session.context.target, AgentTarget::Ssh { .. });
-        let files = inspector_files(session);
+        let files = inspector_files(self.sessions.get(session.id).unwrap_or(session));
         let changed_count = files.iter().filter(|file| file.diff.is_some()).count();
         let files_selected = self.inspector_tab == AgentInspectorTab::Files;
         let changes_selected = self.inspector_tab == AgentInspectorTab::Changes;
@@ -139,9 +151,7 @@ impl AgentConsoleView {
                 .cursor_pointer()
                 .hover(|style| style.bg(ShellDeckColors::hover_bg()))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.focused_trace = Some(trace_id);
-                    this.pending_trace_reveal = Some(trace_id);
-                    cx.notify();
+                    this.reveal_trace(trace_id, cx);
                 }))
                 .child(
                     div()

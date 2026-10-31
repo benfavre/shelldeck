@@ -938,6 +938,17 @@ height inside the timeline. Wrapped command titles and retained output remain
 readable without overlapping the preparation indicator; short windows scroll
 the output while keeping the composer fixed (SDTEST-2858).
 
+Completed operations use a single-line command preview beneath their disclosure.
+Expanded groups expose a floating collapse control while reading their children;
+collapse reveals the matching summary without changing the draft or execution.
+Running operations show explicit status and a small motion indicator; completed,
+cancelled, offscreen and reduced-motion indicators schedule no animation frames.
+Large retained conversations, expanded operation groups and loaded native SSH
+pages use one variable-height virtual list. Rendering reads canonical source by
+identity for visible rows and a small overdraw, preserving exact copy/export,
+logical reading anchors during stream/retention updates, inspector reveal,
+Jump to latest and the fixed composer (SDTEST-2868–2874).
+
 The empty Claude Code/Codex session shows the shared subscription sign-in
 guide. SSH targets require their own installed CLI and provider login; local
 provider credentials are never forwarded to them.
@@ -3318,6 +3329,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-31** — SDUC-475/563/564: readable operation summaries, visible status motion and floating group collapse; large local/native timelines render viewport rows lazily while preserving drafts, reading anchors, source identity, exact copying and paging (SDTEST-2868–2874).
+
 - **2026-10-31** — SDUC-557: Claude Code and Codex runs over SSH can share the desktop browser through a scoped reverse forward and private temporary MCP adapter. SDTEST-2862–2867 cover transport, launch configuration, lifecycle and native CEF.
 
 - **2026-10-31** — SDUC-564: themed tree guides and indented children make folder/worktree ownership visible in the Agents navigator. SDTEST-2860 also checks guide alignment, containment and nested checkout indentation.
@@ -4733,6 +4746,12 @@ formats, including a 57.8 MB Jcode file and an older page from that file. The
 reader imposes a 128 MiB single-record safety limit, reported explicitly; it does
 not impose that limit on a streamed conversation file.
 
+Loaded pages with many entries share the variable-height timeline list. Paging
+opens the requested page at its start, and fresh-history/back transitions retain
+the original immutable source reference and unsent draft. Virtual rows resolve
+copy/reveal actions against that exact current page rather than retained widgets
+(SDTEST-2874).
+
 ### SDUC-564 — Complete Agents workflows remain coherent across navigation and recovery
 
 The acceptance journeys in `AGENTS_ACCEPTANCE.md` connect project entry, session
@@ -4740,7 +4759,11 @@ management, native discovery, context selection and queued execution. Project
 search and opening respect hierarchy and archive state; saved SSH choices refresh
 without redundant setup; older/large native conversations remain discoverable;
 failed context, catalog or queue operations preserve recoverable user work.
-Each change records regression and native-interaction evidence separately from
+Large conversations must keep visible transcript work bounded during scrolling,
+including expanded operation groups and imported pages. Stream and retention
+updates preserve the reader's surviving row and offset; explicit reveal/collapse
+and Jump to latest keep their respective targets reachable without losing drafts.
+Each change records regression, measured render work and native-interaction evidence separately from
 live provider coverage. The pinned T3 Code reference informs behavior, without
 implying support for every feature in that independent product.
 

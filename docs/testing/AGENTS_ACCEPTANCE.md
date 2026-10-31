@@ -409,3 +409,68 @@ Logs: `/tmp/shelldeck-remote-browser-workspace-final.log`,
 `/tmp/shelldeck-remote-browser-python-final.log`,
 `/tmp/shelldeck-remote-browser-native-reviewed.log`,
 `/tmp/shelldeck-remote-browser-clippy.log`.
+
+### Operation layout and large-conversation performance — 2026-10-31
+
+Completed work now puts a bounded single-line command preview beneath its
+summary. Expanded groups expose a themed floating collapse button when their
+header has left the viewport; it returns to that exact summary without changing
+the draft or following a stream. Running operations have explicit status and a
+small opacity pulse confined to the dot. Text stays opaque, and no operation
+frames are requested for offscreen/completed/cancelled/reduced-motion indicators.
+The preparation caption stays stable instead of leasing a recurring text timer.
+
+The render-path review removed full-history presentation clones, empty-query
+message scans in the navigator, and full message copies in action callbacks.
+Large local conversations, expanded operation children and native pages share
+GPUI's variable-height virtual list, with 160px overdraw and positive estimates
+until measured. Descriptors store identities/indices, while visible rows borrow
+the canonical source. Source retention limits and persisted payloads are unchanged.
+Independent header/footer changes preserve intervening measured row sizes.
+
+SDTEST-2868–2874 cover actual multiline preview/expansion, two themes, narrow
+layouts and larger fonts, visible/reduced/finished motion, floating collapse,
+240-operation expansion without jumping, same-length text snapshots, exact
+copy/reveal, surviving anchors after retention pruning, background-session
+updates, draft switching, resize, paging and fresh-history/back source recovery.
+The isolated offline workspace sweep passed **1,149 top-level tests**, including
+340 UI tests; the same ten explicit live/doc gates remain ignored. The core
+single-instance tests also execute two nested subprocess probes. Strict workspace
+all-target Clippy, formatting and whitespace checks passed (the fork retains
+CRLF; whitespace verification uses `core.whitespace=cr-at-eol`).
+
+The 80-exchange rendered fixture at 900×700 fell from **320 transcript body
+renders / 1.469 s** to **3 renders / about 29 ms** for the two-frame harness redraw.
+Steady redraw median was about 26 ms. These are test-platform layout measurements,
+not GPU FPS. Native Linux debug/Xwayland cadence measured 179 intervals with real
+wheel input in each fixture: large conversation p50 **49.93 ms**, p95 **50.18 ms**;
+short control p50 **49.93 ms**, p95 **50.26 ms**. This setup shows a shared roughly
+20-FPS cadence ceiling and no additional measured large-history penalty after
+virtualization; it does not establish release-build or Windows/macOS 60 FPS.
+Individual large message bodies remain atomic rows and are still laid out in full
+when visible. Workspace render/menu review confirmed that only the active surface is attached,
+Agents presentation skips the contextual sidebar refresh, and the menu consumes
+small metadata values rather than transcripts. Support already uses native list
+state; the terminal's channel-driven/coalesced grid repaint and `shape_line` hot
+path were left intact. This benchmark renders the full Agents fixture window,
+including its navigator and composer; it does not profile authenticated Workspace
+chrome, other modes, or live provider/terminal workloads.
+
+Native GPU walkthroughs used fresh XDG profiles, a masked real home and disabled
+network. Actual Send invokes a synthetic event adapter, with no provider, SSH
+host or desktop clipboard. Dark 1280×900: operation status, multiline disclosure,
+floating collapse and return to summary; Dark 620×560: fixed accessible composer.
+French Solarized Light 620×560: the same running, expanded and collapsed controls.
+Evidence: `/tmp/shelldeck-operation-native.OPbj72/02-running.png`,
+`04-scrolled-floating.png`, `05-collapsed.png`, `06-narrow.png`, and
+`/tmp/shelldeck-operation-light.QWegfM/02-running-light.png`,
+`03-floating-light.png`, `04-collapse-light.png`. The repeatable fixture flags are
+`SHELLDECK_PREVIEW_ACTIVITY=1`, `SHELLDECK_PREVIEW_PERF=1` and
+`SHELLDECK_PREVIEW_PROFILE=1`; profile mode needs external native wheel input for
+scroll cadence. Large/short benchmark root paths are recorded in
+`/tmp/shelldeck-operation-perf-root` and `/tmp/shelldeck-operation-perf-short-root`.
+
+Logs: `/tmp/shelldeck-operations-workspace-reviewed.log`,
+`/tmp/shelldeck-operations-focus-final.log`,
+`/tmp/shelldeck-operations-clippy-release.log`. This is controlled ShellDeck
+fixture evidence, not a live model or remote-server performance claim.

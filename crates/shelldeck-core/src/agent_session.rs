@@ -469,6 +469,44 @@ impl AgentSession {
         })
     }
 
+    /// Transient chrome/progress snapshot. History stays in the canonical session
+    /// and is read by identity only for visible rows. Never persist this lossy
+    /// presentation copy or use it as the source of a new execution request.
+    pub fn presentation_snapshot(&self) -> Self {
+        Self {
+            id: self.id,
+            name: self.name.clone(),
+            pinned: self.pinned,
+            archived: self.archived,
+            context: self.context.clone(),
+            remote_history: self.remote_history.clone(),
+            status: self.status,
+            created_at_ms: self.created_at_ms,
+            started_at_ms: self.started_at_ms,
+            updated_at_ms: self.updated_at_ms,
+            finished_at_ms: self.finished_at_ms,
+            unread_count: self.unread_count,
+            attention: self.attention,
+            messages: Vec::new(),
+            trace: Vec::new(),
+            turns: self.turns.clone(),
+            boundaries: Vec::new(),
+            plan: self.plan.clone(),
+            usage: self.usage.clone(),
+            metadata: self.metadata.clone(),
+            metadata_turn_id: self.metadata_turn_id,
+            question: self.question.clone(),
+            approval: self.approval.clone(),
+            sources: self.sources.clone(),
+            artifacts: self.artifacts.clone(),
+            subagents: self.subagents.clone(),
+            next_sequence: self.next_sequence,
+            provider_session_id: self.provider_session_id.clone(),
+            provider_session_context: self.provider_session_context.clone(),
+            current_turn_id: self.current_turn_id,
+        }
+    }
+
     pub fn provider_session_id(&self) -> Option<&str> {
         self.provider_session_id.as_deref()
     }
@@ -1098,24 +1136,35 @@ impl AgentSessionCollection {
             .split_whitespace()
             .map(str::to_lowercase)
             .collect::<Vec<_>>();
+        if terms.is_empty() {
+            return self.library_sessions(include_archived);
+        }
         self.library_sessions(include_archived)
             .into_iter()
             .filter(|session| {
-                let haystack = format!(
-                    "{}\n{}\n{}\n{:?}\n{}",
+                let metadata = format!(
+                    "{}\n{}\n{}\n{:?}",
                     session.name,
                     session.context.workdir,
                     session.context.target.label(),
-                    session.context.provider,
-                    session
-                        .messages
-                        .iter()
-                        .map(|message| message.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                    session.context.provider
                 )
                 .to_lowercase();
-                terms.iter().all(|term| haystack.contains(term))
+                let mut unmatched = terms
+                    .iter()
+                    .filter(|term| !metadata.contains(term.as_str()))
+                    .collect::<Vec<_>>();
+                if unmatched.is_empty() {
+                    return true;
+                }
+                for message in &session.messages {
+                    let text = message.text.to_lowercase();
+                    unmatched.retain(|term| !text.contains(term.as_str()));
+                    if unmatched.is_empty() {
+                        return true;
+                    }
+                }
+                false
             })
             .collect()
     }

@@ -2,7 +2,7 @@
 //! The GPUI test platform owns the clipboard, clock and window; providers never run.
 use super::*;
 use shelldeck_core::agent_remote_history::{
-    RemoteHistoryEntry, RemoteHistoryKind, RemoteHistoryPage,
+    RemoteHistoryEntry, RemoteHistoryKind, RemoteHistoryPage, RemoteHistoryPosition,
 };
 use shelldeck_core::config::app_config::ThemePreference;
 use std::{cell::RefCell, rc::Rc};
@@ -305,9 +305,8 @@ impl Cockpit {
     }
 
     fn at_end(&self) -> bool {
-        self.view.read_with(&self.app, |view, _| {
-            (view.scroll.max_offset().height + view.scroll.offset().y).abs() <= gpui::px(2.0)
-        })
+        self.view
+            .read_with(&self.app, |view, _| view.timeline.at_end(&view.scroll))
     }
 }
 
@@ -644,6 +643,8 @@ fn rendered_native_history_paging_exposes_retry_and_preserves_the_draft() {
     });
     ui.redraw();
     ui.type_draft("Keep this while browsing saved history");
+    ui.wheel(240.0);
+    assert!(!ui.at_end());
     ui.click("agent-jump-latest");
     ui.click("agent-history-bottom-older");
     let first = request(&ui);
@@ -709,6 +710,8 @@ fn rendered_native_history_paging_exposes_retry_and_preserves_the_draft() {
         view.complete_native_history(first, Err("Stale error".into()), cx)
     });
     ui.redraw();
+    assert!(ui.bounds("agent-history-entry-66").is_some());
+    ui.wheel(-100000.0);
     assert!(ui.bounds("agent-history-entry-129").is_some());
     assert_eq!(ui.draft(), "Keep this while browsing saved history");
     assert!(!ui.events.borrow().iter().any(|event| matches!(
@@ -1311,6 +1314,164 @@ fn rendered_warning_cards_and_expanded_work_do_not_crop_output() {
 }
 
 // SDTEST-2860 / SDUC-551, SDUC-564 — closed folders retain the open chat and pins stay above projects.
+
+// SDTEST-2868 — the collapsed command preview never paints a multiline shell script beside its label.
+#[::core::prelude::v1::test]
+fn rendered_completed_operation_previews_keep_multiline_commands_readable() {
+    use shelldeck_core::agent_session::AgentTraceUpdate;
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        for (width, rem) in [(900.0, 16.0), (620.0, 20.0)] {
+            let mut ui = Cockpit::new(theme.clone(), width, 700.0, false);
+            let run = ui.start();
+            let command="/bin/bash -lc \"python3 - <<'PY'\nfrom pathlib import Path\nfrom collections import Counter, defaultdict\nroot=Path('/srv/a project/é🌍')\nprint(root)\nPY\"";
+            ui.view.update(&mut ui.app, |view, cx| {
+                view.push_stream_event_for(
+                    run,
+                    AgentStreamEvent::Trace(AgentTraceUpdate {
+                        correlation_id: Some("multiline".into()),
+                        detail: AgentTraceKind::Command {
+                            command: command.into(),
+                            status: AgentTraceStatus::Succeeded,
+                            exit_code: Some(0),
+                            summary: Some("Retained output".into()),
+                        },
+                    }),
+                    cx,
+                )
+            });
+            ui.window
+                .update(|window, _| window.set_rem_size(gpui::px(rem)));
+            ui.redraw();
+            ui.wheel(-100000.0);
+            let id = ui.view.read_with(&ui.app, |view, _| {
+                view.sessions
+                    .get(ui.session)
+                    .unwrap()
+                    .trace
+                    .last()
+                    .unwrap()
+                    .id
+            });
+            let preview = ui.bounds(&format!("agent-work-preview-{id}")).unwrap();
+            let control = ui.bounds(&format!("agent-work-{id}")).unwrap();
+            assert!(
+                control.bottom() <= preview.top(),
+                "preview is beneath the disclosure"
+            );
+            assert!(
+                preview.size.height <= gpui::px(28.0 * rem / 16.0),
+                "collapsed shell preview must occupy one line: {preview:?}"
+            );
+            assert!(preview.right() <= ui.composer().right() + gpui::px(24.0));
+            ui.click(&format!("agent-work-{id}"));
+            let title = ui.bounds(&format!("agent-trace-{id}-title")).unwrap();
+            assert!(
+                title.size.height > preview.size.height,
+                "expansion retains every command line"
+            );
+            ui.view.read_with(&ui.app,|view,_|assert!(matches!(&view.sessions.get(ui.session).unwrap().trace.last().unwrap().detail,AgentTraceKind::Command {command:actual,..} if actual==command)));
+        }
+    }
+}
+
+// SDTEST-2869 — real scroll and floating collapse controls keep the reader in the same chat.
+#[::core::prelude::v1::test]
+fn rendered_floating_operation_collapse_returns_to_the_matching_summary() {
+    use shelldeck_core::agent_session::AgentTraceUpdate;
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        let mut ui = Cockpit::new(theme, 760.0, 650.0, false);
+        let run = ui.start();
+        ui.type_draft("Keep my next instruction");
+        ui.view.update(&mut ui.app, |view, cx| {
+            let updates = (0..6).map(|i| {
+                AgentStreamEvent::Trace(AgentTraceUpdate {
+                    correlation_id: Some(format!("long-{i}")),
+                    detail: AgentTraceKind::Command {
+                        command: format!("inspect-operation-{i}"),
+                        status: AgentTraceStatus::Succeeded,
+                        exit_code: Some(0),
+                        summary: Some(
+                            (0..30)
+                                .map(|line| format!("Operation {i} retained output line {line}\n"))
+                                .collect::<String>(),
+                        ),
+                    },
+                })
+            });
+            view.push_stream_events_for(run, updates, cx);
+        });
+        ui.redraw();
+        let id = ui.view.read_with(&ui.app, |view, _| {
+            view.sessions
+                .get(ui.session)
+                .unwrap()
+                .trace
+                .iter()
+                .find(|trace| trace.correlation_id.as_deref() == Some("long-0"))
+                .unwrap()
+                .id
+        });
+        let composer = ui.composer();
+        ui.click(&format!("agent-work-{id}"));
+        assert!(
+            ui.bounds("agent-collapse-floating").is_none(),
+            "the inline header is still visible"
+        );
+        ui.wheel(-420.0);
+        let floating = ui
+            .bounds("agent-collapse-floating")
+            .expect("floating collapse is reachable after the header scrolls away");
+        let viewport = ui.bounds("agent-timeline-scroll").unwrap();
+        assert!(viewport.contains(&floating.center()));
+        assert!(
+            floating.bottom() < composer.top(),
+            "the floating action never covers the composer"
+        );
+        let before = ui.view.read_with(&ui.app, |view, _| view.scroll.offset());
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.push_stream_event_for(
+                run,
+                AgentStreamEvent::Text("A new response arrives below while you read.".into()),
+                cx,
+            )
+        });
+        ui.redraw();
+        assert_eq!(
+            ui.view.read_with(&ui.app, |view, _| view.scroll.offset()),
+            before,
+            "incoming work must not steal the reading position"
+        );
+        ui.click("agent-collapse-floating");
+        assert!(ui.bounds("agent-collapse-floating").is_none());
+        let header = ui.bounds(&format!("agent-work-{id}")).unwrap();
+        assert!(
+            ui.bounds("agent-timeline-scroll")
+                .unwrap()
+                .contains(&header.center()),
+            "collapse returns to this group's summary"
+        );
+        assert_eq!(ui.composer(), composer);
+        assert_eq!(ui.draft(), "Keep my next instruction");
+        ui.view.read_with(&ui.app, |view, _| {
+            assert_eq!(view.sessions.selected_id(), Some(ui.session));
+            assert!(view.session_ui[&ui.session].expanded_activity.is_empty());
+            assert_eq!(
+                view.sessions
+                    .get(ui.session)
+                    .unwrap()
+                    .trace
+                    .iter()
+                    .filter(|trace| trace
+                        .correlation_id
+                        .as_deref()
+                        .is_some_and(|key| key.starts_with("long-")))
+                    .count(),
+                6
+            );
+        });
+    }
+}
+
 #[::core::prelude::v1::test]
 fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
     use super::navigation_groups::directory_group_key;
@@ -1711,4 +1872,587 @@ fn rendered_ssh_folders_preserve_source_search_collapse_and_independent_pages() 
             AgentConsoleEvent::Run(_) | AgentConsoleEvent::ReconnectSshSession { .. }
         )));
     }
+}
+
+// SDTEST-2871 — real production layout work stays proportional to the visible viewport.
+#[::core::prelude::v1::test]
+fn rendered_large_conversation_bounds_transcript_work_to_the_viewport() {
+    let mut ui = Cockpit::new(ThemePreference::Dark, 900.0, 700.0, false);
+    seed_large_conversation(&mut ui);
+    let started = std::time::Instant::now();
+    ui.redraw();
+    let count = ui
+        .view
+        .read_with(&ui.app, |view, _| view.rendered_transcripts.get());
+    eprintln!(
+        "large-conversation layout: {count} transcript renders in {:?}",
+        started.elapsed()
+    );
+    assert!(
+        count < 64,
+        "offscreen Markdown must not be parsed and laid out on every frame: {count}"
+    );
+    let mut timings = Vec::new();
+    for _ in 0..8 {
+        let now = std::time::Instant::now();
+        ui.redraw();
+        timings.push(now.elapsed());
+    }
+    timings.sort();
+    eprintln!(
+        "steady large-conversation redraw p50={:?}, max={:?}",
+        timings[timings.len() / 2],
+        timings.last().unwrap()
+    );
+    let composer = ui.composer();
+    for _ in 0..4 {
+        ui.view
+            .read_with(&ui.app, |view, _| view.rendered_transcripts.set(0));
+        ui.wheel(180.0);
+        let count = ui
+            .view
+            .read_with(&ui.app, |view, _| view.rendered_transcripts.get());
+        assert!(
+            count < 64,
+            "scrolling must remain bounded to visible/overdraw rows: {count}"
+        );
+        assert_eq!(ui.composer(), composer);
+    }
+}
+
+fn seed_large_conversation(ui: &mut Cockpit) {
+    use shelldeck_core::agent_session::AgentTraceUpdate;
+    ui.view.update(&mut ui.app,|view,_| {
+        let session=view.sessions.get_mut(ui.session).unwrap();
+        session.messages.clear();session.trace.clear();session.turns.clear();session.boundaries.clear();
+        for index in 0..80 {
+            session.begin_run(format!("Inspect fixture exchange {index}"),10+index*4).unwrap();
+            session.apply_stream_event(AgentStreamEvent::Trace(AgentTraceUpdate {correlation_id:Some(format!("fixture-{index}")),detail:AgentTraceKind::Command {
+                command:format!("read fixture-{index}.rs"),status:AgentTraceStatus::Succeeded,exit_code:Some(0),summary:Some("A retained command result\n".repeat(12))
+            }}),11+index*4,true);
+            session.apply_stream_event(AgentStreamEvent::Text(format!("### Result {index}\n\n{}", "Readable source and **retained context** with `inline code` and a useful explanation.\n\n".repeat(12))),12+index*4,true);
+            session.finish(AgentSessionStatus::Completed,13+index*4,true).unwrap();
+        }
+        view.rendered_transcripts.set(0);
+    });
+}
+
+// SDTEST-2870 — only a visible, running operation leases paint frames; text remains opaque.
+#[::core::prelude::v1::test]
+fn rendered_operation_motion_stops_when_hidden_finished_or_reduced() {
+    use shelldeck_core::agent_session::AgentTraceUpdate;
+    let frames = || activity::MOTION_FRAMES.with(|count| count.get());
+    let reset = || activity::MOTION_FRAMES.with(|count| count.set(0));
+    {
+        let mut ui = Cockpit::new(ThemePreference::Dark, 900.0, 700.0, false);
+        let run = ui.start();
+        let update = |status, summary| {
+            AgentStreamEvent::Trace(AgentTraceUpdate {
+                correlation_id: Some("motion".into()),
+                detail: AgentTraceKind::Command {
+                    command: "inspect the running operation".into(),
+                    status,
+                    exit_code: None,
+                    summary: Some(summary),
+                },
+            })
+        };
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.push_stream_event_for(
+                run,
+                update(AgentTraceStatus::Running, "Short output".into()),
+                cx,
+            )
+        });
+        ui.redraw();
+        reset();
+        ui.redraw();
+        assert!(
+            frames() > 0,
+            "a visible operation animates its small indicator"
+        );
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.push_stream_event_for(
+                run,
+                update(AgentTraceStatus::Succeeded, "Completed output".into()),
+                cx,
+            )
+        });
+        reset();
+        ui.redraw();
+        assert_eq!(
+            frames(),
+            0,
+            "completed work schedules no recurring operation frames"
+        );
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.push_stream_event_for(
+                run,
+                update(
+                    AgentTraceStatus::Running,
+                    "Long retained output line\n".repeat(120),
+                ),
+                cx,
+            )
+        });
+        ui.redraw();
+        ui.wheel(-100000.0);
+        reset();
+        ui.redraw();
+        assert_eq!(
+            frames(),
+            0,
+            "an offscreen running indicator must not animate the window"
+        );
+        ui.view
+            .update(&mut ui.app, |view, cx| view.finish_run(run, None, None, cx));
+        ui.wheel(100000.0);
+        reset();
+        ui.redraw();
+        assert_eq!(frames(), 0, "cancellation stops operation motion");
+    }
+    // The test platform has no OS motion preference setter. Render the actual
+    // canvas with the reduced-motion policy supplied by the production caller.
+    struct Reduced;
+    impl Render for Reduced {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size(gpui::px(32.0))
+                .child(activity::running_dot(ShellDeckColors::primary(), true))
+        }
+    }
+    let mut app = TestAppContext::single();
+    let handle = app.add_window(|_, _| Reduced);
+    let mut window = VisualTestContext::from_window(*handle, &app);
+    reset();
+    window.update(|window, cx| window.draw(cx).clear());
+    assert_eq!(
+        frames(),
+        0,
+        "reduced motion paints a static indicator without another frame"
+    );
+}
+
+// SDTEST-2872 — virtual rows preserve actual scroll, disclosure, copy and streaming authority.
+#[::core::prelude::v1::test]
+fn rendered_virtual_timeline_preserves_reveal_copy_reading_and_following() {
+    let mut ui = Cockpit::new(ThemePreference::SolarizedLight, 900.0, 700.0, false);
+    seed_large_conversation(&mut ui);
+    ui.redraw();
+    assert!(ui
+        .view
+        .read_with(&ui.app, |view, _| view.timeline.virtualized));
+    let composer = ui.composer();
+    let (first_trace, last_message, last_original) = ui.view.read_with(&ui.app, |view, _| {
+        let session = view.sessions.get(ui.session).unwrap();
+        let last = session.messages.last().unwrap();
+        (
+            session.trace.first().unwrap().id,
+            last.id,
+            last.text.clone(),
+        )
+    });
+    assert!(ui.at_end());
+    // The last message's actions are below a tall Markdown body; actual wheel
+    // input moves its end into view before copying exact canonical bytes.
+    ui.wheel(-100000.0);
+    ui.click(&format!("agent-message-copy-{last_message}"));
+    assert_eq!(
+        ui.app.read_from_clipboard().unwrap().text().unwrap(),
+        last_original
+    );
+    ui.wheel(240.0);
+    assert!(!ui.at_end());
+    assert_eq!(ui.composer(), composer);
+    // Same-length snapshots still invalidate the active row's cached height.
+    let run = ui.view.update(&mut ui.app, |view, cx| {
+        let request = view
+            .sessions
+            .begin_run(ui.session, "A subsequent turn", 400)
+            .unwrap();
+        let run = request.id;
+        view.begin_run(request, cx);
+        run
+    });
+    ui.redraw();
+    // Explicitly starting a new turn follows its end; wheel input opts out again.
+    assert!(ui.at_end());
+    let composer = ui.composer();
+    ui.wheel(240.0);
+    let before = ui.view.read_with(&ui.app, |view, _| {
+        let top = view.timeline.list.logical_scroll_top();
+        (view.timeline.rows[top.item_ix].id, top.offset_in_item)
+    });
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_event_for(
+            run,
+            AgentStreamEvent::Text("Streaming output below your reading position.".into()),
+            cx,
+        )
+    });
+    ui.redraw();
+    let after = ui.view.read_with(&ui.app, |view, _| {
+        let top = view.timeline.list.logical_scroll_top();
+        (view.timeline.rows[top.item_ix].id, top.offset_in_item)
+    });
+    assert_eq!(
+        after, before,
+        "a virtual list preserves its logical row and in-row reading offset"
+    );
+    let (snapshot_id, snapshot) = ui.view.read_with(&ui.app, |view, _| {
+        let last = view
+            .sessions
+            .get(ui.session)
+            .unwrap()
+            .messages
+            .last()
+            .unwrap();
+        let mut text = "x\n\n".repeat(last.text.len() / 3);
+        text.push_str(&"x".repeat(last.text.len() - text.len()));
+        (last.id, text)
+    });
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_event_for(run, AgentStreamEvent::TextSnapshot(snapshot.clone()), cx)
+    });
+    ui.redraw();
+    assert_eq!(
+        ui.view.read_with(&ui.app, |view, _| {
+            let top = view.timeline.list.logical_scroll_top();
+            (view.timeline.rows[top.item_ix].id, top.offset_in_item)
+        }),
+        before,
+        "same-length replacements cannot steal the reading anchor"
+    );
+
+    ui.view
+        .update(&mut ui.app, |view, cx| view.reveal_trace(first_trace, cx));
+    ui.redraw();
+    let trace = ui
+        .bounds(&format!("agent-trace-{first_trace}"))
+        .expect("inspector reveal materializes the exact retained operation");
+    assert!(ui
+        .bounds("agent-timeline-scroll")
+        .unwrap()
+        .contains(&trace.origin));
+    ui.click("agent-collapse-floating");
+    let header = ui.bounds(&format!("agent-work-{first_trace}")).unwrap();
+    assert!(ui
+        .bounds("agent-timeline-scroll")
+        .unwrap()
+        .contains(&header.center()));
+    assert_eq!(ui.composer(), composer);
+    ui.click("agent-jump-latest");
+    assert!(ui.at_end());
+    ui.click(&format!("agent-message-copy-{snapshot_id}"));
+    assert_eq!(
+        ui.app.read_from_clipboard().unwrap().text().unwrap(),
+        snapshot
+    );
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_event_for(
+            run,
+            AgentStreamEvent::TextDelta(" Continued streaming.".into()),
+            cx,
+        )
+    });
+    ui.redraw();
+    assert!(ui.at_end(), "streaming follows only after explicit Jump");
+    ui.wheel(240.0);
+    let retained_anchor = ui.view.read_with(&ui.app, |view, _| {
+        let top = view.timeline.list.logical_scroll_top();
+        (view.timeline.rows[top.item_ix].id, top.offset_in_item)
+    });
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_events_for(
+            run,
+            (0..140).map(|index| AgentStreamEvent::UserInputAccepted {
+                text: format!("Accepted follow-up fixture {index}"),
+            }),
+            cx,
+        )
+    });
+    ui.redraw();
+    assert_eq!(
+        ui.view.read_with(&ui.app, |view, _| {
+            let top = view.timeline.list.logical_scroll_top();
+            (view.timeline.rows[top.item_ix].id, top.offset_in_item)
+        }),
+        retained_anchor,
+        "canonical retention pruning preserves the surviving reader's identity"
+    );
+    ui.click("agent-jump-latest");
+    ui.type_draft("Keep this follow-up while checking old work");
+    let other = ui.view.update(&mut ui.app, |view, cx| {
+        let context = view.sessions.get(ui.session).unwrap().context.clone();
+        view.create_session("Another conversation", context, cx)
+            .unwrap()
+    });
+    ui.redraw();
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_event_for(
+            run,
+            AgentStreamEvent::TextDelta(" Background update.".into()),
+            cx,
+        )
+    });
+    ui.redraw();
+    assert_eq!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.sessions.selected_id()),
+        Some(other)
+    );
+    ui.view
+        .update(&mut ui.app, |view, cx| view.select_session(ui.session, cx));
+    ui.redraw();
+    assert_eq!(ui.draft(), "Keep this follow-up while checking old work");
+    ui.window
+        .simulate_resize(size(gpui::px(620.0), gpui::px(560.0)));
+    ui.view
+        .read_with(&ui.app, |view, _| view.rendered_transcripts.set(0));
+    ui.redraw();
+    assert!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.rendered_transcripts.get())
+            < 64,
+        "resizing remeasures only viewport rows"
+    );
+
+    assert!(ui.view.read_with(&ui.app, |view, _| view
+        .sessions
+        .get(ui.session)
+        .unwrap()
+        .trace
+        .iter()
+        .any(|trace| trace.id == first_trace)));
+}
+
+// SDTEST-2873 — a large expanded group has virtual children rather than one enormous list item.
+#[::core::prelude::v1::test]
+fn rendered_large_operation_group_virtualizes_children_without_losing_its_summary() {
+    use shelldeck_core::agent_session::AgentTraceUpdate;
+    let mut ui = Cockpit::new(ThemePreference::Dark, 900.0, 700.0, false);
+    let run = ui.start();
+    ui.type_draft("Preserve the instruction while reading operations");
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_events_for(
+            run,
+            (0..240).map(|index| {
+                AgentStreamEvent::Trace(AgentTraceUpdate {
+                    correlation_id: Some(format!("many-{index}")),
+                    detail: AgentTraceKind::Command {
+                        command: format!("inspect operation {index}"),
+                        status: AgentTraceStatus::Succeeded,
+                        exit_code: Some(0),
+                        summary: Some("Retained operation output\n".repeat(20)),
+                    },
+                })
+            }),
+            cx,
+        )
+    });
+    ui.redraw();
+    ui.wheel(-100000.0);
+    let group = ui.view.read_with(&ui.app, |view, _| {
+        view.sessions
+            .get(ui.session)
+            .unwrap()
+            .trace
+            .iter()
+            .find(|trace| trace.correlation_id.as_deref() == Some("many-0"))
+            .unwrap()
+            .id
+    });
+    assert!(
+        !ui.view
+            .read_with(&ui.app, |view, _| view.timeline.virtualized),
+        "a collapsed group is already inexpensive"
+    );
+    let composer = ui.composer();
+    ui.view
+        .read_with(&ui.app, |view, _| view.rendered_transcripts.set(0));
+    ui.click(&format!("agent-work-{group}"));
+    assert!(ui
+        .view
+        .read_with(&ui.app, |view, _| view.timeline.virtualized));
+    assert!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.rendered_transcripts.get())
+            < 64,
+        "expanding does not lay out every output"
+    );
+    let header = ui.bounds(&format!("agent-work-{group}")).unwrap();
+    assert!(
+        ui.bounds("agent-timeline-scroll")
+            .unwrap()
+            .contains(&header.center()),
+        "expansion preserves the summary instead of jumping to the final operation"
+    );
+    ui.wheel(-480.0);
+    assert!(
+        !ui.at_end(),
+        "a fast wheel gesture cannot jump over unmeasured operations to the end"
+    );
+    ui.click("agent-collapse-floating");
+    assert!(ui.bounds("agent-collapse-floating").is_none());
+    let header = ui.bounds(&format!("agent-work-{group}")).unwrap();
+    assert!(ui
+        .bounds("agent-timeline-scroll")
+        .unwrap()
+        .contains(&header.center()));
+    assert_eq!(ui.composer(), composer);
+    assert_eq!(
+        ui.draft(),
+        "Preserve the instruction while reading operations"
+    );
+    ui.view.read_with(&ui.app,|view,_| {
+        let session=view.sessions.get(ui.session).unwrap();
+        assert_eq!(session.trace.iter().filter(|trace|trace.correlation_id.as_deref().is_some_and(|key|key.starts_with("many-"))).count(),240);
+        assert!(session.trace.iter().all(|trace|matches!(&trace.detail,AgentTraceKind::Command {summary:Some(text),..} if text.ends_with("Retained operation output\n"))));
+    });
+}
+
+// SDTEST-2874 — imported pages share the lazy scroll owner and exact source actions.
+#[::core::prelude::v1::test]
+fn rendered_large_native_history_keeps_paging_copy_and_drafts_with_bounded_work() {
+    let mut ui = Cockpit::new(ThemePreference::Dark, 900.0, 700.0, true);
+    ui.type_draft("Keep this while reading a large imported page");
+    ui.view.update(&mut ui.app, |view, cx| {
+        let mut page = view.native_history[&ui.session].page.clone().unwrap();
+        page.total_entries = 128;
+        page.end = 64;
+        for index in 1..64 {
+            page.entries.push(RemoteHistoryEntry {
+                index,
+                kind: RemoteHistoryKind::Assistant,
+                title: None,
+                text: format!(
+                    "### Imported exchange {index}\n\n{}",
+                    "Readable **native context** and `source` stay available.\n\n".repeat(20)
+                ),
+                at_ms: None,
+                part: 1,
+                parts: 1,
+            });
+        }
+        view.install_native_history(ui.session, page);
+        view.rendered_transcripts.set(0);
+        cx.notify();
+    });
+    ui.redraw();
+    assert!(ui
+        .view
+        .read_with(&ui.app, |view, _| view.timeline.virtualized));
+    assert!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.rendered_transcripts.get())
+            < 32
+    );
+    let composer = ui.composer();
+    ui.wheel(100000.0);
+    ui.click("agent-history-toggle-0");
+    ui.click(&ui.source.clone().selector("copy"));
+    assert_eq!(
+        ui.app.read_from_clipboard().unwrap().text().unwrap(),
+        ui.original
+    );
+    ui.click("agent-history-toggle-0");
+    ui.wheel(-100000.0);
+    assert!(ui.bounds("agent-history-entry-63").is_some());
+    ui.click("agent-history-bottom-newer");
+    let request = ui
+        .events
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            AgentConsoleEvent::LoadSshHistory(request) => Some(request.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(request.query.position, RemoteHistoryPosition::After(64));
+    ui.view.update(&mut ui.app, |view, cx| {
+        let mut page = view.native_history[&ui.session].page.clone().unwrap();
+        page.start = 64;
+        page.end = 128;
+        for entry in &mut page.entries {
+            entry.index += 64;
+        }
+        view.complete_native_history(request, Ok(page), cx);
+        view.rendered_transcripts.set(0);
+    });
+    ui.redraw();
+    let first = ui
+        .bounds("agent-history-entry-64")
+        .expect("a completed page opens at its start");
+    assert!(ui
+        .bounds("agent-timeline-scroll")
+        .unwrap()
+        .contains(&first.center()));
+    assert!(ui.bounds("agent-history-entry-0").is_none());
+    assert!(
+        ui.view
+            .read_with(&ui.app, |view, _| view.rendered_transcripts.get())
+            < 32
+    );
+    // Fresh-history loading keeps one toolbar and returns through the original source.
+    ui.click("agent-history-fresh");
+    assert!(ui.bounds("agent-history-back").is_some());
+    assert!(ui.bounds("agent-history-entry-64").is_none());
+    let fresh = ui
+        .events
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            AgentConsoleEvent::LoadSshHistory(request) => Some(request.clone()),
+            _ => None,
+        })
+        .unwrap();
+    ui.view.update(&mut ui.app, |view, cx| {
+        let page = RemoteHistoryPage {
+            provider: AgentProvider::Codex,
+            session_id: "fixture-native".into(),
+            workdir: "/srv/fixture".into(),
+            model: None,
+            snapshot: "fresh-snapshot".into(),
+            start: 0,
+            end: 1,
+            total_entries: 1,
+            entries: vec![RemoteHistoryEntry {
+                index: 0,
+                kind: RemoteHistoryKind::Assistant,
+                title: None,
+                text: "Fresh source is read without replaying tools.".into(),
+                at_ms: None,
+                part: 1,
+                parts: 1,
+            }],
+            warnings: vec![],
+        };
+        view.complete_native_history(fresh, Ok(page), cx);
+    });
+    ui.redraw();
+    assert!(ui.bounds("agent-history-entry-0").is_some());
+    ui.click("agent-history-back");
+    let restored = ui
+        .events
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            AgentConsoleEvent::LoadSshHistory(request) => Some(request),
+            _ => None,
+        })
+        .unwrap()
+        .query
+        .snapshot
+        .clone();
+    assert_eq!(restored.as_deref(), Some("fixture-snapshot"));
+    assert_eq!(ui.composer(), composer);
+    assert_eq!(ui.draft(), "Keep this while reading a large imported page");
+    assert!(!ui
+        .events
+        .borrow()
+        .iter()
+        .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
 }

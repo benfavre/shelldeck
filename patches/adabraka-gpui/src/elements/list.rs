@@ -131,14 +131,17 @@ pub struct ListPrepaintState {
     layout: LayoutItemsResponse,
 }
 
+// ShellDeck patch: SDPATCH-123 — retain optional estimates until virtual rows are measured.
 #[derive(Clone)]
 enum ListItem {
     Unmeasured {
         focus_handle: Option<FocusHandle>,
+        estimated_height: Option<Pixels>,
     },
     Measured {
         size: Size<Pixels>,
         focus_handle: Option<FocusHandle>,
+        estimated_height: Option<Pixels>,
     },
 }
 
@@ -151,21 +154,34 @@ impl ListItem {
         }
     }
 
+    // ShellDeck patch: SDPATCH-123 — ignore estimate metadata when reading focus custody.
     fn focus_handle(&self) -> Option<FocusHandle> {
         match self {
-            ListItem::Unmeasured { focus_handle } | ListItem::Measured { focus_handle, .. } => {
+            ListItem::Unmeasured { focus_handle, .. } | ListItem::Measured { focus_handle, .. } => {
                 focus_handle.clone()
             }
         }
     }
 
+    // ShellDeck patch: SDPATCH-123 — keep focus checks independent of row estimates.
     fn contains_focused(&self, window: &Window, cx: &App) -> bool {
         match self {
-            ListItem::Unmeasured { focus_handle } | ListItem::Measured { focus_handle, .. } => {
+            ListItem::Unmeasured { focus_handle, .. } | ListItem::Measured { focus_handle, .. } => {
                 focus_handle
                     .as_ref()
                     .is_some_and(|handle| handle.contains_focused(window, cx))
             }
+        }
+    }
+    // ShellDeck patch: SDPATCH-123 — estimates survive measurement and width changes.
+    fn estimated_height(&self) -> Option<Pixels> {
+        match self {
+            Self::Unmeasured {
+                estimated_height, ..
+            }
+            | Self::Measured {
+                estimated_height, ..
+            } => *estimated_height,
         }
     }
 }
@@ -253,7 +269,11 @@ impl ListState {
         new_items.extend(
             focus_handles.into_iter().map(|focus_handle| {
                 spliced_count += 1;
-                ListItem::Unmeasured { focus_handle }
+                // ShellDeck patch: SDPATCH-123 — legacy splice callers keep zero-height unknown rows.
+                ListItem::Unmeasured {
+                    focus_handle,
+                    estimated_height: None,
+                }
             }),
             (),
         );
@@ -273,6 +293,36 @@ impl ListState {
                 *item_ix = *item_ix - (old_range.end - old_range.start) + spliced_count;
             }
         }
+    }
+
+    /// Replace rows with cheap positive height estimates. Actual layout replaces
+    /// each estimate when that row enters the viewport/overdraw. Existing splice
+    /// APIs retain their original behavior for callers without estimates.
+    // ShellDeck patch: SDPATCH-123 — unknown conversation rows must occupy scroll range.
+    pub fn splice_with_estimates(
+        &self,
+        old_range: Range<usize>,
+        heights: impl IntoIterator<Item = Pixels>,
+    ) {
+        let heights = heights
+            .into_iter()
+            .map(|height| height.max(px(1.)))
+            .collect::<Vec<_>>();
+        self.splice(old_range.clone(), heights.len());
+        let state = &mut *self.0.borrow_mut();
+        let mut old_items = state.items.cursor::<Count>(());
+        let mut new_items = old_items.slice(&Count(old_range.start), Bias::Right);
+        old_items.seek_forward(&Count(old_range.start + heights.len()), Bias::Right);
+        new_items.extend(
+            heights.into_iter().map(|height| ListItem::Unmeasured {
+                focus_handle: None,
+                estimated_height: Some(height),
+            }),
+            (),
+        );
+        new_items.append(old_items.suffix(), ());
+        drop(old_items);
+        state.items = new_items;
     }
 
     /// Set a handler that will be called when the list is scrolled.
@@ -582,7 +632,9 @@ impl StateInner {
             let size = size.unwrap();
             rendered_height += size.height;
             max_item_width = max_item_width.max(size.width);
+            // ShellDeck patch: SDPATCH-123 — preserve opt-in estimates after trailing measurement.
             measured_items.push_back(ListItem::Measured {
+                estimated_height: item.estimated_height(),
                 size,
                 focus_handle: item.focus_handle(),
             });
@@ -603,7 +655,9 @@ impl StateInner {
                     let element_size = element.layout_as_root(available_item_space, window, cx);
                     let focus_handle = item.focus_handle();
                     rendered_height += element_size.height;
+                    // ShellDeck patch: SDPATCH-123 — preserve estimates when filling upward from the bottom.
                     measured_items.push_front(ListItem::Measured {
+                        estimated_height: item.estimated_height(),
                         size: element_size,
                         focus_handle,
                     });
@@ -653,7 +707,9 @@ impl StateInner {
                 };
 
                 leading_overdraw += size.height;
+                // ShellDeck patch: SDPATCH-123 — preserve estimates during leading overdraw measurement.
                 measured_items.push_front(ListItem::Measured {
+                    estimated_height: item.estimated_height(),
                     size,
                     focus_handle: item.focus_handle(),
                 });
@@ -942,9 +998,13 @@ impl Element for List {
             .last_layout_bounds
             .is_none_or(|last_bounds| last_bounds.size.width != bounds.size.width)
         {
+            // ShellDeck patch: SDPATCH-123 — width reflow retains an estimated scroll range.
             let new_items = SumTree::from_iter(
                 state.items.iter().map(|item| ListItem::Unmeasured {
                     focus_handle: item.focus_handle(),
+                    estimated_height: item
+                        .estimated_height()
+                        .map(|estimate| item.size().map_or(estimate, |size| size.height)),
                 }),
                 (),
             );
@@ -1027,13 +1087,17 @@ impl Styled for List {
 impl sum_tree::Item for ListItem {
     type Summary = ListItemSummary;
 
+    // ShellDeck patch: SDPATCH-123 — include unmeasured opt-in heights in pixel navigation.
     fn summary(&self, _: ()) -> Self::Summary {
         match self {
-            ListItem::Unmeasured { focus_handle } => ListItemSummary {
+            ListItem::Unmeasured {
+                focus_handle,
+                estimated_height,
+            } => ListItemSummary {
                 count: 1,
                 rendered_count: 0,
                 unrendered_count: 1,
-                height: px(0.),
+                height: estimated_height.unwrap_or(px(0.)),
                 has_focus_handles: focus_handle.is_some(),
             },
             ListItem::Measured {

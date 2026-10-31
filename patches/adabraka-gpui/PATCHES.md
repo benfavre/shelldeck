@@ -8,11 +8,31 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total marker occurrences in code: **163**
+Total marker occurrences in code: **179**
 (`rg "ShellDeck patch:" src/`; SDPATCH-103, SDPATCH-119, and SDPATCH-121 are
 Cargo.toml-only and outside the src-scoped marker convention.)
 
 ## Patches
+
+### SDPATCH-123 — Estimated heights for virtual conversation rows
+
+- **Files / symbols**: `src/elements/list.rs` — `ListState::splice_with_estimates`, `ListItem` estimates, measurement and width reflow.
+- **Markers**:
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — retain optional estimates until virtual rows are measured.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — ignore estimate metadata when reading focus custody.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — keep focus checks independent of row estimates.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — estimates survive measurement and width changes.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — legacy splice callers keep zero-height unknown rows.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — unknown conversation rows must occupy scroll range.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — preserve opt-in estimates after trailing measurement.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — preserve estimates when filling upward from the bottom.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — preserve estimates during leading overdraw measurement.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — width reflow retains an estimated scroll range.`
+  - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-123 — include unmeasured opt-in heights in pixel navigation.`
+- **Why**: Unknown rows previously contributed zero to the scroll range. A fast wheel gesture through a newly expanded operation group could reach the measured range's end and jump to the final operation. The opt-in API supplies inexpensive positive height estimates until actual viewport layout replaces them. Existing splice/focusable clients keep their original zero-estimate behavior. Width reflow preserves opt-in estimates and logical row anchors remain authoritative.
+- **Validation**: SDTEST-2872/2873 exercise real variable-height scrolling, retention pruning, resize, expansion and floating collapse without rendering every row. Workspace and native compile gates cover the shared implementation.
+- **Upstream status**: not filed yet — opt-in list API in the existing fork.
+
 
 ### SDPATCH-122 — Observe only current-frame controls in interaction tests
 

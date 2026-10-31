@@ -272,3 +272,19 @@ This does not add T3's Working/Snoozed/Settled lifecycle or Git-remote grouping.
 
 SDTEST-2859–2861 cover scope, rendered navigation and discovery. Native Linux
 Dark and Solarized Light walkthroughs are recorded in `AGENTS_ACCEPTANCE.md`.
+
+## Timeline performance follow-up — 2026-10-31
+
+The already checked-out `cb9629e6891ef0745772b69f09c9acd0c6a74f7e`
+source uses a variable-height LegendList, stable row keys, a 90px initial estimate,
+message length/type buckets and separate follow/visible-position policies.
+[MessagesTimeline.tsx](https://github.com/pingdotgg/t3code/blob/cb9629e6891ef0745772b69f09c9acd0c6a74f7e/apps/web/src/components/chat/MessagesTimeline.tsx)
+contains those production policies. ShellDeck uses GPUI's native variable-height
+list with identity/index descriptors, positive initial estimates and a 160px
+overdraw. Expanded operation children become independent rows; large native pages
+use the same scroll owner. Short conversations keep their existing layout.
+Canonical history limits, raw payloads, source snapshots and execution routing
+remain authoritative. The rendered scenarios cover same-length replacements,
+retention pruning, source-bound copy, paging, reveal, collapse, resize, background
+streaming and drafts. This is a source comparison and ShellDeck fixture coverage;
+no new T3 runtime or live-provider performance run is claimed.
