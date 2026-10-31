@@ -15,9 +15,55 @@ use shelldeck_ui::agent_console_view::{
 use std::{borrow::Cow, path::PathBuf, time::Duration};
 
 struct Assets;
-struct PreviewRoot(Entity<AgentConsoleView>);
+struct PreviewRoot(Entity<AgentConsoleView>, Option<PreviewProfile>);
+
+// Opt-in native frame-cadence measurement; never touches provider or desktop input.
+struct PreviewProfile {
+    start: std::time::Instant,
+    last: Option<std::time::Instant>,
+    samples: Vec<Duration>,
+    frames: usize,
+    finished: bool,
+}
+impl PreviewProfile {
+    fn new() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            last: None,
+            samples: Vec::new(),
+            frames: 0,
+            finished: false,
+        }
+    }
+}
+
 impl Render for PreviewRoot {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(profile) = &mut self.1 {
+            if !profile.finished {
+                let now = std::time::Instant::now();
+                if profile.start.elapsed() >= Duration::from_secs(2) {
+                    if let Some(last) = profile.last.replace(now) {
+                        profile.samples.push(now.duration_since(last));
+                    }
+                    profile.frames += 1;
+                }
+                if profile.frames >= 180 {
+                    profile.finished = true;
+                    profile.samples.sort();
+                    eprintln!(
+                        "native large-conversation frame cadence: {} frames, p50={:?}, p95={:?}, max={:?}",
+                        profile.samples.len(),
+                        profile.samples[profile.samples.len() / 2],
+                        profile.samples[profile.samples.len() * 95 / 100],
+                        profile.samples.last().unwrap()
+                    );
+                } else {
+                    let entity = cx.entity_id();
+                    window.on_next_frame(move |_, cx| cx.notify(entity));
+                }
+            }
+        }
         // The production Workspace supplies the UI font; standalone fixtures must too.
         div()
             .size_full()
@@ -149,6 +195,28 @@ fn main() -> anyhow::Result<()> {
             8,
         )?;
     }
+    if std::env::var_os("SHELLDECK_PREVIEW_PERF").is_some() {
+        let session = collection.get_mut(first).unwrap();
+        session.rename("Large conversation performance", 10)?;
+        for index in 0..80 {
+            session.begin_run(format!("Inspect fixture exchange {index}"), 20 + index * 4)?;
+            session.apply_stream_event(
+                AgentStreamEvent::Trace(AgentTraceUpdate {
+                    correlation_id: Some(format!("fixture-{index}")),
+                    detail: AgentTraceKind::Command {
+                        command: format!("read fixture-{index}.rs"),
+                        status: AgentTraceStatus::Succeeded,
+                        exit_code: Some(0),
+                        summary: Some("A retained command result\n".repeat(12)),
+                    },
+                }),
+                21 + index * 4,
+                true,
+            );
+            session.apply_stream_event(AgentStreamEvent::Text(format!("### Result {index}\n\n{}", "Readable source and **retained context** with `inline code` and a useful explanation.\n\n".repeat(12))),22+index*4,true);
+            session.finish(AgentSessionStatus::Completed, 23 + index * 4, true)?;
+        }
+    }
     let mut snapshot = AgentSessionSnapshot {
         collection,
         ..Default::default()
@@ -267,6 +335,24 @@ fn main() -> anyhow::Result<()> {
                     .unwrap()
                     .to_path_buf();
                 cx.subscribe(&view, move |view, event: &AgentConsoleEvent, cx| {
+                    if std::env::var_os("SHELLDECK_PREVIEW_ACTIVITY").is_some() {
+                        if let AgentConsoleEvent::Run(request) = event {
+                            view.update(cx, |view,cx| {
+                                view.begin_run(request.clone(),cx);
+                                view.push_stream_event_for(request.id, AgentStreamEvent::Ready, cx);
+                                for index in 0..10 {
+                                    view.push_stream_event_for(request.id,AgentStreamEvent::Trace(AgentTraceUpdate {correlation_id:Some(format!("operation-{index}")),detail:AgentTraceKind::Command {command:format!("/bin/bash -lc \"python3 - <<'PY'\nfrom pathlib import Path\nfrom collections import Counter, defaultdict\nroot = Path('fixture-{index}')\nprint(root)\nPY\""), status:AgentTraceStatus::Succeeded,exit_code:Some(0),summary:Some("Retained fixture output, every original line remains available.\n".repeat(8))}}),cx);
+                                }
+                                view.push_stream_event_for(request.id,AgentStreamEvent::Trace(AgentTraceUpdate {correlation_id:Some("active-operation".into()),detail:AgentTraceKind::Command {command:"Inspect the conversation layout".into(),status:AgentTraceStatus::Running,exit_code:None,summary:Some("Checking the running layout and its readable status.".into())}}),cx);
+                            });
+                            let running = view.downgrade();
+                            let run = request.id;
+                            cx.spawn(async move |cx| {
+                                cx.background_executor().timer(Duration::from_secs(35)).await;
+                                let _ = running.update(cx, |view,cx| view.finish_run(run,Some(0),None,cx));
+                            }).detach();
+                        }
+                    }
                     if std::env::var_os("SHELLDECK_PREVIEW_CROPPED_TRACE").is_some() {
                         if let AgentConsoleEvent::Run(request) = event {
                             view.update(cx, |view, cx| {
@@ -338,6 +424,13 @@ fn main() -> anyhow::Result<()> {
                         view.scan_ssh_sessions(id,cx);
                     });
                 }
+                if std::env::var_os("SHELLDECK_PREVIEW_ACTIVITY").is_some() || std::env::var_os("SHELLDECK_PREVIEW_PERF").is_some() {
+                    let selected_view = view.downgrade();
+                    cx.spawn(async move |cx| {
+                        cx.background_executor().timer(Duration::from_millis(700)).await;
+                        let _ = selected_view.update(cx, |view,cx| view.select_session(first,cx));
+                    }).detach();
+                }
                 if preview_editor {
                     let editor_view = view.downgrade();
                     cx.spawn(async move |cx| {
@@ -376,7 +469,7 @@ fn main() -> anyhow::Result<()> {
                         });
                     }).detach();
                 }
-                cx.new(|_| PreviewRoot(view))
+                cx.new(|_| PreviewRoot(view, std::env::var_os("SHELLDECK_PREVIEW_PROFILE").map(|_| PreviewProfile::new())))
             },
         )
         .unwrap();

@@ -39,7 +39,8 @@ impl AgentConsoleView {
         session: &AgentSession,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !session_needs_deepseek_setup(session) {
+        let source = self.sessions.get(session.id).unwrap_or(session);
+        if source.context != session.context || !session_needs_deepseek_setup(source) {
             return None;
         }
         let context = session.context.clone();

@@ -191,6 +191,9 @@ impl AgentConsoleView {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
+        #[cfg(test)]
+        self.rendered_transcripts
+            .set(self.rendered_transcripts.get() + 1);
         let folded = fold_encoded(text, |bytes| {
             t!("agents.transcript.encoded_hidden", bytes = bytes).to_string()
         });

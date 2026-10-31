@@ -1669,14 +1669,28 @@ impl AgentConsoleView {
             .into_any_element()
     }
 
+    fn message_action_text(&self, session: Uuid, message: Uuid) -> Option<&str> {
+        if self.sessions.selected_id() != Some(session) {
+            return None;
+        }
+        self.sessions
+            .get(session)?
+            .messages
+            .iter()
+            .find(|entry| entry.id == message)
+            .map(|entry| entry.text.as_str())
+    }
+
     pub(super) fn render_message_actions(
         &self,
         message: &AgentMessage,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let copy = message.text.clone();
-        let quote = message.text.clone();
-        let retry = message.text.clone();
+        let session = self
+            .sessions
+            .selected_id()
+            .expect("message belongs to selected session");
+        let message_id = message.id;
         let role = message.role;
         let mut row = div().flex().gap(px(2.0)).pt(px(4.0));
         row = row.child(
@@ -1687,9 +1701,12 @@ impl AgentConsoleView {
                 .h(px(26.0))
                 .icon(IconSource::from("copy"))
                 .tooltip(t!("agents.composer.copy").to_string())
-                .on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
-                }),
+                .debug_selector(|| format!("agent-message-copy-{message_id}"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(text) = this.message_action_text(session, message_id) {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+                    }
+                })),
         );
         row = row.child(
             Button::new(("agent-quote-message", uuid_key(message.id)), "")
@@ -1699,22 +1716,24 @@ impl AgentConsoleView {
                 .h(px(26.0))
                 .icon(IconSource::from("reply"))
                 .tooltip(t!("agents.composer.quote").to_string())
+                .debug_selector(|| format!("agent-message-quote-{message_id}"))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(id) = this.sessions.selected_id() {
-                        if let Some(ui) = this.session_ui.get(&id) {
-                            let old = ui.prompt.read(cx).content().to_string();
-                            let text = format!(
-                                "{}\n\n{}",
-                                quote
-                                    .lines()
-                                    .map(|line| format!("> {line}"))
-                                    .collect::<Vec<_>>()
-                                    .join("\n"),
-                                old
-                            );
-                            ui.prompt
-                                .update(cx, |state, cx| state.replace_content(text, cx));
-                        }
+                    let Some(quote) = this.message_action_text(session, message_id) else {
+                        return;
+                    };
+                    if let Some(ui) = this.session_ui.get(&session) {
+                        let old = ui.prompt.read(cx).content().to_string();
+                        let text = format!(
+                            "{}\n\n{}",
+                            quote
+                                .lines()
+                                .map(|line| format!("> {line}"))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            old
+                        );
+                        ui.prompt
+                            .update(cx, |state, cx| state.replace_content(text, cx));
                     }
                     cx.notify();
                 })),
@@ -1728,13 +1747,17 @@ impl AgentConsoleView {
                     .h(px(26.0))
                     .icon(IconSource::from("pencil"))
                     .tooltip(t!("agents.composer.edit").to_string())
+                    .debug_selector(|| format!("agent-message-edit-{message_id}"))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(id) = this.sessions.selected_id() {
-                            if let Some(ui) = this.session_ui.get(&id) {
-                                ui.prompt.update(cx, |state, cx| {
-                                    state.replace_content(retry.clone(), cx)
-                                });
-                            }
+                        let Some(retry) = this
+                            .message_action_text(session, message_id)
+                            .map(str::to_owned)
+                        else {
+                            return;
+                        };
+                        if let Some(ui) = this.session_ui.get(&session) {
+                            ui.prompt
+                                .update(cx, |state, cx| state.replace_content(retry, cx));
                         }
                         cx.notify();
                     })),

@@ -21,7 +21,7 @@ pub(super) struct NativeHistoryUi {
     pending: Option<Uuid>,
     error: Option<String>,
     query: RemoteHistoryQuery,
-    expanded_entries: HashSet<u64>,
+    pub(super) expanded_entries: HashSet<u64>,
 }
 
 impl NativeHistoryUi {
@@ -54,6 +54,13 @@ fn remote(reference: &RemoteHistoryReference, title: &str) -> RemoteAgentSession
         model: reference.model.clone(),
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum HistoryPart {
+    All,
+    Header,
+    Footer,
+}
+
 impl AgentConsoleView {
     /// Context edits are proposals until a separate conversation is explicitly created.
     /// Never clear the imported source's live resume authority while retaining its timeline.
@@ -200,7 +207,7 @@ impl AgentConsoleView {
             && !self.remote_sessions.active
             && self.ssh_sessions.preview.is_none()
         {
-            follow_latest_if_at_end(&self.scroll);
+            self.timeline.follow(&self.scroll);
         }
         let query = RemoteHistoryQuery {
             snapshot: if reload {
@@ -277,8 +284,7 @@ impl AgentConsoleView {
                     && !self.remote_sessions.active
                     && self.ssh_sessions.preview.is_none()
                 {
-                    self.scroll
-                        .set_offset(point(gpui::Pixels::ZERO, gpui::Pixels::ZERO));
+                    self.timeline.top(&self.scroll);
                 }
                 state.error = None;
                 self.schedule_library_save(cx);
@@ -292,7 +298,7 @@ impl AgentConsoleView {
             && self.ssh_sessions.preview.is_none()
         {
             // Keep the footer and its retry reachable when an error adds content.
-            follow_latest_if_at_end(&self.scroll);
+            self.timeline.follow(&self.scroll);
         }
         cx.notify();
     }
@@ -420,14 +426,150 @@ impl AgentConsoleView {
         )
     }
 
+    pub(super) fn render_native_history_entry(
+        &self,
+        session: Uuid,
+        index: usize,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let Some(state) = self.native_history.get(&session) else {
+            return div().into_any_element();
+        };
+        let Some(page) = &state.page else {
+            return div().into_any_element();
+        };
+        let Some(entry) = page.entries.get(index) else {
+            return div().into_any_element();
+        };
+        let id = session;
+        let label = match entry.kind {
+            RemoteHistoryKind::User => t!("agents.role.you").to_string(),
+            RemoteHistoryKind::Assistant => page.provider.display_name().into(),
+            _ => entry
+                .title
+                .clone()
+                .unwrap_or_else(|| t!("agents.activity.title").to_string()),
+        };
+        let label = if entry.parts > 1 {
+            format!("{label} · {}/{}", entry.part, entry.parts)
+        } else {
+            label
+        };
+        let collapsible = matches!(
+            entry.kind,
+            RemoteHistoryKind::Tool | RemoteHistoryKind::Reasoning
+        );
+        let expanded = state.expanded_entries.contains(&entry.index);
+        let mut row = div()
+            .id(("native-history-entry", entry.index))
+            .debug_selector(|| format!("agent-history-entry-{}", entry.index))
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .flex_shrink_0()
+            .px(px(12.0))
+            .py(px(8.0))
+            .rounded(px(8.0));
+        if entry.kind == RemoteHistoryKind::User {
+            row = row.bg(ShellDeckColors::bg_surface());
+        }
+        if collapsible {
+            let snapshot = page.snapshot.clone();
+            let index = entry.index;
+            let toggle_label = if expanded {
+                t!("agents.transcript.collapse").to_string()
+            } else {
+                t!("agents.transcript.expand").to_string()
+            };
+            row = row.child(
+                div()
+                    .flex()
+                    .min_w_0()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        Button::new("history-entry-toggle", "")
+                            .debug_selector(|| format!("agent-history-toggle-{index}"))
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Icon)
+                            .flex_shrink_0()
+                            .icon(IconSource::from(if expanded {
+                                "chevron-down"
+                            } else {
+                                "chevron-right"
+                            }))
+                            .tooltip(toggle_label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.sessions.selected_id() == Some(id) {
+                                    if let Some(state) = this.native_history.get_mut(&id) {
+                                        if state.toggle_entry(&snapshot, index) {
+                                            cx.notify();
+                                        }
+                                    }
+                                }
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(label),
+                    ),
+            );
+        } else {
+            row = row.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(label),
+            );
+        }
+        if !collapsible || expanded {
+            row = row.child(self.render_transcript_text(
+                transcript::TranscriptId::Native {
+                    snapshot: page.snapshot.clone(),
+                    index: entry.index,
+                },
+                &entry.text,
+                matches!(
+                    entry.kind,
+                    RemoteHistoryKind::User | RemoteHistoryKind::Assistant
+                ),
+                window,
+                cx,
+            ));
+        }
+        row.into_any_element()
+    }
+
     pub(super) fn render_native_history(
         &self,
         session: &AgentSession,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.render_native_history_part(session, HistoryPart::All, window, cx)
+    }
+
+    pub(super) fn render_native_history_part(
+        &self,
+        session: &AgentSession,
+        part: HistoryPart,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let id = session.id;
         let state = self.native_history.get(&id);
+        if part == HistoryPart::Footer && state.and_then(|state| state.page.as_ref()).is_none() {
+            return div().into_any_element();
+        }
         let busy = state.is_some_and(|s| s.pending.is_some());
         let mut view = div()
             .w_full()
@@ -447,6 +589,7 @@ impl AgentConsoleView {
         if state.is_some_and(|state| state.fresh_view) {
             bar = bar.child(
                 Button::new("history-back", t!("agents.native_history.back").to_string())
+                    .debug_selector(|| "agent-history-back".into())
                     .size(ButtonSize::Sm)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.native_history.remove(&id);
@@ -483,6 +626,7 @@ impl AgentConsoleView {
                 t!("agents.native_history.fresh").to_string(),
             )
             .variant(ButtonVariant::Ghost)
+            .debug_selector(|| "agent-history-fresh".into())
             .size(ButtonSize::Sm)
             .disabled(busy)
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -597,113 +741,15 @@ impl AgentConsoleView {
                             .child(warning.clone()),
                     );
                 }
-                for entry in &page.entries {
-                    let label = match entry.kind {
-                        RemoteHistoryKind::User => t!("agents.role.you").to_string(),
-                        RemoteHistoryKind::Assistant => page.provider.display_name().into(),
-                        _ => entry
-                            .title
-                            .clone()
-                            .unwrap_or_else(|| t!("agents.activity.title").to_string()),
-                    };
-                    let label = if entry.parts > 1 {
-                        format!("{label} · {}/{}", entry.part, entry.parts)
-                    } else {
-                        label
-                    };
-                    let collapsible = matches!(
-                        entry.kind,
-                        RemoteHistoryKind::Tool | RemoteHistoryKind::Reasoning
-                    );
-                    let expanded = state.expanded_entries.contains(&entry.index);
-                    let mut row = div()
-                        .id(("native-history-entry", entry.index))
-                        .debug_selector(|| format!("agent-history-entry-{}", entry.index))
-                        .w_full()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.0))
-                        .flex_shrink_0()
-                        .px(px(12.0))
-                        .py(px(8.0))
-                        .rounded(px(8.0));
-                    if entry.kind == RemoteHistoryKind::User {
-                        row = row.bg(ShellDeckColors::bg_surface());
+                if part == HistoryPart::Header {
+                    return view.into_any_element();
+                }
+                if part == HistoryPart::All {
+                    for index in 0..page.entries.len() {
+                        view = view.child(self.render_native_history_entry(id, index, window, cx));
                     }
-                    if collapsible {
-                        let snapshot = page.snapshot.clone();
-                        let index = entry.index;
-                        let toggle_label = if expanded {
-                            t!("agents.transcript.collapse").to_string()
-                        } else {
-                            t!("agents.transcript.expand").to_string()
-                        };
-                        row = row.child(
-                            div()
-                                .flex()
-                                .min_w_0()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(
-                                    Button::new("history-entry-toggle", "")
-                                        .debug_selector(|| format!("agent-history-toggle-{index}"))
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Icon)
-                                        .flex_shrink_0()
-                                        .icon(IconSource::from(if expanded {
-                                            "chevron-down"
-                                        } else {
-                                            "chevron-right"
-                                        }))
-                                        .tooltip(toggle_label)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if this.sessions.selected_id() == Some(id) {
-                                                if let Some(state) =
-                                                    this.native_history.get_mut(&id)
-                                                {
-                                                    if state.toggle_entry(&snapshot, index) {
-                                                        cx.notify();
-                                                    }
-                                                }
-                                            }
-                                        })),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_size(px(11.0))
-                                        .text_color(ShellDeckColors::text_muted())
-                                        .child(label),
-                                ),
-                        );
-                    } else {
-                        row = row.child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(ShellDeckColors::text_muted())
-                                .child(label),
-                        );
-                    }
-                    if !collapsible || expanded {
-                        row = row.child(self.render_transcript_text(
-                            transcript::TranscriptId::Native {
-                                snapshot: page.snapshot.clone(),
-                                index: entry.index,
-                            },
-                            &entry.text,
-                            matches!(
-                                entry.kind,
-                                RemoteHistoryKind::User | RemoteHistoryKind::Assistant
-                            ),
-                            window,
-                            cx,
-                        ));
-                    }
-                    view = view.child(row);
+                } else {
+                    view = div().w_full().flex().flex_col().pb(px(20.0));
                 }
                 // Footer controls use a distinct ID scope.
                 let mut footer = div()

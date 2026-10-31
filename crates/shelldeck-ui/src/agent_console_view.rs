@@ -34,7 +34,7 @@ use uuid::Uuid;
 use crate::file_editor::file_browser::FileBrowserPanel;
 use crate::follow_scroll::{follow_latest_if_at_end, pin_to_latest};
 use crate::icons::lucide_icon;
-use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
+use crate::monolith::{animated_monolith, MonolithMotion};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -49,6 +49,7 @@ mod composer;
 mod composer_controls;
 #[path = "agent_console_view/editor.rs"]
 mod editor;
+mod timeline;
 pub use editor::save_local_document;
 pub use editor::{AgentFileOrigin, AgentFileSaveRequest};
 #[path = "agent_console_view/connection_repair.rs"]
@@ -379,6 +380,10 @@ pub struct AgentConsoleView {
     tools: AgentToolsUi,
     editors: editor::AgentEditorsUi,
     live_browsers: live_browser::AgentLiveBrowsersUi,
+    activity: activity::ActivityUi,
+    timeline: timeline::TimelineUi,
+    #[cfg(test)]
+    rendered_transcripts: std::cell::Cell<usize>,
     explorer: explorer::AgentExplorerUi,
     workflows: AgentWorkflowsUi,
     delivery: AgentDeliveryUi,
@@ -554,6 +559,10 @@ impl AgentConsoleView {
             agent_setup_expanded: false,
             inspector_tab: AgentInspectorTab::Files,
             focused_trace: None,
+            activity: activity::ActivityUi::new(scroll.clone()),
+            timeline: timeline::TimelineUi::default(),
+            #[cfg(test)]
+            rendered_transcripts: std::cell::Cell::new(0),
             focused_trace_anchor: ScrollAnchor::for_handle(scroll.clone()),
             pending_trace_reveal: None,
             surface_focus_requested: false,
@@ -909,7 +918,7 @@ impl AgentConsoleView {
             self.request_surface_focus(cx);
         }
         self.schedule_library_save(cx);
-        pin_to_latest(&self.scroll);
+        self.timeline.pin(&self.scroll);
         cx.notify();
         true
     }
@@ -934,7 +943,7 @@ impl AgentConsoleView {
             self.request_surface_focus(cx);
         }
         self.schedule_library_save(cx);
-        pin_to_latest(&self.scroll);
+        self.timeline.pin(&self.scroll);
         cx.notify();
         Ok(session_id)
     }
@@ -952,6 +961,9 @@ impl AgentConsoleView {
             ui.pending_approval = None;
             ui.received_delta = false;
             ui.received_output = false;
+        }
+        if self.sessions.selected_id() == Some(session_id) && self.sessions.surface_visible() {
+            self.timeline.pin(&self.scroll);
         }
         self.schedule_library_save(cx);
         cx.notify();
@@ -1048,6 +1060,9 @@ impl AgentConsoleView {
         let Some(session_id) = self.run_sessions.get(&run_id).copied() else {
             return false;
         };
+        if self.sessions.selected_id() == Some(session_id) {
+            self.timeline.epoch = self.timeline.epoch.wrapping_add(1);
+        }
         self.workflow_observe_event(run_id, &event, cx);
         self.acknowledge_live_input(run_id, session_id, &event, cx);
         if let AgentStreamEvent::InteractionResolved { id } = &event {
@@ -1058,7 +1073,7 @@ impl AgentConsoleView {
             }
         }
         if self.sessions.selected_id() == Some(session_id) && self.sessions.surface_visible() {
-            follow_latest_if_at_end(&self.scroll);
+            self.timeline.follow(&self.scroll);
         }
         let suppress_complete_jcode = matches!(event, AgentStreamEvent::Text(_))
             && self
@@ -1110,6 +1125,9 @@ impl AgentConsoleView {
         let Some(session_id) = self.run_sessions.remove(&run_id) else {
             return;
         };
+        if self.sessions.selected_id() == Some(session_id) {
+            self.timeline.epoch = self.timeline.epoch.wrapping_add(1);
+        }
         let error_present = error.is_some();
         let error_label = bounded_utf8(error.clone().unwrap_or_default(), MAX_ACTIVITY_BYTES);
         if let Some(error) = error {
@@ -1138,7 +1156,7 @@ impl AgentConsoleView {
             ui.pending_approval = None;
         }
         if self.sessions.selected_id() == Some(session_id) && self.sessions.surface_visible() {
-            follow_latest_if_at_end(&self.scroll);
+            self.timeline.follow(&self.scroll);
         }
         if self.sessions.selected_id() == Some(session_id) {
             self.apply_selected_context(cx);
@@ -1673,6 +1691,44 @@ impl AgentConsoleView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (icon, color, title, detail, stats) = trace_presentation(&trace.detail);
+        // A missing final tool event must not keep saying Running after its
+        // owning turn stopped. Preserve reported results; qualify unfinished work.
+        let mut status = activity::operation_status(&trace.detail);
+        if matches!(
+            status,
+            Some(AgentTraceStatus::Running | AgentTraceStatus::Pending)
+        ) {
+            if let Some(turn) = self.sessions.selected().and_then(|session| {
+                session
+                    .turns
+                    .iter()
+                    .find(|turn| Some(turn.id) == trace.turn_id)
+            }) {
+                status = match turn.status {
+                    AgentSessionStatus::Cancelled => Some(AgentTraceStatus::Cancelled),
+                    AgentSessionStatus::Completed | AgentSessionStatus::Failed => {
+                        Some(AgentTraceStatus::Unknown)
+                    }
+                    _ => status,
+                };
+            }
+        }
+        let color = if matches!(
+            status,
+            Some(AgentTraceStatus::Cancelled | AgentTraceStatus::Unknown)
+        ) {
+            ShellDeckColors::text_muted()
+        } else {
+            color
+        };
+        let animate = status == Some(AgentTraceStatus::Running)
+            && self.sessions.surface_visible()
+            && self.sessions.selected().is_some_and(|session| {
+                matches!(
+                    session.status,
+                    AgentSessionStatus::Starting | AgentSessionStatus::Running
+                ) && trace.turn_id == session.current_turn_id()
+            });
         let title = if matches!(trace.detail, AgentTraceKind::Activity { .. }) {
             Self::concise_activity_label(title)
         } else {
@@ -1776,6 +1832,36 @@ impl AgentConsoleView {
                                         .text_size(px(9.0))
                                         .text_color(ShellDeckColors::text_muted())
                                         .child(stats),
+                                )
+                            })
+                            .when_some(status, |row, status| {
+                                let mut label = div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .flex_shrink_0()
+                                    .debug_selector(|| {
+                                        format!("agent-operation-status-{}", trace.id)
+                                    })
+                                    .text_size(px(10.0))
+                                    .text_color(color);
+                                if animate {
+                                    label = label.child(activity::running_dot(
+                                        color,
+                                        cx.prefers_reduced_motion(),
+                                    ));
+                                }
+                                row.child(
+                                    label.child(
+                                        div()
+                                            .debug_selector(|| {
+                                                format!(
+                                                    "agent-operation-outcome-{}-{status:?}",
+                                                    trace.id
+                                                )
+                                            })
+                                            .child(activity::status_label(status)),
+                                    ),
                                 )
                             }),
                     )
@@ -1908,7 +1994,7 @@ impl Render for AgentConsoleView {
         let mut session = self
             .sessions
             .selected()
-            .cloned()
+            .map(AgentSession::presentation_snapshot)
             .expect("cockpit retains one session");
         session.context = self.displayed_context(cx);
         if self.tools.inspector_context.as_ref() != Some(&session.context) {
@@ -1963,20 +2049,14 @@ impl Render for AgentConsoleView {
         let status = session.status;
         let attention = session.attention;
         let elapsed = session_elapsed(&session);
-        let timeline = if self
-            .native_history
-            .get(&session_id)
-            .is_some_and(|state| state.fresh_view)
-        {
-            Vec::new()
-        } else {
-            activity::group_completed_work(merged_timeline(&session))
-        };
-        let received_output = self
-            .session_ui
-            .get(&session_id)
-            .is_some_and(|ui| ui.received_output);
-        let has_content = !timeline.is_empty();
+        let timeline = self.timeline.project(
+            self.sessions.get(session_id).expect("selected session"),
+            &self.session_ui[&session_id],
+            self.focused_trace,
+            window.rem_size(),
+            self.native_history.get(&session_id),
+        );
+        let has_content = !timeline.is_empty() || self.timeline.virtualized;
         let context_expanded = self.context_expanded;
 
         let header = div()
@@ -2111,6 +2191,7 @@ impl Render for AgentConsoleView {
                     })),
             );
 
+        let activity_frame = activity::ActivityFrame::default();
         let mut output = div()
             .id(("agent-console-output", uuid_key(session_id)))
             .debug_selector(|| "agent-timeline-scroll".into())
@@ -2122,7 +2203,7 @@ impl Render for AgentConsoleView {
             .track_scroll(&self.scroll)
             .px(if wide { px(24.0) } else { px(12.0) })
             .py(px(16.0));
-        if session.remote_history.is_some() {
+        if !self.timeline.virtualized && session.remote_history.is_some() {
             output = output.child(self.render_native_history(&session, window, cx));
         }
         if !has_content && session.remote_history.is_none() {
@@ -2179,7 +2260,7 @@ impl Render for AgentConsoleView {
                     output = output.child(div().w_full().max_w(px(520.0)).mx_auto().child(setup));
                 }
             }
-        } else {
+        } else if !self.timeline.virtualized {
             let mut timeline_view = div()
                 .flex_shrink_0()
                 .w_full()
@@ -2189,136 +2270,45 @@ impl Render for AgentConsoleView {
                 .flex_col()
                 .gap(px(8.0));
             for item in &timeline {
-                match item {
-                    TimelineItem::Message(message) => {
-                        let color = match message.role {
-                            AgentMessageRole::User => ShellDeckColors::text_muted(),
-                            AgentMessageRole::Agent => ShellDeckColors::text_muted(),
-                            AgentMessageRole::Error => ShellDeckColors::error(),
-                        };
-                        let label = match message.role {
-                            AgentMessageRole::User => t!("agents.role.you").to_string(),
-                            AgentMessageRole::Agent => message
-                                .provider
-                                .unwrap_or(context.provider)
-                                .display_name()
-                                .to_string(),
-                            AgentMessageRole::Error => t!("agents.activity.title").to_string(),
-                        };
-                        timeline_view = timeline_view.child(
-                            div()
-                                .id(("agent-message", uuid_key(message.id)))
-                                .debug_selector(|| format!("agent-message-{}", message.id))
-                                .flex_shrink_0()
-                                .w_full()
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .py(px(10.0))
-                                .when(message.role == AgentMessageRole::User, |message| {
-                                    message
-                                        .w(relative(0.85))
-                                        .ml_auto()
-                                        .px(px(16.0))
-                                        .rounded(px(12.0))
-                                        .bg(ShellDeckColors::bg_surface())
-                                })
-                                .when(message.role == AgentMessageRole::Error, |message| {
-                                    message
-                                        .px(px(9.0))
-                                        .rounded(px(5.0))
-                                        .bg(ShellDeckColors::error().opacity(0.10))
-                                })
-                                .child(
-                                    div()
-                                        .mb(px(4.0))
-                                        .text_size(px(10.5))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(color)
-                                        .child(label),
-                                )
-                                .child(self.render_transcript_text(
-                                    transcript::TranscriptId::Message(message.id),
-                                    &message.text,
-                                    true,
-                                    window,
-                                    cx,
-                                ))
-                                .child(self.render_message_actions(message, cx)),
-                        );
-                    }
-                    TimelineItem::Boundary(boundary) => {
-                        let key=match boundary.reason {
-                            shelldeck_core::agent_session::AgentHistoryBoundaryReason::ContextChanged=>"agents.parity.context_boundary",
-                            shelldeck_core::agent_session::AgentHistoryBoundaryReason::ApplicationRestart=>"agents.parity.restart_boundary",
-                            shelldeck_core::agent_session::AgentHistoryBoundaryReason::ConversationNotResumed=>"agents.parity.fresh_boundary",
-                            shelldeck_core::agent_session::AgentHistoryBoundaryReason::ForkedConversation=>"agents.parity.fork_boundary",
-                        };
-                        timeline_view = timeline_view.child(
-                            div()
-                                .py(px(9.0))
-                                .border_y_1()
-                                .border_color(ShellDeckColors::border())
-                                .text_size(px(10.5))
-                                .text_color(ShellDeckColors::text_muted())
-                                .child(t!(key).to_string()),
-                        );
-                    }
-                    TimelineItem::CompletedWork(traces) => {
-                        timeline_view = timeline_view
-                            .child(self.render_completed_work(session_id, traces, window, cx));
-                    }
-                    TimelineItem::Trace(trace) => {
-                        timeline_view = timeline_view.child(self.render_trace(
-                            trace,
-                            self.focused_trace == Some(trace.id),
-                            window,
-                            cx,
-                        ));
-                    }
-                }
+                timeline_view = timeline_view.child(self.render_indexed_timeline_row(
+                    item,
+                    activity_frame.clone(),
+                    true,
+                    window,
+                    cx,
+                ));
             }
-            if status.is_active() && !received_output {
-                timeline_view = timeline_view.child(
-                    div()
-                        .debug_selector(|| "agent-preparing-output".into())
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap(px(7.0))
-                        .py(px(4.0))
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(animated_monolith(
-                            "agent-console-thinking",
-                            28.0,
-                            MonolithMotion::Thinking,
-                            cx,
-                        ))
-                        .child(animated_loading_text(
-                            "agent-console-thinking-text",
-                            t!("agents.status.preparing").to_string(),
-                            cx,
-                        )),
-                );
-            }
-            timeline_view = timeline_view
-                .children(self.render_auth_recovery(&session, cx))
-                .child(self.render_run_progress(&session, cx))
-                .child(self.render_turn_change_cards(&session, cx));
+            timeline_view = timeline_view.child(self.render_timeline_footer(&session, cx));
             output = output.child(timeline_view);
             if let Some(trace_id) = self.pending_trace_reveal.take() {
                 if self.focused_trace == Some(trace_id)
-                    && session.trace.iter().any(|trace| trace.id == trace_id)
+                    && self.sessions.get(session_id).is_some_and(|session| {
+                        session.trace.iter().any(|trace| trace.id == trace_id)
+                    })
                 {
                     // Schedule from render: the expanded trace must first acquire
                     // its new anchor bounds during this frame's prepaint.
-                    self.focused_trace_anchor.scroll_to(window, cx);
+                    if self.timeline.virtualized {
+                        self.timeline.reveal(trace_id, false);
+                    } else {
+                        self.focused_trace_anchor.scroll_to(window, cx);
+                    }
                     window.on_next_frame(|window, _| window.refresh());
                     window.request_animation_frame();
                 }
             }
         }
 
+        if self.timeline.virtualized {
+            if let Some(id) = self.pending_trace_reveal.take() {
+                self.timeline.reveal(id, false);
+            }
+        }
+        let output = if self.timeline.virtualized {
+            self.render_virtual_timeline(wide, cx)
+        } else {
+            output.into_any_element()
+        };
         let composer = self.render_composer(&session, window, cx);
         let mut content = div()
             .flex()
@@ -2358,14 +2348,18 @@ impl Render for AgentConsoleView {
         if context_expanded {
             content = content.child(self.render_context(!wide, window, cx));
         }
-        let away = (self.scroll.max_offset().height.to_f64() + self.scroll.offset().y.to_f64())
-            .abs()
-            > 4.0;
+        let away = !self.timeline.at_end(&self.scroll);
         content = content.child(self.render_middle_switcher(cx));
         if self.agent_editor_visible(cx) {
             content = content.child(self.render_middle_editor(cx));
         } else {
-            content = content.child(output);
+            content = content.child(self.render_activity_viewport(
+                session_id,
+                output,
+                activity_frame,
+                window,
+                cx,
+            ));
             if away {
                 content = content.child(
                     div().flex().justify_center().flex_shrink_0().child(
@@ -2376,7 +2370,7 @@ impl Render for AgentConsoleView {
                             .h(px(28.0))
                             .icon(IconSource::from("arrow-down"))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                pin_to_latest(&this.scroll);
+                                this.timeline.pin(&this.scroll);
                                 cx.notify();
                             })),
                     ),
@@ -2414,7 +2408,7 @@ impl Render for AgentConsoleView {
                 this.toggle_navigator(cx);
             }))
             .on_action(cx.listener(|this, _: &AgentJumpLatest, _, cx| {
-                pin_to_latest(&this.scroll);
+                this.timeline.pin(&this.scroll);
                 cx.notify();
             }))
             .relative()
@@ -2577,15 +2571,29 @@ fn session_elapsed(session: &AgentSession) -> Option<String> {
     })
 }
 
+fn trace_is_visible(session: &AgentSession, trace: &AgentTraceEvent) -> bool {
+    let provider = trace
+        .turn_id
+        .and_then(|id| session.turns.iter().find(|turn| turn.id == id))
+        .map(|turn| turn.context.provider);
+    // Hide bookkeeping retained by older Jcode parsers without deleting history.
+    !(matches!(
+        provider,
+        Some(AgentProvider::Jcode | AgentProvider::DeepSeek)
+    ) && matches!(&trace.detail, AgentTraceKind::Activity { label } if matches!(label.as_str(), "start" | "connection type" | "connection phase" | "message end" | "tokens" | "upstream provider" | "session" | "tool input")))
+}
+
 fn merged_timeline(session: &AgentSession) -> Vec<TimelineItem> {
     let mut timeline = Vec::with_capacity(session.messages.len() + session.trace.len());
     timeline.extend(session.messages.iter().cloned().map(TimelineItem::Message));
-    timeline.extend(session.trace.iter().filter(|trace| {
-        let provider = trace.turn_id.and_then(|id| session.turns.iter().find(|turn| turn.id == id)).map(|turn| turn.context.provider);
-        // Hide bookkeeping retained by older Jcode parsers without deleting history.
-        !(matches!(provider, Some(AgentProvider::Jcode | AgentProvider::DeepSeek))
-            && matches!(&trace.detail, AgentTraceKind::Activity { label } if matches!(label.as_str(), "start" | "connection type" | "connection phase" | "message end" | "tokens" | "upstream provider" | "session" | "tool input")))
-    }).cloned().map(TimelineItem::Trace));
+    timeline.extend(
+        session
+            .trace
+            .iter()
+            .filter(|trace| trace_is_visible(session, trace))
+            .cloned()
+            .map(TimelineItem::Trace),
+    );
     timeline.extend(
         session
             .boundaries
