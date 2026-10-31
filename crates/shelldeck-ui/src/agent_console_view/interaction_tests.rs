@@ -2010,6 +2010,55 @@ fn rendered_operation_motion_stops_when_hidden_finished_or_reduced() {
         reset();
         ui.redraw();
         assert_eq!(frames(), 0, "cancellation stops operation motion");
+        let trace = ui.view.read_with(&ui.app, |view, _| {
+            view.sessions
+                .get(ui.session)
+                .unwrap()
+                .trace
+                .iter()
+                .find(|trace| trace.correlation_id.as_deref() == Some("motion"))
+                .unwrap()
+                .id
+        });
+        assert!(
+            ui.bounds(&format!("agent-operation-outcome-{trace}-Cancelled"))
+                .is_some(),
+            "unfinished work no longer says Running after Stop"
+        );
+        assert!(ui
+            .bounds(&format!("agent-operation-outcome-{trace}-Running"))
+            .is_none());
+        let ended = ui.start();
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.push_stream_event_for(
+                ended,
+                AgentStreamEvent::Trace(AgentTraceUpdate {
+                    correlation_id: Some("missing-final-result".into()),
+                    detail: AgentTraceKind::Command {
+                        command: "Inspect a missing final result".into(),
+                        status: AgentTraceStatus::Running,
+                        exit_code: None,
+                        summary: None,
+                    },
+                }),
+                cx,
+            );
+            view.finish_run(ended, Some(0), None, cx);
+        });
+        reset();
+        ui.redraw();
+        let unfinished = ui.view.read_with(&ui.app, |view, _| {
+            view.sessions
+                .get(ui.session)
+                .unwrap()
+                .trace
+                .iter()
+                .find(|trace| trace.correlation_id.as_deref() == Some("missing-final-result"))
+                .unwrap()
+                .id
+        });
+        assert!(ui.bounds(&format!("agent-operation-outcome-{unfinished}-Unknown")).is_some(), "provider completion without a final operation event cannot fabricate success or keep Running");
+        assert_eq!(frames(), 0);
     }
     // The test platform has no OS motion preference setter. Render the actual
     // canvas with the reduced-motion policy supplied by the production caller.

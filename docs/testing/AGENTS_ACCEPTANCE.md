@@ -419,6 +419,10 @@ the draft or following a stream. Running operations have explicit status and a
 small opacity pulse confined to the dot. Text stays opaque, and no operation
 frames are requested for offscreen/completed/cancelled/reduced-motion indicators.
 The preparation caption stays stable instead of leasing a recurring text timer.
+Unfinished operations show Cancelled after their owning turn is stopped, or an
+unknown result if it ends without a final tool event; reported success/failure
+and retained source details are preserved. SDTEST-2870 checks the rendered
+post-Stop caption in addition to stopped motion.
 
 The render-path review removed full-history presentation clones, empty-query
 message scans in the navigator, and full message copies in action callbacks.
@@ -472,5 +476,7 @@ scroll cadence. Large/short benchmark root paths are recorded in
 
 Logs: `/tmp/shelldeck-operations-workspace-reviewed.log`,
 `/tmp/shelldeck-operations-focus-final.log`,
-`/tmp/shelldeck-operations-clippy-release.log`. This is controlled ShellDeck
+`/tmp/shelldeck-operations-clippy-release.log`. The final caption follow-up passed
+`/tmp/shelldeck-operations-status-final-test.log` and strict all-target Clippy in
+`/tmp/shelldeck-operations-status-reviewed-clippy.log`. This is controlled ShellDeck
 fixture evidence, not a live model or remote-server performance claim.

@@ -1125,6 +1125,9 @@ impl AgentConsoleView {
         let Some(session_id) = self.run_sessions.remove(&run_id) else {
             return;
         };
+        if self.sessions.selected_id() == Some(session_id) {
+            self.timeline.epoch = self.timeline.epoch.wrapping_add(1);
+        }
         let error_present = error.is_some();
         let error_label = bounded_utf8(error.clone().unwrap_or_default(), MAX_ACTIVITY_BYTES);
         if let Some(error) = error {
@@ -1688,7 +1691,36 @@ impl AgentConsoleView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (icon, color, title, detail, stats) = trace_presentation(&trace.detail);
-        let status = activity::operation_status(&trace.detail);
+        // A missing final tool event must not keep saying Running after its
+        // owning turn stopped. Preserve reported results; qualify unfinished work.
+        let mut status = activity::operation_status(&trace.detail);
+        if matches!(
+            status,
+            Some(AgentTraceStatus::Running | AgentTraceStatus::Pending)
+        ) {
+            if let Some(turn) = self.sessions.selected().and_then(|session| {
+                session
+                    .turns
+                    .iter()
+                    .find(|turn| Some(turn.id) == trace.turn_id)
+            }) {
+                status = match turn.status {
+                    AgentSessionStatus::Cancelled => Some(AgentTraceStatus::Cancelled),
+                    AgentSessionStatus::Completed | AgentSessionStatus::Failed => {
+                        Some(AgentTraceStatus::Unknown)
+                    }
+                    _ => status,
+                };
+            }
+        }
+        let color = if matches!(
+            status,
+            Some(AgentTraceStatus::Cancelled | AgentTraceStatus::Unknown)
+        ) {
+            ShellDeckColors::text_muted()
+        } else {
+            color
+        };
         let animate = status == Some(AgentTraceStatus::Running)
             && self.sessions.surface_visible()
             && self.sessions.selected().is_some_and(|session| {
@@ -1819,7 +1851,18 @@ impl AgentConsoleView {
                                         cx.prefers_reduced_motion(),
                                     ));
                                 }
-                                row.child(label.child(activity::status_label(status)))
+                                row.child(
+                                    label.child(
+                                        div()
+                                            .debug_selector(|| {
+                                                format!(
+                                                    "agent-operation-outcome-{}-{status:?}",
+                                                    trace.id
+                                                )
+                                            })
+                                            .child(activity::status_label(status)),
+                                    ),
+                                )
                             }),
                     )
                     .when_some(detail, |column, detail| {
