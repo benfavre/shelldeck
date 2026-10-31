@@ -1,4 +1,5 @@
 pub mod agent_files;
+pub mod browser_bridge;
 pub mod client;
 pub mod directory_browser;
 pub mod error;

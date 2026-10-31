@@ -22,5 +22,6 @@ base64 = "0.22"
 rustix = { workspace = true }
 
 [dev-dependencies]
+shelldeck-browser = { path = "../shelldeck-browser" }
 tempfile = { workspace = true }
 rand = { version = "0.10", features = ["thread_rng"] }

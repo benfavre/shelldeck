@@ -7489,6 +7489,7 @@ dependencies = [
  "rustix 0.38.44",
  "serde",
  "serde_json",
+ "shelldeck-browser",
  "shelldeck-core",
  "tempfile",
  "thiserror 2.0.18",

@@ -2751,7 +2751,7 @@ native_browser.open_link_tab = "Ouvrir le lien dans un nouvel onglet"
 native_browser.copy_selection = "Copier la sélection"
 native_browser.paste_text = "Coller le texte"
 native_browser.control_info = "Autorise les clics, la saisie et la navigation pour les nouvelles exécutions de cette session. Désactiver révoque immédiatement le contrôle en cours."
-native_browser.control_unavailable = "Le contrôle par l’agent nécessite une session locale compatible, autorisée à modifier."
+native_browser.control_unavailable = "Le contrôle par l’agent nécessite une session compatible, autorisée à modifier."
 native_browser.leave_page_title = "Quitter cette page ?"
 native_browser.leave_page = "Quitter la page"
 native_browser.stay_on_page = "Rester sur la page"
@@ -2760,7 +2760,10 @@ native_browser.stay_on_page = "Rester sur la page"
 
 "agents.live_browser.context_limit" = "Jusqu’à %{count} sessions de navigation peuvent rester ouvertes. Fermez une session pour en ouvrir une autre."
 
-"agents.live_browser.local_tools" = "Les outils de navigation sont disponibles pour les exécutions locales Codex, Claude Code et Automonique."
+"agents.live_browser.local_tools" = "Les outils de navigation sont disponibles pour Codex et Claude Code en local et via SSH, ainsi que pour Automonique en local."
+
+"agents.live_browser.bridge_unavailable" = "L’accès au navigateur est indisponible. Rouvrez le navigateur et réessayez."
+"agents.live_browser.remote_expired" = "L’accès au navigateur a pris fin avant la connexion de l’agent distant. Rouvrez le navigateur et réessayez."
 
 "agents.live_browser.close" = "Fermer le navigateur"
 

@@ -2751,7 +2751,7 @@ native_browser.open_link_tab = "Open link in new tab"
 native_browser.copy_selection = "Copy selection"
 native_browser.paste_text = "Paste text"
 native_browser.control_info = "Allows clicking, typing, and navigation for new runs in this browser session. Turning this off revokes current control immediately."
-native_browser.control_unavailable = "Agent control requires a supported local session with permission to make changes."
+native_browser.control_unavailable = "Agent control requires a supported session with permission to make changes."
 native_browser.leave_page_title = "Leave this page?"
 native_browser.leave_page = "Leave page"
 native_browser.stay_on_page = "Stay on page"
@@ -2760,7 +2760,10 @@ native_browser.stay_on_page = "Stay on page"
 
 "agents.live_browser.context_limit" = "Up to %{count} browser sessions can stay open. Close a session to open another."
 
-"agents.live_browser.local_tools" = "Browser tools are available to local Codex, Claude Code, and Automonique runs."
+"agents.live_browser.local_tools" = "Browser tools are available to local and SSH Codex and Claude Code runs, and local Automonique runs."
+
+"agents.live_browser.bridge_unavailable" = "Browser access is unavailable. Reopen the browser and retry."
+"agents.live_browser.remote_expired" = "Browser access ended before the remote agent connected. Reopen the browser and retry."
 
 "agents.live_browser.close" = "Close browser"
 

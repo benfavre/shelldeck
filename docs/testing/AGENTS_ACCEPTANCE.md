@@ -23,7 +23,7 @@ project/session sidebar, composer, and browser beside the conversation.
 | Continue after external changes | Refresh can read current server history without duplicating retained local messages; compaction recovery preserves draft and resume identity; late responses cannot switch conversations. | SDTEST-2818 and private refreshed-history/back-to-chat walkthrough. |
 | Compose and choose a model | Context is visible, controls retain valid draft choices; availability/loading/error states are honest; model options come from actual provider support; failed attachment intake leaves a recoverable draft. | Composer/model/context tests in this pass; live provider catalog claims require a real provider read. |
 | Send, work, stop, retry | Transcript remains ordered, no transport lifecycle spam; draft/queue survives failed admission; tool/approval activity remains usable; stopping is distinct from failure; background streams do not steal focus. | Core/UI runtime and queue tests plus controlled native fixture. A fixture is not evidence of a real provider turn. |
-| Inspect the work | Files/Changes/Terminal actions are coherent; browser is a companion pane; no duplicate toolbars/errors; unavailable capabilities explain an actionable next step. | Earlier inspector/browser walkthrough; current source regression review. Live Chromium and provider/browser control require a working helper, not a screenshot fixture. |
+| Inspect the work | Files/Changes/Terminal actions are coherent; browser is a companion pane; no duplicate toolbars/errors; unavailable capabilities explain an actionable next step. SSH Claude/Codex can share the desktop browser with the same tab scope and control permissions. | Earlier inspector/browser walkthrough; SDTEST-2862–2867 cover scoped SSH forwarding, private provider configuration and grant retirement. The packaged-CEF SSH fixture checks actual snapshots, PNG screenshots, clicks, typing and refusal of read-only/out-of-scope actions. Real provider and external SSH runs remain distinct opt-in evidence. |
 | Recover account/network failures | Errors are local to the failed operation; last known list/catalog is retained; refresh is meaningful; logout cancels/invalidate pending reads; no silent new chat on failed native resume. | Request identity/epoch/destination tests and error-state walkthrough. |
 | Reopen after restart | Local text and drafts preserved; saved SSH choice can refresh once visible; collapse choice survives; native history reads passively; original conversation resumes only after revalidation. | Automated preference/source round-trips; private full-app restart retained selected project, unsent draft and sidebar visibility. SSH auto-refresh-on-restore is state-tested; resume revalidation remains explicit. |
 
@@ -347,3 +347,65 @@ Native Linux GPU evidence: `/tmp/shelldeck-tree-gutter-qa/01-dark.png`,
 `03-narrow-ssh.png`. The isolated fixtures used no providers, network or desktop
 clipboard. The production app was rebuilt separately; the user's running
 instance was left open.
+
+### Remote agents sharing the desktop browser — 2026-10-31
+
+**Source review:** Workspace attaches browser access after normal run admission,
+using the exact run UUID, saved connection UUID and execution context. Local MCP
+launch options remain local-only. Remote Claude Code and Codex receive a separate
+scoped descriptor. The ordinary SSH connection (including ProxyJump) requests a
+server-allocated loopback reverse forward. A fixed Python launcher receives all
+private arguments and the capability on SSH stdin, writes a mode-0700 temporary
+directory with mode-0600 files, and supplies ephemeral MCP options to the provider.
+No local executable path, capability in argv, project MCP mutation or persistent
+remote install is used. A bounded cleanup guard releases forwarding on future
+drop as well as completion, Stop and browser-grant retirement.
+
+Provider scope matches available private launch configuration. Jcode's current
+CLI/configuration was reviewed at
+[`33e27ca4790684179512854d013c78048f5a1ae6`](https://github.com/1jehuang/jcode/tree/33e27ca4790684179512854d013c78048f5a1ae6)
+(`src/cli/args.rs` and `crates/jcode-base/src/mcp`): it reads global/project MCP files and has no
+per-run override suitable for this bridge. Jcode and DeepSeek remain unsupported;
+Automonique keeps its existing local ACP transport. The browser uses desktop
+network semantics; remote loopback web services require an explicit port forward.
+
+**Deterministic fixture coverage:** SDTEST-2862 uses actual encrypted SSH channels
+and loopback TCP bytes, checks the exact listener/origin, rejects other ports and
+non-loopback peers, and revokes active streams without stopping the provider.
+SDTEST-2863 refuses stale run/server identities, invalid endpoints, unsupported
+providers, expired grants, denied forwarding and cancelled setup before exec.
+SDTEST-2864 streams 512 KiB of private input alongside output, retains exit status
+after EOF, and checks Stop/drop while a zero SSH receive window blocks stdin.
+SDTEST-2865 executes the production Python launcher/proxy against harmless
+Claude/Codex stand-ins, including resume arguments, Unicode temporary paths,
+notification framing, exact stdin, unchanged project configuration, normal and
+failed exit, TERM/HUP cleanup and input bounds. SDTEST-2866 exercises the production
+UI attachment path and actual Stop/close/logout handlers with a draining helper;
+local Claude keeps its private-file lifetime and unsupported providers get no
+capability.
+
+**Native runtime evidence:** SDTEST-2867 ran with the staged 0.14.1 CEF runtime,
+a disposable browser profile and a loopback HTML fixture. Both fake providers
+start the production Python adapter using the payload received through SSH.
+Every MCP byte crosses forwarded-tcpip channels. Observation lists only the
+allowed tab, reads actual accessibility content and captures a PNG. Control
+clicks/types into Chromium, checked through trusted fixture DOM inspection.
+Read-only mutation and a foreign tab are rejected. Completion removes private
+files and cancels the exact listener. This native gate is wired into Linux/macOS
+browser CI; normal tests compile the transport on Windows too.
+
+No real model/provider, saved SSH server, provider credentials, desktop profile
+or clipboard was used. These are fixture and native-runtime results, not a live
+remote-provider walkthrough. The user's running app is retained; the rebuilt
+binary will apply on its next restart.
+
+Validation: the isolated offline workspace sweep passed **1,142 runnable tests**,
+including 333 UI tests and 72 SSH tests. Ten tests remain explicitly ignored: the
+previous nine live/doc gates plus the new packaged-CEF SSH gate, which passed
+separately. The standalone Python suite passed its three scenario groups. Strict
+workspace all-target Clippy passed with only existing patched-dependency warnings.
+Logs: `/tmp/shelldeck-remote-browser-workspace-final.log`,
+`/tmp/shelldeck-remote-browser-focused-reviewed.log`,
+`/tmp/shelldeck-remote-browser-python-final.log`,
+`/tmp/shelldeck-remote-browser-native-reviewed.log`,
+`/tmp/shelldeck-remote-browser-clippy.log`.

@@ -3318,6 +3318,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-31** — SDUC-557: Claude Code and Codex runs over SSH can share the desktop browser through a scoped reverse forward and private temporary MCP adapter. SDTEST-2862–2867 cover transport, launch configuration, lifecycle and native CEF.
+
 - **2026-10-31** — SDUC-564: themed tree guides and indented children make folder/worktree ownership visible in the Agents navigator. SDTEST-2860 also checks guide alignment, containment and nested checkout indentation.
 
 - **2026-10-31** — SDUC-551/562/564: pins stay above project folders; uncatalogued chats and native SSH history group by exact machine/server and workdir across providers. Closed folders retain the current chat/preview and summarize hidden work. Search preserves saved collapse; per-folder native pagination and legacy collapse migration are covered by SDTEST-2859–2861.
@@ -4446,6 +4448,15 @@ snapshots are not supported. No live push or PR mutation is part of the test sui
 
 ### SDUC-557 — Shared native Chromium browser and scoped computer use
 
+2026-10-31: SSH Claude Code and Codex runs share their context's desktop browser
+through a run/server-scoped loopback reverse forward and temporary Python MCP
+adapter. Private launch data uses SSH stdin; no desktop executable path or token
+enters remote argv or saved provider configuration. Setup refusal prevents the
+provider from starting. Browser close revokes access while the provider may
+continue; Stop, completion, rejection and logout release the run grant. Python 3
+and SSH remote-forward permission are required. Browser URLs use desktop network
+semantics; remote loopback services need an explicit web port forward.
+
 2026-10-30: Browser opens as a resizable companion to the conversation and
 composer, stacking below it in narrow windows. The header globe hides/reopens
 retained tabs; the pane close action releases that session’s browser and grants
@@ -4466,12 +4477,12 @@ currently displayed draft context; unsent context changes supersede saved contex
 The CEF helper renders live BGRA frames into GPUI; no external Chrome install,
 snapshot fallback, X11 child window, or public debugging port is involved. A
 missing engine reports an error. Scoped MCP tools attach to the next local
-Codex, Claude Code or Automonique run. Observation is the default. Control also
+Codex, Claude Code or Automonique run, or SSH Codex/Claude Code run. Observation is the default. Control also
 requires the visible browser toggle and a confirmed writable execution context.
 Tool grants admit only the matching helper's tabs, including newly opened related
 tabs, and expire on completion, rejection, Stop, browser close or logout. Secrets
-stay outside saved ShellDeck sessions and global provider configuration. SSH and
-unsupported providers do not receive a local desktop capability.
+stay outside saved ShellDeck sessions and global provider configuration.
+Unsupported providers receive no browser capability.
 
 Release payloads include the matching CEF engine on Linux, macOS and Windows.
 Published runtime directories and data remain readable by the installed desktop

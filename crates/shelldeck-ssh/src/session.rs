@@ -445,10 +445,39 @@ impl SshSession {
         output_tx: mpsc::UnboundedSender<Vec<u8>>,
         mut shutdown_rx: mpsc::Receiver<()>,
     ) -> crate::Result<Option<u32>> {
+        self.exec_cancellable_input(command, None, output_tx, &mut shutdown_rx)
+            .await
+    }
+
+    /// A fixed remote launcher receives private run data on SSH stdin, outside
+    /// shell source and process argv. Writes progress alongside output and Stop.
+    pub(crate) async fn exec_cancellable_with_input(
+        &self,
+        command: &str,
+        input: Vec<u8>,
+        output_tx: mpsc::UnboundedSender<Vec<u8>>,
+        mut shutdown_rx: mpsc::Receiver<()>,
+    ) -> crate::Result<Option<u32>> {
+        if input.len() > 4 * 1024 * 1024 {
+            return Err(SshError::Channel(
+                "SSH private launch request exceeds its input limit".into(),
+            ));
+        }
+        self.exec_cancellable_input(command, Some(input), output_tx, &mut shutdown_rx)
+            .await
+    }
+
+    async fn exec_cancellable_input(
+        &self,
+        command: &str,
+        input: Option<Vec<u8>>,
+        output_tx: mpsc::UnboundedSender<Vec<u8>>,
+        shutdown_rx: &mut mpsc::Receiver<()>,
+    ) -> crate::Result<Option<u32>> {
         // Cancellation is checked before channel admission, including while
         // another operation holds the session handle. Never start a queued
         // command after its owner has already stopped it.
-        let mut channel = tokio::select! {
+        let channel = tokio::select! {
             biased;
             _ = shutdown_rx.recv() => return Ok(None),
             result = async {
@@ -472,11 +501,23 @@ impl SshSession {
             }
         }
 
+        let (mut reader, writer) = channel.split();
+        let writer = Arc::new(writer);
+        let mut close_guard = BoundedExecCloseGuard(Some(writer.clone()));
+        let mut input_done = input.is_none();
+        let send_input = async {
+            if let Some(input) = input {
+                writer.data(std::io::Cursor::new(input)).await?;
+                writer.eof().await?;
+            }
+            Ok::<(), russh::Error>(())
+        };
+        tokio::pin!(send_input);
+        let mut input_error = None;
         let mut exit_code = None;
-
         loop {
             tokio::select! {
-                msg = channel.wait() => {
+                msg = reader.wait() => {
                     match msg {
                         Some(ChannelMsg::Data { data }) => {
                             let _ = output_tx.send(data.to_vec());
@@ -492,21 +533,34 @@ impl SshSession {
                         _ => {}
                     }
                 }
+                result = &mut send_input, if !input_done => {
+                    input_done = true;
+                    input_error = result.err();
+                    // A missing interpreter can exit before consuming stdin.
+                    // Keep reading for its authoritative exit-status packet.
+                }
                 _ = shutdown_rx.recv() => {
                     // EOF alone only closes stdin: a remote command that
                     // ignores stdin can otherwise keep running. Request TERM
                     // and close this exact channel; the server owns process
                     // termination and may refuse the signal.
                     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                        let _ = channel.signal(russh::Sig::TERM).await;
-                        let _ = channel.eof().await;
-                        let _ = channel.close().await;
+                        let _ = writer.signal(russh::Sig::TERM).await;
+                        let _ = writer.eof().await;
+                        let _ = writer.close().await;
                     }).await;
-                    break;
+                    close_guard.0 = None;
+                    return Ok(None);
                 }
             }
         }
 
+        close_guard.0 = None;
+        if exit_code.is_none() {
+            if let Some(error) = input_error {
+                return Err(SshError::Channel(error.to_string()));
+            }
+        }
         Ok(exit_code)
     }
 

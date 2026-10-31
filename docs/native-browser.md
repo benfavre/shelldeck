@@ -51,11 +51,29 @@ Choose the globe in an agent session’s header and enter a URL. The browser ope
 beside the conversation and composer; drag the divider to resize either pane.
 Narrow windows stack the two panes. The globe hides/reopens the retained browser;
 the browser pane’s top-right close button closes its tabs and releases its runtime.
-Conversation and Editor keep their own navigation. Local Codex, Claude
-Code and Automonique runs can observe the shared tabs; enable “Allow agent
+Conversation and Editor keep their own navigation. Local and SSH Codex and Claude
+Code runs, and local Automonique runs, can observe the shared tabs; enable “Allow agent
 control” with writable run permissions before the next prompt to permit actions.
-Turning control off revokes it immediately. SSH-hosted agents do not receive a
-capability to control the local browser.
+Turning control off revokes it immediately.
+
+SSH sharing uses the run's existing SSH connection, including ProxyJump, with
+a server-allocated loopback reverse forward. The SSH host needs Python 3 and
+permission to open a loopback remote forward; it needs no Chromium installation.
+An unavailable interpreter or denied forwarding produces a run error. Closing
+the browser revokes the bridge without stopping the agent; Stop also closes its
+execution channel. Run completion, rejection and logout release access.
+
+The provider receives private temporary MCP configuration over SSH stdin. The
+capability stays out of the SSH command and provider arguments; temporary files
+are restricted to the remote account and cleaned on exit, TERM or disconnect HUP.
+Existing provider and project configuration is unchanged. Jcode and DeepSeek
+remain unsupported because this integration requires private per-run MCP launch
+configuration. Automonique retains its local ACP transport.
+
+The shared browser runs on the desktop. Its `localhost` refers to the desktop;
+use a ShellDeck port forward to browse a service listening only on the SSH host.
+Browser sharing does not automatically forward web servers or expose the host's
+desktop files to the remote provider.
 
 ## Building and staging
 
@@ -143,6 +161,18 @@ mutating tools; click, Unicode typing, keys, and scrolling against real DOM
 assertions; a related popup using an exact decimal string ID; exclusion of an
 unshared preexisting tab; and immediate control/grant revocation. The fixture
 starts no model or provider and saves only local fixture screenshots/profile.
+
+The SSH bridge fixture (SDTEST-2867) uses encrypted in-memory SSH channels, the
+production Python adapter and harmless Claude/Codex stand-ins. It requires the
+packaged CEF helper, Python 3 and a display, but no configured SSH server or model:
+
+```sh
+SHELLDECK_BROWSER_SMOKE_HELPER="$(pwd)/target/debug/browser/0.14.1/shelldeck-browser" \
+PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig \
+cargo test --locked -p shelldeck-ssh sdtest_2867 -- --ignored --test-threads=1
+```
+
+On headless Linux, prefix the Cargo invocation with `xvfb-run -a`.
 
 The native GPUI preview supports `SHELLDECK_PREVIEW_AUDIT=1`. Its opt-in audit
 waits up to 25 seconds for the loopback navigation, expected live DOM controls,
