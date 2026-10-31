@@ -57,6 +57,7 @@ pub struct AgentConsolePreferences {
     pub inspector_tab: String,
     pub navigator_width: u16,
     pub inspector_width: u16,
+    /// Stable catalog, pinned, conversation-folder and native SSH group keys.
     pub collapsed_project_ids: Vec<String>,
     pub remote_sessions_expanded: bool,
     pub remote_sessions_available_only: bool,
@@ -1063,8 +1064,14 @@ mod tests {
             .collection
             .create("Saved project", context(), 1)
             .unwrap();
-        snapshot.preferences.collapsed_project_ids =
-            vec!["catalog-project-one".into(), "catalog-project-two".into()];
+        snapshot.preferences.collapsed_project_ids = vec![
+            "catalog-project-one".into(),
+            "catalog-project-two".into(),
+            "pinned-sessions".into(),
+            "chat-folder:local:0123456789abcdef".into(),
+            "ssh-server:00000000-0000-0000-0000-0000000001a5".into(),
+            "ssh-folder:00000000-0000-0000-0000-0000000001a5:0123456789abcdef".into(),
+        ];
         snapshot.preferences.remote_sessions_expanded = true;
         snapshot.preferences.remote_sessions_available_only = true;
         snapshot.preferences.ssh_selected_server = Some(Uuid::new_v4());

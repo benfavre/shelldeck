@@ -207,14 +207,63 @@ impl Cockpit {
     }
 
     fn wheel(&mut self, amount: f32) {
-        let position = self.bounds("agent-timeline-scroll").unwrap().center();
+        self.wheel_in("agent-timeline-scroll", amount);
+    }
+
+    fn wheel_in(&mut self, selector: &str, amount: f32) {
+        let position = self.bounds(selector).unwrap().center();
+        self.window
+            .simulate_mouse_move(position, None, Modifiers::none());
         self.window.simulate_event(ScrollWheelEvent {
             position,
             delta: ScrollDelta::Pixels(point(gpui::px(0.0), gpui::px(amount))),
             touch_phase: TouchPhase::Moved,
             ..Default::default()
         });
+        // GPUI's 70 ms smooth scroll uses std::time::Instant rather than the
+        // test dispatcher clock. Let that animation settle before measuring.
+        std::thread::sleep(std::time::Duration::from_millis(80));
         self.redraw();
+    }
+
+    fn open_navigator(&mut self) {
+        self.view.update(&mut self.app, |view, cx| {
+            view.tools.navigator_visible = true;
+            view.tools.navigator_overlay = true;
+            cx.notify();
+        });
+        self.redraw();
+    }
+
+    fn search_navigator(&mut self, query: &str) {
+        self.click("agent-nav-search");
+        self.window
+            .simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            });
+        self.window.simulate_keystrokes("backspace");
+        self.window.simulate_input(query);
+        self.redraw();
+    }
+
+    fn click_navigation(&mut self, selector: &str) {
+        for _ in 0..4 {
+            let row = self
+                .bounds(selector)
+                .unwrap_or_else(|| panic!("Missing navigation row: {selector}"));
+            let viewport = self.bounds("agent-navigator-scroll").unwrap();
+            if viewport.contains(&row.center()) {
+                self.click(selector);
+                return;
+            }
+            self.wheel_in(
+                "agent-navigator-scroll",
+                (viewport.center().y - row.center().y).to_f64() as f32,
+            );
+        }
+        panic!("Navigation control is unreachable: {selector}");
     }
 
     fn start(&mut self) -> Uuid {
@@ -996,5 +1045,670 @@ fn rendered_missing_ssh_keeps_drafts_and_navigation_until_explicit_repair() {
                 );
             }
         }
+    }
+}
+
+// SDTEST-2857 / SDUC-562, SDUC-563 — reproduce discovery -> Reconnect with a 240-byte title.
+#[::core::prelude::v1::test]
+fn rendered_long_native_titles_reconnect_and_preserve_existing_drafts() {
+    use shelldeck_core::agent_remote_sessions::parse_inventory;
+    use shelldeck_core::agent_session::MAX_AGENT_SESSION_NAME_BYTES;
+    use shelldeck_core::config::app_config::UiLanguage;
+    for provider in [
+        AgentProvider::Claude,
+        AgentProvider::Codex,
+        AgentProvider::Jcode,
+    ] {
+        for (width, height) in [(900.0, 700.0), (620.0, 560.0)] {
+            let mut ui = Cockpit::new(ThemePreference::Dark, width, height, false);
+            crate::apply_ui_language(&UiLanguage::Fr);
+            let local = ui.session;
+            ui.type_draft("Keep the outgoing local draft");
+            let title = "Site : plante-artificielle-unique.com Thème : Rapport · visibilité locale à Rennes Date des faits : 2026-10-30 Chiffres de tête : - Ville : Rennes - Mots-clés relevés depuis Rennes : 2 visibles sur 20 mesurés, couverture 10 %, top 3";
+            let wire = serde_json::json!({"version":1,"sessions":[{
+                "provider":provider,"session_id":"80582780-28b5-433c-a51c-afdac90e0baa",
+                "workdir":"/home/infra-sj278/.cache/seo-reading-cwd", "title":title,
+                "updated_at_ms":1793360000000_u64,"model":null
+            }],"warnings":[],"truncated":false});
+            let remote = parse_inventory(&wire.to_string())
+                .unwrap()
+                .sessions
+                .remove(0);
+            let connection = Uuid::new_v4();
+            let preview = |ui: &mut Cockpit| {
+                ui.view.update(&mut ui.app, |view, cx| {
+                    view.set_connections(
+                        vec![AgentConnectionOption {
+                            id: connection,
+                            label: "Original server".into(),
+                            host: "fixture.invalid".into(),
+                        }],
+                        cx,
+                    );
+                    view.ssh_sessions.preview = Some((connection, remote.clone()));
+                    view.sessions.set_surface_visible(false);
+                    cx.notify();
+                });
+                ui.redraw();
+                // Scroll the actual preview owner, including when the full title wraps.
+                let position = ui.bounds("agent-ssh-preview").unwrap().center();
+                ui.window.simulate_event(ScrollWheelEvent {
+                    position,
+                    delta: ScrollDelta::Pixels(point(gpui::px(0.0), gpui::px(-100000.0))),
+                    touch_phase: TouchPhase::Moved,
+                    ..Default::default()
+                });
+                ui.redraw();
+            };
+            let page = RemoteHistoryPage {
+                provider,
+                session_id: remote.session_id.clone(),
+                workdir: remote.workdir.clone(),
+                model: None,
+                snapshot: format!("v1:1:{}", "a".repeat(64)),
+                total_entries: 1,
+                start: 0,
+                end: 1,
+                entries: vec![RemoteHistoryEntry {
+                    index: 0,
+                    kind: RemoteHistoryKind::Assistant,
+                    title: None,
+                    text: "Complete saved native reply".into(),
+                    at_ms: Some(1),
+                    part: 1,
+                    parts: 1,
+                }],
+                warnings: vec![],
+            };
+            let mut imported = None;
+            for attempt in 0..2 {
+                preview(&mut ui);
+                ui.click("agent-ssh-reconnect");
+                let request_id = ui
+                    .events
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find_map(|event| match event {
+                        AgentConsoleEvent::ReconnectSshSession {
+                            connection_id,
+                            request_id,
+                            session,
+                        } => {
+                            assert_eq!(*connection_id, connection);
+                            assert_eq!(
+                                session, &remote,
+                                "discovery retains the complete title and original authority"
+                            );
+                            Some(*request_id)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                ui.view.update(&mut ui.app, |view, cx| {
+                    view.complete_ssh_reconnect(request_id, Ok(page.clone()), cx)
+                });
+                ui.redraw();
+                assert!(
+                    ui.bounds("agent-ssh-preview").is_none(),
+                    "reconnect must leave the preview without a name-length error"
+                );
+                let id = ui
+                    .view
+                    .read_with(&ui.app, |view, _| view.sessions.selected_id().unwrap());
+                if let Some(expected) = imported {
+                    assert_eq!(id, expected);
+                } else {
+                    imported = Some(id);
+                }
+                ui.session = id;
+                ui.view.read_with(&ui.app, |view, cx| {
+                    let session = view.sessions.get(id).unwrap();
+                    assert!(session.name.len() <= MAX_AGENT_SESSION_NAME_BYTES);
+                    assert!(session.name.ends_with('…'));
+                    let request = session.run_request("Continue this native conversation");
+                    assert_eq!(request.resume_session.as_deref(),Some(remote.session_id.as_str()));
+                    assert_eq!(request.provider,provider);
+                    assert_eq!(request.workdir,remote.workdir);
+                    assert!(matches!(request.target,AgentTarget::Ssh {connection_id,..} if connection_id==connection));
+                    assert_eq!(request.access,AgentAccessMode::ReadOnly);
+                    assert_eq!(view.native_history[&id].page.as_ref().unwrap(),&page);
+                    assert_eq!(view.session_ui[&local].prompt.read(cx).content(),"Keep the outgoing local draft");
+                    assert_eq!(view.sessions.active_count(),0);
+                });
+                if attempt == 0 {
+                    ui.type_draft("Preserve my native draft");
+                } else {
+                    assert_eq!(ui.draft(), "Preserve my native draft");
+                }
+                assert!(!ui
+                    .events
+                    .borrow()
+                    .iter()
+                    .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+            }
+        }
+    }
+}
+
+// SDTEST-2858 / SDUC-475, SDUC-564 — technical output must retain its natural height.
+#[::core::prelude::v1::test]
+fn rendered_warning_cards_and_expanded_work_do_not_crop_output() {
+    use shelldeck_core::agent_session::AgentTraceUpdate;
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        for (width, height) in [(900.0, 700.0), (620.0, 560.0), (900.0, 400.0)] {
+            for with_output in [false, true] {
+                let mut ui = Cockpit::new(theme.clone(), width, height, false);
+                let run = ui.start();
+                ui.view.update(&mut ui.app,|view,cx| view.push_stream_events_for(run,[
+                AgentStreamEvent::Trace(AgentTraceUpdate {correlation_id:Some("curl".into()),detail:AgentTraceKind::Command {
+                    command:"curl -sS -o /dev/null -w 'home: %{http_code} %{time_total}s %{size_download}B via %{remote_ip}' -L https://inklura.fr".into(),
+                    status:AgentTraceStatus::Succeeded, exit_code:Some(0), summary:Some("home: 200 0.41s 18420B\nNavigation complete".into())
+                }}),
+                AgentStreamEvent::Trace(AgentTraceUpdate {correlation_id:Some("browser-warning".into()),detail:AgentTraceKind::Command {
+                    command:format!("/home/fixture/.cache/ms-playwright/chromium-{}/chrome-linux64/chrome: browser process warning — inspect retained stderr and retry the original operation", "152.0.7977.75".repeat(3)),
+                    status:AgentTraceStatus::Running, exit_code:None,
+                    summary:with_output.then(|| "Browser launch warning:\nFirst retained output line.\nSecond retained output line.\nFinal retained output line · é🌍".into())
+                }}),
+                AgentStreamEvent::Usage(shelldeck_core::agent_runtime::AgentUsageUpdate { input_tokens:Some(18420), output_tokens:Some(3), ..Default::default() }),
+            ],cx));
+                ui.redraw();
+                let (completed, warning) = ui.view.read_with(&ui.app, |view, _| {
+                    let traces = &view.sessions.get(ui.session).unwrap().trace;
+                    (
+                        traces
+                            .iter()
+                            .find(|trace| trace.correlation_id.as_deref() == Some("curl"))
+                            .unwrap()
+                            .id,
+                        traces
+                            .iter()
+                            .find(|trace| {
+                                trace.correlation_id.as_deref() == Some("browser-warning")
+                            })
+                            .unwrap()
+                            .id,
+                    )
+                });
+                let composer = ui.composer();
+                for expanded in [false, true] {
+                    if expanded {
+                        let selector = format!("agent-work-{completed}");
+                        for _ in 0..8 {
+                            let control = ui.bounds(&selector).unwrap();
+                            let viewport = ui.bounds("agent-timeline-scroll").unwrap();
+                            if viewport.contains(&control.center()) {
+                                break;
+                            }
+                            ui.wheel((viewport.center().y - control.center().y).to_f64() as f32);
+                        }
+                        let control = ui.bounds(&selector).unwrap();
+                        let viewport = ui.bounds("agent-timeline-scroll").unwrap();
+                        assert!(viewport.contains(&control.center()),"{width}x{height}, output={with_output}: control={control:?}, viewport={viewport:?}");
+                        ui.click(&selector);
+                    }
+                    let card = ui.bounds(&format!("agent-trace-{warning}")).unwrap();
+                    let content = ui
+                        .bounds(&format!("agent-trace-{warning}-content"))
+                        .unwrap();
+                    let title = ui.bounds(&format!("agent-trace-{warning}-title")).unwrap();
+                    let body = ui.bounds(&TranscriptId::Trace(warning).selector("folded"));
+                    let icon = ui.bounds(&format!("agent-trace-{warning}-icon")).unwrap();
+                    let preparing = ui.bounds("agent-preparing-output").unwrap();
+                    let progress = ui.bounds("agent-run-progress").unwrap();
+                    assert!(
+                        card.bottom() <= preparing.top(),
+                        "warning output cannot overlap the preparing indicator"
+                    );
+                    assert!(
+                        preparing.bottom() <= progress.top(),
+                        "run details must remain below the preparing indicator"
+                    );
+                    assert!(
+                        progress.size.height >= gpui::px(36.0),
+                        "the run-details disclosure must keep its natural height"
+                    );
+                    assert!(
+                        card.size.height >= gpui::px(36.0),
+                        "a trace cannot shrink below its icon plus padding: {card:?}"
+                    );
+                    for child in [Some(content), Some(title), body, Some(icon)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        assert!(
+                            child.top() >= card.top() && child.bottom() <= card.bottom(),
+                            "trace child is vertically clipped: card={card:?}, child={child:?}"
+                        );
+                        assert!(
+                            child.left() >= card.left() && child.right() <= card.right(),
+                            "trace child is horizontally clipped: card={card:?}, child={child:?}"
+                        );
+                    }
+                    if with_output {
+                        let body = body.unwrap();
+                        assert!(
+                            body.size.height >= gpui::px(52.0),
+                            "all four literal output lines must have room: {body:?}"
+                        );
+                    }
+                    assert_eq!(
+                        ui.composer(),
+                        composer,
+                        "technical output must scroll independently of the composer"
+                    );
+                    ui.wheel(-100000.0);
+                    let card = ui.bounds(&format!("agent-trace-{warning}")).unwrap();
+                    let viewport = ui.bounds("agent-timeline-scroll").unwrap();
+                    assert!(
+                        card.bottom() <= viewport.bottom(),
+                        "the bottom of the complete warning must be reachable by scrolling"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// SDTEST-2860 / SDUC-551, SDUC-564 — closed folders retain the open chat and pins stay above projects.
+#[::core::prelude::v1::test]
+fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
+    use super::navigation_groups::directory_group_key;
+    use shelldeck_core::config::app_config::UiLanguage;
+    for (theme, language) in [
+        (ThemePreference::Dark, UiLanguage::En),
+        (ThemePreference::SolarizedLight, UiLanguage::Fr),
+    ] {
+        for (width, height) in [(900.0, 700.0), (620.0, 560.0)] {
+            let mut ui = Cockpit::new(theme.clone(), width, height, false);
+            crate::apply_ui_language(&language);
+            let first = ui.session;
+            ui.type_draft("Keep the selected project's draft · é🌍");
+            let (background, pinned, other, folder_key) =
+                ui.view.update(&mut ui.app, |view, cx| {
+                    let context = view.sessions.get(first).unwrap().context.clone();
+                    view.set_project_groups(
+                        vec![AgentProjectGroup {
+                            id: "catalog".into(),
+                            label: "Customer project".into(),
+                            worktrees: vec![AgentWorktreeOption {
+                                id: "primary".into(),
+                                label: "Customer project".into(),
+                                path: context.workdir.clone(),
+                                target: context.target.clone(),
+                                branch: if matches!(&theme, ThemePreference::SolarizedLight) {
+                                    Some("main".into())
+                                } else {
+                                    None
+                                },
+                                is_primary: true,
+                            }],
+                        }],
+                        cx,
+                    );
+                    let background = view
+                        .create_session("Background approval", context.clone(), cx)
+                        .unwrap();
+                    view.sessions
+                        .begin_run(background, "Wait for a decision", 20)
+                        .unwrap();
+                    view.sessions
+                        .apply_stream_event(
+                            background,
+                            AgentStreamEvent::Question(
+                                shelldeck_core::agent_runtime::AgentQuestionRequest {
+                                    id: "which".into(),
+                                    prompt: "Which destination?".into(),
+                                    options: vec![],
+                                    multiple: false,
+                                    response_supported: false,
+                                },
+                            ),
+                            21,
+                        )
+                        .unwrap();
+                    let pinned = view
+                        .create_session("Pinned task", context.clone(), cx)
+                        .unwrap();
+                    view.sessions.set_pinned(pinned, true, 22).unwrap();
+                    let mut elsewhere = context;
+                    elsewhere.workdir = "/tmp/shelldeck-uncatalogued-project".into();
+                    let key =
+                        directory_group_key("chat-folder", &elsewhere.target, &elsewhere.workdir);
+                    let other = view
+                        .create_session("Another folder", elsewhere, cx)
+                        .unwrap();
+                    view.select_session(first, cx);
+                    (background, pinned, other, key)
+                });
+            ui.open_navigator();
+            let guide = ui.bounds("agent-tree-children-catalog").unwrap();
+            let parent = ui.bounds("agent-project-collapse-catalog").unwrap();
+            let child = ui.bounds(&format!("agent-nav-session-{first}")).unwrap();
+            assert_eq!(
+                guide.left(),
+                parent.center().x,
+                "the guide aligns beneath its parent chevron"
+            );
+            assert!(
+                child.left() >= guide.left() + gpui::px(6.0) && child.right() <= guide.right(),
+                "conversation controls stay inset and contained beside the guide"
+            );
+            if matches!(&theme, ThemePreference::SolarizedLight) {
+                let nested = ui.bounds("agent-tree-children-worktree-primary").unwrap();
+                assert!(
+                    nested.left() > guide.left() && child.left() >= nested.left() + gpui::px(6.0),
+                    "worktree conversations keep a second hierarchy level"
+                );
+            }
+            assert!(
+                ui.bounds(&format!("agent-nav-session-{pinned}"))
+                    .unwrap()
+                    .top()
+                    < ui.bounds("agent-project-collapse-catalog").unwrap().top()
+            );
+            assert!(ui.bounds(&format!("agent-folder-{folder_key}")).is_some());
+            ui.click_navigation("agent-project-collapse-catalog");
+            assert!(
+                ui.bounds(&format!("agent-nav-session-{first}")).is_some(),
+                "the current chat remains in its closed project"
+            );
+            assert!(ui
+                .bounds(&format!("agent-nav-session-{background}"))
+                .is_none());
+            assert!(
+                ui.bounds("agent-group-summary-catalog").is_some(),
+                "hidden pending work is summarized"
+            );
+            ui.click_navigation(&format!("agent-nav-session-{pinned}"));
+            ui.session = pinned;
+            ui.type_draft("A separate pinned draft");
+            ui.open_navigator();
+            ui.click_navigation(&format!("agent-nav-menu-{pinned}"));
+            ui.click(&format!("agent-nav-action-{pinned}-TogglePin"));
+            assert!(ui.bounds("agent-folder-pinned-sessions").is_none());
+            assert!(
+                ui.bounds(&format!("agent-nav-session-{pinned}")).is_some(),
+                "unpinning keeps the open chat visible in its closed project"
+            );
+            assert_eq!(ui.draft(), "A separate pinned draft");
+            ui.click_navigation(&format!("agent-nav-menu-{pinned}"));
+            ui.click(&format!("agent-nav-action-{pinned}-TogglePin"));
+            assert!(ui.bounds("agent-folder-pinned-sessions").is_some());
+            assert!(ui.bounds(&format!("agent-nav-session-{first}")).is_none());
+            let saved = ui
+                .view
+                .read_with(&ui.app, |view, _| view.library.preferences.clone());
+            ui.search_navigator("background approval");
+            assert!(ui
+                .bounds(&format!("agent-nav-session-{background}"))
+                .is_some());
+            assert!(ui.bounds(&format!("agent-nav-session-{other}")).is_none());
+            assert_eq!(
+                ui.view
+                    .read_with(&ui.app, |view, _| view.library.preferences.clone()),
+                saved
+            );
+            ui.search_navigator("Transcript");
+            ui.click_navigation(&format!("agent-nav-session-{first}"));
+            ui.session = first;
+            assert_eq!(ui.draft(), "Keep the selected project's draft · é🌍");
+            ui.open_navigator();
+            ui.search_navigator("");
+            assert!(ui.bounds(&format!("agent-nav-session-{first}")).is_some());
+            assert!(ui
+                .bounds(&format!("agent-nav-session-{background}"))
+                .is_none());
+            ui.click_navigation(&format!("agent-folder-toggle-{folder_key}"));
+            assert!(ui.bounds(&format!("agent-nav-session-{other}")).is_none());
+            let loaded = ui.view.update(&mut ui.app, |view, cx| {
+                view.flush_library(cx).unwrap();
+                view.draft_store().load(100).unwrap()
+            });
+            assert!(loaded
+                .preferences
+                .collapsed_project_ids
+                .contains(&"catalog".to_owned()));
+            assert!(loaded
+                .preferences
+                .collapsed_project_ids
+                .contains(&folder_key));
+            assert_eq!(
+                loaded.drafts[&first],
+                "Keep the selected project's draft · é🌍"
+            );
+            assert_eq!(loaded.drafts[&pinned], "A separate pinned draft");
+            // A legacy closed catch-all becomes closed folders on an actual store restore.
+            let store = ui.view.read_with(&ui.app, |view, _| view.draft_store());
+            let catalog = ui
+                .view
+                .read_with(&ui.app, |view, _| view.project_groups.clone());
+            let mut legacy = loaded;
+            legacy
+                .preferences
+                .collapsed_project_ids
+                .retain(|id| id != &folder_key);
+            legacy
+                .preferences
+                .collapsed_project_ids
+                .push("unassigned-sessions".into());
+            store.save(&legacy).unwrap();
+            let mut restored = Cockpit::new(theme.clone(), width, height, false);
+            restored.view.update(&mut restored.app, |view, cx| {
+                let context = view.sessions.selected().unwrap().context.clone();
+                view.library = AgentLibraryUi::with_store(cx, store);
+                view.sessions = AgentSessionCollection::default();
+                view.session_ui.clear();
+                let placeholder = view.sessions.create("New chat", context, 1).unwrap();
+                view.session_ui.insert(placeholder, AgentSessionUi::new(cx));
+                view.set_project_groups(catalog, cx);
+                view.apply_selected_context(cx);
+                view.restore_library(cx);
+            });
+            restored.redraw();
+            restored.session = first;
+            restored.open_navigator();
+            assert_eq!(restored.draft(), "Keep the selected project's draft · é🌍");
+            assert!(restored
+                .bounds(&format!("agent-nav-session-{first}"))
+                .is_some());
+            assert!(restored
+                .bounds(&format!("agent-nav-session-{other}"))
+                .is_none());
+            restored.view.read_with(&restored.app, |view, _| {
+                assert!(view
+                    .library
+                    .preferences
+                    .collapsed_project_ids
+                    .contains(&folder_key));
+                assert!(!view
+                    .library
+                    .preferences
+                    .collapsed_project_ids
+                    .contains(&"unassigned-sessions".to_owned()));
+            });
+            assert!(!ui
+                .events
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+        }
+    }
+}
+
+// SDTEST-2861 / SDUC-562, SDUC-563 — SSH folders combine providers without combining machines or authority.
+#[::core::prelude::v1::test]
+fn rendered_ssh_folders_preserve_source_search_collapse_and_independent_pages() {
+    use super::navigation_groups::directory_group_key;
+    use shelldeck_core::agent_remote_sessions::{RemoteAgentSession, RemoteAgentSessionInventory};
+    for (width, height) in [(900.0, 700.0), (620.0, 560.0)] {
+        let mut ui = Cockpit::new(ThemePreference::Dark, width, height, false);
+        ui.type_draft("Keep my local draft while browsing remote projects");
+        let a = Uuid::from_u128(501);
+        let b = Uuid::from_u128(502);
+        let remote = |index: usize, path: &str| RemoteAgentSession {
+            provider: [
+                AgentProvider::Claude,
+                AgentProvider::Codex,
+                AgentProvider::Jcode,
+            ][index % 3],
+            session_id: format!("native-{index}"),
+            workdir: path.into(),
+            title: format!("Saved task {index}"),
+            updated_at_ms: index as u64,
+            model: None,
+        };
+        let alpha = (0..12)
+            .map(|index| remote(index, "/srv/customer/api"))
+            .collect::<Vec<_>>();
+        let beta = (12..23)
+            .map(|index| remote(index, "/srv/other/api"))
+            .collect::<Vec<_>>();
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.set_connections(
+                vec![
+                    AgentConnectionOption {
+                        id: a,
+                        label: "Server A".into(),
+                        host: "a.invalid".into(),
+                    },
+                    AgentConnectionOption {
+                        id: b,
+                        label: "Server B".into(),
+                        host: "b.invalid".into(),
+                    },
+                ],
+                cx,
+            );
+            view.scan_ssh_sessions(a, cx);
+            view.scan_ssh_sessions(b, cx);
+        });
+        let requests = ui
+            .events
+            .borrow()
+            .iter()
+            .filter_map(|event| match event {
+                AgentConsoleEvent::DiscoverSshSessions {
+                    connection_id,
+                    request_id,
+                    ..
+                } => Some((*connection_id, *request_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        ui.view.update(&mut ui.app, |view, cx| {
+            for (id, request) in requests {
+                view.set_ssh_sessions(
+                    id,
+                    request,
+                    Ok(RemoteAgentSessionInventory {
+                        sessions: if id == a {
+                            alpha.iter().chain(&beta).cloned().collect()
+                        } else {
+                            vec![remote(0, "/srv/customer/api")]
+                        },
+                        warnings: vec![],
+                        truncated: false,
+                        next_cursor: None,
+                    }),
+                    cx,
+                );
+            }
+        });
+        ui.open_navigator();
+        let target = |id| AgentTarget::Ssh {
+            connection_id: id,
+            connection_label: "ignored alias".into(),
+        };
+        let alpha_key = directory_group_key("ssh-folder", &target(a), "/srv/customer/api");
+        let beta_key = directory_group_key("ssh-folder", &target(a), "/srv/other/api");
+        let b_key = directory_group_key("ssh-folder", &target(b), "/srv/customer/api");
+        let row = |server, session: &RemoteAgentSession| {
+            format!(
+                "agent-ssh-conversation-{server}-{:?}-{}",
+                session.provider, session.session_id
+            )
+        };
+        let folder = ui.bounds(&format!("agent-folder-{alpha_key}")).unwrap();
+        for session in alpha.iter().take(3) {
+            let bounds = ui.bounds(&row(a, session)).unwrap();
+            assert!(
+                bounds.top() >= folder.top() && bounds.bottom() <= folder.bottom(),
+                "all three providers share the folder"
+            );
+        }
+        assert!(
+            ui.bounds(&format!("agent-folder-{b_key}")).is_some(),
+            "same path on another server stays separate"
+        );
+        assert!(ui.bounds(&row(a, &alpha[11])).is_none());
+        assert!(ui.bounds(&row(a, &beta[10])).is_none());
+        ui.click_navigation(&format!("agent-ssh-more-{alpha_key}"));
+        assert!(ui.bounds(&row(a, &alpha[11])).is_some());
+        assert!(
+            ui.bounds(&row(a, &beta[10])).is_none(),
+            "show more only grows its own folder"
+        );
+        ui.click_navigation(&row(a, &alpha[11]));
+        assert_eq!(
+            ui.view
+                .read_with(&ui.app, |view, _| view.ssh_sessions.preview.clone()),
+            Some((a, alpha[11].clone()))
+        );
+        if ui.bounds("agent-navigator-scroll").is_none() {
+            ui.click("agent-ssh-preview-navigator");
+        }
+        ui.click_navigation(&format!("agent-folder-toggle-{alpha_key}"));
+        assert!(
+            ui.bounds(&row(a, &alpha[11])).is_some(),
+            "closed folder retains the open preview"
+        );
+        assert!(ui.bounds(&row(a, &alpha[0])).is_none());
+        ui.click_navigation(&format!("agent-folder-toggle-ssh-server:{a}"));
+        assert!(
+            ui.bounds(&row(a, &alpha[11])).is_some(),
+            "closed server retains the open preview"
+        );
+        assert!(ui.bounds(&format!("agent-folder-{beta_key}")).is_none());
+        let saved = ui
+            .view
+            .read_with(&ui.app, |view, _| view.library.preferences.clone());
+        ui.search_navigator("Server A task 11");
+        assert!(ui.bounds(&row(a, &alpha[11])).is_some());
+        assert!(ui.bounds(&format!("agent-folder-{b_key}")).is_none());
+        assert_eq!(
+            ui.view
+                .read_with(&ui.app, |view, _| view.library.preferences.clone()),
+            saved
+        );
+        ui.search_navigator("no matching project");
+        assert!(ui.bounds(&row(a, &alpha[11])).is_none());
+        ui.search_navigator("");
+        assert!(ui.bounds(&row(a, &alpha[11])).is_some());
+        assert!(ui.bounds(&row(a, &alpha[0])).is_none());
+        ui.click_navigation(&format!("agent-folder-toggle-ssh-server:{a}"));
+        assert!(
+            ui.bounds(&row(a, &alpha[0])).is_none(),
+            "opening the server preserves its folder's saved collapse"
+        );
+        assert!(ui.bounds(&row(a, &beta[0])).is_some());
+        ui.click_navigation(&format!("agent-ssh-more-{beta_key}"));
+        assert!(ui.bounds(&row(a, &beta[10])).is_some());
+        assert_eq!(
+            ui.draft(),
+            "Keep my local draft while browsing remote projects"
+        );
+        let loaded = ui.view.update(&mut ui.app, |view, cx| {
+            view.flush_library(cx).unwrap();
+            view.draft_store().load(100).unwrap()
+        });
+        assert!(loaded
+            .preferences
+            .collapsed_project_ids
+            .contains(&alpha_key));
+        assert!(!ui.events.borrow().iter().any(|event| matches!(
+            event,
+            AgentConsoleEvent::Run(_) | AgentConsoleEvent::ReconnectSshSession { .. }
+        )));
     }
 }

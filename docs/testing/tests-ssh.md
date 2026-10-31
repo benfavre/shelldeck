@@ -210,3 +210,13 @@ Existing: **0 tests.**
 |---|---|---|---|---|
 | SDTEST-2760 | `session::in_memory_ssh_tests::sdtest_2760_cancellable_exec_retains_status_after_eof` | SDUC-046, SDUC-047 | Green | In-memory SSH emits output EOF before success/failure exit status; both streaming entry points retain the actual result. Passed in the complete SSH library suite: 69 passed, one intentional live test ignored. |
 | SDTEST-2761 | `session::in_memory_ssh_tests::sdtest_2761_cancelled_exec_never_starts_while_waiting_for_handle` | SDUC-047 | Green | Cancellation while the shared handle is occupied returns without admitting a remote command. Passed in the complete SSH library suite: 69 passed, one intentional live test ignored. |
+
+## Scoped remote browser bridge — 2026-10-31
+
+| ID | SDUC | Scenario | Location | Status |
+|---|---|---|---|---|
+| SDTEST-2862 | SDUC-557 | Real in-memory SSH reverse forwarding routes only the allocated loopback listener to the scoped browser and revokes it without stopping the provider | `browser_bridge` | Green |
+| SDTEST-2863 | SDUC-557 | Wrong run/server, invalid endpoints, denied forwarding and setup cancellation refuse before provider execution; secrets never enter command/debug output | `browser_bridge` | Green |
+| SDTEST-2864 | SDUC-557 | Bounded SSH stdin is sent concurrently with streamed output; Stop releases input/exec/forwarding and EOF does not lose a later exit status | `session`, `browser_bridge` | Green |
+| SDTEST-2865 | SDUC-557 | Production Python launcher and proxy drive fake Claude/Codex MCP conversations, keep private configuration scoped and remove it on completion/failure/signals | `scripts/test-remote-browser-bridge.py` | Green |
+| SDTEST-2867 | SDUC-557 | Opt-in packaged CEF plus actual SSH channels and a harmless fake provider exercise browser observation/control and revocation end to end | `browser_bridge` | Yellow / native gate — passed locally with packaged CEF; explicit runtime/display opt-in, Linux/macOS browser CI |

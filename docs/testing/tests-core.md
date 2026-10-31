@@ -754,3 +754,10 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 
 | SDTEST-2836 | SDUC-564 | Version 1 draft migration and complete draft bundles retain context, queued text and private image snapshots | `agent_session::storage::tests::durable_draft_bundles_roundtrip_and_capture_private_images` | Green |
 | SDTEST-2837 | SDUC-564 | Saved image references reject escape, missing and changed content without granting arbitrary reads | `agent_session::storage::tests::restored_draft_images_reject_escape_missing_and_changed_content` | Green |
+
+
+## Remote discovery titles — 2026-10-30
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2856 | `agent_session::tests::sdtest_2856_long_remote_titles_reconnect_without_losing_identity_or_saved_work` | SDUC-562, SDUC-563 | Green — failed before the import correction | Valid discovery titles over 160 bytes import with a bounded UTF-8 display name, retain native ID/server/folder, preserve existing transcript and user rename, and never merge conversations by title prefix. Manual naming, control-character and identity validation stay strict. |

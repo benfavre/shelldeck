@@ -933,6 +933,11 @@ The session search has a usable text viewport, and inherited navigator/provider
 labels follow the active theme in both light and dark appearances
 (SDTEST-1931/1932, manual native validation).
 
+Technical trace cards, expanded completed work and run details keep their natural
+height inside the timeline. Wrapped command titles and retained output remain
+readable without overlapping the preparation indicator; short windows scroll
+the output while keeping the composer fixed (SDTEST-2858).
+
 The empty Claude Code/Codex session shows the shared subscription sign-in
 guide. SSH targets require their own installed CLI and provider login; local
 provider credentials are never forwarded to them.
@@ -3313,6 +3318,14 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-10-31** — SDUC-557: Claude Code and Codex runs over SSH can share the desktop browser through a scoped reverse forward and private temporary MCP adapter. SDTEST-2862–2867 cover transport, launch configuration, lifecycle and native CEF.
+
+- **2026-10-31** — SDUC-564: themed tree guides and indented children make folder/worktree ownership visible in the Agents navigator. SDTEST-2860 also checks guide alignment, containment and nested checkout indentation.
+
+- **2026-10-31** — SDUC-551/562/564: pins stay above project folders; uncatalogued chats and native SSH history group by exact machine/server and workdir across providers. Closed folders retain the current chat/preview and summarize hidden work. Search preserves saved collapse; per-folder native pagination and legacy collapse migration are covered by SDTEST-2859–2861.
+
+- **2026-10-30** — SDUC-562/563: valid native titles may exceed the local display-name budget; import bounds the UTF-8 label with an ellipsis while retaining exact resume authority and saved work (SDTEST-2856/2857). SDUC-475/564: technical warning and completed-work output must retain its natural height without cropping (SDTEST-2858).
+
 - **2026-10-30** — SDUC-562: older-conversation discovery uses a short sidebar label with the complete action available in a tooltip, preventing the French caption from overflowing.
 
 - **2026-10-30** — SDUC-499/551/564: selecting the current chat from search restores composer focus; missing SSH recovery is covered through actual picker/search/Send controls in both languages, themes and narrow/wide layouts (SDTEST-2738/2855).
@@ -4435,6 +4448,15 @@ snapshots are not supported. No live push or PR mutation is part of the test sui
 
 ### SDUC-557 — Shared native Chromium browser and scoped computer use
 
+2026-10-31: SSH Claude Code and Codex runs share their context's desktop browser
+through a run/server-scoped loopback reverse forward and temporary Python MCP
+adapter. Private launch data uses SSH stdin; no desktop executable path or token
+enters remote argv or saved provider configuration. Setup refusal prevents the
+provider from starting. Browser close revokes access while the provider may
+continue; Stop, completion, rejection and logout release the run grant. Python 3
+and SSH remote-forward permission are required. Browser URLs use desktop network
+semantics; remote loopback services need an explicit web port forward.
+
 2026-10-30: Browser opens as a resizable companion to the conversation and
 composer, stacking below it in narrow windows. The header globe hides/reopens
 retained tabs; the pane close action releases that session’s browser and grants
@@ -4455,12 +4477,12 @@ currently displayed draft context; unsent context changes supersede saved contex
 The CEF helper renders live BGRA frames into GPUI; no external Chrome install,
 snapshot fallback, X11 child window, or public debugging port is involved. A
 missing engine reports an error. Scoped MCP tools attach to the next local
-Codex, Claude Code or Automonique run. Observation is the default. Control also
+Codex, Claude Code or Automonique run, or SSH Codex/Claude Code run. Observation is the default. Control also
 requires the visible browser toggle and a confirmed writable execution context.
 Tool grants admit only the matching helper's tabs, including newly opened related
 tabs, and expire on completion, rejection, Stop, browser close or logout. Secrets
-stay outside saved ShellDeck sessions and global provider configuration. SSH and
-unsupported providers do not receive a local desktop capability.
+stay outside saved ShellDeck sessions and global provider configuration.
+Unsupported providers receive no browser capability.
 
 Release payloads include the matching CEF engine on Linux, macOS and Windows.
 Published runtime directories and data remain readable by the installed desktop
@@ -4646,10 +4668,15 @@ Automated: SDTEST-2802, SDTEST-2803, SDTEST-2804. Native fixture:
 
 Agents offers a searchable saved-server picker and **Connect and refresh**.
 Read-only SSH discovery groups recent Claude Code, Codex and Jcode conversations
-by server/provider, with timestamps, search, collapse, pagination and explicit
+by server and exact original folder, with provider icons per conversation,
+timestamps, search, persisted collapse, independent folder pagination and explicit
 partial-results warnings. Refresh failures retain previous rows marked stale.
 Selecting a conversation shows its original server, native ID, folder and model;
 **Reconnect in chat** rechecks SSH access, folder and current native metadata.
+Long provider titles are retained in discovery and preview. Import creates a
+UTF-8-safe display name within the local 160-byte budget with an ellipsis;
+length never prevents reconnecting a valid native conversation. Reconnection
+matches the exact source identity and preserves a saved user rename and draft.
 No provider starts until Send. The next turn uses native resume in that exact
 folder, defaults to read-only and bypasses catalog path translation. A changed
 SSH destination blocks Send until reconnection. Native history is read from the original server and shown through the paged
@@ -4658,7 +4685,7 @@ persisted: rediscovery/reconnection is required after app restart. Automonique
 remains a separate typed Platform directory and refreshes independently.
 
 Automated: SDTEST-2806, SDTEST-2807, SDTEST-2808, SDTEST-2809, SDTEST-2810,
-SDTEST-2811, SDTEST-2812; SDTEST-1905 covers resume path mapping exclusion.
+SDTEST-2811, SDTEST-2812, SDTEST-2856, SDTEST-2857; SDTEST-1905 covers resume path mapping exclusion.
 Native fixture: `SHELLDECK_PREVIEW_SSH=1` on `agent_console_preview`.
 
 
@@ -4722,6 +4749,19 @@ collapsed groups retain count/attention, row states distinguish approval/input
 from work, and unsent drafts remain visible. Editing an imported native context
 requires explicit new-conversation intent instead of silently losing continuity.
 Provider-specific access labels describe the mode actually passed to the CLI.
+
+Pinned conversations stay in one section above project folders. Catalog ownership
+remains authoritative; other chats group by exact local/SSH target and folder,
+including when no projects are registered. Identical folder names on different
+servers remain separate, and duplicate names within a server show their paths.
+Closed groups keep the current chat or native preview visible and summarize only
+the remaining hidden conversations. Search reveals matching rows without changing
+saved collapse choices. Older closed catch-all preferences migrate to folder
+choices on library restore (SDTEST-2859–2861).
+
+Child conversations have a theme-colored tree guide aligned below the parent
+chevron, with space before the row chrome. Nested worktrees add another guide
+level; closed groups draw a guide only for any retained visible conversation.
 
 Further T3 parity: completed technical work expands inline without losing output;
 live work, failures and pending decisions stay visible. Plans retain current-step

@@ -501,6 +501,14 @@ impl AgentSession {
             ));
         }
         context.access = AgentAccessMode::ReadOnly;
+        // Discovery titles can exceed the local display-name budget. Bound only
+        // that label; invalid control characters must still fail validation.
+        let name = name.into();
+        let name = if name.trim().chars().any(char::is_control) {
+            name
+        } else {
+            truncate_utf8(name.trim(), MAX_AGENT_SESSION_NAME_BYTES)
+        };
         let mut session = Self::new(name, context, now_ms)?;
         let AgentTarget::Ssh { connection_id, .. } = session.context.target else {
             unreachable!("validated SSH context")
@@ -1928,6 +1936,110 @@ mod tests {
             .run_request("hello")
             .resume_session
             .is_none());
+    }
+
+    // SDTEST-2856 — SDUC-562/563: discovery titles are display data, never resume authority.
+    #[test]
+    fn sdtest_2856_long_remote_titles_reconnect_without_losing_identity_or_saved_work() {
+        let long_title = "Site : plante-artificielle-unique.com Thème : Rapport · visibilité locale à Rennes Date des faits : 2026-10-30 Chiffres de tête : - Ville : Rennes - Mots-clés relevés depuis Rennes : 2 visibles sur 20 mesurés, couverture 10 %, top 3";
+        for provider in [
+            AgentProvider::Claude,
+            AgentProvider::Codex,
+            AgentProvider::Jcode,
+            AgentProvider::DeepSeek,
+        ] {
+            let context = AgentExecutionContext {
+                target: AgentTarget::Ssh {
+                    connection_id: Uuid::new_v4(),
+                    connection_label: "server".into(),
+                },
+                workdir: "/srv/customer project".into(),
+                ..context(provider)
+            };
+            for title in [
+                long_title.to_owned(),
+                "a".repeat(160),
+                "a".repeat(161),
+                "a".repeat(256),
+                "é🌍".repeat(40),
+            ] {
+                let mut sessions = AgentSessionCollection::default();
+                let id = sessions
+                    .reconnect_remote(&title, context.clone(), "native-original", 1)
+                    .unwrap();
+                let imported = sessions.get(id).unwrap();
+                assert!(imported.name.len() <= MAX_AGENT_SESSION_NAME_BYTES);
+                if title.len() > MAX_AGENT_SESSION_NAME_BYTES {
+                    assert!(imported.name.ends_with('…'));
+                    assert!(title.starts_with(imported.name.strip_suffix('…').unwrap()));
+                } else {
+                    assert_eq!(imported.name, title);
+                }
+                let request = sessions.begin_run(id, "Continue", 2).unwrap();
+                assert_eq!(request.resume_session.as_deref(), Some("native-original"));
+                assert_eq!(request.workdir, "/srv/customer project");
+                assert_eq!(request.target, context.target);
+                sessions
+                    .apply_stream_event(
+                        id,
+                        AgentStreamEvent::Text("Retained native reply".into()),
+                        3,
+                    )
+                    .unwrap();
+                sessions
+                    .finish(id, AgentSessionStatus::Completed, 4)
+                    .unwrap();
+                let messages = sessions.get(id).unwrap().messages.clone();
+                sessions
+                    .get_mut(id)
+                    .unwrap()
+                    .rename("My saved name", 5)
+                    .unwrap();
+                assert_eq!(
+                    sessions
+                        .reconnect_remote(long_title, context.clone(), "native-original", 6)
+                        .unwrap(),
+                    id
+                );
+                assert_eq!(sessions.get(id).unwrap().name, "My saved name");
+                assert_eq!(sessions.get(id).unwrap().messages, messages);
+                // Matching display prefixes must not merge distinct native conversations.
+                let other = sessions
+                    .reconnect_remote(&title, context.clone(), "native-other", 7)
+                    .unwrap();
+                assert_ne!(other, id);
+                assert_eq!(sessions.sessions.len(), 2);
+                assert_eq!(
+                    sessions
+                        .get(other)
+                        .unwrap()
+                        .run_request("Next")
+                        .resume_session
+                        .as_deref(),
+                    Some("native-other")
+                );
+                assert_eq!(sessions.active_count(), 0);
+            }
+            let mut imported =
+                AgentSession::from_remote(long_title, context.clone(), "native-original", 1)
+                    .unwrap();
+            assert!(imported.rename(long_title, 2).is_err());
+            assert!(AgentSession::new(long_title, context.clone(), 1).is_err());
+            for invalid in [
+                String::new(),
+                "  ".into(),
+                format!("{}\ninvalid", "a".repeat(180)),
+                format!("{}\0invalid", "a".repeat(180)),
+            ] {
+                assert!(
+                    AgentSession::from_remote(invalid, context.clone(), "native-original", 1)
+                        .is_err()
+                );
+            }
+            assert!(
+                AgentSession::from_remote(long_title, context, "invalid/native-id", 1).is_err()
+            );
+        }
     }
 
     // SDTEST-2809 — SDUC-562

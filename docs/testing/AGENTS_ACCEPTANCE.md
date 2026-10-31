@@ -17,13 +17,13 @@ project/session sidebar, composer, and browser beside the conversation.
 | Open the app | Agents is the default; Agents is second in the full shell rail; shell toggle works in Agents mode; resizing retains navigation and composer. | Source reviewed and native fixture clicked: Agents startup, second activity after Connections (below brand), sidebar toggle, 900px resize; composer remains usable. |
 | Add/open a project | Local folder picker or saved SSH connection plus remote folder browser; standard SSH folders require no helper install; successful add lands in Agents; Cancel returns without losing draft. | Native fixture clicked: Add project → local folder → Agents; canonical re-add retains one project/name and selects existing chat. SSH browsing covered by earlier onboarding work; not repeated against a live host in this pass. |
 | Start another task | New conversation has explicit project, server, agent and model; existing project sessions are selectable; archived sessions do not reopen implicitly; nested checkouts do not duplicate rows. | Navigator/project-picker corrections and regression coverage in this pass. |
-| Manage the list | Search matches project/server/session; collapsed groups remain manageable; active/archived state is clear; archive and restore have distinct actions; hiding an SSH list does not delete server history. | Native fixture clicked: archive → archived filter → restore retains unsent draft; project search excludes unrelated chats; Other conversations collapses separately. SSH page/hide state regressions. No implied parity with T3 snoozing/drag ordering. |
+| Manage the list | Search matches project/server/session; collapsed groups remain manageable; active/archived state is clear; archive and restore have distinct actions; hiding an SSH list does not delete server history. | Native fixture clicked: archive → archived filter → restore retains unsent draft; pins above folders, hidden attention and current-row retention, provider-mixed SSH folders and temporary search reveal. SDTEST-2859–2861 cover exact folder scope, pin/unpin, paging, drafts and legacy collapse migration. SSH page/hide state regressions remain. No implied parity with T3 snoozing/drag ordering. |
 | Discover remote work | Automonique and native SSH are clearly separate and grouped; selecting a saved SSH server loads fresh metadata; last successful fetch and failures are visible; large histories and older inventory pages remain accessible. | Paged inventory and large-file fixtures plus live read-only verification. Candidate/time/output bounds must remain explicit. |
 | Reconnect and read | Exact server/provider/native ID/directory; full provider-retained history is reachable in pages; reading never runs tools; source reference survives restart; explicit revalidation restores resume authority. | SDUC-562/563 parser/storage/UI regressions and native reconnect walkthrough. Deleted/compacted server content cannot be recreated. |
 | Continue after external changes | Refresh can read current server history without duplicating retained local messages; compaction recovery preserves draft and resume identity; late responses cannot switch conversations. | SDTEST-2818 and private refreshed-history/back-to-chat walkthrough. |
 | Compose and choose a model | Context is visible, controls retain valid draft choices; availability/loading/error states are honest; model options come from actual provider support; failed attachment intake leaves a recoverable draft. | Composer/model/context tests in this pass; live provider catalog claims require a real provider read. |
 | Send, work, stop, retry | Transcript remains ordered, no transport lifecycle spam; draft/queue survives failed admission; tool/approval activity remains usable; stopping is distinct from failure; background streams do not steal focus. | Core/UI runtime and queue tests plus controlled native fixture. A fixture is not evidence of a real provider turn. |
-| Inspect the work | Files/Changes/Terminal actions are coherent; browser is a companion pane; no duplicate toolbars/errors; unavailable capabilities explain an actionable next step. | Earlier inspector/browser walkthrough; current source regression review. Live Chromium and provider/browser control require a working helper, not a screenshot fixture. |
+| Inspect the work | Files/Changes/Terminal actions are coherent; browser is a companion pane; no duplicate toolbars/errors; unavailable capabilities explain an actionable next step. SSH Claude/Codex can share the desktop browser with the same tab scope and control permissions. | Earlier inspector/browser walkthrough; SDTEST-2862–2867 cover scoped SSH forwarding, private provider configuration and grant retirement. The packaged-CEF SSH fixture checks actual snapshots, PNG screenshots, clicks, typing and refusal of read-only/out-of-scope actions. Real provider and external SSH runs remain distinct opt-in evidence. |
 | Recover account/network failures | Errors are local to the failed operation; last known list/catalog is retained; refresh is meaningful; logout cancels/invalidate pending reads; no silent new chat on failed native resume. | Request identity/epoch/destination tests and error-state walkthrough. |
 | Reopen after restart | Local text and drafts preserved; saved SSH choice can refresh once visible; collapse choice survives; native history reads passively; original conversation resumes only after revalidation. | Automated preference/source round-trips; private full-app restart retained selected project, unsent draft and sidebar visibility. SSH auto-refresh-on-restore is state-tested; resume revalidation remains explicit. |
 
@@ -226,3 +226,186 @@ This walkthrough also exposed an overflowing older-conversations sidebar label;
 its visible text is now shorter in both languages, with the full action in a
 tooltip. The preview supports `SHELLDECK_PREVIEW_MISSING_SSH=1` and
 `SHELLDECK_PREVIEW_FR=1` for repeating this case without SSH/provider access.
+
+### Screenshot follow-up — native titles and cropped command cards
+
+SDTEST-2856 reproduced `agent session name is too long` with the screenshot's
+240-byte French title before the correction. Discovery accepts longer titles
+than local session names. Native import now bounds only the display label to
+160 bytes with a UTF-8-safe ellipsis; manual naming and control-character checks
+remain strict. The matrix covers all four provider variants, multibyte and
+boundary-length titles, saved transcript/rename preservation, exact resume
+authority and distinct conversations sharing a display prefix. SDTEST-2857
+clicks the production reconnect button for all three native formats at 900×700
+and 620×560, loads a validated history page, reuses the same chat and preserves
+both local and native drafts without emitting Run.
+
+Technical trace cards, expanded completed-work groups, transcript bodies and
+run details now explicitly retain their natural height. A command icon cannot
+shrink, and wrapped titles have an explicit full-width header and line height.
+SDTEST-2858 covers Dark/Solarized Light at 900×700, 620×560 and 900×400 with and
+without multiline Unicode output. It checks complete child bounds, separation
+from the preparing indicator and run details, real wheel reachability and a
+fixed composer with completed work collapsed/expanded. The initial Linux
+fixture and simple headless geometry did not reproduce the exact compressed
+Windows card from the user screenshot; this is layout hardening with regression
+coverage, not a claim of a Windows GPU reproduction.
+
+The wheel harness waits for GPUI's 70 ms smooth-scroll animation, which uses
+`std::time::Instant` rather than the test dispatcher clock. Checking geometry
+before that animation settled caused an intermittent offscreen-click failure;
+the harness now moves the pointer and waits 80 ms before measuring. No assertion
+was widened and no production scrolling code was changed.
+
+Native Linux GPU walkthroughs used fresh isolated XDG profiles, a masked real
+home and disabled networking. The synthetic browser traces did not execute a
+browser, SSH command or provider. Dark at 900×700 shows the complete warning,
+preparation indicator and run details (`/tmp/shelldeck-chat-qa/03-warning-dark.png`);
+900×400 keeps the complete warning reachable by wheel while the composer stays
+fixed (`06-short-scrolled-dark.png`). Solarized Light at 620×560 covers both
+collapsed and expanded completed work
+(`/tmp/shelldeck-chat-light-qa/03-warning-light.png`, `04-expanded-light.png`).
+The full-title native preview reconnects into retained history at 1280×900
+(`/tmp/shelldeck-long-title-qa/02-preview.png`, `03-reconnected.png`). Repeat with
+`SHELLDECK_PREVIEW_CROPPED_TRACE=1` or
+`SHELLDECK_PREVIEW_SSH=1 SHELLDECK_PREVIEW_LONG_TITLE=1`; add
+`SHELLDECK_PREVIEW_FR=1` and optionally `SHELLDECK_PREVIEW_LIGHT=1`.
+
+Final isolated offline workspace sweep: 1,135 tests passed, including 510 core
+and 329 UI tests; the same nine existing live/doc tests remain ignored. Strict
+workspace all-target Clippy, formatting and whitespace checks passed. Logs:
+`/tmp/shelldeck-chat-final-tests.log`, `/tmp/shelldeck-chat-final-clippy.log`.
+
+### Sidebar grouping follow-up — 2026-10-31
+
+Source review of T3 Code's optional project-folder sidebar at `cb9629e` is in
+`T3_CODE_REVIEW_2026-10-30.md`. ShellDeck now keeps active pins above catalog
+projects, uses exact execution target/workdir folders for uncatalogued chats,
+and groups native SSH discovery by server/folder across providers. Catalog
+ownership still uses the most specific matching checkout. Group membership
+never depends on display names, provider binaries or hashed preference keys.
+Collapsed groups retain the current chat/native preview; their badges and
+attention describe the other hidden rows. Native server actions are compact
+icon controls, and each native folder owns its own visible-row limit.
+
+SDTEST-2859 covers exact target/path scope, identical server/folder labels,
+cross-provider grouping, pin/catalog exclusion and stable ordering during
+streaming. SDTEST-2860 dispatches real pin/unpin, collapse, search and navigation
+controls in EN/Dark and FR/Solarized Light at 900×700 and 620×560. It flushes
+separate drafts to the real isolated store and restores a legacy closed catch-all
+into closed folder groups without losing the selected chat. SDTEST-2861 clicks
+mixed-provider discovery folders, independently grows two folders, retains the
+current preview when its folder/server closes, and searches across server/title
+terms without mutating saved collapse. All callbacks are fixture-only; neither
+Run nor native reconnect execution is admitted by these grouping scenarios.
+Existing SDTEST-2744 additionally persists the bounded folder/server/pin keys.
+
+Native Linux GPU walkthrough used fresh XDG profiles, a masked home, no network,
+providers or desktop clipboard. The old layout is captured at
+`/tmp/shelldeck-sidebar-before/01-sidebar.png`. Dark 1280×900 evidence:
+`/tmp/shelldeck-sidebar-qa/01-grouped.png` (pins, catalog and uncatalogued folders),
+`02-hidden-attention.png` (closed project with hidden approval),
+`03-current-in-closed-project.png` (current chat retained),
+`05-native-folder-closed.png` (selected native preview retained), and
+`06-search-reveals.png` / `07-cleared-search.png` (temporary reveal and restored
+collapse). Solarized Light 620×560 evidence:
+`/tmp/shelldeck-sidebar-light-qa/02-narrow-sidebar.png` and
+`03-narrow-native-folders.png`; the overlay scrolls independently and the
+underlying composer keeps its width. The standalone fixture uses its existing
+Ctrl+Shift+B session toggle. Repeat with
+`SHELLDECK_PREVIEW_SSH=1 SHELLDECK_PREVIEW_GROUPS=1`; add
+`SHELLDECK_PREVIEW_ATTENTION=1`, `SHELLDECK_PREVIEW_FR=1` or
+`SHELLDECK_PREVIEW_LIGHT=1` as needed. This is native ShellDeck fixture evidence,
+not a new T3 runtime or live-provider walkthrough.
+
+Validation: the isolated offline workspace sweep passed 1,138 tests, including
+332 UI tests, with the same nine existing live/doc ignores. The final focused
+folder run passed all ten selected scenarios after the migration, source-selection
+and visible-count refinements. Strict workspace all-target Clippy and formatting
+passed. Logs: `/tmp/shelldeck-sidebar-final-tests.log`,
+`/tmp/shelldeck-sidebar-reviewed-tests.log`, `/tmp/shelldeck-sidebar-final-lint.log`.
+
+### Tree gutter follow-up — 2026-10-31
+
+Catalog, pinned, uncatalogued and native SSH folder children share one decorative
+guide wrapper. A one-pixel themed border aligns below the parent chevron; child
+rows have six pixels of padding before their existing chrome. Nested worktrees
+add a second guide level. A closed empty group has no visible rail, while a
+retained current conversation keeps its guide. Headers use matching chevron
+insets. Conversation controls and their event routing remain the existing ones.
+
+The ten focused folder scenarios passed. SDTEST-2860 additionally measures guide
+alignment and child containment in wide/narrow Dark and Solarized Light layouts;
+the light fixture uses a labelled checkout to exercise nested guides. This
+expanded scenario and strict UI all-target Clippy passed afterward. Logs:
+`/tmp/shelldeck-tree-gutter-tests.log`, `/tmp/shelldeck-tree-gutter-nested.log`,
+`/tmp/shelldeck-tree-gutter-final-clippy.log`.
+
+Native Linux GPU evidence: `/tmp/shelldeck-tree-gutter-qa/01-dark.png`,
+`02-collapsed-current.png`, `03-empty-closed.png`, and
+`/tmp/shelldeck-tree-gutter-light-qa/01-light.png`, `02-narrow.png`,
+`03-narrow-ssh.png`. The isolated fixtures used no providers, network or desktop
+clipboard. The production app was rebuilt separately; the user's running
+instance was left open.
+
+### Remote agents sharing the desktop browser — 2026-10-31
+
+**Source review:** Workspace attaches browser access after normal run admission,
+using the exact run UUID, saved connection UUID and execution context. Local MCP
+launch options remain local-only. Remote Claude Code and Codex receive a separate
+scoped descriptor. The ordinary SSH connection (including ProxyJump) requests a
+server-allocated loopback reverse forward. A fixed Python launcher receives all
+private arguments and the capability on SSH stdin, writes a mode-0700 temporary
+directory with mode-0600 files, and supplies ephemeral MCP options to the provider.
+No local executable path, capability in argv, project MCP mutation or persistent
+remote install is used. A bounded cleanup guard releases forwarding on future
+drop as well as completion, Stop and browser-grant retirement.
+
+Provider scope matches available private launch configuration. Jcode's current
+CLI/configuration was reviewed at
+[`33e27ca4790684179512854d013c78048f5a1ae6`](https://github.com/1jehuang/jcode/tree/33e27ca4790684179512854d013c78048f5a1ae6)
+(`src/cli/args.rs` and `crates/jcode-base/src/mcp`): it reads global/project MCP files and has no
+per-run override suitable for this bridge. Jcode and DeepSeek remain unsupported;
+Automonique keeps its existing local ACP transport. The browser uses desktop
+network semantics; remote loopback web services require an explicit port forward.
+
+**Deterministic fixture coverage:** SDTEST-2862 uses actual encrypted SSH channels
+and loopback TCP bytes, checks the exact listener/origin, rejects other ports and
+non-loopback peers, and revokes active streams without stopping the provider.
+SDTEST-2863 refuses stale run/server identities, invalid endpoints, unsupported
+providers, expired grants, denied forwarding and cancelled setup before exec.
+SDTEST-2864 streams 512 KiB of private input alongside output, retains exit status
+after EOF, and checks Stop/drop while a zero SSH receive window blocks stdin.
+SDTEST-2865 executes the production Python launcher/proxy against harmless
+Claude/Codex stand-ins, including resume arguments, Unicode temporary paths,
+notification framing, exact stdin, unchanged project configuration, normal and
+failed exit, TERM/HUP cleanup and input bounds. SDTEST-2866 exercises the production
+UI attachment path and actual Stop/close/logout handlers with a draining helper;
+local Claude keeps its private-file lifetime and unsupported providers get no
+capability.
+
+**Native runtime evidence:** SDTEST-2867 ran with the staged 0.14.1 CEF runtime,
+a disposable browser profile and a loopback HTML fixture. Both fake providers
+start the production Python adapter using the payload received through SSH.
+Every MCP byte crosses forwarded-tcpip channels. Observation lists only the
+allowed tab, reads actual accessibility content and captures a PNG. Control
+clicks/types into Chromium, checked through trusted fixture DOM inspection.
+Read-only mutation and a foreign tab are rejected. Completion removes private
+files and cancels the exact listener. This native gate is wired into Linux/macOS
+browser CI; normal tests compile the transport on Windows too.
+
+No real model/provider, saved SSH server, provider credentials, desktop profile
+or clipboard was used. These are fixture and native-runtime results, not a live
+remote-provider walkthrough. The user's running app is retained; the rebuilt
+binary will apply on its next restart.
+
+Validation: the isolated offline workspace sweep passed **1,142 runnable tests**,
+including 333 UI tests and 72 SSH tests. Ten tests remain explicitly ignored: the
+previous nine live/doc gates plus the new packaged-CEF SSH gate, which passed
+separately. The standalone Python suite passed its three scenario groups. Strict
+workspace all-target Clippy passed with only existing patched-dependency warnings.
+Logs: `/tmp/shelldeck-remote-browser-workspace-final.log`,
+`/tmp/shelldeck-remote-browser-focused-reviewed.log`,
+`/tmp/shelldeck-remote-browser-python-final.log`,
+`/tmp/shelldeck-remote-browser-native-reviewed.log`,
+`/tmp/shelldeck-remote-browser-clippy.log`.

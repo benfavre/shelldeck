@@ -21,6 +21,17 @@ struct RunBrowserGrant {
     _grant: BrowserGrant,
     // Claude needs a private filename, not a capability in its process argv.
     _config: Option<tempfile::NamedTempFile>,
+    _remote_lease: Option<shelldeck_ssh::browser_bridge::BrowserBridgeLease>,
+}
+
+fn browser_tools_supported(provider: AgentProvider, target: &AgentTarget) -> bool {
+    match target {
+        AgentTarget::Local => matches!(
+            provider,
+            AgentProvider::Claude | AgentProvider::Codex | AgentProvider::Automonique
+        ),
+        AgentTarget::Ssh { .. } => matches!(provider, AgentProvider::Claude | AgentProvider::Codex),
+    }
 }
 
 #[derive(Default)]
@@ -90,11 +101,7 @@ impl AgentConsoleView {
                 session_id,
                 &context,
             );
-            let observation_available = matches!(context.target, AgentTarget::Local)
-                && matches!(
-                    context.provider,
-                    AgentProvider::Claude | AgentProvider::Codex | AgentProvider::Automonique
-                );
+            let observation_available = browser_tools_supported(context.provider, &context.target);
             let view = cx.new(|cx| {
                 let mut view = NativeBrowserView::new(scope, cx);
                 view.set_agent_observation_available(observation_available, cx);
@@ -278,34 +285,32 @@ impl AgentConsoleView {
         request: &AgentRunRequest,
         options: &mut AgentInputOptions,
         cx: &App,
-    ) -> Result<(), String> {
-        if !matches!(request.target, AgentTarget::Local)
-            || !matches!(
-                request.provider,
-                AgentProvider::Codex | AgentProvider::Claude | AgentProvider::Automonique
-            )
-        {
-            return Ok(());
+    ) -> Result<Option<shelldeck_ssh::browser_bridge::BrowserBridgeConfig>, String> {
+        if !browser_tools_supported(request.provider, &request.target) {
+            return Ok(None);
         }
         let Some(session_id) = self.run_sessions.get(&request.id).copied() else {
-            return Ok(());
+            return Ok(None);
         };
         let context = self.sessions.get(session_id).map(|s| &s.context);
+        if context != Some(&AgentExecutionContext::from_request(request)) {
+            return Err(t!("agents.editor.context_changed").to_string());
+        }
         let Some(instance) = self
             .live_browsers
             .instances
             .iter()
             .find(|b| b.session_id == session_id && Some(&b.context) == context)
         else {
-            return Ok(());
+            return Ok(None);
         };
         let view = instance.view.read(cx);
         let Some(client) = view.control() else {
-            return Ok(());
+            return Ok(None);
         };
         let ids = view.browser_ids();
         if ids.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let permission =
             if view.agent_control_allowed() && request.access != AgentAccessMode::ReadOnly {
@@ -316,6 +321,31 @@ impl AgentConsoleView {
         let grant = mcp::grant(client, ids, permission).map_err(|e| e.to_string())?;
         grant.include_new_tabs();
         let config = grant.configuration();
+        if let AgentTarget::Ssh { connection_id, .. } = request.target {
+            let (remote, lease) = shelldeck_ssh::browser_bridge::BrowserBridgeConfig::new(
+                request.id,
+                connection_id,
+                config
+                    .env
+                    .get(mcp::ENDPOINT_ENV)
+                    .ok_or_else(|| t!("agents.live_browser.bridge_unavailable").to_string())?,
+                config
+                    .env
+                    .get(mcp::CAPABILITY_ENV)
+                    .ok_or_else(|| t!("agents.live_browser.bridge_unavailable").to_string())?
+                    .clone(),
+            )
+            .map_err(|error| error.to_string())?;
+            self.live_browsers.grants.insert(
+                request.id,
+                RunBrowserGrant {
+                    _grant: grant,
+                    _config: None,
+                    _remote_lease: Some(lease),
+                },
+            );
+            return Ok(Some(remote));
+        }
         let private_config = if request.provider == AgentProvider::Claude {
             let mut file = tempfile::Builder::new()
                 .prefix("shelldeck-browser-")
@@ -340,9 +370,10 @@ impl AgentConsoleView {
             RunBrowserGrant {
                 _grant: grant,
                 _config: private_config,
+                _remote_lease: None,
             },
         );
-        Ok(())
+        Ok(None)
     }
 
     pub fn retire_browser_run(&mut self, run_id: Uuid) {
@@ -410,6 +441,180 @@ fn browser_scope(
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+
+    // SDTEST-2866 — production grant attachment/retirement, using a harmless
+    // draining helper. Native CEF and SSH transport have separate smoke gates.
+    #[cfg(unix)]
+    #[test]
+    fn sdtest_2866_remote_browser_grants_follow_context_run_and_account_lifetimes() {
+        use futures_lite::future::{block_on, poll_once};
+        use shelldeck_browser::{BrowserClient, BrowserLaunch};
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let helper = fixture.path().join("fake-browser");
+        std::fs::write(
+            &helper,
+            "#!/usr/bin/env python3\nimport sys,pathlib\npathlib.Path(sys.argv[sys.argv.index('--profile')+1],'ready').write_text('ready')\nwhile sys.stdin.buffer.read(1): pass\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for (provider, target, disposition) in [
+            (
+                AgentProvider::Codex,
+                AgentTarget::Ssh {
+                    connection_id: Uuid::new_v4(),
+                    connection_label: "fixture".into(),
+                },
+                "stop",
+            ),
+            (
+                AgentProvider::Claude,
+                AgentTarget::Ssh {
+                    connection_id: Uuid::new_v4(),
+                    connection_label: "fixture".into(),
+                },
+                "close",
+            ),
+            (
+                AgentProvider::Codex,
+                AgentTarget::Ssh {
+                    connection_id: Uuid::new_v4(),
+                    connection_label: "fixture".into(),
+                },
+                "logout",
+            ),
+            (AgentProvider::Claude, AgentTarget::Local, "local"),
+            (
+                AgentProvider::Jcode,
+                AgentTarget::Ssh {
+                    connection_id: Uuid::new_v4(),
+                    connection_label: "fixture".into(),
+                },
+                "unsupported",
+            ),
+        ] {
+            let mut app = TestAppContext::single();
+            let console = app.update(|cx| cx.new(AgentConsoleView::new));
+            console.update(&mut app, |view, cx| {
+                let session_id = view.sessions.selected_id().unwrap();
+                let context = AgentExecutionContext {
+                    provider,
+                    target,
+                    access: AgentAccessMode::ReadOnly,
+                    workdir: "/fixture".into(),
+                    model: None,
+                };
+                view.sessions
+                    .get_mut(session_id)
+                    .unwrap()
+                    .set_context(context.clone(), 1)
+                    .unwrap();
+                if let AgentTarget::Ssh {
+                    connection_id,
+                    connection_label,
+                } = &context.target
+                {
+                    view.connections.push(AgentConnectionOption {
+                        id: *connection_id,
+                        label: connection_label.clone(),
+                        host: "127.0.0.1".into(),
+                    });
+                }
+                let request = view
+                    .sessions
+                    .get_mut(session_id)
+                    .unwrap()
+                    .begin_run("fixture", 2)
+                    .unwrap();
+                view.run_sessions.insert(request.id, session_id);
+                let client = BrowserClient::spawn(BrowserLaunch {
+                    executable: helper.clone(),
+                    profile_dir: fixture.path().join(Uuid::new_v4().to_string()),
+                })
+                .unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !client.launch().profile_dir.join("ready").exists() {
+                    assert!(std::time::Instant::now() < deadline, "fake helper started");
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                let id = client.create_tab("about:blank", 800, 600, 1.0).unwrap();
+                let browser = cx.new(|cx| {
+                    let mut browser = NativeBrowserView::new("fixture".into(), cx);
+                    browser.bind_fixture_client(client, id);
+                    browser
+                });
+                let subscription = cx.subscribe(&browser, |_, _, _, _| {});
+                view.live_browsers.instances.push(BrowserInstance {
+                    session_id,
+                    context: context.clone(),
+                    view: browser,
+                    visible: true,
+                    _subscription: subscription,
+                });
+                let mut options = AgentInputOptions::default();
+                if disposition != "unsupported" {
+                    let mut stale = request.clone();
+                    stale.workdir = "/other".into();
+                    assert!(view.attach_browser_tools(&stale, &mut options, cx).is_err());
+                    assert!(view.live_browsers.grants.is_empty());
+                }
+                let bridge = view
+                    .attach_browser_tools(&request, &mut options, cx)
+                    .unwrap();
+                if disposition == "unsupported" {
+                    assert!(bridge.is_none());
+                    assert!(options.mcp_servers.is_empty());
+                    assert!(view.live_browsers.grants.is_empty());
+                    return;
+                }
+                if disposition == "local" {
+                    assert!(bridge.is_none());
+                    let config = options.mcp_servers[0].claude_config_path.clone().unwrap();
+                    assert!(config.is_file());
+                    view.retire_browser_run(request.id);
+                    assert!(!config.exists());
+                    return;
+                }
+                assert!(
+                    options.mcp_servers.is_empty(),
+                    "desktop paths never enter SSH options"
+                );
+                let mut bridge = bridge.expect("SSH browser descriptor");
+                assert!(block_on(poll_once(bridge.revoked())).is_none());
+                let mut other = context.run_request("other run");
+                assert!(view
+                    .attach_browser_tools(&other, &mut options, cx)
+                    .unwrap()
+                    .is_none());
+                other.id = request.id;
+                other.target = AgentTarget::Ssh {
+                    connection_id: Uuid::new_v4(),
+                    connection_label: "fixture".into(),
+                };
+                assert!(view.attach_browser_tools(&other, &mut options, cx).is_err());
+                match disposition {
+                    "stop" => {
+                        view.request_stop(request.id, cx);
+                        assert_eq!(
+                            view.sessions.get(session_id).unwrap().status,
+                            shelldeck_core::agent_session::AgentSessionStatus::Stopping
+                        );
+                    }
+                    "close" => {
+                        view.apply_selected_context(cx);
+                        view.close_current_browser(cx);
+                    }
+                    "logout" => view.set_browser_account("https://fixture.invalid", None, cx),
+                    _ => unreachable!(),
+                }
+                assert!(view.live_browsers.grants.is_empty());
+                assert!(
+                    block_on(poll_once(bridge.revoked())).is_some(),
+                    "run retirement must revoke SSH forwarding"
+                );
+            });
+        }
+    }
     // SDTEST-2587 — SDUC-557
     #[test]
     fn browser_profiles_separate_sessions_and_execution_contexts() {

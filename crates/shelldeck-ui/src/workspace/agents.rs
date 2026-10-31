@@ -372,12 +372,15 @@ impl Workspace {
         let mut options = self
             .agent_console
             .update(cx, |view, _| view.take_run_options(request.id));
-        if let Err(error) = self.agent_console.update(cx, |view, cx| {
+        let remote_browser = match self.agent_console.update(cx, |view, cx| {
             view.attach_browser_tools(&request, &mut options, cx)
         }) {
-            self.reject_agent_run(&request, error, ToastLevel::Error, cx);
-            return;
-        }
+            Ok(remote) => remote,
+            Err(error) => {
+                self.reject_agent_run(&request, error, ToastLevel::Error, cx);
+                return;
+            }
+        };
         let mut spec = match AgentCommandSpec::for_request_with_options(&request, &options) {
             Ok(spec) => spec,
             Err(error) => {
@@ -454,10 +457,10 @@ impl Workspace {
         let (done_tx, done_rx) = std::sync::mpsc::channel::<AgentDone>();
         let thread = match connection {
             Some(connection) => spawn_remote_agent(
-                run_id,
-                provider,
+                &request,
                 spec,
                 connection,
+                remote_browser,
                 shutdown_rx,
                 event_tx,
                 done_tx,
@@ -1274,14 +1277,15 @@ fn spawn_local_agent(
 }
 
 fn spawn_remote_agent(
-    run_id: Uuid,
-    provider: shelldeck_core::agent_runtime::AgentProvider,
+    request: &AgentRunRequest,
     spec: AgentCommandSpec,
     connection: Connection,
+    mut browser: Option<shelldeck_ssh::browser_bridge::BrowserBridgeConfig>,
     shutdown_rx: tokio::sync::mpsc::Receiver<()>,
     event_tx: std::sync::mpsc::Sender<AgentStreamEvent>,
     done_tx: std::sync::mpsc::Sender<AgentDone>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
+    let (run_id, provider) = (request.id, request.provider);
     std::thread::Builder::new()
         .name(format!("agent-remote-{run_id}"))
         .spawn(move || {
@@ -1299,9 +1303,14 @@ fn spawn_remote_agent(
                 let mut shutdown_rx = shutdown_rx;
                 let client = SshClient::new();
                 let connect = client.connect(&connection);
-                let session = match tokio::select! {
+                let mut session = match tokio::select! {
+                    biased;
                     _ = shutdown_rx.recv() => {
                         let _ = done_tx.send((None, None));
+                        return;
+                    }
+                    _ = async { match &mut browser { Some(browser) => browser.revoked().await, None => std::future::pending::<()>().await } } => {
+                        let _ = done_tx.send((None, Some(t!("agents.live_browser.remote_expired").to_string())));
                         return;
                     }
                     result = connect => result,
@@ -1324,9 +1333,12 @@ fn spawn_remote_agent(
                         let _ = event_tx.send(event);
                     }
                 });
-                let result = session
-                    .exec_cancellable(&spec.remote_shell_command(), output_tx, shutdown_rx)
-                    .await;
+                let result = match browser {
+                    Some(browser) => shelldeck_ssh::browser_bridge::run(
+                        &mut session, run_id, provider, &spec, browser, output_tx, shutdown_rx,
+                    ).await,
+                    None => session.exec_cancellable(&spec.remote_shell_command(), output_tx, shutdown_rx).await,
+                };
                 let _ = forward.await;
                 match result {
                     Ok(exit_code) => {

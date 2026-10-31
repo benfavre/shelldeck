@@ -88,6 +88,39 @@ fn main() -> anyhow::Result<()> {
     collection.create("Review the terminal shortcuts", context.clone(), 6)?;
     collection.create("Investigate SSH reconnects", context, 7)?;
     collection.select(first)?;
+    if std::env::var_os("SHELLDECK_PREVIEW_GROUPS").is_some() {
+        let template = collection.get(first).unwrap().context.clone();
+        for (target, path, name) in [
+            (
+                AgentTarget::Local,
+                root.parent()
+                    .unwrap()
+                    .join("image-tools")
+                    .display()
+                    .to_string(),
+                "Resize the product screenshots",
+            ),
+            (
+                AgentTarget::Ssh {
+                    connection_id: uuid::Uuid::from_u128(421),
+                    connection_label: "Development server".into(),
+                },
+                "/srv/customer-project".into(),
+                "Continue the remote deployment review",
+            ),
+        ] {
+            collection.create(
+                name,
+                AgentExecutionContext {
+                    target,
+                    workdir: path,
+                    ..template.clone()
+                },
+                10,
+            )?;
+        }
+        collection.select(first)?;
+    }
     if std::env::var_os("SHELLDECK_PREVIEW_MISSING_SSH").is_some() {
         let session = collection.get_mut(first).unwrap();
         let mut context = session.context.clone();
@@ -126,7 +159,11 @@ fn main() -> anyhow::Result<()> {
     snapshot.preferences.inspector_visible = std::env::var_os("SHELLDECK_PREVIEW_PANEL").is_some();
     snapshot.drafts.insert(
         first,
-        "Add coverage for a reconnect while the page is hidden.".into(),
+        if std::env::var_os("SHELLDECK_PREVIEW_CROPPED_TRACE").is_some() {
+            "open browser check inklura.fr".into()
+        } else {
+            "Add coverage for a reconnect while the page is hidden.".into()
+        },
     );
     snapshot.preferences.remote_sessions_expanded =
         std::env::var_os("SHELLDECK_PREVIEW_CONNECT").is_some();
@@ -230,6 +267,31 @@ fn main() -> anyhow::Result<()> {
                     .unwrap()
                     .to_path_buf();
                 cx.subscribe(&view, move |view, event: &AgentConsoleEvent, cx| {
+                    if std::env::var_os("SHELLDECK_PREVIEW_CROPPED_TRACE").is_some() {
+                        if let AgentConsoleEvent::Run(request) = event {
+                            view.update(cx, |view, cx| {
+                                view.begin_run(request.clone(), cx);
+                                view.push_stream_events_for(request.id, [
+                                    AgentStreamEvent::Ready,
+                                    AgentStreamEvent::Trace(AgentTraceUpdate {
+                                        correlation_id: Some("preview-curl".into()),
+                                        detail: AgentTraceKind::Command {
+                                            command: "curl -sS -o /dev/null -w 'home: %{http_code} %{time_total}s %{size_download}B via %{remote_ip}' -L https://inklura.fr".into(),
+                                            status: AgentTraceStatus::Succeeded, exit_code: Some(0), summary: None,
+                                        },
+                                    }),
+                                    AgentStreamEvent::Trace(AgentTraceUpdate {
+                                        correlation_id: Some("preview-browser-warning".into()),
+                                        detail: AgentTraceKind::Command {
+                                            command: "/home/fixture/.cache/browser/chrome/linux-152.0.7977.75/chrome-linux64/chrome --headless --remote-debugging-port=0 about:blank".into(),
+                                            status: AgentTraceStatus::Running, exit_code: None, summary: None,
+                                        },
+                                    }),
+                                    AgentStreamEvent::Usage(AgentUsageUpdate { input_tokens:Some(18420), output_tokens:Some(3), ..Default::default() }),
+                                ], cx);
+                            });
+                        }
+                    }
                     if let AgentConsoleEvent::OpenPlatformSession(coordinate) = event {
                         let opened = remote
                             .update(cx, |source, cx| {
@@ -437,12 +499,16 @@ fn ssh_sessions_fixture() -> shelldeck_core::agent_remote_sessions::RemoteAgentS
             provider,
             session_id: format!("fixture-conversation-{i}"),
             workdir: "/srv/customer-project".into(),
-            title: [
-                "Investigate checkout failure",
-                "Improve the remote session picker",
-                "Review API latency",
-            ][i]
-                .into(),
+            title: if std::env::var_os("SHELLDECK_PREVIEW_LONG_TITLE").is_some() && i == 0 {
+                "Site : plante-artificielle-unique.com Thème : Rapport · visibilité locale à Rennes Date des faits : 2026-10-30 Chiffres de tête : - Ville : Rennes - Mots-clés relevés depuis Rennes : 2 visibles sur 20 mesurés, couverture 10 %, top 3".into()
+            } else {
+                [
+                    "Investigate checkout failure",
+                    "Improve the remote session picker",
+                    "Review API latency",
+                ][i]
+                    .into()
+            },
             updated_at_ms: 1793360000000,
             model: None,
         })

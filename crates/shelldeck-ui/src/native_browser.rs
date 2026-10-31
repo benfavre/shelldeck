@@ -207,6 +207,13 @@ impl NativeBrowserView {
         self.client.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn bind_fixture_client(&mut self, client: BrowserClient, id: BrowserId) {
+        self.client = Some(client);
+        self.tabs.push(BrowserTab::new(id, "about:blank".into()));
+        self.active = Some(id);
+    }
+
     pub fn active_browser_id(&self) -> Option<BrowserId> {
         self.active
     }

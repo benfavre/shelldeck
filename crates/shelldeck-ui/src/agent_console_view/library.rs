@@ -139,6 +139,7 @@ impl AgentConsoleView {
                         }
                         if untouched {
                             this.library.preferences = snapshot.preferences;
+                            this.migrate_legacy_folder_collapse();
                             this.restore_ssh_preferences(cx);
                             this.tools.navigator_visible =
                                 this.library.preferences.navigator_visible;
