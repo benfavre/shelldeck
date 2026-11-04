@@ -245,6 +245,13 @@ impl Workspace {
             // authenticates before forwarding, so keep this arm inert if
             // another caller accidentally routes it into Workspace.
             DeepLink::Assistant | DeepLink::Agents => {}
+            DeepLink::ExtensionSettings => {
+                self.settings.update(cx, |settings, cx| {
+                    settings.set_active_tab(crate::settings::SettingsTab::General, cx);
+                });
+                self.refresh_inklura_extension_panel(cx);
+                self.open_settings(cx);
+            }
             DeepLink::OpenConnection(id) => {
                 if !self.enter_dev_mode(cx) {
                     return;

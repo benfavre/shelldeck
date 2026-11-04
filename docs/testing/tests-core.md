@@ -773,3 +773,5 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2879 | `config::inklura_extension::tests::sdtest_2879_picks_chrome_profile_for_account` | SDUC-565 | Green | Chrome's `Local State` profile signed into the Manage account wins over `last_used` (case-insensitive); otherwise `last_used`; the profile's preferences report whether the extension ID is loaded. |
 | — | `config::inklura_extension::live_tests::live_install_real_manage_package` | SDUC-565 | Yellow — `#[ignore]`, network | Downloads the real package from manage.inklura.fr; verified 2026-11-04 (v0.1.0). |
 
+
+| SDTEST-2880 | `config::deep_link::tests::sdtest_2880_extension_settings_link_is_bounded` | SDUC-565 | Green | Browser/Manage setup handoff accepts only the extension settings route. Query values cannot request installation or file access. |

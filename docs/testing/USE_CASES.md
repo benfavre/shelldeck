@@ -4817,3 +4817,5 @@ the package's `native/install.py` with that ID and a user-chosen folder, so
 the ID never has to be copied by hand. Without Chrome the section says so
 instead of offering a dead button.
 
+
+The SDUC-565 setup flow is also reachable from Manage and the Chrome panel through `shelldeck://extension`. It opens General settings after the existing sign-in gate; downloading and granting a Craft workspace still require the user’s setup controls.

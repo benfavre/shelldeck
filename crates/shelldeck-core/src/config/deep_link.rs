@@ -18,6 +18,7 @@
 //! | URL | Variant |
 //! |-----|---------|
 //! | `shelldeck://assistant`              | [`DeepLink::Assistant`] |
+//! | `shelldeck://extension`             | [`DeepLink::ExtensionSettings`] |
 //! | `shelldeck://agents`                 | [`DeepLink::Agents`] |
 //! | `shelldeck://open/connection/<uuid>` | [`DeepLink::OpenConnection`] |
 //! | `shelldeck://ssh/connect/<uuid>`     | [`DeepLink::SshConnect`] |
@@ -48,6 +49,8 @@ pub enum DeepLink {
     /// Show the retained Agents workspace presentation after authentication
     /// and Dev capability checks. This intent grants no execution authority.
     Agents,
+    /// Open extension setup settings. Never downloads or grants file access.
+    ExtensionSettings,
     /// Focus the connections view and highlight this connection (no SSH).
     OpenConnection(Uuid),
     /// Open the app and start an SSH session for this connection.
@@ -96,6 +99,7 @@ impl DeepLink {
         match verbs.as_slice() {
             ["assistant"] => Some(DeepLink::Assistant),
             ["agents"] => Some(DeepLink::Agents),
+            ["extension"] => Some(DeepLink::ExtensionSettings),
             ["open", "connection", _] => Uuid::parse_str(segments[2])
                 .ok()
                 .map(DeepLink::OpenConnection),
@@ -232,6 +236,26 @@ mod tests {
         assert!(DeepLink::looks_like("  ShellDeck://ticket/y  "));
         assert!(!DeepLink::looks_like("/usr/bin/shelldeck"));
         assert!(!DeepLink::looks_like("--minimized"));
+    }
+
+    // SDTEST-2880 — SDUC-565: a browser handoff opens settings only.
+    #[test]
+    fn sdtest_2880_extension_settings_link_is_bounded() {
+        assert_eq!(
+            DeepLink::parse("shelldeck://extension"),
+            Some(DeepLink::ExtensionSettings)
+        );
+        assert_eq!(
+            DeepLink::parse("ShellDeck://EXTENSION?install=true#craft"),
+            Some(DeepLink::ExtensionSettings)
+        );
+        for url in [
+            "shelldeck://extension/install",
+            "shelldeck://extension/file/private",
+            "https://extension",
+        ] {
+            assert_eq!(DeepLink::parse(url), None);
+        }
     }
 
     // SDTEST-2634 — SDUC-558
