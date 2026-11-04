@@ -369,6 +369,8 @@ impl SettingsView {
         let ai_backend_select = build_ai_backend_select(&config, cx);
         let ai_model = config.ai.model.clone();
         let shortcut_capture_focus = cx.focus_handle();
+        let inklura_extension =
+            InkluraExtensionPanel::detect(config.account.as_ref().map(|a| a.email.as_str()));
         Self {
             config,
             active_tab: SettingsTab::General,
@@ -392,7 +394,7 @@ impl SettingsView {
             shortcut_status_before_capture: None,
             shortcut_capture_focus,
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),
-            inklura_extension: InkluraExtensionPanel::detect(),
+            inklura_extension,
         }
     }
 

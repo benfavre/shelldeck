@@ -3329,7 +3329,7 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
-- **2026-11-04** — SDUC-565: Settings → Général and the palette set up the Inklura Chrome extension (download, stable folder, computed ID, chrome://extensions, optional Craft bridge). SDTEST-2875–2878.
+- **2026-11-04** — SDUC-565: Settings → Général and the palette set up the Inklura Chrome extension (download, stable folder, computed ID, chrome://extensions, optional Craft bridge). SDTEST-2875–2879.
 
 - **2026-10-31** — SDUC-475/563/564: readable operation summaries, visible status motion and floating group collapse; large local/native timelines render viewport rows lazily while preserving drafts, reading anchors, source identity, exact copying and paging (SDTEST-2868–2874).
 
@@ -4809,7 +4809,7 @@ l’extension Chrome Inklura ». ShellDeck downloads
 `{manage}/extensions/inklura-assistant.zip`, validates and unpacks it into a
 stable folder under its data directory (a failed or hostile package never
 replaces a working copy), copies the `extension/` path to the clipboard and
-opens `chrome://extensions` in Chrome or Chromium. Chrome reserves the « Load
+opens `chrome://extensions` in the Chrome profile signed into the same Google account as the ShellDeck/Manage account (else the last-used profile, via `--profile-directory`); Settings names that profile and reports when the extension is loaded in it. Chrome reserves the « Load
 unpacked » click for the user; the section lists that step. Updates replace the
 files in place so Chrome keeps the same unpacked-extension ID, which ShellDeck
 computes and shows. On macOS and Linux, « Activer les MCP Craft locaux » runs

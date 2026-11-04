@@ -5,7 +5,7 @@
 //! `workspace/inklura_extension.rs` on the background executor.
 
 use super::*;
-use shelldeck_core::config::inklura_extension::{self, InstalledExtension};
+use shelldeck_core::config::inklura_extension::{self, ChromeProfile, InstalledExtension};
 
 /// What the section shows. Owned by `SettingsView`, refreshed by Workspace
 /// after each operation (`set_inklura_extension`).
@@ -14,15 +14,25 @@ pub struct InkluraExtensionPanel {
     pub installed: Option<InstalledExtension>,
     pub busy: bool,
     pub chrome_available: bool,
+    /// Chrome profile targeted for the signed-in account (the one signed
+    /// into the same Google account, else the last-used profile).
+    pub chrome_profile: Option<ChromeProfile>,
 }
 
 impl InkluraExtensionPanel {
-    /// Read the on-disk state (a manifest read + PATH lookup; cheap).
-    pub fn detect() -> Self {
+    /// Read the on-disk state: the unpacked manifest, Chrome's `Local
+    /// State` and the target profile's preferences (small local reads).
+    pub fn detect(account_email: Option<&str>) -> Self {
+        let installed = inklura_extension::installed();
+        let target = inklura_extension::target_profile(
+            account_email,
+            installed.as_ref().map(|e| e.extension_id.as_str()),
+        );
         Self {
-            installed: inklura_extension::installed(),
+            installed,
             busy: false,
-            chrome_available: inklura_extension::chrome_available(),
+            chrome_available: target.is_some(),
+            chrome_profile: target.and_then(|(_, profile)| profile),
         }
     }
 }
@@ -89,13 +99,22 @@ impl SettingsView {
                 .child(s)
         };
 
-        let status = match &panel.installed {
-            Some(ext) => t!(
+        let loaded = panel
+            .chrome_profile
+            .as_ref()
+            .is_some_and(|p| p.extension_loaded);
+        let status = match (&panel.installed, loaded) {
+            (Some(ext), true) => t!(
+                "settings.inklura_extension.status.loaded",
+                version = ext.version.clone()
+            )
+            .to_string(),
+            (Some(ext), false) => t!(
                 "settings.inklura_extension.status.installed",
                 version = ext.version.clone()
             )
             .to_string(),
-            None => t!("settings.inklura_extension.status.missing").to_string(),
+            (None, _) => t!("settings.inklura_extension.status.missing").to_string(),
         };
         let install_label = match (panel.busy, panel.installed.is_some()) {
             (true, _) => t!("settings.inklura_extension.install.busy"),
@@ -114,6 +133,18 @@ impl SettingsView {
                 t!("settings.inklura_extension.status.description").as_ref(),
                 value_text(status),
             ));
+        if let Some(profile) = &panel.chrome_profile {
+            let label = if profile.email.is_empty() {
+                profile.name.clone()
+            } else {
+                format!("{} ({})", profile.name, profile.email)
+            };
+            section = section.child(Self::render_setting_row(
+                t!("settings.inklura_extension.profile.label").as_ref(),
+                t!("settings.inklura_extension.profile.description").as_ref(),
+                value_text(label),
+            ));
+        }
 
         if let Some(ext) = &panel.installed {
             section = section

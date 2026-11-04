@@ -16,8 +16,18 @@ impl Workspace {
         });
     }
 
-    fn refresh_inklura_extension_panel(&mut self, cx: &mut Context<Self>) {
-        let panel = InkluraExtensionPanel::detect();
+    fn account_email(&self) -> Option<String> {
+        self.app_config
+            .account
+            .as_ref()
+            .map(|a| a.email.clone())
+            .filter(|e| !e.is_empty())
+    }
+
+    /// Re-read install + Chrome profile state (e.g. after the user loaded
+    /// the extension in Chrome and comes back to Settings).
+    pub(super) fn refresh_inklura_extension_panel(&mut self, cx: &mut Context<Self>) {
+        let panel = InkluraExtensionPanel::detect(self.account_email().as_deref());
         self.settings
             .update(cx, |settings, cx| settings.set_inklura_extension(panel, cx));
     }
@@ -40,12 +50,13 @@ impl Workspace {
         }
         self.set_inklura_extension_busy(true, cx);
         let base_url = self.app_config.cloud_sync.base_url.clone();
+        let email = self.account_email();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     inklura_extension::install(&base_url).map(|ext| {
-                        let opened = inklura_extension::open_extensions_page();
+                        let opened = inklura_extension::open_extensions_page(email.as_deref());
                         (ext, opened)
                     })
                 })
@@ -58,9 +69,10 @@ impl Workspace {
                             ext.extension_dir.display().to_string(),
                         ));
                         let message = match opened {
-                            Ok(()) => t!(
+                            Ok(profile) => t!(
                                 "settings.inklura_extension.toast.installed",
-                                version = ext.version.clone()
+                                version = ext.version.clone(),
+                                profile = profile_label(profile.as_ref())
                             ),
                             Err(_) => t!(
                                 "settings.inklura_extension.toast.installed_no_chrome",
@@ -85,8 +97,9 @@ impl Workspace {
     }
 
     pub(super) fn open_inklura_extension_page(&mut self, cx: &mut Context<Self>) {
-        if let Err(e) = inklura_extension::open_extensions_page() {
-            self.show_toast(
+        let email = self.account_email();
+        match inklura_extension::open_extensions_page(email.as_deref()) {
+            Err(e) => self.show_toast(
                 t!(
                     "settings.inklura_extension.toast.chrome_failed",
                     error = e.to_string()
@@ -94,13 +107,16 @@ impl Workspace {
                 .to_string(),
                 ToastLevel::Error,
                 cx,
-            );
-        } else {
-            self.show_toast(
-                t!("settings.inklura_extension.toast.path_copied").to_string(),
+            ),
+            Ok(profile) => self.show_toast(
+                t!(
+                    "settings.inklura_extension.toast.path_copied",
+                    profile = profile_label(profile.as_ref())
+                )
+                .to_string(),
                 ToastLevel::Info,
                 cx,
-            );
+            ),
         }
     }
 
@@ -143,5 +159,14 @@ impl Workspace {
             });
         })
         .detach();
+    }
+}
+
+/// « Personne 1 (ben@…) » for toasts; Chrome's default window otherwise.
+fn profile_label(profile: Option<&inklura_extension::ChromeProfile>) -> String {
+    match profile {
+        Some(p) if !p.email.is_empty() => format!("{} ({})", p.name, p.email),
+        Some(p) => p.name.clone(),
+        None => "Chrome".to_string(),
     }
 }

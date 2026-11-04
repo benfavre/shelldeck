@@ -284,70 +284,222 @@ fn extract_zip(data: &[u8], dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Chrome executables to try, most specific first.
-fn chrome_candidates() -> Vec<PathBuf> {
+/// One installed Chrome flavour: its executable and its user-data folder
+/// (where `Local State` lists the profiles).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChromeInstall {
+    pub binary: PathBuf,
+    pub user_data_dir: PathBuf,
+}
+
+/// A Chrome profile, resolved from `Local State`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChromeProfile {
+    /// Folder name passed to `--profile-directory` (`Default`, `Profile 1`…).
+    pub directory: String,
+    /// Display name Chrome shows for the profile.
+    pub name: String,
+    /// Google account signed into the profile, if any.
+    pub email: String,
+    /// The extension is registered in this profile's preferences.
+    pub extension_loaded: bool,
+}
+
+/// Installed Chrome flavours, Google Chrome first, then Chromium.
+fn chrome_installs() -> Vec<ChromeInstall> {
     #[cfg(target_os = "linux")]
-    {
-        let names = [
-            "google-chrome",
-            "google-chrome-stable",
-            "google-chrome-beta",
-            "chromium",
-            "chromium-browser",
-        ];
+    let pairs: Vec<(Vec<PathBuf>, Option<PathBuf>)> = {
         let path = std::env::var_os("PATH").unwrap_or_default();
-        std::env::split_paths(&path)
-            .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
-            .filter(|p| p.is_file())
-            .collect()
-    }
+        let find = |names: &[&str]| -> Vec<PathBuf> {
+            std::env::split_paths(&path)
+                .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
+                .collect()
+        };
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| crate::util::home_dir().map(|h| h.join(".config")));
+        vec![
+            (
+                find(&["google-chrome", "google-chrome-stable"]),
+                config.as_ref().map(|c| c.join("google-chrome")),
+            ),
+            (
+                find(&["google-chrome-beta"]),
+                config.as_ref().map(|c| c.join("google-chrome-beta")),
+            ),
+            (
+                find(&["chromium", "chromium-browser"]),
+                config.as_ref().map(|c| c.join("chromium")),
+            ),
+        ]
+    };
     #[cfg(target_os = "macos")]
-    {
-        let mut roots = vec![PathBuf::from("/Applications")];
-        if let Some(home) = crate::util::home_dir() {
-            roots.push(home.join("Applications"));
-        }
-        let apps = [
-            "Google Chrome.app/Contents/MacOS/Google Chrome",
-            "Chromium.app/Contents/MacOS/Chromium",
-        ];
-        roots
-            .iter()
-            .flat_map(|r| apps.iter().map(move |a| r.join(a)))
-            .filter(|p| p.is_file())
-            .collect()
-    }
+    let pairs: Vec<(Vec<PathBuf>, Option<PathBuf>)> = {
+        let home = crate::util::home_dir();
+        let apps = |bundle: &str| -> Vec<PathBuf> {
+            let mut roots = vec![PathBuf::from("/Applications")];
+            if let Some(h) = &home {
+                roots.push(h.join("Applications"));
+            }
+            roots.into_iter().map(|r| r.join(bundle)).collect()
+        };
+        let support = home.as_ref().map(|h| h.join("Library/Application Support"));
+        vec![
+            (
+                apps("Google Chrome.app/Contents/MacOS/Google Chrome"),
+                support.as_ref().map(|s| s.join("Google/Chrome")),
+            ),
+            (
+                apps("Chromium.app/Contents/MacOS/Chromium"),
+                support.as_ref().map(|s| s.join("Chromium")),
+            ),
+        ]
+    };
     #[cfg(target_os = "windows")]
-    {
-        ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+    let pairs: Vec<(Vec<PathBuf>, Option<PathBuf>)> = {
+        let binaries = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
             .iter()
             .filter_map(std::env::var_os)
             .map(|root| PathBuf::from(root).join(r"Google\Chrome\Application\chrome.exe"))
-            .filter(|p| p.is_file())
-            .collect()
-    }
+            .collect();
+        let data = std::env::var_os("LOCALAPPDATA")
+            .map(|l| PathBuf::from(l).join(r"Google\Chrome\User Data"));
+        vec![(binaries, data)]
+    };
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        Vec::new()
-    }
+    let pairs: Vec<(Vec<PathBuf>, Option<PathBuf>)> = Vec::new();
+
+    pairs
+        .into_iter()
+        .filter_map(|(binaries, data)| {
+            let binary = binaries.into_iter().find(|p| p.is_file())?;
+            Some(ChromeInstall {
+                binary,
+                user_data_dir: data?,
+            })
+        })
+        .collect()
 }
 
 /// Whether a Chrome/Chromium executable was found.
 pub fn chrome_available() -> bool {
-    !chrome_candidates().is_empty()
+    !chrome_installs().is_empty()
 }
 
-/// Open `chrome://extensions` in Chrome. A running Chrome receives it as a
-/// new tab; otherwise Chrome starts on that page.
-pub fn open_extensions_page() -> Result<()> {
-    let chrome = chrome_candidates()
-        .into_iter()
-        .next()
+/// Profiles listed in a `Local State` document, `last_used` first.
+fn profiles_from_local_state(local_state: &str) -> Vec<(String, String, String)> {
+    let Ok(state) = serde_json::from_str::<serde_json::Value>(local_state) else {
+        return Vec::new();
+    };
+    let last_used = state
+        .pointer("/profile/last_used")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Default")
+        .to_string();
+    let mut profiles: Vec<(String, String, String)> = state
+        .pointer("/profile/info_cache")
+        .and_then(|v| v.as_object())
+        .map(|cache| {
+            cache
+                .iter()
+                .map(|(dir, info)| {
+                    let field = |k: &str| {
+                        info.get(k)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    (dir.clone(), field("name"), field("user_name"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    profiles.sort_by_key(|(dir, _, _)| (dir != &last_used, dir.clone()));
+    profiles
+}
+
+/// Pick the profile signed in with `email` (case-insensitive), else the
+/// last-used one. Returns `(directory, name, email)`.
+fn pick_profile(local_state: &str, email: Option<&str>) -> Option<(String, String, String)> {
+    let profiles = profiles_from_local_state(local_state);
+    let wanted = email.map(str::trim).filter(|e| !e.is_empty());
+    wanted
+        .and_then(|e| {
+            profiles
+                .iter()
+                .find(|(_, _, user)| user.eq_ignore_ascii_case(e))
+                .cloned()
+        })
+        .or_else(|| profiles.into_iter().next())
+}
+
+/// Whether a profile's preferences register `extension_id`.
+fn profile_has_extension(profile_dir: &Path, extension_id: &str) -> bool {
+    ["Preferences", "Secure Preferences"].iter().any(|file| {
+        std::fs::read_to_string(profile_dir.join(file))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|prefs| {
+                prefs
+                    .pointer("/extensions/settings")
+                    .and_then(|s| s.as_object())
+                    .map(|s| s.contains_key(extension_id))
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// The Chrome install and profile ShellDeck targets for `email` (the
+/// signed-in Manage account): the profile signed into the same Google
+/// account, otherwise the last-used profile.
+pub fn target_profile(
+    email: Option<&str>,
+    extension_id: Option<&str>,
+) -> Option<(ChromeInstall, Option<ChromeProfile>)> {
+    let installs = chrome_installs();
+    let read =
+        |i: &ChromeInstall| std::fs::read_to_string(i.user_data_dir.join("Local State")).ok();
+    // Prefer the flavour that actually has a profile for this account.
+    let matched = email.and_then(|e| {
+        installs.iter().find_map(|install| {
+            let state = read(install)?;
+            let picked = pick_profile(&state, Some(e))?;
+            picked
+                .2
+                .eq_ignore_ascii_case(e.trim())
+                .then(|| (install.clone(), picked))
+        })
+    });
+    let (install, picked) = match matched {
+        Some((install, picked)) => (install, Some(picked)),
+        None => {
+            let install = installs.into_iter().next()?;
+            let picked = read(&install).and_then(|s| pick_profile(&s, None));
+            (install, picked)
+        }
+    };
+    let profile = picked.map(|(directory, name, email)| ChromeProfile {
+        extension_loaded: extension_id
+            .is_some_and(|id| profile_has_extension(&install.user_data_dir.join(&directory), id)),
+        directory,
+        name,
+        email,
+    });
+    Some((install, profile))
+}
+
+/// Open `chrome://extensions` in the Chrome profile used by `email`. A
+/// running Chrome receives it as a new tab in that profile's window.
+pub fn open_extensions_page(email: Option<&str>) -> Result<Option<ChromeProfile>> {
+    let (install, profile) = target_profile(email, None)
         .ok_or_else(|| ShellDeckError::NotFound("Google Chrome".into()))?;
-    Command::new(chrome)
-        .arg("chrome://extensions")
+    let mut cmd = Command::new(&install.binary);
+    if let Some(p) = &profile {
+        cmd.arg(format!("--profile-directory={}", p.directory));
+    }
+    cmd.arg("chrome://extensions")
         .spawn()
-        .map(|_| ())
+        .map(|_| profile)
         .map_err(|e| ShellDeckError::Connection(format!("failed to start Chrome: {e}")))
 }
 
@@ -537,6 +689,38 @@ mod tests {
         }
         assert!(!dir.path().join("escape.txt").exists());
         assert_eq!(installed_at(&root).unwrap().version, "0.1.0");
+    }
+
+    // SDTEST-2879 — the profile signed into the Manage account wins over the
+    // last-used one; without a match, the last-used profile is targeted.
+    #[test]
+    fn sdtest_2879_picks_chrome_profile_for_account() {
+        let state = r#"{"profile":{"last_used":"Profile 1","info_cache":{
+            "Default":{"name":"Personne 1","user_name":"ben@webdesign29.net"},
+            "Profile 1":{"name":"Benjamin","user_name":"benfavre@gmail.com"},
+            "Profile 3":{"name":"jordan","user_name":"jordan@webdesign29.net"}}}}"#;
+        let dir = |email| pick_profile(state, email).map(|p| p.0);
+        assert_eq!(dir(Some("Ben@WebDesign29.net")), Some("Default".into()));
+        assert_eq!(dir(Some("nobody@example.com")), Some("Profile 1".into()));
+        assert_eq!(dir(None), Some("Profile 1".into()));
+        assert_eq!(pick_profile("not json", Some("ben@webdesign29.net")), None);
+
+        let profiles = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(profiles.path().join("Default")).unwrap();
+        std::fs::write(
+            profiles.path().join("Default/Preferences"),
+            r#"{"extensions":{"settings":{"lkidjmdekjibhkgigkjdhfgbiccgpgmn":{"location":4}}}}"#,
+        )
+        .unwrap();
+        let default = profiles.path().join("Default");
+        assert!(profile_has_extension(
+            &default,
+            "lkidjmdekjibhkgigkjdhfgbiccgpgmn"
+        ));
+        assert!(!profile_has_extension(
+            &default,
+            "coclcblpabicamklkjabojgpfndihkif"
+        ));
     }
 
     // SDTEST-2878 — the bridge installer receives the computed ID, never a placeholder.
