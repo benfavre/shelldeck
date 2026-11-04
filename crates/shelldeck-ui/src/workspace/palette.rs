@@ -54,6 +54,12 @@ impl Workspace {
                     "plus",
                     Box::new(NewRequest),
                 ),
+                PaletteAction::new(
+                    t!("palette.setup_inklura_extension").to_string(),
+                    None,
+                    "download",
+                    Box::new(SetupInkluraExtension),
+                ),
             ]);
         } else {
             actions.push(PaletteAction::new(
@@ -357,6 +363,8 @@ impl Workspace {
             self.activate_dev_section(SidebarSection::FileEditor, cx);
         } else if action.as_any().is::<CloudSyncNow>() {
             self.cloud_sync_now(cx);
+        } else if action.as_any().is::<SetupInkluraExtension>() {
+            self.setup_inklura_extension(cx);
         } else if action.as_any().is::<SwitchSite>() {
             self.open_site_switcher(cx);
         } else if let Some(area) = action.as_any().downcast_ref::<OpenManageArea>() {

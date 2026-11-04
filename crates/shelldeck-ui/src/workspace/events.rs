@@ -584,6 +584,15 @@ impl Workspace {
             SettingsEvent::AiTestRequested(config) => {
                 self.test_ai_connection(config.clone(), cx);
             }
+            SettingsEvent::InkluraExtensionInstallRequested => {
+                self.install_inklura_extension(cx);
+            }
+            SettingsEvent::InkluraExtensionOpenChromeRequested => {
+                self.open_inklura_extension_page(cx);
+            }
+            SettingsEvent::InkluraExtensionBridgeRequested(workspace) => {
+                self.install_inklura_bridge(workspace.clone(), cx);
+            }
             SettingsEvent::ThemeChanged(pref) => {
                 tracing::info!("Theme preference changed to {:?}", pref);
 
