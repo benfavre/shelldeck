@@ -833,7 +833,6 @@ pub struct Workspace {
 pub struct TrayCounters {
     pub signed_in: bool,
     pub active_ssh: usize,
-    pub open_tunnels: usize,
     pub unread_tickets: usize,
     pub monique_pending: usize,
     pub ai_tasks_running: usize,

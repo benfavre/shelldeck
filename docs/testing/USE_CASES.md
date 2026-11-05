@@ -4841,7 +4841,7 @@ loader-compatible. The NSIS fixture now compiles with the actual exported ICO.
 
 Server synchronization, detected-site scans and manual port-forward management
 are retired from the application navigation, Go menu and command palette.
-Their dashboard/status counters are removed. Legacy tunnel deep links and
+Their dashboard/status/tray counters are removed. Legacy tunnel deep links and
 activity entries explain retirement without opening a screen or starting a
 tunnel. Saved sync profiles, detected sites and forwarding configurations remain
 on disk, and internal SSH/browser transport capabilities remain available.
