@@ -32,12 +32,12 @@ case "$ARCH" in
     *)             PLATFORM="macos-$ARCH" ;;
 esac
 
-echo "==> Building DMG for ShellDeck $VERSION ($PLATFORM)"
+echo "==> Building DMG for Inklura Desktop $VERSION ($PLATFORM)"
 
 # ---------------------------------------------------------------------------
 # Create .app bundle
 # ---------------------------------------------------------------------------
-APP_DIR="$PROJECT_ROOT/dist/ShellDeck.app"
+APP_DIR="$PROJECT_ROOT/dist/Inklura Desktop.app"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
@@ -64,9 +64,9 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>ShellDeck</string>
+    <string>Inklura Desktop</string>
     <key>CFBundleDisplayName</key>
-    <string>ShellDeck</string>
+    <string>Inklura Desktop</string>
     <key>CFBundleIdentifier</key>
     <string>com.shelldeck.app</string>
     <key>CFBundleVersion</key>
@@ -190,7 +190,7 @@ codesign "${SIGN_ARGS[@]}" --options runtime "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 if [ "${SHELLDECK_MACOS_APP_ONLY:-0}" = "1" ]; then
-    echo "==> App bundle ready at dist/ShellDeck.app"
+    echo "==> App bundle ready at dist/Inklura Desktop.app"
     exit 0
 fi
 
@@ -214,24 +214,24 @@ ln -s /Applications "$DMG_TEMP/Applications"
 # Try create-dmg for pretty DMG, fall back to hdiutil
 if command -v create-dmg &>/dev/null; then
     create-dmg \
-        --volname "ShellDeck" \
+        --volname "Inklura Desktop" \
         --window-pos 200 120 \
         --window-size 600 400 \
         --icon-size 100 \
-        --icon "ShellDeck.app" 150 190 \
+        --icon "Inklura Desktop.app" 150 190 \
         --icon "Applications" 450 190 \
-        --hide-extension "ShellDeck.app" \
+        --hide-extension "Inklura Desktop.app" \
         --app-drop-link 450 190 \
         --no-internet-enable \
         "$DMG_PATH" \
         "$DMG_TEMP" || {
         echo "==> create-dmg failed, falling back to hdiutil..."
-        hdiutil create -volname "ShellDeck" -srcfolder "$DMG_TEMP" \
+        hdiutil create -volname "Inklura Desktop" -srcfolder "$DMG_TEMP" \
             -ov -format UDZO "$DMG_PATH"
     }
 else
     echo "==> Using hdiutil..."
-    hdiutil create -volname "ShellDeck" -srcfolder "$DMG_TEMP" \
+    hdiutil create -volname "Inklura Desktop" -srcfolder "$DMG_TEMP" \
         -ov -format UDZO "$DMG_PATH"
 fi
 

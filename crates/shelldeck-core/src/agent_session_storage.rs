@@ -202,7 +202,7 @@ impl AgentSessionStore {
             let envelope: Envelope = serde_json::from_value(value).map_err(serialization_error)?;
             if !(1..=AGENT_SESSION_SCHEMA_VERSION).contains(&envelope.schema_version) {
                 return Err(ShellDeckError::Config(
-                    "unsupported agent history version; preserve the file for a newer ShellDeck"
+                    "unsupported agent history version; preserve the file for a newer Inklura Desktop"
                         .into(),
                 ));
             }

@@ -976,3 +976,11 @@ full shell. Pending signed-out requests do not auto-open a login modal.
 | SDTEST-2873 | SDUC-475, SDUC-564 | Expanding hundreds of completed operations switches to bounded virtual rows without jumping to the end, and floating collapse reveals the original group while preserving its payloads | `agent_console_view/interaction_tests` | Green — rendered production layout/input; native fixture evidence in AGENTS_ACCEPTANCE.md |
 
 | SDTEST-2874 | SDUC-563, SDUC-564 | Large native history pages render viewport entries lazily; original copy, actual paging, page-top reset, source identity and drafts remain intact | `agent_console_view/interaction_tests` | Green — rendered production layout/input; native fixture evidence in AGENTS_ACCEPTANCE.md |
+
+
+| SDTEST-2883 | SDUC-566 | The production macOS archive packager passes the spaced Inklura Desktop bundle path intact and retains its signed application/browser bytes under compatible executable and archive names | `scripts/test-browser-packaging.py::test_sdtest_2883_macos_archive_keeps_renamed_bundle_and_legacy_payload_names` | Green |
+
+SDUC-566 also extends SDTEST-2630/2632 (actual generated Linux desktop name and
+Windows launcher arguments), SDTEST-2633 (CLI version/help and unchanged handoff),
+and the existing FR/EN tray-label regression. Native installer execution on
+macOS/Windows remains a release verification step; CI compiles both targets.

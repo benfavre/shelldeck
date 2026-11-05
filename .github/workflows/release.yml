@@ -524,7 +524,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: ShellDeck ${{ needs.prepare.outputs.version }}
+          name: Inklura Desktop ${{ needs.prepare.outputs.version }}
           draft: false
           prerelease: ${{ contains(needs.prepare.outputs.version, '-beta') || contains(needs.prepare.outputs.version, '-rc') }}
           generate_release_notes: true

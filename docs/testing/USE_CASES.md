@@ -4819,3 +4819,17 @@ instead of offering a dead button.
 
 
 The SDUC-565 setup flow is also reachable from Manage and the Chrome panel through `shelldeck://extension`. It opens General settings after the existing sign-in gate; downloading and granting a Craft workspace still require the user’s setup controls.
+
+
+### SDUC-566 — Inklura Desktop product identity with upgrade continuity
+
+The application presents itself as Inklura Desktop in French and English: the
+wordmark, window and Agents titles, welcome/onboarding, About, tray, notifications,
+CLI version output, browser callbacks and installer display names agree. Existing
+profiles, keychain entries, executable names, single-instance and URL-protocol
+identities, startup registrations, release download names and update signatures
+remain compatible with ShellDeck installations. macOS packaging includes
+`Inklura Desktop.app` with its complete browser runtime; generated installers
+accept old and new bundles and update existing bundle locations in place. Windows
+keeps the existing install/uninstall registry identity while naming the app and
+new shortcuts Inklura Desktop.

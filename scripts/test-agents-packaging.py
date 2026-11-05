@@ -106,6 +106,7 @@ fi
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         appdir = self.root / "dist/ShellDeck.AppDir"
         desktop = self.desktop(appdir / "shelldeck.desktop")
+        self.assertEqual(desktop["Desktop Entry"]["Name"], "Inklura Desktop")
         self.assertEqual(desktop["Desktop Entry"]["Exec"], "shelldeck %u")
         self.assertEqual(desktop["Desktop Entry"]["MimeType"], "x-scheme-handler/shelldeck;")
         self.assertIn("Agents", desktop["Desktop Entry"]["Actions"].split(";"))
@@ -219,10 +220,11 @@ process.stdout.write(JSON.stringify(output));'''
                                       text=True, capture_output=True, env=environment, timeout=5)
         self.assertEqual(registration.returncode, 0, registration.stderr)
         desktop = self.desktop(applications / "shelldeck.desktop")
+        self.assertEqual(desktop["Desktop Entry"]["Name"], "Inklura Desktop")
         self.assertEqual(desktop["Desktop Entry"]["Exec"], f'"{install}/shelldeck" %u')
         self.assertEqual(desktop["Desktop Action Agents"]["Exec"], f'"{install}/shelldeck" --agents')
         self.assertIn('$Shortcut.TargetPath = $InstalledExe', scripts["ps1"])
-        self.assertIn('Name="ShellDeck Agents"; Arguments="--agents"', scripts["ps1"])
+        self.assertIn('Name="Inklura Desktop Agents"; Arguments="--agents"', scripts["ps1"])
         self.assertIn('$Shortcut.Arguments = $Launch.Arguments', scripts["ps1"])
         self.assertIn('$Shortcut.Save()', scripts["ps1"])
 

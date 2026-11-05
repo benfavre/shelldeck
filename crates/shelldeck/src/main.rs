@@ -478,7 +478,7 @@ impl AssetSource for Assets {
 fn show_tray_notification(n: shelldeck_ui::TrayNotification) -> anyhow::Result<()> {
     let (summary, body) = n.localized_text();
     notify_rust::Notification::new()
-        .appname("ShellDeck")
+        .appname(shelldeck_core::APP_NAME)
         .summary(&summary)
         .body(&body)
         .icon("shelldeck")
@@ -496,7 +496,7 @@ fn show_platform_attention_notification(
     >,
 ) -> anyhow::Result<()> {
     let handle = notify_rust::Notification::new()
-        .appname("ShellDeck")
+        .appname(shelldeck_core::APP_NAME)
         .summary(&notification.summary)
         .body(&notification.body)
         .icon("shelldeck")
@@ -1853,7 +1853,7 @@ fn main() -> Result<()> {
             return Ok(());
         }
         cli::Command::Version => {
-            println!("ShellDeck {}", shelldeck_core::VERSION);
+            println!("{} {}", shelldeck_core::APP_NAME, shelldeck_core::VERSION);
             return Ok(());
         }
         cli::Command::Launch(target) => target,
@@ -1869,7 +1869,7 @@ fn main() -> Result<()> {
         )
         .init();
 
-    tracing::info!("Starting ShellDeck v{}", shelldeck_core::VERSION);
+    tracing::info!("Starting Inklura Desktop v{}", shelldeck_core::VERSION);
 
     // Single-instance guard + deep-link hand-off. If the OS launched us to
     // follow a `shelldeck://…` link (or just to focus an existing window),
@@ -1879,12 +1879,15 @@ fn main() -> Result<()> {
     let deep_link_arg = target.payload().map(str::to_owned);
     let primary = match single_instance::acquire(deep_link_arg.as_deref()) {
         Acquire::AlreadyRunning => {
-            tracing::info!("another ShellDeck instance is running; forwarded request and exiting");
+            tracing::info!(
+                "another Inklura Desktop instance is running; forwarded request and exiting"
+            );
             return Ok(());
         }
         Acquire::Primary(p) => p,
         Acquire::Failed(error) => {
-            return Err(error).context("Unable to initialize ShellDeck single-instance routing");
+            return Err(error)
+                .context("Unable to initialize Inklura Desktop single-instance routing");
         }
     };
     // Bridge forwarded deep links directly into an async receiver. The IPC
@@ -2001,9 +2004,9 @@ fn main() -> Result<()> {
             titlebar: Some(TitlebarOptions {
                 title: Some(
                     if launch_agents {
-                        "ShellDeck Agents"
+                        shelldeck_core::AGENTS_APP_NAME
                     } else {
-                        "ShellDeck"
+                        shelldeck_core::APP_NAME
                     }
                     .into(),
                 ),
@@ -2465,7 +2468,7 @@ fn main() -> Result<()> {
             }
         }
 
-        tracing::info!("ShellDeck window opened");
+        tracing::info!("Inklura Desktop window opened");
     });
 
     Ok(())

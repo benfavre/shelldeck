@@ -86,7 +86,7 @@ fn invalid_scope() -> SshError {
 
 pub fn launcher_command() -> String {
     let quoted = format!("'{}'", LAUNCHER.replace('\'', "'\\''"));
-    format!("export PATH=\"$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v python3 >/dev/null 2>&1 || {{ printf '%s\\n' 'ShellDeck browser sharing requires Python 3 on this SSH server' >&2; exit 126; }}; exec python3 -u -c {quoted}")
+    format!("export PATH=\"$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v python3 >/dev/null 2>&1 || {{ printf '%s\\n' 'Inklura Desktop browser sharing requires Python 3 on this SSH server' >&2; exit 126; }}; exec python3 -u -c {quoted}")
 }
 
 fn launch_input(

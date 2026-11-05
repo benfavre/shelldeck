@@ -265,7 +265,7 @@ fn main() -> anyhow::Result<()> {
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some("ShellDeck Agents — isolated preview".into()),
+                    title: Some("Inklura Desktop Agents — isolated preview".into()),
                     ..Default::default()
                 }),
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -285,10 +285,10 @@ fn main() -> anyhow::Result<()> {
                     view.set_project_groups(
                         vec![AgentProjectGroup {
                             id: "preview-project".into(),
-                            label: "ShellDeck".into(),
+                            label: "Inklura Desktop".into(),
                             worktrees: vec![AgentWorktreeOption {
                                 id: "preview-main".into(),
-                                label: "ShellDeck".into(),
+                                label: "Inklura Desktop".into(),
                                 path: preview_root.display().to_string(),
                                 branch: None,
                                 is_primary: true,

@@ -294,7 +294,7 @@ impl RunState {
         let rpc_id = server_id(message)?;
         let params = &message["params"];
         if !self.scope_matches(params) || self.interrupted.is_some() {
-            return wire.send(json!({"id":rpc_id,"error":{"code":-32600,"message":"Request is not for the active ShellDeck turn"}}));
+            return wire.send(json!({"id":rpc_id,"error":{"code":-32600,"message":"Request is not for the active Inklura Desktop turn"}}));
         }
         let method = message["method"].as_str().unwrap_or_default();
         let kind = match method {

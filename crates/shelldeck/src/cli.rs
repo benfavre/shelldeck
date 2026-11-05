@@ -6,7 +6,7 @@ use std::ffi::OsString;
 pub(crate) const HELP: &str = "Usage: shelldeck [--agents | --main | shelldeck://URL]
 
   --agents       Open the focused Agents workspace
-  --main         Open the full ShellDeck application
+  --main         Open the full Inklura Desktop application
   -h, --help     Show this help
   -V, --version  Show the application version
 
@@ -52,7 +52,7 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command,
     for arg in args {
         let arg = arg
             .to_str()
-            .ok_or("ShellDeck launch arguments must be valid Unicode")?;
+            .ok_or("Inklura Desktop launch arguments must be valid Unicode")?;
         let next = match arg {
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),

@@ -143,7 +143,7 @@ impl Proxy {
         Ok(response)
     }
     fn initialize(&mut self) -> Result<()> {
-        let reply = self.request("initialize", json!({"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ShellDeck local smoke","version":"1"}}))?;
+        let reply = self.request("initialize", json!({"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"Inklura Desktop local smoke","version":"1"}}))?;
         assert_eq!(
             reply["result"]["serverInfo"]["name"],
             "shelldeck-native-browser"

@@ -24,7 +24,7 @@ if [ ! -f "$BINARY" ]; then
 fi
 
 VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
-echo "==> Building NSIS installer for ShellDeck $VERSION"
+echo "==> Building NSIS installer for Inklura Desktop $VERSION"
 if [ ! -f "target/release/browser/$VERSION/shelldeck-browser.exe" ] || \
    [ ! -f "target/release/browser/$VERSION/shelldeck-browser.dll" ] || \
    [ ! -f "target/release/browser/$VERSION/libcef.dll" ]; then

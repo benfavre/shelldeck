@@ -212,7 +212,7 @@ pub fn hostname() -> String {
         std::env::var("COMPUTERNAME").ok().as_deref(),
     )
     .or_else(platform_hostname)
-    .unwrap_or_else(|| "ShellDeck".to_string())
+    .unwrap_or_else(|| "Inklura Desktop".to_string())
 }
 
 /// Env-only part of [`hostname`], injectable for tests.
