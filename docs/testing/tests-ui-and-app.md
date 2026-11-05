@@ -1000,3 +1000,13 @@ SDTEST-1808 now covers the remaining connection/script counters.
 Legacy `shelldeck://tunnel/start/<id>` handling is reviewed to show the localized
 retirement toast and return without invoking the forward handler; native visual
 and deep-link walkthroughs remain manual acceptance checks.
+
+
+### Native macOS brand packaging
+
+| ID | Test | Use cases | Status | Contract |
+|---|---|---|---|---|
+| SDTEST-2885 | `scripts/test-macos-branding.py::test_sdtest_2885_canonical_icon_decodes_with_native_iconutil` | SDUC-566 | Green | Apple's native decoder accepts the committed ICNS and extracts correctly sized 256/1024 PNGs. Runs on macOS CI; explicitly skipped on Linux. |
+| SDTEST-2886 | `scripts/test-macos-branding.py::test_sdtest_2886_dmg_build_refuses_missing_icon` | SDUC-566 | Green | Missing source icon fails before replacing an existing bundle. |
+| SDTEST-2887 | `scripts/test-macos-branding.py::test_sdtest_2887_update_archive_refuses_missing_bundle_icon` | SDUC-566 | Green | Archive packaging rejects an iconless bundle before producing a ZIP. |
+| SDTEST-2888 | `scripts/test-macos-branding.py::test_sdtest_2888_update_archive_preserves_the_canonical_icon` | SDUC-566 | Green | Native ditto preserves the exact ICNS bytes inside the correctly named app bundle. Runs on macOS CI; explicitly skipped on Linux. |

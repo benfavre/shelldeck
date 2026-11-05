@@ -23,6 +23,9 @@ The canonical visual mark is `crates/shelldeck/assets/images/brand/inklura-deskt
 Regenerate icons, theme badges, tray masks and motion assets with
 `python3 scripts/export-inklura-brand.py`; the legacy Monolith export command
 forwards to it. Keep the Inklura blue-and-white identity across platforms.
+The exporter also writes the committed `packaging/icons/shelldeck.icns`.
+macOS packaging must fail if the source or bundled icon is missing; native
+Apple icon decoding and ZIP inclusion are checked in CI.
 New macOS packages contain `Inklura Desktop.app`; the download installer accepts
 both that bundle and legacy `ShellDeck.app` and preserves an existing location.
 

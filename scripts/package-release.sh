@@ -46,6 +46,10 @@ case "$PLATFORM" in
         ;;
     macos-aarch64)
         test -d "dist/Inklura Desktop.app"
+        if [ ! -s "dist/Inklura Desktop.app/Contents/Resources/shelldeck.icns" ]; then
+            echo "ERROR: macOS bundle icon is missing; refusing to publish the archive" >&2
+            exit 1
+        fi
         test -x "dist/Inklura Desktop.app/Contents/Frameworks/browser/ShellDeck Browser.app/Contents/MacOS/shelldeck-browser"
         test -f "dist/Inklura Desktop.app/Contents/Frameworks/browser/ShellDeck Browser.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
         rm -f dist/shelldeck-macos-aarch64.zip

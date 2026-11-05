@@ -56,6 +56,13 @@ def main():
         shutil.copyfile(PACK / "shelldeck-128.png", BRAND / f"png/themes/monolith-{theme}-128.png")
     with Image.open(PACK / "shelldeck-256.png") as icon:
         icon.save(PACK / "shelldeck.ico", sizes=[(s, s) for s in SIZES if s <= 256], bitmap_format="bmp")
+    # Commit a ready-to-copy ICNS so packaging never depends on iconutil
+    # accepting the legacy directory name "iconset" (without .iconset).
+    icns_images = []
+    for size in (32, 64, 128, 256, 512, 1024):
+        with Image.open(PACK / f"shelldeck-{size}.png") as image:
+            icns_images.append(image.convert("RGBA"))
+    icns_images[-1].save(PACK / "shelldeck.icns", format="ICNS", append_images=icns_images)
     for name, size in {
         "icon_16x16.png": 16, "icon_16x16@2x.png": 32, "icon_32x32.png": 32,
         "icon_32x32@2x.png": 64, "icon_128x128.png": 128, "icon_128x128@2x.png": 256,
