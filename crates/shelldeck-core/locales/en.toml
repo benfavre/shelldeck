@@ -2965,3 +2965,5 @@ copy_raw = "Copy original"
 hide_raw = "Hide encoded data"
 expand = "Show details"
 collapse = "Collapse details"
+
+navigation.retired_tool = "This tool is no longer available in %{app_name}."

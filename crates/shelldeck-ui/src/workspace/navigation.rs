@@ -28,7 +28,6 @@ impl Workspace {
 
     pub(super) fn update_dashboard_stats(&mut self, cx: &mut Context<Self>) {
         let terminal_count = self.terminal.read(cx).tab_count();
-        let active_forwards = self.active_tunnels.len();
         let running_scripts = if self.scripts.read(cx).is_running() {
             1
         } else {
@@ -73,13 +72,12 @@ impl Workspace {
 
         self.dashboard.update(cx, |d, _| {
             d.active_terminals = terminal_count;
-            d.active_forwards = active_forwards;
             d.running_scripts = running_scripts;
             d.active_connections = active_connections;
             d.favorite_hosts = favorite_hosts;
         });
         self.status_bar.update(cx, |bar, _| {
-            bar.set_counts(active_connections, active_forwards, running_scripts);
+            bar.set_counts(active_connections, running_scripts);
         });
         // Also push the fresh state to the tray. The tray publisher
         // dedups against its last state, so this is cheap even when
@@ -196,6 +194,9 @@ impl Workspace {
     }
 
     pub fn set_active_view(&mut self, view: ActiveView, cx: &mut Context<Self>) {
+        if view.is_retired() {
+            return;
+        }
         self.close_titlebar_menus();
         self.active_view = view;
         self.on_active_view_changed(cx);
@@ -299,14 +300,16 @@ impl Workspace {
                     );
                 }
             }
-            DeepLink::TunnelStart(id) => {
-                if !self.enter_dev_mode(cx) {
-                    return;
-                }
-                self.switch_to_section(SidebarSection::PortForwards);
-                self.on_active_view_changed(cx);
-                self.handle_forward_event(&PortForwardEvent::StartForward(id), cx);
-                cx.notify();
+            DeepLink::TunnelStart(_) => {
+                self.show_toast(
+                    t!(
+                        "navigation.retired_tool",
+                        app_name = shelldeck_core::APP_NAME
+                    )
+                    .to_string(),
+                    ToastLevel::Info,
+                    cx,
+                );
             }
             DeepLink::OpenSite(id) => {
                 if self.can_switch_mode() {
@@ -466,6 +469,9 @@ impl Workspace {
     }
 
     pub fn switch_to_section(&mut self, section: SidebarSection) {
+        if section.is_retired() {
+            return;
+        }
         self.close_titlebar_menus();
         self.active_view = match section {
             SidebarSection::Connections => ActiveView::Dashboard,
@@ -486,6 +492,9 @@ impl Workspace {
     }
 
     pub(super) fn activate_dev_section(&mut self, section: SidebarSection, cx: &mut Context<Self>) {
+        if section.is_retired() {
+            return;
+        }
         if !self.enter_dev_mode(cx) {
             return;
         }

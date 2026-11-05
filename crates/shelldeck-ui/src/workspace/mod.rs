@@ -363,6 +363,13 @@ pub enum ActiveView {
     Settings,
 }
 
+impl ActiveView {
+    /// Retained only for compatibility with legacy internal navigation.
+    fn is_retired(self) -> bool {
+        matches!(self, Self::PortForwards | Self::ServerSync | Self::Sites)
+    }
+}
+
 // Actions for keyboard shortcuts
 actions!(
     shelldeck,
@@ -379,8 +386,6 @@ actions!(
         Quit,
         OpenTemplateBrowser,
         NewScript,
-        OpenServerSync,
-        OpenSites,
         OpenRecent,
         OpenFileEditorView,
         CloudSyncNow,
@@ -1794,25 +1799,6 @@ fn shortcut_failure_toasts(
         &t!("shortcut.name.command_palette"),
     );
     toasts
-}
-
-/// Deterministic stand-in id for a Manage site whose `site_id` is not a UUID.
-///
-/// Sidebar rows need a stable id for their `ElementId` and for selection
-/// matching. Manage sends `site_id` as a string that is normally a UUID; when
-/// it is not, hashing the id and name keeps the row stable across renders
-/// instead of it churning an id every frame. Not a real v5 UUID — the `uuid`
-/// crate is built with `v4` + `serde` only — and never persisted.
-fn uuid_from_key(site_id: &str, name: &str) -> Uuid {
-    use std::hash::{Hash, Hasher};
-
-    let mut hi = std::collections::hash_map::DefaultHasher::new();
-    site_id.hash(&mut hi);
-    name.hash(&mut hi);
-    let mut lo = std::collections::hash_map::DefaultHasher::new();
-    name.hash(&mut lo);
-    site_id.hash(&mut lo);
-    Uuid::from_u128(((hi.finish() as u128) << 64) | lo.finish() as u128)
 }
 
 #[cfg(test)]

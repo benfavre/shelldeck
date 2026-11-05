@@ -124,22 +124,10 @@ impl Workspace {
                     Box::new(NewScript),
                 ),
                 PaletteAction::new(
-                    t!("palette.open_server_sync").to_string(),
-                    None,
-                    "refresh-cw",
-                    Box::new(OpenServerSync),
-                ),
-                PaletteAction::new(
                     t!("palette.open_agents").to_string(),
                     None,
                     "bot",
                     Box::new(OpenAgents),
-                ),
-                PaletteAction::new(
-                    t!("palette.open_sites").to_string(),
-                    None,
-                    "globe",
-                    Box::new(OpenSites),
                 ),
                 PaletteAction::new(
                     t!("palette.open_recent").to_string(),
@@ -351,12 +339,8 @@ impl Workspace {
             }
             self.set_active_view(ActiveView::Scripts, cx);
             self.show_script_form(cx);
-        } else if action.as_any().is::<OpenServerSync>() {
-            self.activate_dev_section(SidebarSection::ServerSync, cx);
         } else if action.as_any().is::<OpenAgents>() {
             self.activate_dev_section(SidebarSection::Agents, cx);
-        } else if action.as_any().is::<OpenSites>() {
-            self.activate_dev_section(SidebarSection::Sites, cx);
         } else if action.as_any().is::<OpenRecent>() {
             self.activate_dev_section(SidebarSection::Recent, cx);
         } else if action.as_any().is::<OpenFileEditorView>() {
@@ -398,10 +382,10 @@ mod tests {
     use super::{
         AppMode, ApplyTerminalTheme, CloudSyncNow, NewRequest, NewScript, NewTerminal, OpenAgents,
         OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView, OpenFleet, OpenLogin,
-        OpenMoniqueConsole, OpenRecent, OpenServerSync, OpenSettings, OpenSites,
-        OpenSupportRequests, OpenTemplateBrowser, PaletteAction, Quit, SetAppMode, SwitchSite,
-        ToggleMenuBar, Workspace,
+        OpenMoniqueConsole, OpenRecent, OpenSettings, OpenSupportRequests, OpenTemplateBrowser,
+        PaletteAction, Quit, SetAppMode, SwitchSite, ToggleMenuBar, Workspace,
     };
+    use crate::t;
     use gpui::Action;
 
     /// SDTEST-1700 — « Quitter » ne doit jamais être la première ligne.
@@ -446,9 +430,7 @@ mod tests {
     fn assert_no_dev_actions(actions: &[PaletteAction], context: &str) {
         assert!(!contains_action::<NewTerminal>(actions), "{context}");
         assert!(!contains_action::<OpenFileEditorView>(actions), "{context}");
-        assert!(!contains_action::<OpenServerSync>(actions), "{context}");
         assert!(!contains_action::<OpenAgents>(actions), "{context}");
-        assert!(!contains_action::<OpenSites>(actions), "{context}");
         assert!(!contains_action::<OpenRecent>(actions), "{context}");
         assert!(!contains_action::<NewScript>(actions), "{context}");
         assert!(
@@ -507,6 +489,14 @@ mod tests {
         let allowed: &'static [AppMode] = &[AppMode::User, AppMode::Support, AppMode::Dev];
 
         let in_dev = Workspace::base_palette_actions(allowed, AppMode::Dev, true, true);
+        for retired_name in [t!("palette.open_server_sync"), t!("palette.open_sites")] {
+            assert!(
+                in_dev
+                    .iter()
+                    .all(|entry| entry.name != retired_name.as_ref()),
+                "retired tool must not be offered in Dev: {retired_name}"
+            );
+        }
         assert!(contains_action::<NewTerminal>(&in_dev));
         assert!(contains_action::<OpenAgents>(&in_dev));
         assert!(contains_action::<OpenMoniqueConsole>(&in_dev));
