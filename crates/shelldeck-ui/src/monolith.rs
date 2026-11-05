@@ -17,10 +17,10 @@ pub(crate) enum MonolithMotion {
     TerminalTyping,
 }
 
-/// Render a complete Monolith expression under the shared motion policy.
+/// Render the Inklura identity under the shared motion policy.
 ///
-/// Authored motions are transparent lossless animated WebP files exported from
-/// the browser motion lab. The SVG post-login expression derives its transform
+/// Brand motions are transparent lossless animated WebP files exported from
+/// the canonical vector. The SVG post-login expression derives its transform
 /// from the shared clock, and every motion falls back to a static asset when
 /// the platform requests reduced motion.
 pub(crate) fn animated_monolith<V: 'static>(

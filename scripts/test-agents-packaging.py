@@ -27,6 +27,8 @@ class AgentsPackaging(unittest.TestCase):
             shutil.copy2(REPOSITORY / "packaging/linux" / name, self.root / "packaging/linux" / name)
         shutil.copy2(REPOSITORY / "packaging/icons/shelldeck-256.png",
                      self.root / "packaging/icons/shelldeck-256.png")
+        shutil.copy2(REPOSITORY / "packaging/icons/shelldeck.ico",
+                     self.root / "packaging/icons/shelldeck.ico")
         (self.root / "Cargo.toml").write_text(f'[workspace.package]\nversion = "{VERSION}"\n')
         self.browser = self.root / "target/release/browser" / VERSION
         self.browser.mkdir(parents=True, mode=0o700)

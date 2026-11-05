@@ -146,13 +146,12 @@ fn build(s: Seed) -> Palette {
 
 // ---- Built-in palettes ----
 
-/// Default dark theme — kept as an explicit literal so its exact, hand-tuned
-/// look is preserved unchanged across the palette refactor.
+/// Default dark surfaces with Inklura blue for controls and accents.
 fn dark_palette() -> Palette {
     Palette {
         is_dark: true,
-        primary: hsla(0.63, 0.85, 0.55, 1.0),
-        primary_hover: hsla(0.63, 0.85, 0.50, 1.0),
+        primary: hx(0x146bff),
+        primary_hover: hx(0x0058e6),
         success: hsla(0.40, 0.70, 0.45, 1.0),
         warning: hsla(0.10, 0.85, 0.55, 1.0),
         error: hsla(0.0, 0.75, 0.50, 1.0),
@@ -185,12 +184,12 @@ fn dark_palette() -> Palette {
     }
 }
 
-/// Default light theme — explicit literal, preserves the original look.
+/// Default light surfaces with Inklura's primary brand blue.
 fn light_palette() -> Palette {
     Palette {
         is_dark: false,
-        primary: hsla(0.63, 0.80, 0.42, 1.0),
-        primary_hover: hsla(0.63, 0.80, 0.38, 1.0),
+        primary: hx(0x146bff),
+        primary_hover: hx(0x0058e6),
         success: hsla(0.40, 0.65, 0.38, 1.0),
         warning: hsla(0.10, 0.80, 0.45, 1.0),
         error: hsla(0.0, 0.70, 0.45, 1.0),
