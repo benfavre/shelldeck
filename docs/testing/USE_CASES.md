@@ -2395,14 +2395,10 @@ marker; a divider separates primary work from secondary tools. Every glyph has
 its localized label in a tooltip, and Recent Activity uses the same clock icon
 as the Aller menu rather than an ambiguous pulse trace.
 
-The panel follows the selected activity: Connections keeps its grouped host
-list with pins and per-row actions, while Terminals lists open tabs, Scripts
-the saved scripts, Port Forwards the configured forwards, Sites the available
-sites, Recent the activity feed, and Editor the open buffers. Each row reports
-whether it is the active one and whether it is live, and selecting it performs
-that activity's own open/focus action. An activity with no rows shows a
-localized empty state; an activity with no panel at all hides the panel so its
-main view takes the full width.
+Connections keeps its grouped host list with pins and per-row actions. Other
+activities use their main surface without duplicating its list in a contextual
+panel. The current rail and retirement behavior are specified in SDUC-567;
+retained workspaces are reached through Agents.
 
 The rail is unconditional: no state renders the Dev sidebar without a
 navigation surface, and there is no setting to hide it. The panel collapses
@@ -4839,3 +4835,19 @@ terminal mascot in app/package icons, the template tray mask, theme badges and
 all six loading/mode motions. Exports come from the retained canonical SVG;
 reduced-motion still uses the static Inklura mark. Existing filenames remain
 loader-compatible. The NSIS fixture now compiles with the actual exported ICO.
+
+
+### SDUC-567 — Simplified Dev navigation and retired server tools
+
+Server synchronization, detected-site scans and manual port-forward management
+are retired from the application navigation, Go menu and command palette.
+Their dashboard/status/tray counters are removed. Legacy tunnel deep links and
+activity entries explain retirement without opening a screen or starting a
+tunnel. Saved sync profiles, detected sites and forwarding configurations remain
+on disk, and internal SSH/browser transport capabilities remain available.
+
+Workspaces no longer occupy a rail slot. Opening a retained workspace keeps
+Agents selected; the Agents project/workspace flows remain available. The Dev
+rail contains Connections, Agents, Terminals, Scripts, Recent and File Editor,
+with the secondary group starting at Recent and Settings pinned separately.
+Manage site context and account/profile synchronization remain available.

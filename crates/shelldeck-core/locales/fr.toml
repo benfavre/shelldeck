@@ -2815,6 +2815,8 @@ agents.navigator.search = "Rechercher…"
 agents.remote.connection_unavailable = "Connexion indisponible"
 
 
+navigation.retired_tool = "Cet outil n’est plus disponible dans %{app_name}."
+
 [fleet.tasks]
 pause_requested = "Pause demandée"
 starting = "Démarrage"

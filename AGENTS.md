@@ -26,6 +26,15 @@ forwards to it. Keep the Inklura blue-and-white identity across platforms.
 New macOS packages contain `Inklura Desktop.app`; the download installer accepts
 both that bundle and legacy `ShellDeck.app` and preserves an existing location.
 
+## Retired Dev tools
+
+The server-sync, detected-site scan and manual port-forward screens are retired
+from navigation, menus, palette actions and tunnel deep links. Preserve their
+saved records and the SSH/browser transport layers. Do not reintroduce their
+entry points when adding navigation. Retained Workspaces belongs under Agents
+and does not get a separate rail icon. Manage site context and cloud profile
+synchronization remain active features.
+
 ## Tech Stack
 
 | Layer | Technology |

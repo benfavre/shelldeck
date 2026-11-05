@@ -121,11 +121,6 @@ impl Workspace {
         } else {
             0
         };
-        let open_tunnels = if signed_in {
-            self.active_tunnels.len()
-        } else {
-            0
-        };
         let unread_tickets = if signed_in {
             self.support.read(cx).unread_ticket_count()
         } else {
@@ -164,7 +159,6 @@ impl Workspace {
         let counters = TrayCounters {
             signed_in,
             active_ssh,
-            open_tunnels,
             unread_tickets,
             monique_pending,
             ai_tasks_running,

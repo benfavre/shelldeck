@@ -243,10 +243,10 @@ mod tests {
     /// SDTEST-1704 — reste dans le scénario bilingue unique : la locale est
     /// globale au processus et ne doit jamais être modifiée par deux tests en
     /// parallèle.
-    fn assert_operational_vocabulary_is_localized(expected: [&str; 8]) {
+    fn assert_operational_vocabulary_is_localized(expected: [&str; 7]) {
         use crate::status_bar::{status_count_label, StatusMetric};
 
-        let [unknown_status, unknown_priority, one_connection, many_connections, one_forward, many_forwards, one_script, many_scripts] =
+        let [unknown_status, unknown_priority, one_connection, many_connections, one_script, many_scripts, retired_tool] =
             expected;
 
         assert_eq!(
@@ -271,14 +271,6 @@ mod tests {
             many_connections
         );
         assert_eq!(
-            status_count_label(StatusMetric::ActiveForwards, 1),
-            one_forward
-        );
-        assert_eq!(
-            status_count_label(StatusMetric::ActiveForwards, 2),
-            many_forwards
-        );
-        assert_eq!(
             status_count_label(StatusMetric::RunningScripts, 1),
             one_script
         );
@@ -288,12 +280,11 @@ mod tests {
         );
 
         assert_eq!(
-            crate::t!("sidebar.nav.server_sync"),
-            crate::t!("menu.go.server_sync")
-        );
-        assert_eq!(
-            crate::t!("sidebar.nav.server_sync"),
-            crate::t!("sync.title")
+            crate::t!(
+                "navigation.retired_tool",
+                app_name = shelldeck_core::APP_NAME
+            ),
+            retired_tool
         );
         assert_eq!(crate::t!("sidebar.nav.recent"), crate::t!("menu.go.recent"));
         assert_eq!(crate::t!("sidebar.nav.recent"), crate::t!("recent.title"));
@@ -352,10 +343,9 @@ mod tests {
             "Priorité inconnue",
             "1 connexion active",
             "2 connexions actives",
-            "1 redirection active",
-            "2 redirections actives",
             "1 script en cours",
             "2 scripts en cours",
+            "Cet outil n’est plus disponible dans Inklura Desktop.",
         ]);
         assert_account_timestamps_are_customer_facing(
             "Aujourd’hui à 10:34",
@@ -395,10 +385,9 @@ mod tests {
             "Unknown priority",
             "1 active connection",
             "2 active connections",
-            "1 active port forward",
-            "2 active port forwards",
             "1 running script",
             "2 running scripts",
+            "This tool is no longer available in Inklura Desktop.",
         ]);
         assert_account_timestamps_are_customer_facing(
             "Today at 10:34",

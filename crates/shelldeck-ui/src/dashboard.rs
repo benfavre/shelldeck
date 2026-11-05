@@ -25,7 +25,6 @@ pub struct DashboardView {
     pub active_connections: usize,
     pub active_terminals: usize,
     pub running_scripts: usize,
-    pub active_forwards: usize,
     pub recent_activity: Vec<ActivityEntry>,
     pub favorite_hosts: Vec<(Uuid, String, String, bool)>,
 }
@@ -42,7 +41,6 @@ impl DashboardView {
             active_connections: 0,
             active_terminals: 0,
             running_scripts: 0,
-            active_forwards: 0,
             recent_activity: Vec::new(),
             favorite_hosts: Vec::new(),
         }
@@ -250,12 +248,6 @@ impl Render for DashboardView {
                         t!("dashboard.stats.scripts").as_ref(),
                         self.running_scripts,
                         ShellDeckColors::warning(),
-                    ))
-                    .child(Self::render_stat_card(
-                        "arrow-left-right",
-                        t!("dashboard.stats.forwards").as_ref(),
-                        self.active_forwards,
-                        ShellDeckColors::primary_hover(),
                     )),
             );
 

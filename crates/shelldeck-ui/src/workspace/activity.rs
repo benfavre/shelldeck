@@ -90,7 +90,15 @@ impl Workspace {
                 cx.notify();
             }
             ActivityAction::OpenForward => {
-                self.activate_dev_section(SidebarSection::PortForwards, cx);
+                self.show_toast(
+                    t!(
+                        "navigation.retired_tool",
+                        app_name = shelldeck_core::APP_NAME
+                    )
+                    .to_string(),
+                    ToastLevel::Info,
+                    cx,
+                );
             }
             ActivityAction::OpenScript => {
                 let script_id = entry

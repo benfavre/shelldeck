@@ -29,7 +29,6 @@ pub enum TrayCommand {
 pub struct TrayState {
     pub signed_in: bool,
     pub active_ssh: usize,
-    pub open_tunnels: usize,
     pub unread_tickets: usize,
     pub monique_pending: usize,
     pub ai_tasks_running: usize,
@@ -189,7 +188,6 @@ fn build_menu(state: &TrayState) -> Vec<TrayMenuItem> {
     });
     items.push(TrayMenuItem::Separator);
     items.push(label(counter_label_ssh(state.active_ssh)));
-    items.push(label(counter_label_tunnels(state.open_tunnels)));
     items.push(label(counter_label_tickets(state.unread_tickets)));
     items.push(label(counter_label_monique(state.monique_pending)));
     if state.signed_in {
@@ -236,9 +234,6 @@ const PINNED_ID_PREFIX: &str = "shelldeck.tray.pinned.";
 
 fn counter_label_ssh(n: usize) -> String {
     shelldeck_ui::ai_dock::tray_counter_ssh(n)
-}
-fn counter_label_tunnels(n: usize) -> String {
-    shelldeck_ui::ai_dock::tray_counter_tunnels(n)
 }
 fn counter_label_tickets(n: usize) -> String {
     shelldeck_ui::ai_dock::tray_counter_tickets(n)

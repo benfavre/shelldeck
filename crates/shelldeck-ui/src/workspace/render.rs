@@ -107,6 +107,12 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.window_active = _window.is_window_active();
+        if self.active_view.is_retired() {
+            self.active_view = ActiveView::Agents;
+            self.sidebar.update(_cx, |sidebar, _| {
+                sidebar.set_active_section(SidebarSection::Agents);
+            });
+        }
         let agents_presentation = self.agents_presentation_active();
         let native_title = (_window.window_handle().window_id(), agents_presentation);
         if self.native_title != Some(native_title) {
@@ -240,8 +246,6 @@ impl Render for Workspace {
         let h9 = handle.clone();
         let h10 = handle.clone();
         let h11 = handle.clone();
-        let h12 = handle.clone();
-        let h13 = handle.clone();
         let h14 = handle.clone();
         let h15 = handle.clone();
         let h16 = handle.clone();
@@ -343,20 +347,6 @@ impl Render for Workspace {
                         ws.set_active_view(ActiveView::Scripts, cx);
                         ws.show_script_form(cx);
                         cx.notify();
-                    });
-                }
-            })
-            .on_action(move |_: &OpenServerSync, _window, cx| {
-                if let Some(ws) = h12.upgrade() {
-                    ws.update(cx, |ws, cx| {
-                        ws.activate_dev_section(SidebarSection::ServerSync, cx)
-                    });
-                }
-            })
-            .on_action(move |_: &OpenSites, _window, cx| {
-                if let Some(ws) = h13.upgrade() {
-                    ws.update(cx, |ws, cx| {
-                        ws.activate_dev_section(SidebarSection::Sites, cx)
                     });
                 }
             })

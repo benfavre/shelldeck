@@ -38,7 +38,6 @@ pub enum StatusBarEvent {
 
 pub struct StatusBar {
     pub active_connections: usize,
-    pub active_forwards: usize,
     pub running_scripts: usize,
     pub notification: Option<String>,
     pub git_status: Option<String>,
@@ -57,7 +56,6 @@ impl StatusBar {
     pub fn new() -> Self {
         Self {
             active_connections: 0,
-            active_forwards: 0,
             running_scripts: 0,
             notification: None,
             git_status: None,
@@ -65,9 +63,8 @@ impl StatusBar {
         }
     }
 
-    pub fn set_counts(&mut self, connections: usize, forwards: usize, scripts: usize) {
+    pub fn set_counts(&mut self, connections: usize, scripts: usize) {
         self.active_connections = connections;
-        self.active_forwards = forwards;
         self.running_scripts = scripts;
     }
 
@@ -144,7 +141,6 @@ impl StatusBar {
 #[derive(Clone, Copy)]
 pub(crate) enum StatusMetric {
     ActiveConnections,
-    ActiveForwards,
     RunningScripts,
 }
 
@@ -152,7 +148,6 @@ impl StatusMetric {
     fn icon(self) -> &'static str {
         match self {
             Self::ActiveConnections => "server",
-            Self::ActiveForwards => "route",
             Self::RunningScripts => "play",
         }
     }
@@ -160,7 +155,6 @@ impl StatusMetric {
     fn element_id(self) -> &'static str {
         match self {
             Self::ActiveConnections => "status-active-connections",
-            Self::ActiveForwards => "status-active-forwards",
             Self::RunningScripts => "status-running-scripts",
         }
     }
@@ -176,10 +170,6 @@ pub(crate) fn status_count_label(metric: StatusMetric, count: usize) -> String {
         (StatusMetric::ActiveConnections, 1) => t!("status_bar.connections.one").to_string(),
         (StatusMetric::ActiveConnections, _) => {
             t!("status_bar.connections.many", count = count).to_string()
-        }
-        (StatusMetric::ActiveForwards, 1) => t!("status_bar.forwards.one").to_string(),
-        (StatusMetric::ActiveForwards, _) => {
-            t!("status_bar.forwards.many", count = count).to_string()
         }
         (StatusMetric::RunningScripts, 1) => t!("status_bar.scripts.one").to_string(),
         (StatusMetric::RunningScripts, _) => {
@@ -247,10 +237,6 @@ impl Render for StatusBar {
                 .child(Self::status_item(
                     StatusMetric::ActiveConnections,
                     self.active_connections,
-                ))
-                .child(Self::status_item(
-                    StatusMetric::ActiveForwards,
-                    self.active_forwards,
                 ))
                 .child(Self::status_item(
                     StatusMetric::RunningScripts,
@@ -338,7 +324,6 @@ mod tests {
     #[test]
     fn status_metrics_have_distinct_semantic_icons() {
         assert_eq!(StatusMetric::ActiveConnections.icon(), "server");
-        assert_eq!(StatusMetric::ActiveForwards.icon(), "route");
         assert_eq!(StatusMetric::RunningScripts.icon(), "play");
     }
 }

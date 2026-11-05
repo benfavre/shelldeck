@@ -745,7 +745,6 @@ impl CompanionRoot {
                     let state = tray::TrayState {
                         signed_in: counters.signed_in,
                         active_ssh: counters.active_ssh,
-                        open_tunnels: counters.open_tunnels,
                         unread_tickets: counters.unread_tickets,
                         monique_pending: counters.monique_pending,
                         ai_tasks_running: counters.ai_tasks_running,
