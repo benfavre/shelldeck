@@ -44,37 +44,8 @@ impl Workspace {
             })
             .count();
 
-        let quick_connections: Vec<&Connection> = if self.app_config.pinned_connections.is_empty() {
-            self.connections.iter().take(5).collect()
-        } else {
-            self.app_config
-                .pinned_connections
-                .iter()
-                .filter_map(|id| {
-                    self.connections
-                        .iter()
-                        .find(|connection| connection.id == *id)
-                })
-                .take(5)
-                .collect()
-        };
-        let favorite_hosts: Vec<(Uuid, String, String, bool)> = quick_connections
-            .into_iter()
-            .map(|c| {
-                (
-                    c.id,
-                    c.display_name().to_string(),
-                    c.hostname.clone(),
-                    c.status == ConnectionStatus::Connected,
-                )
-            })
-            .collect();
-
         self.dashboard.update(cx, |d, _| {
             d.active_terminals = terminal_count;
-            d.running_scripts = running_scripts;
-            d.active_connections = active_connections;
-            d.favorite_hosts = favorite_hosts;
         });
         self.status_bar.update(cx, |bar, _| {
             bar.set_counts(active_connections, running_scripts);
