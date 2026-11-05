@@ -4858,3 +4858,10 @@ and shortcut reference. The active-connection and running-script cards and the
 dashboard Quick Connect section are removed, including their host-list copying
 and event subscription. The separate Connections sidebar, global Quick Connect
 command, saved hosts and script execution remain available.
+
+
+SDUC-566 macOS packaging correction: the canonical exporter now commits a native
+ICNS. DMG creation requires this icon before replacing a bundle, and update ZIP
+creation independently refuses a missing bundle icon. Native macOS CI decodes
+the actual ICNS through Apple's iconutil and checks its inclusion through ditto.
+This replaces the iconutil fallback that silently shipped v0.15.1 without an icon.
