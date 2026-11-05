@@ -125,6 +125,7 @@ mod cloud_sync;
 mod discovery;
 mod events;
 mod fleet;
+mod inklura_extension;
 pub(crate) mod platform_attention;
 pub use platform_attention::PlatformAttentionNotification;
 mod forwards;
@@ -393,6 +394,7 @@ actions!(
         OpenAiAssistant,
         OpenClippy,
         OpenAgents,
+        SetupInkluraExtension,
     ]
 );
 

@@ -3329,6 +3329,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-04** — SDUC-565: Settings → Général and the palette set up the Inklura Chrome extension (download, stable folder, computed ID, chrome://extensions, optional Craft bridge). SDTEST-2875–2879.
+
 - **2026-10-31** — SDUC-475/563/564: readable operation summaries, visible status motion and floating group collapse; large local/native timelines render viewport rows lazily while preserving drafts, reading anchors, source identity, exact copying and paging (SDTEST-2868–2874).
 
 - **2026-10-31** — SDUC-557: Claude Code and Codex runs over SSH can share the desktop browser through a scoped reverse forward and private temporary MCP adapter. SDTEST-2862–2867 cover transport, launch configuration, lifecycle and native CEF.
@@ -4798,3 +4800,22 @@ after chat selection and durable reload, independent transcript scrolling,
 footer retry, exact copy/disclosure, once-only queued admission, and duplicate
 question/approval click prevention with correlated failure recovery. They use
 production controls with provider-event fixtures and a private test clipboard.
+
+### SDUC-565 — Set up the Inklura Chrome extension from ShellDeck
+
+A signed-in user can install the Inklura browser assistant from Settings →
+Général (« Extension Chrome Inklura ») or the palette command « Installer
+l’extension Chrome Inklura ». ShellDeck downloads
+`{manage}/extensions/inklura-assistant.zip`, validates and unpacks it into a
+stable folder under its data directory (a failed or hostile package never
+replaces a working copy), copies the `extension/` path to the clipboard and
+opens `chrome://extensions` in the Chrome profile signed into the same Google account as the ShellDeck/Manage account (else the last-used profile, via `--profile-directory`); Settings names that profile and reports when the extension is loaded in it. Chrome reserves the « Load
+unpacked » click for the user; the section lists that step. Updates replace the
+files in place so Chrome keeps the same unpacked-extension ID, which ShellDeck
+computes and shows. On macOS and Linux, « Activer les MCP Craft locaux » runs
+the package's `native/install.py` with that ID and a user-chosen folder, so
+the ID never has to be copied by hand. Without Chrome the section says so
+instead of offering a dead button.
+
+
+The SDUC-565 setup flow is also reachable from Manage and the Chrome panel through `shelldeck://extension`. It opens General settings after the existing sign-in gate; downloading and granting a Craft workspace still require the user’s setup controls.

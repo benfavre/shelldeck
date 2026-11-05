@@ -243,6 +243,7 @@ impl Workspace {
             return;
         }
         self.settings_open = true;
+        self.refresh_inklura_extension_panel(cx);
         self.account_menu_open = false;
         self.mode_menu_open = false;
         self.site_menu_open = false;

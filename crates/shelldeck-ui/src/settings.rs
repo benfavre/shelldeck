@@ -25,6 +25,9 @@ use shelldeck_core::config::themes::TerminalTheme;
 use crate::theme::{palette_for, ShellDeckColors};
 use crate::workspace::CloudSyncNow;
 
+mod inklura_extension;
+pub use inklura_extension::InkluraExtensionPanel;
+
 /// Fixed shortlist of monospace families offered for the editor + terminal.
 /// Kept in sync between the two settings tabs; extend here to surface new
 /// picks everywhere.
@@ -280,6 +283,12 @@ pub enum SettingsEvent {
     },
     /// Run a real minimal completion through the selected backend.
     AiTestRequested(AppConfig),
+    /// Download/refresh the Inklura Chrome extension, then open Chrome.
+    InkluraExtensionInstallRequested,
+    /// Open `chrome://extensions` (the folder path is already copied).
+    InkluraExtensionOpenChromeRequested,
+    /// Install the Craft MCP native bridge for the chosen workspace folder.
+    InkluraExtensionBridgeRequested(std::path::PathBuf),
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -346,6 +355,7 @@ pub struct SettingsView {
     shortcut_status_before_capture: Option<(CompanionShortcutKind, ShortcutRegistrationStatus)>,
     shortcut_capture_focus: FocusHandle,
     companion_shortcut_statuses: CompanionShortcutStatuses,
+    inklura_extension: InkluraExtensionPanel,
 }
 
 impl SettingsView {
@@ -359,6 +369,8 @@ impl SettingsView {
         let ai_backend_select = build_ai_backend_select(&config, cx);
         let ai_model = config.ai.model.clone();
         let shortcut_capture_focus = cx.focus_handle();
+        let inklura_extension =
+            InkluraExtensionPanel::detect(config.account.as_ref().map(|a| a.email.as_str()));
         Self {
             config,
             active_tab: SettingsTab::General,
@@ -382,6 +394,7 @@ impl SettingsView {
             shortcut_status_before_capture: None,
             shortcut_capture_focus,
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),
+            inklura_extension,
         }
     }
 
@@ -1139,6 +1152,7 @@ impl SettingsView {
                 ),
             ))
             .child(self.render_cloud_sync_settings(cx))
+            .child(self.render_inklura_extension_settings(cx))
     }
 
     /// Shared adabraka `Toggle` bound to a single `bool` config field. The

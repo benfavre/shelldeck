@@ -6,6 +6,7 @@ pub mod bext_instance;
 pub mod cloud_account;
 pub mod cloud_sync;
 pub mod deep_link;
+pub mod inklura_extension;
 pub mod issues;
 pub mod keychain;
 pub mod manage_directory;

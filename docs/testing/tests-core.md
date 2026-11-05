@@ -761,3 +761,17 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-2856 | `agent_session::tests::sdtest_2856_long_remote_titles_reconnect_without_losing_identity_or_saved_work` | SDUC-562, SDUC-563 | Green — failed before the import correction | Valid discovery titles over 160 bytes import with a bounded UTF-8 display name, retain native ID/server/folder, preserve existing transcript and user rename, and never merge conversations by title prefix. Manual naming, control-character and identity validation stay strict. |
+
+## Inklura Chrome extension setup — 2026-11-04
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2875 | `config::inklura_extension::tests::sdtest_2875_unpacked_id_matches_chrome` | SDUC-565 | Green | Unpacked ID algorithm checked against an ID read from a real Chrome profile (POSIX path hashing). Windows UTF-16 branch is compile-checked by CI only. |
+| SDTEST-2876 | `config::inklura_extension::tests::sdtest_2876_install_downloads_unpacks_and_updates_in_place` | SDUC-565 | Green | Mock `TcpListener` asserts the `GET /extensions/inklura-assistant.zip` route; stale files vanish, the ID stays stable, `.py` files are executable. |
+| SDTEST-2877 | `config::inklura_extension::tests::sdtest_2877_rejects_escaping_or_invalid_packages_without_touching_install` | SDUC-565 | Green | `..` entries, packages without a manifest and HTML error pages are refused and the existing install is untouched. |
+| SDTEST-2878 | `config::inklura_extension::tests::sdtest_2878_native_bridge_args_carry_computed_id` | SDUC-565 | Green | The Craft bridge installer receives the computed 32-letter ID and the chosen folder; `python3` itself never runs in tests. |
+| SDTEST-2879 | `config::inklura_extension::tests::sdtest_2879_picks_chrome_profile_for_account` | SDUC-565 | Green | Chrome's `Local State` profile signed into the Manage account wins over `last_used` (case-insensitive); otherwise `last_used`; the profile's preferences report whether the extension ID is loaded. |
+| — | `config::inklura_extension::live_tests::live_install_real_manage_package` | SDUC-565 | Yellow — `#[ignore]`, network | Downloads the real package from manage.inklura.fr; verified 2026-11-04 (v0.1.0). |
+
+
+| SDTEST-2880 | `config::deep_link::tests::sdtest_2880_extension_settings_link_is_bounded` | SDUC-565 | Green | Browser/Manage setup handoff accepts only the extension settings route. Query values cannot request installation or file access. |
