@@ -111,6 +111,9 @@ class BrowserPackaging(unittest.TestCase):
         main = app / "Contents/MacOS/shelldeck"
         main.parent.mkdir(parents=True)
         main.write_bytes(b"signed application fixture")
+        icon = app / "Contents/Resources/shelldeck.icns"
+        icon.parent.mkdir(parents=True)
+        shutil.copyfile(REPOSITORY / "packaging/icons/shelldeck.icns", icon)
         tools = self.root / "native archive tool"
         tools.mkdir()
         ditto = tools / "ditto"
@@ -131,6 +134,7 @@ with zipfile.ZipFile(destination, "w") as archive:
                                 env=environment, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         with zipfile.ZipFile(self.root / "dist/shelldeck-macos-aarch64.zip") as archive:
+            self.assertEqual(archive.read(icon.relative_to(app.parent).as_posix()), icon.read_bytes())
             self.assertEqual(archive.read("Inklura Desktop.app/Contents/MacOS/shelldeck"),
                              b"signed application fixture")
             self.assertEqual(archive.read(executable.relative_to(app.parent).as_posix()),
