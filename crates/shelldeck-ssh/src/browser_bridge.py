@@ -51,7 +51,7 @@ def main():
                     value = json.loads(response)
                     if isinstance(value.get("result"), dict):
                         original = value["result"].get("instructions", "")
-                        value["result"]["instructions"] = original + " The browser runs on the Inklura Desktop on your computer, not this SSH server. Localhost URLs refer to the desktop; use a forwarded URL for a service bound to this server's loopback interface."
+                        value["result"]["instructions"] = original + " The browser runs in Inklura Desktop on your computer, not this SSH server. Localhost URLs refer to the desktop; use a forwarded URL for a service bound to this server's loopback interface."
                         response = json.dumps(value, separators=(",", ":")).encode() + b"\n"
                 if len(response) > LIMIT:
                     raise ValueError("Browser response exceeds its size limit")
