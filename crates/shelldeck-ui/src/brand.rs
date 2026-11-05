@@ -4,7 +4,7 @@ use gpui::prelude::*;
 use gpui::SharedString;
 use gpui::*;
 
-/// Monolith logo — 128px PNG per theme (`brand/png/themes/monolith-{slug}-128.png`).
+/// Inklura's blue mark in every theme (legacy asset paths stay compatible).
 /// GPUI `svg()` is monochrome-only; multi-color marks use a raster asset.
 /// Falls back to the dark badge for unknown slugs (should be unreachable —
 /// slugs are enumerated in `ThemePreference::brand_slug`).
@@ -31,7 +31,7 @@ pub fn brand_badge_abs(size: f32) -> impl IntoElement {
         .child(img(path).w_full().h_full().object_fit(ObjectFit::Contain))
 }
 
-/// Monochrome Monolith mark (`shelldeck-mark.svg`) — muted contexts, `currentColor`.
+/// Monochrome Inklura mark (`shelldeck-mark.svg`) — muted contexts, `currentColor`.
 pub fn brand_mark(width: f32, height: f32) -> impl IntoElement {
     svg()
         .path("images/shelldeck-mark.svg")

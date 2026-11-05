@@ -7,6 +7,10 @@ routes = [
   { pattern = "shelldeck.1clic.pro/*", zone_name = "1clic.pro" }
 ]
 
+# Preserve the production per-invocation CPU safeguard on every deployment.
+[limits]
+cpu_ms = 50
+
 [[kv_namespaces]]
 binding = "SHELLDECK_KV"
 id = "860e45ea2eb84055861d946e514c8497"

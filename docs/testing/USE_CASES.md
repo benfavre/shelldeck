@@ -4833,3 +4833,9 @@ remain compatible with ShellDeck installations. macOS packaging includes
 accept old and new bundles and update existing bundle locations in place. Windows
 keeps the existing install/uninstall registry identity while naming the app and
 new shortcuts Inklura Desktop.
+
+SDUC-566 visual identity: the blue-and-white Inklura figure replaces the
+terminal mascot in app/package icons, the template tray mask, theme badges and
+all six loading/mode motions. Exports come from the retained canonical SVG;
+reduced-motion still uses the static Inklura mark. Existing filenames remain
+loader-compatible. The NSIS fixture now compiles with the actual exported ICO.

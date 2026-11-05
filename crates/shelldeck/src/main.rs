@@ -2914,7 +2914,7 @@ mod tests {
 
     // SDTEST-1424
     #[test]
-    fn contextual_monolith_animations_are_embedded_webp_assets() {
+    fn contextual_inklura_animations_are_embedded_webp_assets() {
         for path in [
             "images/brand/webp/studies/monolith-thinking.webp",
             "images/brand/webp/studies/monolith-scan.webp",
@@ -2923,11 +2923,11 @@ mod tests {
             let bytes = Assets
                 .load(path)
                 .expect("embedded asset lookup succeeds")
-                .unwrap_or_else(|| panic!("contextual Monolith motion is not embedded: {path}"));
+                .unwrap_or_else(|| panic!("contextual Inklura motion is not embedded: {path}"));
 
             assert!(
                 bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
-                "contextual Monolith motion is not a WebP asset: {path}"
+                "contextual Inklura motion is not a WebP asset: {path}"
             );
         }
     }

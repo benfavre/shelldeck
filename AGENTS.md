@@ -19,6 +19,10 @@ The repository/crates/executables, profile directories, keychain services,
 autostart registration identity, bundle IDs, `shelldeck://` links, release asset
 filenames and signed-manifest domain separator retain their ShellDeck identifiers
 for upgrade compatibility. Do not rename those as a display-copy cleanup.
+The canonical visual mark is `crates/shelldeck/assets/images/brand/inklura-desktop.svg`.
+Regenerate icons, theme badges, tray masks and motion assets with
+`python3 scripts/export-inklura-brand.py`; the legacy Monolith export command
+forwards to it. Keep the Inklura blue-and-white identity across platforms.
 New macOS packages contain `Inklura Desktop.app`; the download installer accepts
 both that bundle and legacy `ShellDeck.app` and preserves an existing location.
 

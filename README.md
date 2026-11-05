@@ -1,7 +1,7 @@
 # Inklura Desktop
 
 <p align="center">
-  <img src="crates/shelldeck/assets/images/shelldeck-icon.png" alt="Inklura Desktop Monolith logo" width="120" height="120" />
+  <img src="crates/shelldeck/assets/images/shelldeck-icon.png" alt="Inklura Desktop logo" width="120" height="120" />
 </p>
 
 A GPU-accelerated native desktop SSH, terminal, and operations companion built
