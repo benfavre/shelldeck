@@ -176,7 +176,7 @@ fn acquire_startup_lock(
                 if Instant::now() >= deadline {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
-                        "Timed out waiting for another ShellDeck startup",
+                        "Timed out waiting for another Inklura Desktop startup",
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(10));

@@ -112,7 +112,7 @@ impl StatusBar {
             (notification.clone(), ShellDeckColors::text_muted(), false)
         } else if !compact {
             (
-                format!("ShellDeck v{}", shelldeck_core::VERSION),
+                format!("{} v{}", shelldeck_core::APP_NAME, shelldeck_core::VERSION),
                 ShellDeckColors::text_muted(),
                 false,
             )

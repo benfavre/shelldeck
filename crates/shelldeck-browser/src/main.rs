@@ -3,7 +3,7 @@ fn main() -> std::process::ExitCode {
         return match shelldeck_browser::mcp::run_stdio_proxy() {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("ShellDeck browser bridge: {error}");
+                eprintln!("Inklura Desktop browser bridge: {error}");
                 std::process::ExitCode::FAILURE
             }
         };
@@ -11,7 +11,7 @@ fn main() -> std::process::ExitCode {
     match shelldeck_browser::runtime::run() {
         Ok(code) => std::process::ExitCode::from(code.clamp(0, 255) as u8),
         Err(error) => {
-            eprintln!("ShellDeck browser: {error}");
+            eprintln!("Inklura Desktop browser: {error}");
             std::process::ExitCode::FAILURE
         }
     }

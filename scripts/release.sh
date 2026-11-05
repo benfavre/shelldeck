@@ -88,7 +88,7 @@ cmd_status() {
     tag=$(latest_tag)
 
     echo ""
-    printf "${BOLD}ShellDeck Release Status${RESET}\n"
+    printf "${BOLD}Inklura Desktop Release Status${RESET}\n"
     echo "──────────────────────────────"
     printf "  Cargo.toml version: ${CYAN}%s${RESET}\n" "$ver"
     printf "  Latest local tag:   ${CYAN}%s${RESET}\n" "${tag:-none}"
@@ -397,7 +397,7 @@ NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
 TAG="v${NEW_VERSION}"
 
 echo ""
-printf "${BOLD}ShellDeck Release${RESET}\n"
+printf "${BOLD}Inklura Desktop Release${RESET}\n"
 echo "──────────────────────────────"
 printf "  Current: ${DIM}%s${RESET}\n" "$CURRENT_VERSION"
 printf "  New:     ${CYAN}%s${RESET}  (%s bump)\n" "$NEW_VERSION" "$BUMP_TYPE"

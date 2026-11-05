@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=ShellDeck
+Name=Inklura Desktop
 Comment=GPU-accelerated terminal and SSH companion
 Exec=shelldeck %u
 Icon=shelldeck

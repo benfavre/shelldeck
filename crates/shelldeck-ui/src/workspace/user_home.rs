@@ -1035,7 +1035,7 @@ impl Workspace {
                             .text_size(px(14.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(white().opacity(0.90))
-                            .child("ShellDeck"),
+                            .child(shelldeck_core::APP_NAME),
                     ),
             )
             .child(hero_copy);

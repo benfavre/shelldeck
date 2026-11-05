@@ -260,7 +260,7 @@ fn drive(
         wire,
         "initialize",
         json!({"clientInfo": {
-        "name":"shelldeck","title":"ShellDeck","version":env!("CARGO_PKG_VERSION")},
+        "name":"shelldeck","title":"Inklura Desktop","version":env!("CARGO_PKG_VERSION")},
         "capabilities":{"experimentalApi":true}}),
     )?;
     rpc.wait(wire, init, commands, cancel)?;
@@ -366,7 +366,7 @@ fn server_id(message: &Value) -> Result<Value> {
 
 fn reject_unsupported(wire: &mut impl CodexWire, message: &Value) -> Result<()> {
     wire.send(json!({"id":server_id(message)?,"error":{"code":-32601,
-        "message":"ShellDeck does not support this interactive request"}}))
+        "message":"Inklura Desktop does not support this interactive request"}}))
 }
 
 #[path = "agent_codex/interactions.rs"]

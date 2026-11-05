@@ -1,6 +1,6 @@
-# ShellDeck - AGENTS.md
+# Inklura Desktop - AGENTS.md
 
-> This is the canonical agent instruction file for ShellDeck. `CLAUDE.md` at the
+> This is the canonical agent instruction file for Inklura Desktop. `CLAUDE.md` at the
 > repo root is a thin pointer that imports this file, so Claude Code, Cursor,
 > Codex, and any other AGENTS.md-aware tool all read the same source of truth.
 >
@@ -9,7 +9,18 @@
 
 ## Project Overview
 
-ShellDeck is a GPU-accelerated native desktop SSH & Terminal companion app built with Rust. It provides a unified control plane for managing terminal sessions, SSH connections, remote script execution, and port forwarding from a polished sidebar/dashboard UI.
+Inklura Desktop (formerly ShellDeck) is a GPU-accelerated native desktop SSH & Terminal companion app built with Rust. It provides a unified control plane for managing terminal sessions, SSH connections, remote script execution, and port forwarding from a polished sidebar/dashboard UI.
+
+## Product identity
+
+The public product name is **Inklura Desktop** (`shelldeck_core::APP_NAME`).
+Use it in windows, menus, notifications, onboarding and installer display names.
+The repository/crates/executables, profile directories, keychain services,
+autostart registration identity, bundle IDs, `shelldeck://` links, release asset
+filenames and signed-manifest domain separator retain their ShellDeck identifiers
+for upgrade compatibility. Do not rename those as a display-copy cleanup.
+New macOS packages contain `Inklura Desktop.app`; the download installer accepts
+both that bundle and legacy `ShellDeck.app` and preserves an existing location.
 
 ## Tech Stack
 

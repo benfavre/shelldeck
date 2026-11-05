@@ -1545,7 +1545,7 @@ impl AgentSessionCollection {
                         turn.finished_at_ms = Some(now_ms);
                     }
                 }
-                session.push_message(AgentMessageRole::Error, "ShellDeck restarted while this run was active. The run is interrupted; check its target before retrying.".into(), now_ms);
+                session.push_message(AgentMessageRole::Error, "Inklura Desktop restarted while this run was active. The run is interrupted; check its target before retrying.".into(), now_ms);
             }
             if !session.messages.is_empty()
                 && session.boundaries.last().is_none_or(|boundary| {

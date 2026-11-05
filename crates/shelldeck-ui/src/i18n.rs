@@ -325,7 +325,7 @@ mod tests {
             "Aucun site ne correspond à « zzzzintrouvable »"
         );
         let tray_fr = crate::ai_dock::TrayLabels::localized();
-        assert_eq!(tray_fr.show, "Ouvrir ShellDeck");
+        assert_eq!(tray_fr.show, "Ouvrir Inklura Desktop");
         assert_eq!(crate::ai_dock::tray_counter_tickets(3), "3 tickets non lus");
         assert_eq!(
             crate::ai_dock::tray_counter_ai_tasks(2),
@@ -371,7 +371,7 @@ mod tests {
             "No site matches “zzzzintrouvable”"
         );
         let tray_en = crate::ai_dock::TrayLabels::localized();
-        assert_eq!(tray_en.show, "Open ShellDeck");
+        assert_eq!(tray_en.show, "Open Inklura Desktop");
         assert_eq!(crate::ai_dock::tray_counter_tickets(3), "3 unread tickets");
         assert_eq!(
             crate::ai_dock::tray_counter_ai_tasks(2),

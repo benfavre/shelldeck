@@ -51,24 +51,25 @@ pub fn brand_mark_abs(width: f32, height: f32) -> impl IntoElement {
         .text_color(ShellDeckColors::text_muted().opacity(0.72))
 }
 
-/// The ShellDeck wordmark — "Shell" in the primary text color, "Deck" in the
-/// brand accent color. `text_size` sets the point size of both halves.
+/// Product wordmark: Inklura with Desktop in the active brand accent color.
 pub fn brand_wordmark(text_size: f32) -> impl IntoElement {
     div()
         .flex()
         .items_baseline()
+        .gap(px(text_size * 0.25))
+        .whitespace_nowrap()
         .child(
             div()
                 .text_size(px(text_size))
                 .font_weight(FontWeight::BOLD)
                 .text_color(ShellDeckColors::text_primary())
-                .child("Shell"),
+                .child("Inklura"),
         )
         .child(
             div()
                 .text_size(px(text_size))
                 .font_weight(FontWeight::BOLD)
                 .text_color(ShellDeckColors::primary())
-                .child("Deck"),
+                .child("Desktop"),
         )
 }

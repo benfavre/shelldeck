@@ -26,3 +26,8 @@ pub use models::*;
 /// Application version, resolved at compile time from the workspace Cargo.toml.
 /// Use this constant everywhere instead of calling `env!("CARGO_PKG_VERSION")` directly.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Public product name. Persistent storage, keychain and protocol identifiers
+/// intentionally retain their original names so existing installations upgrade.
+pub const APP_NAME: &str = "Inklura Desktop";
+pub const AGENTS_APP_NAME: &str = "Inklura Desktop Agents";

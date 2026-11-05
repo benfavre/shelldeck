@@ -62,7 +62,7 @@ def tool(name, arguments=None):
 
 try:
     initialized = request("initialize", {"protocolVersion":"2024-11-05", "capabilities":{}, "clientInfo":{"name":"shelldeck-fixture","version":"1"}})
-    assert "ShellDeck desktop" in initialized["instructions"]
+    assert "Inklura Desktop on your computer" in initialized["instructions"]
     request("notifications/initialized", notification=True)
     tools = request("tools/list")
     listing = tool("browser_tabs")

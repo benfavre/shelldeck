@@ -90,7 +90,7 @@ async function renderInstallSh(env: Env): Promise<Response> {
   const script = `#!/bin/bash
 set -euo pipefail
 
-# ShellDeck installer — generated dynamically
+# Inklura Desktop installer — generated dynamically
 # https://shelldeck.bext.dev
 
 VERSION="${version}"
@@ -134,7 +134,7 @@ fi
 
 [ -z "$DOWNLOAD_URL" ] && error "No download URL for $OS/$ARCH"
 
-info "Installing ShellDeck v$VERSION for $OS/$ARCH..."
+info "Installing Inklura Desktop v$VERSION for $OS/$ARCH..."
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -175,9 +175,15 @@ case "$DOWNLOAD_URL" in
 esac
 
 if [ "$OS" = "Darwin" ]; then
-  APP_BUNDLE="$WORK_DIR/ShellDeck.app"
-  [ -d "$APP_BUNDLE/Contents/MacOS" ] || error "Archive does not contain ShellDeck.app"
-  APP_DEST="$HOME/Applications/ShellDeck.app"
+  APP_BUNDLE="$WORK_DIR/Inklura Desktop.app"
+  # Accept published ShellDeck bundles as well as the renamed product.
+  [ -d "$APP_BUNDLE" ] || APP_BUNDLE="$WORK_DIR/ShellDeck.app"
+  [ -d "$APP_BUNDLE/Contents/MacOS" ] || error "Archive does not contain the desktop app bundle"
+  APP_DEST="$HOME/Applications/Inklura Desktop.app"
+  # Existing installs keep their location so old launchers and updates still work.
+  if [ ! -d "$APP_DEST" ] && [ -d "$HOME/Applications/ShellDeck.app" ]; then
+    APP_DEST="$HOME/Applications/ShellDeck.app"
+  fi
   mkdir -p "$HOME/Applications"
   APP_BACKUP="$APP_DEST.previous-$VERSION-$$"
   [ ! -e "$APP_DEST" ] || mv "$APP_DEST" "$APP_BACKUP"
@@ -249,7 +255,7 @@ if [ "$OS" = "Linux" ]; then
   mkdir -p "$APPS_DIR"
   cat > "$APPS_DIR/shelldeck.desktop" <<DESKTOP
 [Desktop Entry]
-Name=ShellDeck
+Name=Inklura Desktop
 Comment=GPU-accelerated terminal and SSH companion
 Exec="$INSTALL_DIR/shelldeck" %u
 Icon=shelldeck
@@ -279,7 +285,7 @@ fi
 add_to_path() {
   local rc="$1"
   if [ -f "$rc" ] && grep -qF '.shelldeck/bin' "$rc" 2>/dev/null; then return; fi
-  printf '\\n# ShellDeck\\nexport PATH="$HOME/.shelldeck/bin:$PATH"\\n' >> "$rc"
+  printf '\\n# Inklura Desktop\\nexport PATH="$HOME/.shelldeck/bin:$PATH"\\n' >> "$rc"
   info "Added to PATH in $rc"
 }
 
@@ -295,7 +301,7 @@ case "$SHELL_NAME" in
     mkdir -p "$HOME/.config/fish"
     FISH_RC="$HOME/.config/fish/config.fish"
     if ! grep -qF '.shelldeck/bin' "$FISH_RC" 2>/dev/null; then
-      printf '\\n# ShellDeck\\nset -gx PATH $HOME/.shelldeck/bin $PATH\\n' >> "$FISH_RC"
+      printf '\\n# Inklura Desktop\\nset -gx PATH $HOME/.shelldeck/bin $PATH\\n' >> "$FISH_RC"
       info "Added to PATH in $FISH_RC"
     fi
     ;;
@@ -303,7 +309,7 @@ case "$SHELL_NAME" in
 esac
 
 echo ""
-ok "ShellDeck v$VERSION installed successfully!"
+ok "Inklura Desktop v$VERSION installed successfully!"
 echo ""
 echo "  Run 'shelldeck' to get started."
 echo "  You may need to restart your shell or run:"
@@ -336,7 +342,7 @@ async function renderInstallPs1(env: Env): Promise<Response> {
   const gh = `https://github.com/benfavre/shelldeck/releases/download/v${version}`;
   if (!windowsUrl) windowsUrl = `${gh}/shelldeck-windows-x86_64.zip`;
 
-  const script = `# ShellDeck installer for Windows
+  const script = `# Inklura Desktop installer for Windows
 # https://shelldeck.bext.dev
 
 $ErrorActionPreference = "Stop"
@@ -345,7 +351,7 @@ $DownloadUrl = "${windowsUrl}"
 $ExpectedHash = "${windowsSha}"
 $InstallDir = "$env:LOCALAPPDATA\\ShellDeck"
 
-Write-Host "==> Installing ShellDeck v$Version..." -ForegroundColor Blue
+Write-Host "==> Installing Inklura Desktop v$Version..." -ForegroundColor Blue
 
 # Create install directory
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -424,10 +430,10 @@ if ($CurrentPath -notlike "*$InstallDir*") {
 try {
     $Programs = [Environment]::GetFolderPath("Programs")
     if ([string]::IsNullOrWhiteSpace($Programs)) { throw "Start Menu folder is unavailable" }
-    $ShortcutDir = Join-Path $Programs "ShellDeck"
+    $ShortcutDir = Join-Path $Programs "Inklura Desktop"
     New-Item -ItemType Directory -Force -Path $ShortcutDir | Out-Null
     $ShortcutShell = New-Object -ComObject WScript.Shell
-    foreach ($Launch in @(@{Name="ShellDeck"; Arguments=""}, @{Name="ShellDeck Agents"; Arguments="--agents"})) {
+    foreach ($Launch in @(@{Name="Inklura Desktop"; Arguments=""}, @{Name="Inklura Desktop Agents"; Arguments="--agents"})) {
         $Shortcut = $ShortcutShell.CreateShortcut((Join-Path $ShortcutDir ($Launch.Name + ".lnk")))
         $Shortcut.TargetPath = $InstalledExe
         $Shortcut.Arguments = $Launch.Arguments
@@ -435,7 +441,21 @@ try {
         $Shortcut.IconLocation = "$InstalledExe,0"
         $Shortcut.Save()
     }
-    Write-Host "==> Created ShellDeck and Agents Start Menu entries" -ForegroundColor Blue
+    # Remove old branded shortcuts only when they target this same installation.
+    $LegacyShortcutDir = Join-Path $Programs "ShellDeck"
+    foreach ($LegacyName in @("ShellDeck", "ShellDeck Agents")) {
+        $LegacyPath = Join-Path $LegacyShortcutDir ($LegacyName + ".lnk")
+        if (Test-Path -LiteralPath $LegacyPath) {
+            $LegacyShortcut = $ShortcutShell.CreateShortcut($LegacyPath)
+            if ([string]::Equals($LegacyShortcut.TargetPath, $InstalledExe, [StringComparison]::OrdinalIgnoreCase)) {
+                Remove-Item -LiteralPath $LegacyPath -Force
+            }
+        }
+    }
+    if ((Test-Path -LiteralPath $LegacyShortcutDir) -and -not (Get-ChildItem -LiteralPath $LegacyShortcutDir -Force)) {
+        Remove-Item -LiteralPath $LegacyShortcutDir
+    }
+    Write-Host "==> Created Inklura Desktop and Agents Start Menu entries" -ForegroundColor Blue
 } catch {
     Write-Host "warn: could not create Start Menu entries: $_" -ForegroundColor Yellow
 }
@@ -445,7 +465,7 @@ try {
     $Exe = Join-Path $InstallDir "shelldeck.exe"
     $Root = "HKCU:\\Software\\Classes\\shelldeck"
     New-Item -Path $Root -Force | Out-Null
-    Set-ItemProperty -Path $Root -Name "(default)" -Value "URL:ShellDeck Protocol"
+    Set-ItemProperty -Path $Root -Name "(default)" -Value "URL:Inklura Desktop Protocol"
     Set-ItemProperty -Path $Root -Name "URL Protocol" -Value ""
     New-Item -Path "$Root\\DefaultIcon" -Force | Out-Null
     Set-ItemProperty -Path "$Root\\DefaultIcon" -Name "(default)" -Value "$Exe,0"
@@ -458,7 +478,7 @@ try {
 }
 
 Write-Host ""
-Write-Host "==> ShellDeck v$Version installed successfully!" -ForegroundColor Green
+Write-Host "==> Inklura Desktop v$Version installed successfully!" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Run 'shelldeck' to get started."
 Write-Host "  Restart your terminal for PATH changes to take effect."

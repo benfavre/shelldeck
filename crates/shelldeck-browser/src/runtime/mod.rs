@@ -868,7 +868,7 @@ pub unsafe extern "C" fn RunWinMain(
         return match crate::mcp::run_stdio_proxy() {
             Ok(()) => 0,
             Err(error) => {
-                eprintln!("ShellDeck browser bridge: {error}");
+                eprintln!("Inklura Desktop browser bridge: {error}");
                 1
             }
         };
@@ -876,7 +876,7 @@ pub unsafe extern "C" fn RunWinMain(
     match run_with_sandbox(sandbox_info) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("ShellDeck browser: {error}");
+            eprintln!("Inklura Desktop browser: {error}");
             1
         }
     }

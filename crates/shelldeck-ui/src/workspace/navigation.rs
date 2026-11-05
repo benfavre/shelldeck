@@ -132,7 +132,7 @@ impl Workspace {
 
     /// Gracefully shut down: close all terminal sessions, stop tunnels, stop background tasks.
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {
-        tracing::info!("ShellDeck shutting down gracefully...");
+        tracing::info!("Inklura Desktop shutting down gracefully...");
         // Persist open tabs before tearing sessions down so there is something
         // to restore next launch. Best-effort; never blocks shutdown.
         self.save_workspace_state(cx);

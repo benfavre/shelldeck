@@ -111,9 +111,9 @@ impl Render for Workspace {
         let native_title = (_window.window_handle().window_id(), agents_presentation);
         if self.native_title != Some(native_title) {
             _window.set_window_title(if agents_presentation {
-                "ShellDeck Agents"
+                shelldeck_core::AGENTS_APP_NAME
             } else {
-                "ShellDeck"
+                shelldeck_core::APP_NAME
             });
             self.native_title = Some(native_title);
         }

@@ -62,7 +62,7 @@ impl TrayService {
             cx.set_tray_icon(None);
             return Err(anyhow!("native tray backend unavailable"));
         }
-        cx.set_tray_tooltip("ShellDeck");
+        cx.set_tray_tooltip(shelldeck_core::APP_NAME);
         cx.set_tray_menu(build_menu(&TrayState::default()));
         cx.on_tray_menu_action(move |id, _cx| {
             let Some(command) = command_for_menu_id(id.as_ref()) else {

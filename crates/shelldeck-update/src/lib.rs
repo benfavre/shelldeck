@@ -49,7 +49,7 @@ pub enum AutoUpdateStatus {
 impl std::fmt::Display for AutoUpdateStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Idle => write!(f, "ShellDeck v{}", CURRENT_VERSION),
+            Self::Idle => write!(f, "Inklura Desktop v{}", CURRENT_VERSION),
             Self::Checking => write!(f, "Checking for updates..."),
             Self::Downloading => write!(f, "Downloading update..."),
             Self::Installing => write!(f, "Installing update..."),
