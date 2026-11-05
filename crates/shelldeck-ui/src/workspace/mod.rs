@@ -66,7 +66,7 @@ use crate::command_palette::{
     PaletteAction, SetAppMode, ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
-use crate::dashboard::{DashboardEvent, DashboardView};
+use crate::dashboard::DashboardView;
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::issue_attachments::{
@@ -556,7 +556,6 @@ pub struct Workspace {
     _file_editor_sub: Subscription,
     _form_sub: Option<Subscription>,
     _pf_form_sub: Option<Subscription>,
-    _dashboard_sub: Subscription,
     _script_form_sub: Option<Subscription>,
     _template_browser_sub: Option<Subscription>,
     _variable_prompt_sub: Option<Subscription>,
@@ -988,7 +987,6 @@ impl Workspace {
             .as_deref()
             .and_then(|s| Uuid::parse_str(s).ok());
         let initial_pinned_connections = config.pinned_connections.clone();
-        let initial_dashboard_pins = initial_pinned_connections.clone();
         let sidebar = cx.new(|cx| {
             let mut s = SidebarView::new(cx);
             s.set_active_section(SidebarSection::Agents);
@@ -1008,26 +1006,6 @@ impl Workspace {
 
         let dashboard = cx.new(|_| {
             let mut d = DashboardView::new();
-            let quick_connections: Vec<&Connection> = if initial_dashboard_pins.is_empty() {
-                connections.iter().take(5).collect()
-            } else {
-                initial_dashboard_pins
-                    .iter()
-                    .filter_map(|id| connections.iter().find(|connection| connection.id == *id))
-                    .take(5)
-                    .collect()
-            };
-            d.favorite_hosts = quick_connections
-                .into_iter()
-                .map(|c| {
-                    (
-                        c.id,
-                        c.display_name().to_string(),
-                        c.hostname.clone(),
-                        c.status == ConnectionStatus::Connected,
-                    )
-                })
-                .collect();
             d.recent_activity = recent_activity.iter().take(8).cloned().collect();
             d
         });
@@ -1410,14 +1388,6 @@ impl Workspace {
             },
         );
 
-        // Subscribe to dashboard events
-        let dashboard_sub = cx.subscribe(
-            &dashboard,
-            |this, _dashboard, event: &DashboardEvent, cx| {
-                this.handle_dashboard_event(event, cx);
-            },
-        );
-
         // Subscribe to auto-updater events
         let update_sub = cx.subscribe(
             &auto_updater,
@@ -1552,7 +1522,6 @@ impl Workspace {
             _sites_sub: sites_sub,
             _recent_sub: recent_sub,
             _file_editor_sub: file_editor_sub,
-            _dashboard_sub: dashboard_sub,
             _form_sub: None,
             _pf_form_sub: None,
             _script_form_sub: None,

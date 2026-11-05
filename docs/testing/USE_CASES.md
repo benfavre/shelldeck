@@ -4851,3 +4851,10 @@ Agents selected; the Agents project/workspace flows remain available. The Dev
 rail contains Connections, Agents, Terminals, Scripts, Recent and File Editor,
 with the secondary group starting at Recent and Settings pinned separately.
 Manage site context and account/profile synchronization remain available.
+
+
+SDUC-567 dashboard cleanup: Dev home keeps its terminal counter, recent activity
+and shortcut reference. The active-connection and running-script cards and the
+dashboard Quick Connect section are removed, including their host-list copying
+and event subscription. The separate Connections sidebar, global Quick Connect
+command, saved hosts and script execution remain available.
