@@ -4865,3 +4865,25 @@ ICNS. DMG creation requires this icon before replacing a bundle, and update ZIP
 creation independently refuses a missing bundle icon. Native macOS CI decodes
 the actual ICNS through Apple's iconutil and checks its inclusion through ditto.
 This replaces the iconutil fallback that silently shipped v0.15.1 without an icon.
+
+
+### SDUC-568 — Personal Share in Inklura Desktop
+
+In User mode, a signed-in customer can stage files, paste clipboard images or
+capture and annotate a region, then explicitly send the selected batch. Desktop
+uses the same personal account, gallery, quota, storage residency and retention
+policies as share.inklura.fr. It copies a successful viewer link and supports
+search, open, copy, confirmed deletion and a saved retention default. Files above
+50 MiB use bounded multipart transfer; failures abort reservations. Temporary
+service failures preserve the Manage login. Account changes cancel pending work
+and discard old results, drafts and gallery data. Desktop never requests a Share
+API key or receives administrative, team-management or billing permissions.
+
+### SDUC-569 — Existing Inklura PDF application from Desktop
+
+The Share surface launches the installed Inklura PDF app using its existing
+platform identity. If it cannot launch, it opens the official download page and
+reports that destination accurately. This entry point never uploads a PDF.
+
+2026-11-06: Added SDUC-568 and SDUC-569. Inklura Desktop houses the personal
+sharing workspace; existing ShareX configuration remains optional compatibility.

@@ -39,6 +39,7 @@ pub mod script_editor;
 pub mod script_form;
 pub mod server_sync_view;
 pub mod settings;
+pub mod share_view;
 pub mod shortcut_reference;
 pub mod sidebar;
 pub mod sites_view;

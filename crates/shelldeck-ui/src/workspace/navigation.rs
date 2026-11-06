@@ -131,6 +131,7 @@ impl Workspace {
     /// Stop runtime resources that must never survive an account boundary.
     /// Unlike `shutdown`, this keeps the Workspace itself alive for login.
     pub(super) fn stop_authenticated_runtime(&mut self, cx: &mut Context<Self>) {
+        self.personal_share.update(cx, |view, cx| view.clear(cx));
         self.workspace_hub
             .update(cx, |hub, cx| hub.cancel_remote_folder_picker(cx));
         // Retire setup attempts before stopping completed tunnels.
