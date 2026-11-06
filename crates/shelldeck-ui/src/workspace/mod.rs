@@ -86,6 +86,7 @@ use crate::server_sync_view::{ServerSyncEvent, ServerSyncView};
 use crate::settings::{
     CompanionShortcutStatuses, SettingsEvent, SettingsView, ShortcutRegistrationStatus,
 };
+use crate::share_view::ShareView;
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
@@ -150,6 +151,7 @@ mod request_views;
 mod requests;
 mod scripts;
 mod server_sync;
+mod share;
 mod sites;
 mod ssh;
 mod support;
@@ -274,6 +276,7 @@ pub enum UserHomeTab {
     #[default]
     Home,
     Sites,
+    Share,
     Requests,
     Infos,
 }
@@ -534,6 +537,7 @@ pub struct Workspace {
     >,
     // Keep subscriptions alive
     _sidebar_sub: Subscription,
+    _personal_share_sub: Subscription,
     _workspace_hub_sub: Subscription,
     _terminal_sub: Subscription,
     _agent_console_sub: Subscription,
@@ -590,6 +594,7 @@ pub struct Workspace {
     manage_requests: ManageRequests,
     /// Which User-mode home tab is showing (Sites / Demandes / Infos).
     user_home_tab: UserHomeTab,
+    personal_share: Entity<ShareView>,
     /// Cached Inklura Manage sites directory + areas (fetched after sign-in).
     site_directory: Option<SitesPayload>,
     /// Whether the titlebar site-switcher dropdown is open.
@@ -1135,6 +1140,13 @@ impl Workspace {
                 .menu_min_width(gpui::px(240.0))
         });
         let support = cx.new(SupportView::new);
+        let personal_share = cx.new(ShareView::new);
+        let personal_share_sub = cx.subscribe(
+            &personal_share,
+            |this, _, _: &crate::share_view::ShareViewEvent, cx| {
+                this.invalidate_cloud_session(cx);
+            },
+        );
         let monique_view = cx.new(MoniqueView::new);
         let fleet_view = cx.new(FleetView::new);
         agent_console.update(cx, |view, cx| {
@@ -1542,6 +1554,8 @@ impl Workspace {
             last_whoami: None,
             manage_requests: ManageRequests::default(),
             user_home_tab: UserHomeTab::Home,
+            personal_share,
+            _personal_share_sub: personal_share_sub,
             site_directory: None,
             site_menu_open: false,
             sidebar_kebab_menu: None,

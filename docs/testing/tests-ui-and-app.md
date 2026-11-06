@@ -1010,3 +1010,16 @@ and deep-link walkthroughs remain manual acceptance checks.
 | SDTEST-2886 | `scripts/test-macos-branding.py::test_sdtest_2886_dmg_build_refuses_missing_icon` | SDUC-566 | Green | Missing source icon fails before replacing an existing bundle. |
 | SDTEST-2887 | `scripts/test-macos-branding.py::test_sdtest_2887_update_archive_refuses_missing_bundle_icon` | SDUC-566 | Green | Archive packaging rejects an iconless bundle before producing a ZIP. |
 | SDTEST-2888 | `scripts/test-macos-branding.py::test_sdtest_2888_update_archive_preserves_the_canonical_icon` | SDUC-566 | Green | Native ditto preserves the exact ICNS bytes inside the correctly named app bundle. Runs on macOS CI; explicitly skipped on Linux. |
+
+
+### Personal Share in User mode
+
+| ID | Test | Use cases | Status | Contract |
+|---|---|---|---|---|
+| SDTEST-2893 | `share_view::tests::sdtest_2893_small_share_batches_keep_actions_reachable_and_account_switch_rejects_old_results` | SDUC-568 | Green | Render actual controls at 480×420, 620×560 and 1100×800 with 20 long drafts. Keep Send and Review visible without scrolling, inspect/remove selected files in a bounded dialog, copy a real viewer URL, cancel deletion, switch accounts with an outstanding completion and reject the stale gallery. Private test clipboard; no network. |
+| SDTEST-2896 | `share_view::tests::sdtest_2896_stop_preserves_unshared_files_and_partial_success_restores_a_usable_session` | SDUC-568 | Green | Render Stop and progress at 480×420, cancel, apply partial completion, retain only unshared drafts, copy the completed link and restore usable account state. Review/clear selection through actual controls. |
+
+Native visual fixture: `cargo run -p shelldeck-ui --example share_preview` with
+disposable XDG homes, no device credential and no real files. Screenshot/capture
+selection and installed PDF application handoff remain manual OS acceptance;
+transport and annotation reuse the existing request attachment implementation.

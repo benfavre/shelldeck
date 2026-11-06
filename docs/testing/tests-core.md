@@ -775,3 +775,16 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 
 
 | SDTEST-2880 | `config::deep_link::tests::sdtest_2880_extension_settings_link_is_bounded` | SDUC-565 | Green | Browser/Manage setup handoff accepts only the extension settings route. Query values cannot request installation or file access. |
+
+
+### Personal Share and PDF launcher
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2889 | `config::share::tests::sdtest_2889_personal_share_auth_uses_separate_manage_and_share_credentials` | SDUC-568 | Green | Real local HTTP requests pin route/body shape, account parsing and device/session credential separation. |
+| SDTEST-2890 | `config::share::tests::sdtest_2890_untrusted_origin_and_cancelled_session_stop_before_upload` | SDUC-568 | Green | Foreign origins and cancellation stop before upload; hostile public and signed-storage URL forms are rejected. |
+| SDTEST-2891 | `config::share::tests::sdtest_2891_large_file_aborts_reservation_when_part_origin_is_invalid` | SDUC-568 | Green | Sparse 51 MiB source takes multipart path; hostile part URL and malformed start metadata both trigger reservation abort. |
+| SDTEST-2892 | `examples/share_live_smoke.rs` (opt-in executable) | SDUC-568 | Green — manual live, 2026-11-06 | Synthetic-account-only stdin credentials. Actual Manage/Share/native upload service: persisted retention, image bytes, 51 MiB multipart SHA-256, gallery/quota, deletion and cleanup. Never runs in CI. |
+| SDTEST-2894 | `config::share::tests::sdtest_2894_only_revoked_manage_devices_invalidate_login_and_mint_cancellation_stops_work` | SDUC-568 | Green | Manage device 401 alone invalidates login; Share grant 401 and service 503 preserve it. Cancellation during mint prevents subsequent operations. |
+| SDTEST-2895 | `config::desktop_pdf::tests::sdtest_2895_pdf_uses_installed_platform_identity_and_reports_download_fallback` | SDUC-569 | Green | Fake launcher pins macOS/Windows/Linux executable, arguments, wait policy and honest download fallback without spawning real processes. All branches use portable std APIs. Native installed-app walkthrough on Windows/macOS remains manual acceptance. |
+| SDTEST-2897 | `config::share::tests::sdtest_2897_upload_reports_total_and_honors_stop_before_credentials_leave_the_device` | SDUC-568 | Green | Initial progress exposes the true source length before authentication. Stop from that callback prevents all Manage/Share requests. |

@@ -651,8 +651,13 @@ impl Workspace {
                 ButtonVariant::Outline
             })
             .icon(IconSource::from(icon))
-            .on_click(move |_, _, cx| {
+            .on_click(move |_, window, cx| {
                 entity.update(cx, |this, cx| {
+                    if target == UserHomeTab::Share {
+                        this.open_personal_share(cx);
+                        this.personal_share.read(cx).focus_in(window);
+                        return;
+                    }
                     this.user_home_tab = target;
                     cx.notify();
                 });
@@ -662,6 +667,7 @@ impl Workspace {
         div()
             .flex()
             .items_center()
+            .flex_wrap()
             .gap(px(6.0))
             .px(px(16.0))
             .pt(px(4.0))
@@ -679,6 +685,13 @@ impl Workspace {
                 t!("user.tabs.sites").to_string(),
                 "globe",
                 UserHomeTab::Sites,
+                current,
+                cx,
+            ))
+            .child(tab(
+                t!("share.tab").to_string(),
+                "upload",
+                UserHomeTab::Share,
                 current,
                 cx,
             ))
@@ -1951,6 +1964,11 @@ impl Workspace {
         let tab = self.user_home_tab;
         let tab_bar = self.render_user_home_tab_bar(cx);
         let tab_content = match tab {
+            UserHomeTab::Share => div()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(self.personal_share.clone())
+                .into_any_element(),
             UserHomeTab::Home => div()
                 .flex_1()
                 .min_h(px(0.0))

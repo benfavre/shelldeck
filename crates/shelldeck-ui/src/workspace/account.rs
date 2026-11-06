@@ -386,6 +386,10 @@ impl Workspace {
         account: AccountInfo,
         cx: &mut Context<Self>,
     ) {
+        // An account replacement must never expose the previous Share gallery
+        // or let an in-flight capture/upload publish under the new UI session.
+        self.personal_share.update(cx, |view, cx| view.clear(cx));
+        self.user_home_tab = UserHomeTab::Home;
         self.manage_requests.change_session();
         if let Err(error) = shelldeck_core::config::keychain::store_manage_token(&token) {
             tracing::error!("Failed to store AI Operations token in OS keychain: {error}");
