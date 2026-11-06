@@ -369,6 +369,7 @@ impl ShareClient {
         if retention > 365 * 86400 || (retention != 0 && retention < 300) {
             return Err(ShareError::Invalid("invalid_retention"));
         }
+        progress(0, length);
         let mut session = self.authenticate()?;
         self.check()?;
         let result: SharedUpload = if length <= SINGLE_BYTES {
@@ -690,5 +691,26 @@ mod tests {
         let (client, worker) = fixture(vec![grant(), minted]);
         assert!(matches!(client.snapshot(), Err(ShareError::Cancelled)));
         assert_eq!(worker.join().unwrap().len(), 2);
+    }
+    // SDTEST-2897 / SDUC-568
+    #[test]
+    fn sdtest_2897_upload_reports_total_and_honors_stop_before_credentials_leave_the_device() {
+        let (client, worker) = fixture(vec![]);
+        let cancellation = client.cancelled.clone();
+        let mut progress = Vec::new();
+        let upload = ShareUpload {
+            filename: "capture.png".into(),
+            content_type: "image/png".into(),
+            source: ShareSource::Bytes(Arc::new(vec![137, 80, 78, 71, 13, 10, 26, 10])),
+        };
+        assert!(matches!(
+            client.upload(&upload, 86400, |done, total| {
+                progress.push((done, total));
+                cancellation.store(true, Ordering::Release);
+            }),
+            Err(ShareError::Cancelled)
+        ));
+        assert_eq!(progress, vec![(0, 8)]);
+        assert!(worker.join().unwrap().is_empty());
     }
 }

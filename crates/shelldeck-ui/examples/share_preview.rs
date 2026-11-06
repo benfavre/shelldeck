@@ -46,6 +46,7 @@ fn main() -> anyhow::Result<()> {
         "files":[{"id":"abcdef","filename":"Rapport de visite.pdf","bytes":2400000,"content_type":"application/pdf","kind":"pdf","created_at":"2026-11-06T12:00:00Z","expires_at":"2026-11-13T12:00:00Z","views":3,"url":"https://share.inklura.fr/r/abcdef.pdf","viewer_url":"https://share.inklura.fr/s/abcdef"},
         {"id":"fedcba","filename":"Capture annotée.png","bytes":57600,"content_type":"image/png","kind":"image","created_at":"2026-11-06T12:00:00Z","expires_at":"2026-11-13T12:00:00Z","views":1,"url":"https://share.inklura.fr/r/fedcba.png","viewer_url":"https://share.inklura.fr/s/fedcba"}]
     }))?;
+    let scene = std::env::var("SHELLDECK_PREVIEW_STATE").unwrap_or_default();
     Application::new().with_assets(Assets).run(move |cx| {
         adabraka_ui::init(cx);
         adabraka_ui::components::input::init(cx);
@@ -74,6 +75,7 @@ fn main() -> anyhow::Result<()> {
                             .collect(),
                         cx,
                     )
+                    .with_preview_scene(&scene)
                 });
                 cx.new(|_| PreviewRoot(share))
             },

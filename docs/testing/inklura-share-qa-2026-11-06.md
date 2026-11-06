@@ -55,3 +55,21 @@ and annotation code. PDF launch plans and fallback are tested without starting
 external applications; Windows/macOS binaries are covered by the existing CI
 platform gates. Public marketing should advertise native Desktop sharing when
 its Desktop release is published; ShareX documentation stays available.
+
+
+Follow-up before merge: the selected-file review dialog exposes removal and clear
+selection even when the compact intake is scrolled. Transfer progress shows the
+current filename, file count and acknowledged bytes using the shared progress
+component. Stop prevents subsequent requests after the current request finishes;
+completed shares retain their links. Partial completion removes only successful
+files and preserves the remaining selection. Finishing a stopped job resets its
+cancellation flag; account changes and view destruction cancel outstanding work.
+The progress polling task is bounded by the active operation and account generation.
+Transport, view state and rendering now live in separate focused modules.
+
+SDTEST-2893 now covers Review/removal at all three sizes. SDTEST-2896 exercises
+rendered Stop, preserved partial results, copied link, usable account state and
+review/clear. SDTEST-2897 verifies initial byte totals and Stop before any
+credential-bearing request. The updated focused suites pass (five core and two
+rendered UI tests). The earlier full suites and cross-platform CI passed before
+this follow-up; the final CI matrix must be green before merge.

@@ -1,4 +1,5 @@
 use super::*;
+use crate::theme::ShellDeckColors;
 use shelldeck_core::config::app_config::ThemePreference;
 
 fn snapshot() -> ShareSnapshot {
@@ -69,6 +70,12 @@ fn sdtest_2893_small_share_batches_keep_actions_reachable_and_account_switch_rej
             send.bottom() <= viewport.height,
             "Send is visible without scrolling"
         );
+        click(&mut window, "share-review");
+        click(&mut window, "share-review-remove-0");
+        assert!(view.read_with(&app, |view, _| view.drafts.len() == 19
+            && view.drafts[0].upload.filename.ends_with("-1.pdf")));
+        click(&mut window, "share-review-close");
+        assert!(!view.read_with(&app, |view, _| view.review_drafts));
         click(&mut window, "share-copy-abcdef");
         assert_eq!(
             app.read_from_clipboard().unwrap().text().unwrap(),
@@ -97,4 +104,81 @@ fn sdtest_2893_small_share_batches_keep_actions_reachable_and_account_switch_rej
             && !view.busy));
         app.quit();
     }
+}
+
+// SDTEST-2896 / SDUC-568 — real Stop control, partial completion and retry state.
+#[::core::prelude::v1::test]
+fn sdtest_2896_stop_preserves_unshared_files_and_partial_success_restores_a_usable_session() {
+    let mut app = TestAppContext::single();
+    app.update(|cx| {
+        adabraka_ui::init(cx);
+        adabraka_ui::components::input::init(cx);
+        ShellDeckColors::set_theme(&ThemePreference::Dark);
+        adabraka_ui::theme::install_theme(cx, crate::theme::adabraka_theme_from_palette());
+    });
+    let handle = app.add_window(|_, cx| {
+        ShareView::preview(
+            snapshot(),
+            vec!["first.pdf".into(), "second.pdf".into(), "third.pdf".into()],
+            cx,
+        )
+    });
+    let view = handle.root(&mut app).unwrap();
+    let mut window = VisualTestContext::from_window(*handle, &app);
+    window.simulate_resize(size(gpui::px(480.0), gpui::px(420.0)));
+    let progress = Arc::new(UploadProgress::default());
+    progress.begin(1);
+    progress.update(8 * 1024 * 1024, 16 * 1024 * 1024);
+    let cancellation = view.read_with(&app, |view, _| view.cancelled.clone());
+    view.update(&mut app, |view, cx| {
+        view.busy = true;
+        view.upload_progress = Some(progress);
+        cx.notify();
+    });
+    redraw(&mut window);
+    assert!(window.debug_bounds("share-transfer-progress").is_some());
+    click(&mut window, "share-stop");
+    assert!(cancellation.load(Ordering::Acquire));
+    assert!(view.read_with(&app, |view, _| view.drafts.len() == 3 && view.busy));
+    // One initiated upload completed; the remaining files must survive Stop.
+    view.update(&mut app, |view, cx| {
+        view.busy = false;
+        view.manage = "https://manage.inklura.fr".into();
+        view.device = "synthetic".into();
+        view.run(
+            |_| {
+                Ok(Outcome {
+                    snapshot: None,
+                    uploads: vec![SharedUpload {
+                        id: "fedcba".into(),
+                        url: "https://share.inklura.fr/r/fedcba.pdf".into(),
+                        viewer: "https://share.inklura.fr/s/fedcba".into(),
+                    }],
+                    completed: 1,
+                    warning: Some(ShareError::Cancelled),
+                })
+            },
+            cx,
+        );
+    });
+    redraw(&mut window);
+    assert_eq!(
+        app.read_from_clipboard().unwrap().text().unwrap(),
+        "https://share.inklura.fr/s/fedcba"
+    );
+    assert!(view.read_with(&app, |view, _| view
+        .drafts
+        .iter()
+        .map(|draft| draft.upload.filename.as_str())
+        .collect::<Vec<_>>()
+        == vec!["second.pdf", "third.pdf"]
+        && !view.busy
+        && view.upload_progress.is_none()
+        && !view.cancelled.load(Ordering::Acquire)
+        && view.device == "synthetic"));
+    click(&mut window, "share-review");
+    click(&mut window, "share-review-clear");
+    assert!(view.read_with(&app, |view, _| view.drafts.is_empty()
+        && !view.review_drafts));
+    app.quit();
 }

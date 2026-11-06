@@ -2,16 +2,10 @@
 //! request tools; uploads, gallery and retention use personal Share policies.
 use crate::{
     attachment_annotator::AttachmentAnnotator,
-    icons::lucide_icon,
     issue_attachments::{capture_region, draft_from_clipboard_image, AttachmentDraft},
-    scale::px,
     t,
-    theme::ShellDeckColors,
 };
-use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
-use adabraka_ui::components::confirm_dialog::Dialog;
-use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::components::input::InputState;
 use gpui::{prelude::*, *};
 use shelldeck_core::config::share::{
     share_url, ShareClient, ShareError, ShareResult, ShareSnapshot, ShareSource, ShareUpload,
@@ -60,6 +54,8 @@ pub struct ShareView {
     drafts: Vec<Draft>,
     retention: u64,
     busy: bool,
+    upload_progress: Option<Arc<UploadProgress>>,
+    review_drafts: bool,
     error: Option<String>,
     notice: Option<String>,
     confirm_delete: Option<String>,
@@ -68,6 +64,22 @@ pub struct ShareView {
     focus: FocusHandle,
 }
 impl ShareView {
+    /// Native preview examples can exercise overlays without an account.
+    #[cfg(debug_assertions)]
+    pub fn with_preview_scene(mut self, scene: &str) -> Self {
+        match scene {
+            "review" => self.review_drafts = true,
+            "transfer" => {
+                let progress = Arc::new(UploadProgress::default());
+                progress.begin(0);
+                progress.update(8 * 1024 * 1024, 51 * 1024 * 1024);
+                self.upload_progress = Some(progress);
+                self.busy = true;
+            }
+            _ => {}
+        }
+        self
+    }
     /// Isolated visual fixtures have no device credential and cannot upload.
     #[cfg(debug_assertions)]
     pub fn preview(snapshot: ShareSnapshot, paths: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
@@ -97,6 +109,8 @@ impl ShareView {
             drafts: vec![],
             retention: 7 * 86400,
             busy: false,
+            upload_progress: None,
+            review_drafts: false,
             error: None,
             notice: None,
             confirm_delete: None,
@@ -122,6 +136,8 @@ impl ShareView {
         self.snapshot = None;
         self.drafts.clear();
         self.annotator = None;
+        self.upload_progress = None;
+        self.review_drafts = false;
         self.confirm_delete = None;
         self.error = None;
         self.notice = None;
@@ -156,6 +172,8 @@ impl ShareView {
                     return;
                 }
                 this.busy = false;
+                this.upload_progress = None;
+                this.cancelled = Arc::new(AtomicBool::new(false));
                 match result {
                     Ok(outcome) => {
                         if let Some(snapshot) = outcome.snapshot {
@@ -203,6 +221,11 @@ impl ShareView {
             ShareError::Remote(code) if code == "unsupported_type" => "share.error.type",
             ShareError::Invalid("too_large") => "share.error.size",
             ShareError::Remote(code) if code == "too_large" => "share.error.size",
+            ShareError::Remote(code)
+                if code == "share_unavailable" || code == "share_session_rejected" =>
+            {
+                "share.error.network"
+            }
             ShareError::Invalid("invalid_retention") | ShareError::Remote(_) => {
                 "share.error.policy"
             }
@@ -214,17 +237,28 @@ impl ShareView {
         self.run(|client| client.snapshot().map(Outcome::snapshot), cx);
     }
     fn send(&mut self, cx: &mut Context<Self>) {
-        if self.drafts.is_empty() || self.snapshot.as_ref().is_none_or(|s| !s.plan.storage_ready) {
+        if self.busy
+            || self.device.is_empty()
+            || self.drafts.is_empty()
+            || self.snapshot.as_ref().is_none_or(|s| !s.plan.storage_ready)
+        {
             return;
         }
         let drafts = self.drafts.clone();
         let retention = self.retention;
+        let progress = Arc::new(UploadProgress::default());
+        self.upload_progress = Some(progress.clone());
+        self.review_drafts = false;
+        self.watch_upload(progress.clone(), cx);
         self.run(
             move |client| {
                 let mut uploads = Vec::new();
                 let mut warning = None;
-                for draft in drafts {
-                    match client.upload(&draft.upload, retention, |_, _| {}) {
+                for (index, draft) in drafts.into_iter().enumerate() {
+                    progress.begin(index);
+                    match client.upload(&draft.upload, retention, |done, total| {
+                        progress.update(done, total)
+                    }) {
                         Ok(upload) => uploads.push(upload),
                         Err(error) => {
                             warning = Some(error);
@@ -445,502 +479,20 @@ impl ShareView {
             cx,
         );
     }
-    fn render_file(
-        &self,
-        file: &shelldeck_core::config::share::ShareFile,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let viewer = file.viewer_url.clone();
-        let copy = viewer.clone();
-        let id = file.id.clone();
-        let expiry = file
-            .expires_at
-            .as_deref()
-            .and_then(|date| chrono::DateTime::parse_from_rfc3339(date).ok())
-            .map(|date| {
-                date.with_timezone(&chrono::Local)
-                    .format("%d/%m/%Y %H:%M")
-                    .to_string()
-            })
-            .unwrap_or_else(|| t!("share.forever").to_string());
-        div()
-            .h(px(82.0))
-            .py(px(4.0))
-            .child(
-                div()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.0))
-                    .px(px(12.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .child(lucide_icon(
-                        if file.kind == "image" {
-                            "paperclip"
-                        } else {
-                            "file-text"
-                        },
-                        20.0,
-                        ShellDeckColors::text_muted(),
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(13.0))
-                                    .child(file.filename.clone()),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(11.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(format!("{} · {}", human_bytes(file.bytes), expiry)),
-                            ),
-                    )
-                    .child(
-                        Button::new(
-                            SharedString::from(format!("share-copy-{}", file.id)),
-                            t!("share.copy").to_string(),
-                        )
-                        .debug_selector(|| format!("share-copy-{}", file.id))
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Outline)
-                        .on_click(move |_, _, cx| {
-                            if share_url(&copy) {
-                                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
-                            }
-                        }),
-                    )
-                    .child(
-                        Button::new(
-                            SharedString::from(format!("share-open-{}", file.id)),
-                            t!("share.open").to_string(),
-                        )
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Outline)
-                        .on_click(move |_, _, _| {
-                            if share_url(&viewer) {
-                                let _ = open::that_detached(viewer.clone());
-                            }
-                        }),
-                    )
-                    .child(
-                        Button::new(
-                            SharedString::from(format!("share-delete-{}", file.id)),
-                            t!("share.delete").to_string(),
-                        )
-                        .debug_selector(|| format!("share-delete-{}", file.id))
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Ghost)
-                        .disabled(self.busy)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.confirm_delete = Some(id.clone());
-                            cx.notify();
-                        })),
-                    ),
-            )
-            .into_any_element()
-    }
-    fn delete_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
-        let cancel = cx.entity();
-        let confirm = cancel.clone();
-        Dialog::new()
-            .width(gpui::px(420.0))
-            .on_backdrop_click({
-                let cancel = cancel.clone();
-                move |_, cx| {
-                    cancel.update(cx, |this, cx| {
-                        this.confirm_delete = None;
-                        cx.notify();
-                    })
-                }
-            })
-            .header(
-                div()
-                    .p(px(16.0))
-                    .text_size(px(16.0))
-                    .child(t!("share.delete_title").to_string()),
-            )
-            .content(
-                div()
-                    .p(px(16.0))
-                    .text_size(px(13.0))
-                    .child(t!("share.delete_body").to_string()),
-            )
-            .footer(
-                div()
-                    .p(px(16.0))
-                    .flex()
-                    .justify_end()
-                    .gap(px(8.0))
-                    .child(
-                        Button::new("share-delete-cancel", t!("share.cancel").to_string())
-                            .debug_selector(|| "share-delete-cancel".into())
-                            .variant(ButtonVariant::Outline)
-                            .on_click(move |_, _, cx| {
-                                cancel.update(cx, |this, cx| {
-                                    this.confirm_delete = None;
-                                    cx.notify();
-                                })
-                            }),
-                    )
-                    .child(
-                        Button::new("share-delete-confirm", t!("share.delete").to_string())
-                            .on_click(move |_, _, cx| {
-                                confirm.update(cx, |this, cx| this.delete_confirmed(cx))
-                            }),
-                    ),
-            )
-            .into_any_element()
-    }
 }
 impl Focusable for ShareView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
 }
-impl Render for ShareView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(annotator) = &self.annotator {
-            return div()
-                .size_full()
-                .child(annotator.clone())
-                .into_any_element();
-        }
-        let mut root = div()
-            .id("personal-share")
-            .size_full()
-            .min_h(px(0.0))
-            .min_w(px(0.0))
-            .flex()
-            .flex_col()
-            .gap(px(12.0))
-            .p(px(16.0))
-            .bg(ShellDeckColors::bg_primary())
-            .text_color(ShellDeckColors::text_primary())
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                let modifiers = event.keystroke.modifiers;
-                if !this.search.read(cx).focus_handle(cx).is_focused(window)
-                    && event.keystroke.key.eq_ignore_ascii_case("v")
-                    && (modifiers.control || modifiers.platform)
-                {
-                    this.paste(cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                this.add_paths(paths.paths().to_vec(), cx)
-            }));
-        let mut controls = div()
-            .id("share-intake")
-            .debug_selector(|| "share-intake".into())
-            .flex()
-            .flex_col()
-            .gap(px(12.0))
-            .max_h(relative(0.5))
-            .flex_shrink_0()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(12.0))
-                    .flex_wrap()
-                    .child(
-                        div()
-                            .text_size(px(23.0))
-                            .font_weight(FontWeight::BOLD)
-                            .child("Inklura Share"),
-                    )
-                    .child(
-                        Button::new("share-refresh", t!("share.refresh").to_string())
-                            .variant(ButtonVariant::Outline)
-                            .size(ButtonSize::Sm)
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("share.intro").to_string()),
-            );
-        if let Some(snapshot) = &self.snapshot {
-            controls = controls.child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(10.0))
-                    .text_size(px(12.0))
-                    .child(format!(
-                        "{} · {} · {} / {}",
-                        snapshot.owner.email,
-                        snapshot.plan.label,
-                        human_bytes(snapshot.usage.bytes),
-                        human_bytes(snapshot.plan.storage_bytes)
-                    )),
-            );
-            if snapshot.plan.pending_france || !snapshot.plan.storage_ready {
-                controls = controls.child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::warning())
-                        .child(t!("share.error.france").to_string()),
-                );
-            }
-        }
-        if let Some(error) = &self.error {
-            controls = controls.child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::error())
-                    .child(error.clone()),
-            );
-        }
-        if let Some(notice) = &self.notice {
-            controls = controls.child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::success())
-                    .child(notice.clone()),
-            );
-        }
-        controls = controls.child(
-            div()
-                .flex()
-                .gap(px(8.0))
-                .flex_wrap()
-                .child(
-                    Button::new("share-pick", t!("share.files").to_string())
-                        .icon(IconSource::from("upload"))
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Outline)
-                        .disabled(self.busy)
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_files(cx))),
-                )
-                .child(
-                    Button::new("share-capture", t!("share.capture").to_string())
-                        .icon(IconSource::from("scan"))
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Outline)
-                        .disabled(self.busy)
-                        .on_click(cx.listener(|this, _, _, cx| this.capture(cx))),
-                )
-                .child(
-                    Button::new("share-paste", t!("share.paste").to_string())
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Outline)
-                        .disabled(self.busy)
-                        .on_click(cx.listener(|this, _, _, cx| this.paste(cx))),
-                )
-                .child(
-                    Button::new("share-pdf", "Inklura PDF")
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Outline)
-                        .on_click(cx.listener(|this, _, _, cx| this.open_pdf(cx))),
-                ),
-        );
-        if let Some(snapshot) = &self.snapshot {
-            let mut choices = div().flex().items_center().flex_wrap().gap(px(6.0)).child(
-                div()
-                    .text_size(px(12.0))
-                    .child(t!("share.retention").to_string()),
-            );
-            for days in &snapshot.plan.retention_days {
-                let seconds = days * 86400;
-                let label = if *days == 0 {
-                    t!("share.forever").to_string()
-                } else {
-                    t!("share.days", count = *days).to_string()
-                };
-                choices = choices.child(
-                    Button::new(SharedString::from(format!("share-retention-{days}")), label)
-                        .size(ButtonSize::Sm)
-                        .variant(if seconds == self.retention {
-                            ButtonVariant::Default
-                        } else {
-                            ButtonVariant::Outline
-                        })
-                        .disabled(self.busy)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.retention = seconds;
-                            cx.notify();
-                        })),
-                );
-            }
-            choices = choices.child(
-                Button::new("share-default", t!("share.save_default").to_string())
-                    .size(ButtonSize::Sm)
-                    .variant(ButtonVariant::Ghost)
-                    .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.save_default(cx))),
-            );
-            controls = controls.child(choices);
-        }
-        if !self.drafts.is_empty() {
-            let mut drafts = div()
-                .id("share-drafts")
-                .debug_selector(|| "share-drafts".into())
-                .flex()
-                .flex_wrap()
-                .gap(px(8.0))
-                .max_h(px(100.0))
-                .min_h(px(0.0))
-                .flex_shrink_0()
-                .overflow_y_scroll();
-            for (index, draft) in self.drafts.iter().enumerate() {
-                let mut row = div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .max_w(px(320.0))
-                    .min_w(px(0.0));
-                if let Some(preview) = &draft.preview {
-                    row = row.child(
-                        img(preview.image.clone())
-                            .w(px(44.0))
-                            .h(px(36.0))
-                            .object_fit(ObjectFit::Contain),
-                    );
-                }
-                drafts = drafts.child(
-                    row.child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(12.0))
-                            .child(draft.upload.filename.clone()),
-                    )
-                    .child(
-                        Button::new(
-                            SharedString::from(format!("share-draft-remove-{index}")),
-                            "×",
-                        )
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Ghost)
-                        .disabled(self.busy)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if index < this.drafts.len() {
-                                this.drafts.remove(index);
-                            }
-                            cx.notify();
-                        })),
-                    ),
-                );
-            }
-            controls = controls.child(drafts);
-        }
-        if self.busy {
-            controls = controls.child(
-                div()
-                    .text_size(px(12.0))
-                    .child(t!("share.working").to_string()),
-            );
-        }
-        root = root.child(controls);
-        if !self.drafts.is_empty() {
-            root = root.child(
-                Button::new(
-                    "share-send",
-                    t!("share.send", count = self.drafts.len()).to_string(),
-                )
-                .debug_selector(|| "share-send".into())
-                .disabled(
-                    self.busy
-                        || self
-                            .snapshot
-                            .as_ref()
-                            .is_none_or(|snapshot| !snapshot.plan.storage_ready),
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
-            );
-        }
-        let search = self.search.clone();
-        let view = cx.entity();
-        root = root.child(
-            Input::new(&search)
-                .size(InputSize::Sm)
-                .placeholder(t!("share.search").to_string())
-                .on_change(move |_, cx| view.update(cx, |_, cx| cx.notify())),
-        );
-        let query = self.search.read(cx).content().to_lowercase();
-        let files = self
-            .snapshot
-            .as_ref()
-            .map(|snapshot| {
-                snapshot
-                    .files
-                    .iter()
-                    .filter(|file| file.filename.to_lowercase().contains(&query))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if files.is_empty() && !self.busy {
-            root = root.child(
-                div()
-                    .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("share.empty").to_string()),
-            );
-        }
-        let files = Arc::new(files);
-        root = root.child(
-            uniform_list(
-                "personal-share-files",
-                files.len(),
-                cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                    range
-                        .filter_map(|index| files.get(index))
-                        .map(|file| this.render_file(file, cx))
-                        .collect::<Vec<_>>()
-                }),
-            )
-            .flex_1()
-            .min_h(px(0.0)),
-        );
-        if let Some(snapshot) = &self.snapshot {
-            if snapshot.usage.files > snapshot.list_limit as u64 {
-                root = root.child(
-                    div()
-                        .text_size(px(11.0))
-                        .child(t!("share.list_limit", count = snapshot.list_limit).to_string()),
-                );
-            }
-        }
-        if self.confirm_delete.is_some() {
-            root = root.child(self.delete_dialog(cx));
-        }
-        root.into_any_element()
+impl Drop for ShareView {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 }
-fn human_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 {
-        format!(
-            "{:.1} {}",
-            bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-            t!("share.gib")
-        )
-    } else if bytes >= 1024 * 1024 {
-        format!(
-            "{:.1} {}",
-            bytes as f64 / (1024.0 * 1024.0),
-            t!("share.mib")
-        )
-    } else {
-        format!("{} {}", bytes.div_ceil(1024), t!("share.kib"))
-    }
-}
+mod progress;
+mod rendering;
+use progress::UploadProgress;
+
 #[cfg(test)]
 mod tests;

@@ -4887,3 +4887,8 @@ reports that destination accurately. This entry point never uploads a PDF.
 
 2026-11-06: Added SDUC-568 and SDUC-569. Inklura Desktop houses the personal
 sharing workspace; existing ShareX configuration remains optional compatibility.
+
+2026-11-06: SDUC-568 adds file review/removal/clear without uploading, per-file
+transfer progress and Stop. Stop waits for the current HTTP request; already
+shared files keep their links and unshared files stay selected. A cancelled
+operation does not poison the next operation or clear the Inklura login.
