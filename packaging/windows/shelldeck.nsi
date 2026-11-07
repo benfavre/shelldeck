@@ -87,6 +87,11 @@ Section "Install"
         "--agents" "$INSTDIR\shelldeck.ico"
     CreateShortcut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
+    ; Explorer "Send to" entry: appends the selected files after --share.
+    ; They are staged in Share for review; nothing uploads automatically.
+    CreateShortcut "$SENDTO\Inklura Share.lnk" "$INSTDIR\${APP_EXE}" \
+        "--share" "$INSTDIR\shelldeck.ico"
+
     ; Desktop shortcut
     CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" \
         "" "$INSTDIR\shelldeck.ico"
@@ -144,6 +149,7 @@ Section "Uninstall"
     Delete "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk"
     RMDir "$SMPROGRAMS\${APP_NAME}"
     Delete "$DESKTOP\${APP_NAME}.lnk"
+    Delete "$SENDTO\Inklura Share.lnk"
 
     ; Remove registry
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}"

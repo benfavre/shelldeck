@@ -277,7 +277,23 @@ impl ShareView {
             cx,
         );
     }
+    /// Stage files handed over by the OS ("Share with Inklura", Send to,
+    /// Finder Open With). They open in Review; nothing uploads until the
+    /// user clicks Share.
+    pub fn stage_external(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if self.busy {
+            self.error = Some(t!("share.error.busy").to_string());
+            cx.notify();
+            return;
+        }
+        self.error = None;
+        self.notice = None;
+        self.add_paths_then(paths, true, cx);
+    }
     fn add_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.add_paths_then(paths, false, cx);
+    }
+    fn add_paths_then(&mut self, paths: Vec<PathBuf>, review: bool, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -310,7 +326,12 @@ impl ShareView {
                 }
                 this.busy = false;
                 match drafts {
-                    Ok(drafts) => this.drafts.extend(drafts),
+                    Ok(drafts) => {
+                        this.drafts.extend(drafts);
+                        if review && !this.drafts.is_empty() {
+                            this.review_drafts = true;
+                        }
+                    }
                     Err(error) => this.fail(error, cx),
                 }
                 cx.notify();

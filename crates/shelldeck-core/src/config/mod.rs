@@ -20,6 +20,7 @@ pub mod platform_review;
 mod platform_task_journal;
 pub mod platform_tasks;
 pub mod share;
+pub mod share_intent;
 pub mod single_instance;
 pub mod ssh_config;
 pub mod store;
