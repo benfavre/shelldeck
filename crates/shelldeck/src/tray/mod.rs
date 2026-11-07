@@ -22,6 +22,10 @@ pub enum TrayCommand {
     PauseCharacter,
     ReturnCharacterToCorner,
     ConnectPinned(Uuid),
+    /// Region capture, then Share's annotator (User → Share).
+    CaptureShare,
+    /// Share with the native file picker open.
+    ShareFiles,
     Quit,
 }
 
@@ -149,6 +153,18 @@ fn build_menu(state: &TrayState) -> Vec<TrayMenuItem> {
         labels.clippy.clone(),
         CLIPPY_ID,
     );
+    protected_action(
+        &mut items,
+        state.signed_in,
+        labels.capture_share.clone(),
+        CAPTURE_SHARE_ID,
+    );
+    protected_action(
+        &mut items,
+        state.signed_in,
+        labels.share_files.clone(),
+        SHARE_FILES_ID,
+    );
     items.push(action(labels.show.clone(), SHOW_ID));
     items.push(action(labels.palette.clone(), PALETTE_ID));
     protected_action(
@@ -213,6 +229,8 @@ fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
         CHOOSE_CHARACTER_ID => Some(TrayCommand::ChooseCharacter),
         PAUSE_CHARACTER_ID => Some(TrayCommand::PauseCharacter),
         RETURN_CHARACTER_ID => Some(TrayCommand::ReturnCharacterToCorner),
+        CAPTURE_SHARE_ID => Some(TrayCommand::CaptureShare),
+        SHARE_FILES_ID => Some(TrayCommand::ShareFiles),
         QUIT_ID => Some(TrayCommand::Quit),
         _ => id
             .strip_prefix(PINNED_ID_PREFIX)
@@ -230,6 +248,8 @@ const CHOOSE_CHARACTER_ID: &str = "shelldeck.tray.character.choose";
 const PAUSE_CHARACTER_ID: &str = "shelldeck.tray.character.pause";
 const RETURN_CHARACTER_ID: &str = "shelldeck.tray.character.return_to_dock";
 const QUIT_ID: &str = "shelldeck.tray.quit";
+const CAPTURE_SHARE_ID: &str = "shelldeck.tray.share.capture";
+const SHARE_FILES_ID: &str = "shelldeck.tray.share.files";
 const PINNED_ID_PREFIX: &str = "shelldeck.tray.pinned.";
 
 fn counter_label_ssh(n: usize) -> String {
@@ -302,6 +322,33 @@ mod tests {
             command_for_menu_id(AI_TASKS_ID),
             Some(TrayCommand::OpenAiTasks)
         ));
+    }
+
+    // Share shortcuts route to their commands and are inert while signed out.
+    #[test]
+    fn share_menu_ids_route_and_fail_closed() {
+        assert!(matches!(
+            command_for_menu_id(CAPTURE_SHARE_ID),
+            Some(TrayCommand::CaptureShare)
+        ));
+        assert!(matches!(
+            command_for_menu_id(SHARE_FILES_ID),
+            Some(TrayCommand::ShareFiles)
+        ));
+        let is_action = |items: &[TrayMenuItem], wanted: &str| {
+            items.iter().any(
+                |item| matches!(item, TrayMenuItem::Action { id, .. } if id.as_ref() == wanted),
+            )
+        };
+        let signed_out = build_menu(&TrayState::default());
+        assert!(!is_action(&signed_out, CAPTURE_SHARE_ID));
+        assert!(!is_action(&signed_out, SHARE_FILES_ID));
+        let signed_in = build_menu(&TrayState {
+            signed_in: true,
+            ..TrayState::default()
+        });
+        assert!(is_action(&signed_in, CAPTURE_SHARE_ID));
+        assert!(is_action(&signed_in, SHARE_FILES_ID));
     }
 
     // SDTEST-1411

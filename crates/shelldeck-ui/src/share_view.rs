@@ -19,6 +19,8 @@ use std::{
     },
 };
 
+/// Runs once an external capture request finishes (shows the main window).
+pub type CaptureReady = Box<dyn FnOnce(&mut App)>;
 #[derive(Clone)]
 pub enum ShareViewEvent {
     AuthenticationRejected,
@@ -400,6 +402,32 @@ impl ShareView {
         }
     }
     fn capture(&mut self, cx: &mut Context<Self>) {
+        self.capture_then(None, cx);
+    }
+    /// Tray/palette "Capture & share": select a region while the main window
+    /// may still be hidden, then run `on_ready` (which shows the window) so
+    /// the annotator, or the capture error, is what the user sees next.
+    pub fn capture_external(&mut self, on_ready: CaptureReady, cx: &mut Context<Self>) {
+        if self.busy {
+            self.error = Some(t!("share.error.busy").to_string());
+            cx.notify();
+            on_ready(cx);
+            return;
+        }
+        self.error = None;
+        self.notice = None;
+        self.capture_then(Some(on_ready), cx);
+    }
+    /// Tray/palette "Share files…": open the native picker straight away.
+    pub fn choose_files_external(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            self.error = Some(t!("share.error.busy").to_string());
+            cx.notify();
+            return;
+        }
+        self.choose_files(cx);
+    }
+    fn capture_then(&mut self, on_ready: Option<CaptureReady>, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -422,6 +450,9 @@ impl ShareView {
                 }
                 cx.notify();
             });
+            if let Some(on_ready) = on_ready {
+                let _ = cx.update(on_ready);
+            }
         })
         .detach();
     }

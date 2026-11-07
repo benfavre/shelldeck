@@ -55,6 +55,18 @@ impl Workspace {
                     Box::new(NewRequest),
                 ),
                 PaletteAction::new(
+                    t!("palette.capture_share").to_string(),
+                    None,
+                    "scan",
+                    Box::new(CaptureAndShare),
+                ),
+                PaletteAction::new(
+                    t!("palette.share_files").to_string(),
+                    None,
+                    "upload",
+                    Box::new(ShareFiles),
+                ),
+                PaletteAction::new(
                     t!("palette.setup_inklura_extension").to_string(),
                     None,
                     "download",
@@ -361,6 +373,10 @@ impl Workspace {
             self.open_fleet(cx);
         } else if action.as_any().is::<NewRequest>() {
             self.open_new_request(cx);
+        } else if action.as_any().is::<CaptureAndShare>() {
+            self.capture_and_share(Box::new(|_| {}), cx);
+        } else if action.as_any().is::<ShareFiles>() {
+            self.share_files_now(cx);
         } else if action.as_any().is::<OpenSupportRequests>() {
             self.open_support_requests(cx);
         } else if action.as_any().is::<OpenBextCloud>() {
@@ -380,10 +396,11 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppMode, ApplyTerminalTheme, CloudSyncNow, NewRequest, NewScript, NewTerminal, OpenAgents,
-        OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView, OpenFleet, OpenLogin,
-        OpenMoniqueConsole, OpenRecent, OpenSettings, OpenSupportRequests, OpenTemplateBrowser,
-        PaletteAction, Quit, SetAppMode, SwitchSite, ToggleMenuBar, Workspace,
+        AppMode, ApplyTerminalTheme, CaptureAndShare, CloudSyncNow, NewRequest, NewScript,
+        NewTerminal, OpenAgents, OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView,
+        OpenFleet, OpenLogin, OpenMoniqueConsole, OpenRecent, OpenSettings, OpenSupportRequests,
+        OpenTemplateBrowser, PaletteAction, Quit, SetAppMode, ShareFiles, SwitchSite,
+        ToggleMenuBar, Workspace,
     };
     use crate::t;
     use gpui::Action;
@@ -454,6 +471,8 @@ mod tests {
 
         assert!(contains_action::<OpenSettings>(&actions));
         assert!(contains_action::<NewRequest>(&actions));
+        assert!(contains_action::<CaptureAndShare>(&actions));
+        assert!(contains_action::<ShareFiles>(&actions));
         assert!(!contains_action::<OpenSupportRequests>(&actions));
         assert_no_dev_actions(&actions, "regular account");
 
@@ -540,6 +559,8 @@ mod tests {
         assert!(!contains_action::<CloudSyncNow>(&actions));
         assert!(!contains_action::<SwitchSite>(&actions));
         assert!(!contains_action::<NewRequest>(&actions));
+        assert!(!contains_action::<CaptureAndShare>(&actions));
+        assert!(!contains_action::<ShareFiles>(&actions));
         assert!(!contains_action::<OpenAiAssistant>(&actions));
         assert!(!contains_action::<OpenClippy>(&actions));
         assert!(!contains_action::<NewTerminal>(&actions));
