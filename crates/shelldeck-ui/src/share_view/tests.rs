@@ -156,6 +156,7 @@ fn sdtest_2896_stop_preserves_unshared_files_and_partial_success_restores_a_usab
                     }],
                     completed: 1,
                     warning: Some(ShareError::Cancelled),
+                    notice: None,
                 })
             },
             cx,
@@ -227,4 +228,60 @@ fn external_share_intent_stages_files_for_review_without_uploading() {
         assert!(view.error.is_some(), "busy hand-off is explained");
     });
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// Rename opens prefilled from the gallery row, refuses unsafe names inside
+// the dialog, closes on Escape and shows the success notice from the job.
+#[::core::prelude::v1::test]
+fn gallery_rename_prefills_validates_and_reports_success() {
+    let mut app = TestAppContext::single();
+    app.update(|cx| {
+        adabraka_ui::init(cx);
+        adabraka_ui::components::input::init(cx);
+        ShellDeckColors::set_theme(&ThemePreference::Dark);
+        adabraka_ui::theme::install_theme(cx, crate::theme::adabraka_theme_from_palette());
+    });
+    let handle = app.add_window(|_, cx| ShareView::preview(snapshot(), vec![], cx));
+    let view = handle.root(&mut app).unwrap();
+    let mut window = VisualTestContext::from_window(*handle, &app);
+    window.simulate_resize(size(gpui::px(480.0), gpui::px(420.0)));
+    redraw(&mut window);
+    click(&mut window, "share-rename-abcdef");
+    assert!(window.debug_bounds("share-rename-input").is_some());
+    view.read_with(&app, |view, cx| {
+        let draft = view.rename.as_ref().expect("rename dialog open");
+        assert_eq!(draft.input.read(cx).content(), "Rapport de visite.pdf");
+    });
+    window.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            let input = view.rename.as_ref().unwrap().input.clone();
+            input.update(cx, |state, cx| state.set_value("a/b", window, cx));
+            view.rename_confirmed(cx);
+        })
+    });
+    redraw(&mut window);
+    assert!(view.read_with(&app, |view, _| view.rename.is_some()
+        && view.error.is_some()));
+    assert!(window.debug_bounds("share-rename-error").is_some());
+    click(&mut window, "share-rename-cancel");
+    assert!(view.read_with(&app, |view, _| view.rename.is_none()));
+
+    view.update(&mut app, |view, cx| {
+        view.manage = "https://manage.inklura.fr".into();
+        view.device = "synthetic".into();
+        view.run(
+            |_| {
+                Ok(Outcome {
+                    notice: Some("share.renamed"),
+                    ..Outcome::snapshot(snapshot())
+                })
+            },
+            cx,
+        );
+    });
+    redraw(&mut window);
+    view.read_with(&app, |view, _| {
+        assert_eq!(view.notice.as_deref(), Some(t!("share.renamed").as_ref()));
+        assert!(!view.busy);
+    });
 }

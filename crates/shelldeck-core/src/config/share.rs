@@ -331,6 +331,26 @@ impl ShareClient {
         }
         Ok(())
     }
+    /// Rename a shared file's display/download name. The link and stored
+    /// object are unchanged. Returns the name Share actually saved.
+    pub fn rename(&self, id: &str, filename: &str) -> ShareResult<String> {
+        if !valid_id(id) {
+            return Err(ShareError::Invalid("invalid_file"));
+        }
+        let filename = valid_filename(filename).ok_or(ShareError::Invalid("invalid_name"))?;
+        let session = self.authenticate()?;
+        self.check()?;
+        let result: Value = self.json(
+            &session,
+            Method::POST,
+            "/api/uploads/action",
+            Some(json!({"op":"rename","id":id,"filename":filename})),
+        )?;
+        match result["filename"].as_str() {
+            Some(saved) if result["ok"] == true && !saved.is_empty() => Ok(saved.to_string()),
+            _ => Err(ShareError::Invalid("rename_failed")),
+        }
+    }
     pub fn set_retention(&self, seconds: u64) -> ShareResult<()> {
         if !seconds.is_multiple_of(86400) || seconds > 365 * 86400 {
             return Err(ShareError::Invalid("invalid_retention"));
@@ -483,6 +503,41 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
+/// Share keeps at most 200 characters. Names stay single-line and cannot
+/// contain path separators, so they are safe as download names.
+pub const MAX_FILENAME_CHARS: usize = 200;
+pub fn valid_filename(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty()
+        || name.chars().count() > MAX_FILENAME_CHARS
+        || name == "."
+        || name == ".."
+        || name
+            .chars()
+            .any(|c| c.is_control() || c == '/' || c == '\\')
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
+/// Keep the original extension when a rename omits it, so the file still
+/// opens with the right application after download.
+pub fn rename_keeping_extension(original: &str, requested: &str) -> String {
+    let requested = requested.trim();
+    let extension = Path::new(original).extension().and_then(|e| e.to_str());
+    match extension {
+        Some(ext)
+            if !ext.is_empty()
+                && Path::new(requested)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_none_or(|current| !current.eq_ignore_ascii_case(ext)) =>
+        {
+            format!("{requested}.{ext}")
+        }
+        _ => requested.to_string(),
+    }
+}
 pub fn valid_id(id: &str) -> bool {
     (6..=32).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -603,6 +658,45 @@ mod tests {
         assert!(requests[2].starts_with("GET /api/desktop "));
         assert!(requests[2].contains("share_session=synthetic.payload"));
         assert!(!requests[2].contains("sd_synthetic"));
+    }
+    // Rename sends only the id and the validated name, returns Share's
+    // saved name, and refuses unsafe names before any credential is used.
+    #[test]
+    fn rename_validates_locally_and_returns_the_saved_name() {
+        let (client, worker) = fixture(vec![
+            grant(),
+            session(),
+            json!({"ok":true,"filename":"Devis signé.pdf"}),
+        ]);
+        assert_eq!(
+            client.rename("abcdef", "  Devis signé.pdf ").unwrap(),
+            "Devis signé.pdf"
+        );
+        let requests = worker.join().unwrap();
+        assert!(requests[2].starts_with("POST /api/uploads/action "));
+        assert!(requests[2].contains("\"op\":\"rename\""));
+        assert!(requests[2].contains("\"filename\":\"Devis signé.pdf\""));
+        let (client, worker) = fixture(vec![]);
+        for bad in ["", "   ", "a/b.pdf", "a\\b.pdf", "..", "line\nbreak.pdf"] {
+            assert!(matches!(
+                client.rename("abcdef", bad),
+                Err(ShareError::Invalid("invalid_name"))
+            ));
+        }
+        assert!(client.rename("abcdef", &"x".repeat(201)).is_err());
+        assert!(matches!(
+            client.rename("../x", "ok.pdf"),
+            Err(ShareError::Invalid("invalid_file"))
+        ));
+        assert!(worker.join().unwrap().is_empty(), "nothing left the device");
+        let (client, worker) = fixture(vec![grant(), session(), json!({"$status":404,"ok":false})]);
+        assert!(client.rename("abcdef", "x.pdf").is_err());
+        worker.join().unwrap();
+        assert_eq!(rename_keeping_extension("a.PDF", "Devis"), "Devis.PDF");
+        assert_eq!(rename_keeping_extension("a.pdf", "Devis.pdf"), "Devis.pdf");
+        assert_eq!(rename_keeping_extension("a.pdf", "Devis.PDF"), "Devis.PDF");
+        assert_eq!(rename_keeping_extension("a.pdf", "v1.2"), "v1.2.pdf");
+        assert_eq!(rename_keeping_extension("README", "notes"), "notes");
     }
     // SDTEST-2890 / SDUC-568
     #[test]

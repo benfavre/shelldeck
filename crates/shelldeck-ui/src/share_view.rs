@@ -8,8 +8,8 @@ use crate::{
 use adabraka_ui::components::input::InputState;
 use gpui::{prelude::*, *};
 use shelldeck_core::config::share::{
-    share_url, ShareClient, ShareError, ShareResult, ShareSnapshot, ShareSource, ShareUpload,
-    SharedUpload,
+    rename_keeping_extension, share_url, valid_filename, ShareClient, ShareError, ShareResult,
+    ShareSnapshot, ShareSource, ShareUpload, SharedUpload,
 };
 use std::{
     path::PathBuf,
@@ -31,11 +31,19 @@ struct Draft {
     upload: ShareUpload,
     preview: Option<AttachmentDraft>,
 }
+/// The gallery file being renamed and its editable name.
+struct RenameDraft {
+    id: String,
+    original: String,
+    input: Entity<InputState>,
+}
 struct Outcome {
     snapshot: Option<ShareSnapshot>,
     uploads: Vec<SharedUpload>,
     completed: usize,
     warning: Option<ShareError>,
+    /// Locale key shown as the success notice.
+    notice: Option<&'static str>,
 }
 impl Outcome {
     fn snapshot(snapshot: ShareSnapshot) -> Self {
@@ -44,6 +52,7 @@ impl Outcome {
             uploads: vec![],
             completed: 0,
             warning: None,
+            notice: None,
         }
     }
 }
@@ -61,6 +70,7 @@ pub struct ShareView {
     error: Option<String>,
     notice: Option<String>,
     confirm_delete: Option<String>,
+    rename: Option<RenameDraft>,
     annotator: Option<Entity<AttachmentAnnotator>>,
     search: Entity<InputState>,
     focus: FocusHandle,
@@ -116,6 +126,7 @@ impl ShareView {
             error: None,
             notice: None,
             confirm_delete: None,
+            rename: None,
             annotator: None,
             search: cx.new(InputState::new),
             focus: cx.focus_handle(),
@@ -141,6 +152,7 @@ impl ShareView {
         self.upload_progress = None;
         self.review_drafts = false;
         self.confirm_delete = None;
+        self.rename = None;
         self.error = None;
         self.notice = None;
         self.busy = false;
@@ -196,6 +208,9 @@ impl ShareView {
                             this.notice = Some(
                                 t!("share.uploaded", count = outcome.uploads.len()).to_string(),
                             );
+                        }
+                        if let Some(key) = outcome.notice {
+                            this.notice = Some(t!(key).to_string());
                         }
                         if let Some(error) = outcome.warning {
                             this.fail(error, cx);
@@ -274,6 +289,7 @@ impl ShareView {
                     uploads,
                     snapshot,
                     warning,
+                    notice: None,
                 })
             },
             cx,
@@ -518,6 +534,59 @@ impl ShareView {
             });
         })
         .detach();
+    }
+    fn begin_rename(
+        &mut self,
+        id: String,
+        original: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        self.error = None;
+        let input = cx.new(InputState::new);
+        input.update(cx, |state, cx| {
+            state.set_value(original.clone(), window, cx);
+            window.focus(&state.focus_handle(cx));
+        });
+        self.rename = Some(RenameDraft {
+            id,
+            original,
+            input,
+        });
+        cx.notify();
+    }
+    fn rename_confirmed(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.rename.as_ref() else {
+            return;
+        };
+        let requested = draft.input.read(cx).content().to_string();
+        let name = rename_keeping_extension(&draft.original, &requested);
+        if valid_filename(&name).is_none() {
+            self.error = Some(t!("share.error.name").to_string());
+            cx.notify();
+            return;
+        }
+        let Some(draft) = self.rename.take() else {
+            return;
+        };
+        if name.trim() == draft.original {
+            cx.notify();
+            return;
+        }
+        let id = draft.id;
+        self.run(
+            move |client| {
+                client.rename(&id, &name)?;
+                client.snapshot().map(|snapshot| Outcome {
+                    notice: Some("share.renamed"),
+                    ..Outcome::snapshot(snapshot)
+                })
+            },
+            cx,
+        );
     }
     fn delete_confirmed(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.confirm_delete.take() else {

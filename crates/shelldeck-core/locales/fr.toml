@@ -3003,6 +3003,10 @@ delete = "Supprimer"
 cancel = "Annuler"
 delete_title = "Supprimer ce partage ?"
 delete_body = "Le fichier sera supprimé définitivement et son lien ne fonctionnera plus. Conservez votre copie originale."
+rename_title = "Renommer ce partage"
+rename_help = "Le lien reste le même. L’extension d’origine est conservée si vous l’omettez."
+rename_save = "Renommer"
+renamed = "Le fichier a été renommé. Son lien ne change pas."
 search = "Rechercher dans mes fichiers"
 empty = "Aucun fichier à afficher."
 list_limit = "Les %{count} fichiers les plus récents sont affichés."
@@ -3015,6 +3019,7 @@ pdf_failed = "Inklura PDF n’a pas pu être ouvert. Rendez-vous sur pdf.inklura
 sign_in = "Connectez-vous pour partager ces fichiers avec Inklura."
 
 [share.error]
+name = "Saisissez un nom d’au plus 200 caractères, sans / ni \\."
 busy = "Un partage est en cours. Ajoutez ces fichiers une fois l’opération terminée."
 auth = "Votre connexion Inklura a expiré. Reconnectez-vous."
 cancelled = "Opération annulée."
