@@ -816,7 +816,7 @@ impl Render for ShareView {
         root.into_any_element()
     }
 }
-fn human_bytes(bytes: u64) -> String {
+pub(crate) fn human_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
         format!(
             "{:.1} {}",

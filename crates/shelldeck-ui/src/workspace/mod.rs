@@ -540,6 +540,10 @@ pub struct Workspace {
     // Keep subscriptions alive
     _sidebar_sub: Subscription,
     _personal_share_sub: Subscription,
+    /// Re-renders User Home only when the Share summary actually changes.
+    _personal_share_observer: Subscription,
+    /// Personal Share summary for the User Home dashboard card.
+    share_summary: Option<crate::share_view::ShareSummary>,
     _workspace_hub_sub: Subscription,
     _terminal_sub: Subscription,
     _agent_console_sub: Subscription,
@@ -1151,6 +1155,13 @@ impl Workspace {
                 this.invalidate_cloud_session(cx);
             },
         );
+        let personal_share_observer = cx.observe(&personal_share, |this, share, cx| {
+            let summary = share.read(cx).summary();
+            if summary != this.share_summary {
+                this.share_summary = summary;
+                cx.notify();
+            }
+        });
         let monique_view = cx.new(MoniqueView::new);
         let fleet_view = cx.new(FleetView::new);
         agent_console.update(cx, |view, cx| {
@@ -1561,6 +1572,8 @@ impl Workspace {
             personal_share,
             pending_share_files: Vec::new(),
             _personal_share_sub: personal_share_sub,
+            _personal_share_observer: personal_share_observer,
+            share_summary: None,
             site_directory: None,
             site_menu_open: false,
             sidebar_kebab_menu: None,

@@ -31,6 +31,59 @@ struct Draft {
     upload: ShareUpload,
     preview: Option<AttachmentDraft>,
 }
+/// What the User Home dashboard shows about the personal Share space.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareSummary {
+    pub plan_label: String,
+    pub used_bytes: u64,
+    pub storage_bytes: u64,
+    pub files: u64,
+    /// Newest first, at most [`SHARE_SUMMARY_RECENT`].
+    pub recent: Vec<ShareSummaryFile>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareSummaryFile {
+    pub id: String,
+    pub filename: String,
+    pub bytes: u64,
+    pub viewer_url: String,
+}
+pub const SHARE_SUMMARY_RECENT: usize = 3;
+impl ShareSummary {
+    fn from_snapshot(snapshot: &ShareSnapshot) -> Self {
+        let mut files: Vec<_> = snapshot
+            .files
+            .iter()
+            .filter(|file| share_url(&file.viewer_url))
+            .collect();
+        // RFC 3339 timestamps from one server sort lexicographically.
+        files.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Self {
+            plan_label: snapshot.plan.label.clone(),
+            used_bytes: snapshot.usage.bytes,
+            storage_bytes: snapshot.plan.storage_bytes,
+            files: snapshot.usage.files,
+            recent: files
+                .into_iter()
+                .take(SHARE_SUMMARY_RECENT)
+                .map(|file| ShareSummaryFile {
+                    id: file.id.clone(),
+                    filename: file.filename.clone(),
+                    bytes: file.bytes,
+                    viewer_url: file.viewer_url.clone(),
+                })
+                .collect(),
+        }
+    }
+    /// Share of the plan's storage in use, clamped to `0.0..=1.0`.
+    pub fn usage_ratio(&self) -> f32 {
+        if self.storage_bytes == 0 {
+            0.0
+        } else {
+            (self.used_bytes as f64 / self.storage_bytes as f64).clamp(0.0, 1.0) as f32
+        }
+    }
+}
 /// The gallery file being renamed and its editable name.
 struct RenameDraft {
     id: String,
@@ -107,6 +160,14 @@ impl ShareView {
             })
             .collect();
         view
+    }
+    /// Dashboard summary of the loaded gallery, if any.
+    pub fn summary(&self) -> Option<ShareSummary> {
+        self.snapshot.as_ref().map(ShareSummary::from_snapshot)
+    }
+    /// True when the account's gallery has been loaded or is loading.
+    pub fn is_loaded_or_busy(&self) -> bool {
+        self.snapshot.is_some() || self.busy
     }
     pub fn focus_in(&self, window: &mut Window) {
         window.focus(&self.focus);
@@ -614,6 +675,7 @@ impl Drop for ShareView {
 mod progress;
 mod rendering;
 use progress::UploadProgress;
+pub(crate) use rendering::human_bytes;
 
 #[cfg(test)]
 mod tests;
