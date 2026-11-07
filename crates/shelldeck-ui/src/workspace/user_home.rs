@@ -1128,6 +1128,7 @@ impl Workspace {
                         ),
                 ),
             )
+            .children(self.render_home_share_card(cx))
             .child(
                 div()
                     .flex()

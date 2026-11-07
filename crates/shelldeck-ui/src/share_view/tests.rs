@@ -285,3 +285,38 @@ fn gallery_rename_prefills_validates_and_reports_success() {
         assert!(!view.busy);
     });
 }
+
+// The Home card summary lists the newest valid links first, at most three,
+// and reports storage use against the plan.
+#[::core::prelude::v1::test]
+fn home_summary_orders_recent_links_and_reports_usage() {
+    let mut snapshot = snapshot();
+    let base = snapshot.files[0].clone();
+    snapshot.files = ["2026-11-01", "2026-11-05", "2026-11-03", "2026-11-04"]
+        .iter()
+        .enumerate()
+        .map(|(index, day)| shelldeck_core::config::share::ShareFile {
+            id: format!("abcde{index}"),
+            filename: format!("{day}.pdf"),
+            created_at: format!("{day}T12:00:00Z"),
+            viewer_url: format!("https://share.inklura.fr/s/abcde{index}"),
+            ..base.clone()
+        })
+        .chain([shelldeck_core::config::share::ShareFile {
+            id: "unsafe".into(),
+            created_at: "2026-11-09T12:00:00Z".into(),
+            viewer_url: "https://attacker.example/s/x".into(),
+            ..base.clone()
+        }])
+        .collect();
+    snapshot.usage.bytes = snapshot.plan.storage_bytes / 4;
+    let summary = ShareSummary::from_snapshot(&snapshot);
+    let names: Vec<_> = summary.recent.iter().map(|f| f.filename.as_str()).collect();
+    assert_eq!(
+        names,
+        ["2026-11-05.pdf", "2026-11-04.pdf", "2026-11-03.pdf"]
+    );
+    assert!((summary.usage_ratio() - 0.25).abs() < 1e-6);
+    snapshot.plan.storage_bytes = 0;
+    assert_eq!(ShareSummary::from_snapshot(&snapshot).usage_ratio(), 0.0);
+}
