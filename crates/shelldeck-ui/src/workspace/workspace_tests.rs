@@ -43,6 +43,7 @@ fn statuses(
     CompanionShortcutStatuses {
         ai_dock,
         command_palette,
+        capture_share: ShortcutRegistrationStatus::Disabled,
     }
 }
 
