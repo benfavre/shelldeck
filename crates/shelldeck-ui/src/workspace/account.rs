@@ -517,6 +517,7 @@ impl Workspace {
     /// Clear Inklura Manage credentials and stop cloud-backed polls/views.
     pub(super) fn invalidate_cloud_session(&mut self, cx: &mut Context<Self>) {
         self.manage_requests.change_session();
+        self.clear_inklura_notifications();
         self.stop_authenticated_runtime(cx);
         // Overwrite the persisted workspace after closing sessions. Otherwise
         // a later launch/account could restore terminals from the old session.

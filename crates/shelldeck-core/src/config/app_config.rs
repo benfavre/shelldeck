@@ -261,6 +261,9 @@ pub struct TrayConfig {
     /// Show an OS notification when an AI task completes while the
     /// ShellDeck window is not active.
     pub notify_ai_tasks: bool,
+    /// Show an OS notification when new Inklura Manage bell items arrive
+    /// (exports, automations, agent alerts) in any of the account's spaces.
+    pub notify_inklura: bool,
 }
 
 impl Default for TrayConfig {
@@ -275,6 +278,7 @@ impl Default for TrayConfig {
             notify_ssh_disconnect: true,
             notify_fleet_done: true,
             notify_ai_tasks: true,
+            notify_inklura: true,
         }
     }
 }

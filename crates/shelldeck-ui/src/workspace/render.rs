@@ -566,6 +566,7 @@ impl Render for Workspace {
 
         // Custom titlebar with drag area + window controls
         let compact_titlebar = logical_width < 760.0;
+        let inklura_bell = self.render_inklura_bell(_cx);
         let titlebar = Self::render_titlebar(
             is_maximized,
             compact_titlebar,
@@ -598,6 +599,7 @@ impl Render for Workspace {
                         || matches!(task.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
                 })
                 .count(),
+            inklura_bell,
             &handle,
             _cx,
         );
@@ -624,6 +626,11 @@ impl Render for Workspace {
         // Titlebar site-switcher dropdown overlay
         if self.site_menu_open {
             root = root.child(self.render_site_menu(_cx));
+        }
+
+        // Inklura Manage notifications panel under the bell.
+        if self.inklura_notifications_open && self.inklura_notifications.is_some() {
+            root = root.child(self.render_inklura_notifications_menu(_window, _cx));
         }
 
         // Sidebar kebab (⋮) row-action menu

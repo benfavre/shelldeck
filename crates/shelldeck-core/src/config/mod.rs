@@ -11,6 +11,7 @@ pub mod inklura_extension;
 pub mod issues;
 pub mod keychain;
 pub mod manage_directory;
+pub mod manage_notifications;
 pub mod manage_sites;
 pub mod manage_support;
 pub mod monique;

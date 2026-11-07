@@ -127,6 +127,7 @@ mod discovery;
 mod events;
 mod fleet;
 mod inklura_extension;
+mod inklura_notifications;
 pub(crate) mod platform_attention;
 pub use platform_attention::PlatformAttentionNotification;
 mod forwards;
@@ -607,6 +608,15 @@ pub struct Workspace {
     site_directory: Option<SitesPayload>,
     /// Whether the titlebar site-switcher dropdown is open.
     site_menu_open: bool,
+    /// Inklura Manage bell, merged across the account's spaces. `None` until
+    /// the first successful poll (and while the server lacks the endpoint).
+    inklura_notifications: Option<shelldeck_core::config::manage_notifications::NotificationFeed>,
+    /// Item keys already shown once, so a poll only raises OS notifications for
+    /// arrivals. `None` until the first poll seeds it.
+    inklura_notifications_seen: Option<std::collections::HashSet<(String, String)>>,
+    inklura_notifications_open: bool,
+    inklura_notifications_pos: Option<Point<Pixels>>,
+    _inklura_notifications_poll: Option<gpui::Task<()>>,
     /// Kebab menu open state for a sidebar host row: which connection and where
     /// (window-relative click position). `None` = closed.
     sidebar_kebab_menu: Option<(Uuid, Point<Pixels>)>,
@@ -877,6 +887,14 @@ pub enum TrayNotification {
     /// An AI generation or executable action finished while the main window
     /// was not active.
     AiTaskDone { success: bool },
+    /// New Inklura Manage bell items arrived. One item carries its own text;
+    /// a burst collapses to a count so a busy space cannot flood the desktop.
+    Inklura {
+        count: usize,
+        title: String,
+        body: String,
+        site: String,
+    },
 }
 
 impl TrayNotification {
@@ -918,6 +936,31 @@ impl TrayNotification {
                     t!("notification.ai.failed").to_string()
                 },
             ),
+            Self::Inklura {
+                count,
+                title,
+                body,
+                site,
+            } => {
+                if *count == 1 {
+                    let summary = if site.is_empty() {
+                        t!("notification.inklura.summary").to_string()
+                    } else {
+                        format!("{} · {}", t!("notification.inklura.summary"), site)
+                    };
+                    let text = if body.trim().is_empty() {
+                        title.clone()
+                    } else {
+                        format!("{title}\n{body}")
+                    };
+                    (summary, text)
+                } else {
+                    (
+                        t!("notification.inklura.summary").to_string(),
+                        t!("notification.inklura.many", count = *count).to_string(),
+                    )
+                }
+            }
         }
     }
 }
@@ -1576,6 +1619,11 @@ impl Workspace {
             share_summary: None,
             site_directory: None,
             site_menu_open: false,
+            inklura_notifications: None,
+            inklura_notifications_seen: None,
+            inklura_notifications_open: false,
+            inklura_notifications_pos: None,
+            _inklura_notifications_poll: None,
             sidebar_kebab_menu: None,
             account_menu_pos: None,
             mode_menu_pos: None,

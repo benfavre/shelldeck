@@ -4892,3 +4892,22 @@ sharing workspace; existing ShareX configuration remains optional compatibility.
 transfer progress and Stop. Stop waits for the current HTTP request; already
 shared files keep their links and unshared files stay selected. A cancelled
 operation does not poison the next operation or clear the Inklura login.
+
+### SDUC-570: Inklura Manage notifications in Desktop
+
+A signed-in Desktop shows the Manage bell for every space in the account's site
+directory: a titlebar bell with an unread badge opens a panel listing exports,
+automation and agent alerts with their space and age. Opening an item marks it
+read and opens Manage in the browser on that space and page through a two-minute,
+user-bound signed switch link minted at click time. "Mark all as read" stops at
+the newest item on screen. A minute-level background poll raises one OS
+notification per arrival batch (opt-out: Settings → tray "Notify Inklura
+activity"); the first load after launch or login is silent. Prospect names stay
+masked unless the device token proves the right to read them (platform
+super-admin, or an admin role inside its own tenant). The personal staff inbox
+of the web bell needs a browser session and is not part of this feed. A Manage
+without the endpoint answers 404 and the bell stays hidden.
+
+2026-11-07: Added SDUC-570. Server side: `GET|POST /api/manage/shelldeck/notifications`
+in the bext repository (`sites/shared/manage/src/routes/shelldeck-notifications.ts`).
+

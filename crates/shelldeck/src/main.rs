@@ -59,6 +59,7 @@ lucide_assets!(
     "git-branch",
     "arrow-left-right",
     "arrow-right",
+    "bell",
     "bot",
     "box",
     "calendar",
