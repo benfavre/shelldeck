@@ -548,6 +548,7 @@ impl CompanionRuntime {
         match id {
             AI_DOCK_GLOBAL_HOTKEY_ID => Some(CompanionCommand::ToggleAiDock),
             COMMAND_PALETTE_GLOBAL_HOTKEY_ID => Some(CompanionCommand::ToggleCommandPalette),
+            CAPTURE_SHARE_GLOBAL_HOTKEY_ID => Some(CompanionCommand::CaptureShare),
             _ => None,
         }
     }
@@ -557,6 +558,7 @@ impl CompanionRuntime {
 enum CompanionCommand {
     ToggleAiDock,
     ToggleCommandPalette,
+    CaptureShare,
 }
 
 /// Lightweight root kept in the hidden main window until a surface actually
@@ -915,27 +917,7 @@ fn dispatch_tray_command(
                 tracing::warn!(error = %error, "tray could not open a pinned connection");
             }
         }
-        TrayCommand::CaptureShare => {
-            let Some(workspace) = root
-                .upgrade()
-                .and_then(|root| authenticated_workspace(&root, window, cx))
-            else {
-                return;
-            };
-            // Select the region first so the main window is not in the way;
-            // it comes forward once the annotator (or an error) is ready.
-            workspace.update(cx, |ws, cx| {
-                ws.capture_and_share(
-                    Box::new(move |cx: &mut gpui::App| {
-                        let _ = window.update(cx, |_, window, _| {
-                            window.show_window();
-                            window.activate_window();
-                        });
-                    }),
-                    cx,
-                )
-            });
-        }
+        TrayCommand::CaptureShare => capture_and_share(root, window, cx),
         TrayCommand::ShareFiles => {
             let Some(workspace) = root
                 .upgrade()
@@ -958,6 +940,34 @@ fn dispatch_tray_command(
             cx.quit();
         }
     }
+}
+
+/// Tray and global-shortcut "Capture & share". Signed-out users get the main
+/// window with the login form. Otherwise the region is selected first so the
+/// main window is not in the way; it comes forward with the annotator (or the
+/// capture error) afterwards.
+fn capture_and_share(
+    root: gpui::WeakEntity<CompanionRoot>,
+    window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    let Some(workspace) = root
+        .upgrade()
+        .and_then(|root| authenticated_workspace(&root, window, cx))
+    else {
+        return;
+    };
+    workspace.update(cx, |ws, cx| {
+        ws.capture_and_share(
+            Box::new(move |cx: &mut gpui::App| {
+                let _ = window.update(cx, |_, window, _| {
+                    window.show_window();
+                    window.activate_window();
+                });
+            }),
+            cx,
+        )
+    });
 }
 
 fn tray_command_requires_auth(command: &tray::TrayCommand) -> bool {
@@ -1039,6 +1049,7 @@ fn workspace_created_at_boot(main_window_visible: bool) -> bool {
 
 const AI_DOCK_GLOBAL_HOTKEY_ID: u32 = 1;
 const COMMAND_PALETTE_GLOBAL_HOTKEY_ID: u32 = 2;
+const CAPTURE_SHARE_GLOBAL_HOTKEY_ID: u32 = 3;
 
 #[cfg(test)]
 fn ai_dock_global_shortcut() -> &'static str {
@@ -1089,41 +1100,67 @@ impl Default for RegisteredGlobalShortcut {
 struct GlobalShortcutRegistrationState {
     ai_dock: RegisteredGlobalShortcut,
     command_palette: RegisteredGlobalShortcut,
+    capture_share: RegisteredGlobalShortcut,
 }
 
 impl GlobalShortcutRegistrationState {
+    /// Registers the enabled shortcuts in priority order (AI Dock, palette,
+    /// Capture & share). A shortcut equal to an earlier enabled one is
+    /// unregistered and reported as a conflict before anything registers.
     fn sync(&mut self, config: &CompanionConfig, registry: &impl GlobalHotkeyRegistry) {
-        let conflict = config.global_shortcut_enabled
-            && config.global_palette_shortcut_enabled
-            && config.global_shortcut == config.global_palette_shortcut;
-        if conflict {
-            sync_global_shortcut(
-                &mut self.command_palette,
-                false,
-                COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
-                &config.global_palette_shortcut,
-                "command palette",
-                registry,
-            );
-            self.command_palette.status = ShortcutRegistrationStatus::Conflict;
-        }
-        sync_global_shortcut(
-            &mut self.ai_dock,
-            config.global_shortcut_enabled,
-            AI_DOCK_GLOBAL_HOTKEY_ID,
-            &config.global_shortcut,
-            "AI Dock",
-            registry,
-        );
-        if !conflict {
-            sync_global_shortcut(
-                &mut self.command_palette,
+        let wanted = [
+            (
+                config.global_shortcut_enabled,
+                AI_DOCK_GLOBAL_HOTKEY_ID,
+                config.global_shortcut.as_str(),
+                "AI Dock",
+            ),
+            (
                 config.global_palette_shortcut_enabled,
                 COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
-                &config.global_palette_shortcut,
+                config.global_palette_shortcut.as_str(),
                 "command palette",
-                registry,
-            );
+            ),
+            (
+                config.global_capture_shortcut_enabled,
+                CAPTURE_SHARE_GLOBAL_HOTKEY_ID,
+                config.global_capture_shortcut.as_str(),
+                "capture and share",
+            ),
+        ];
+        let mut claimed: Vec<&str> = Vec::new();
+        let mut conflict = [false; 3];
+        for (index, (enabled, _, shortcut, _)) in wanted.iter().enumerate() {
+            if *enabled {
+                if claimed.contains(shortcut) {
+                    conflict[index] = true;
+                } else {
+                    claimed.push(shortcut);
+                }
+            }
+        }
+        let registrations = [
+            &mut self.ai_dock,
+            &mut self.command_palette,
+            &mut self.capture_share,
+        ];
+        for (index, (_, id, shortcut, label)) in wanted.iter().enumerate() {
+            if conflict[index] {
+                sync_global_shortcut(registrations[index], false, *id, shortcut, label, registry);
+                registrations[index].status = ShortcutRegistrationStatus::Conflict;
+            }
+        }
+        for (index, (enabled, id, shortcut, label)) in wanted.iter().enumerate() {
+            if !conflict[index] {
+                sync_global_shortcut(
+                    registrations[index],
+                    *enabled,
+                    *id,
+                    shortcut,
+                    label,
+                    registry,
+                );
+            }
         }
     }
 
@@ -1131,6 +1168,7 @@ impl GlobalShortcutRegistrationState {
         CompanionShortcutStatuses {
             ai_dock: self.ai_dock.status.clone(),
             command_palette: self.command_palette.status.clone(),
+            capture_share: self.capture_share.status.clone(),
         }
     }
 
@@ -1148,6 +1186,7 @@ impl GlobalShortcutRegistrationState {
         let registration = match id {
             AI_DOCK_GLOBAL_HOTKEY_ID => &mut self.ai_dock,
             COMMAND_PALETTE_GLOBAL_HOTKEY_ID => &mut self.command_palette,
+            CAPTURE_SHARE_GLOBAL_HOTKEY_ID => &mut self.capture_share,
             _ => return,
         };
         if registration.shortcut.as_deref() == Some(shortcut.as_str()) {
@@ -2238,6 +2277,9 @@ fn main() -> Result<()> {
                                         cx,
                                     );
                                 }
+                                Some(CompanionCommand::CaptureShare) => {
+                                    capture_and_share(root_handle, window_handle, cx);
+                                }
                                 None => {}
                             })
                         {
@@ -2553,7 +2595,7 @@ mod tests {
         tray_command_requires_auth, workspace_created_at_boot, AiDockRequest, AiDockWindowAction,
         Assets, CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry,
         GlobalShortcutRegistrationState, ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID,
-        COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
+        CAPTURE_SHARE_GLOBAL_HOTKEY_ID, COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
     };
     #[cfg(target_os = "linux")]
     use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
@@ -2778,6 +2820,56 @@ mod tests {
                 .filter(|call| **call == ("register", AI_DOCK_GLOBAL_HOTKEY_ID))
                 .count(),
             3
+        );
+    }
+
+    // The opt-in Capture & share shortcut routes to its command, registers
+    // only when enabled and loses to an earlier shortcut on a collision.
+    #[test]
+    fn capture_share_shortcut_is_opt_in_and_reports_conflicts() {
+        assert_eq!(
+            CompanionRuntime::command_for_hotkey(CAPTURE_SHARE_GLOBAL_HOTKEY_ID),
+            Some(CompanionCommand::CaptureShare)
+        );
+        let registry = FakeGlobalHotkeyRegistry::default();
+        let mut state = GlobalShortcutRegistrationState::default();
+        let mut config = CompanionConfig::default();
+        assert!(!config.global_capture_shortcut_enabled);
+        state.sync(&config, &registry);
+        assert!(!registry
+            .calls
+            .borrow()
+            .contains(&("register", CAPTURE_SHARE_GLOBAL_HOTKEY_ID)));
+        assert_eq!(
+            state.capture_share.status,
+            ShortcutRegistrationStatus::Disabled
+        );
+
+        config.global_capture_shortcut_enabled = true;
+        state.sync(&config, &registry);
+        assert_eq!(
+            registry.calls.borrow().last(),
+            Some(&("register", CAPTURE_SHARE_GLOBAL_HOTKEY_ID))
+        );
+        assert_eq!(
+            state.capture_share.status,
+            ShortcutRegistrationStatus::Registered
+        );
+
+        config.global_capture_shortcut = config.global_palette_shortcut.clone();
+        state.sync(&config, &registry);
+        assert_eq!(
+            state.capture_share.status,
+            ShortcutRegistrationStatus::Conflict
+        );
+        assert!(state.capture_share.shortcut.is_none());
+        assert_eq!(
+            state.command_palette.status,
+            ShortcutRegistrationStatus::Registered
+        );
+        assert_eq!(
+            state.statuses().capture_share,
+            ShortcutRegistrationStatus::Conflict
         );
     }
 
