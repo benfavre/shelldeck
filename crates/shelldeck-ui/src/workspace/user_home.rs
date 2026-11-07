@@ -780,6 +780,23 @@ impl Workspace {
             .on_click(move |_, _, cx| {
                 entity.update(cx, |this, cx| this.open_new_request(cx));
             });
+        let entity = cx.entity();
+        let capture_share = Button::new(
+            "home-capture-share",
+            t!("palette.capture_share").to_string(),
+        )
+        .variant(ButtonVariant::Outline)
+        .icon(IconSource::from("scan"))
+        .on_click(move |_, _, cx| {
+            entity.update(cx, |this, cx| this.capture_and_share(Box::new(|_| {}), cx));
+        });
+        let entity = cx.entity();
+        let share_files = Button::new("home-share-files", t!("palette.share_files").to_string())
+            .variant(ButtonVariant::Outline)
+            .icon(IconSource::from("upload"))
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| this.share_files_now(cx));
+            });
 
         let recent_requests = if my_requests.is_empty() {
             div()
@@ -1105,6 +1122,8 @@ impl Workspace {
                                 .flex_wrap()
                                 .justify_end()
                                 .gap(px(8.0))
+                                .child(capture_share)
+                                .child(share_files)
                                 .child(new_request),
                         ),
                 ),

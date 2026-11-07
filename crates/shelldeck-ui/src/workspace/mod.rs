@@ -403,6 +403,8 @@ actions!(
         OpenClippy,
         OpenAgents,
         SetupInkluraExtension,
+        CaptureAndShare,
+        ShareFiles,
     ]
 );
 

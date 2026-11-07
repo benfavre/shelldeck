@@ -915,6 +915,40 @@ fn dispatch_tray_command(
                 tracing::warn!(error = %error, "tray could not open a pinned connection");
             }
         }
+        TrayCommand::CaptureShare => {
+            let Some(workspace) = root
+                .upgrade()
+                .and_then(|root| authenticated_workspace(&root, window, cx))
+            else {
+                return;
+            };
+            // Select the region first so the main window is not in the way;
+            // it comes forward once the annotator (or an error) is ready.
+            workspace.update(cx, |ws, cx| {
+                ws.capture_and_share(
+                    Box::new(move |cx: &mut gpui::App| {
+                        let _ = window.update(cx, |_, window, _| {
+                            window.show_window();
+                            window.activate_window();
+                        });
+                    }),
+                    cx,
+                )
+            });
+        }
+        TrayCommand::ShareFiles => {
+            let Some(workspace) = root
+                .upgrade()
+                .and_then(|root| authenticated_workspace(&root, window, cx))
+            else {
+                return;
+            };
+            let _ = window.update(cx, |_, window, _| {
+                window.show_window();
+                window.activate_window();
+            });
+            workspace.update(cx, |ws, cx| ws.share_files_now(cx));
+        }
         TrayCommand::Quit => {
             if let Some(root) = root.upgrade() {
                 if let Some(ws) = root.read(cx).workspace.clone() {
@@ -936,6 +970,8 @@ fn tray_command_requires_auth(command: &tray::TrayCommand) -> bool {
             | tray::TrayCommand::PauseCharacter
             | tray::TrayCommand::ReturnCharacterToCorner
             | tray::TrayCommand::ConnectPinned(_)
+            | tray::TrayCommand::CaptureShare
+            | tray::TrayCommand::ShareFiles
     )
 }
 

@@ -46,4 +46,44 @@ impl Workspace {
         let files = std::mem::take(&mut self.pending_share_files);
         self.stage_external_share(files, cx);
     }
+
+    /// Switches to User → Share for a Share shortcut. Returns `false` when
+    /// signed out (the login form is shown instead).
+    fn enter_personal_share(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.signed_in() {
+            self.show_main_presentation(cx);
+            self.show_login_form(cx);
+            return false;
+        }
+        if self.effective_mode() != AppMode::User && self.can_access_mode(AppMode::User) {
+            self.set_mode(AppMode::User, cx);
+        }
+        self.open_personal_share(cx);
+        true
+    }
+
+    /// "Capture & share": region capture first, then `on_ready` shows the
+    /// window with the annotator. Signed-out runs `on_ready` immediately so
+    /// the login form is visible.
+    pub fn capture_and_share(
+        &mut self,
+        on_ready: crate::share_view::CaptureReady,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.enter_personal_share(cx) {
+            on_ready(cx);
+            return;
+        }
+        self.personal_share
+            .update(cx, |view, cx| view.capture_external(on_ready, cx));
+    }
+
+    /// "Share files…": open Share and the native file picker.
+    pub fn share_files_now(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_personal_share(cx) {
+            return;
+        }
+        self.personal_share
+            .update(cx, |view, cx| view.choose_files_external(cx));
+    }
 }

@@ -32,6 +32,8 @@ pub struct TrayLabels {
     pub quit: String,
     pub pinned: String,
     pub no_pinned: String,
+    pub capture_share: String,
+    pub share_files: String,
 }
 
 impl TrayLabels {
@@ -47,6 +49,8 @@ impl TrayLabels {
             quit: t!("tray.quit").to_string(),
             pinned: t!("tray.pinned").to_string(),
             no_pinned: t!("tray.no_pinned").to_string(),
+            capture_share: t!("tray.share.capture").to_string(),
+            share_files: t!("tray.share.files").to_string(),
         }
     }
 }
