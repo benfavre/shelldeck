@@ -3007,7 +3007,11 @@ pdf_opened = "Inklura PDF was opened. Documents stay on your device."
 pdf_downloads = "Inklura PDF was not found. Its official download page was opened."
 pdf_failed = "Inklura PDF could not be opened. Visit pdf.inklura.fr."
 
+[share.external]
+sign_in = "Sign in to share these files with Inklura."
+
 [share.error]
+busy = "A share is in progress. Add these files once it finishes."
 auth = "Your Inklura session expired. Sign in again."
 cancelled = "Operation cancelled."
 france = "France storage or migration is being prepared. Check your plan in Share."

@@ -95,6 +95,31 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
     <string>11.0</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Inklura Share file</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.image</string>
+                <string>public.movie</string>
+                <string>public.audio</string>
+                <string>com.adobe.pdf</string>
+                <string>public.plain-text</string>
+                <string>public.comma-separated-values-text</string>
+                <string>public.json</string>
+                <string>net.daringfireball.markdown</string>
+                <string>public.zip-archive</string>
+                <string>org.gnu.gnu-zip-archive</string>
+                <string>org.7-zip.7-zip-archive</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

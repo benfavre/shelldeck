@@ -595,6 +595,8 @@ pub struct Workspace {
     /// Which User-mode home tab is showing (Sites / Demandes / Infos).
     user_home_tab: UserHomeTab,
     personal_share: Entity<ShareView>,
+    /// Files from a "Share with Inklura" launch that arrived signed out.
+    pending_share_files: Vec<std::path::PathBuf>,
     /// Cached Inklura Manage sites directory + areas (fetched after sign-in).
     site_directory: Option<SitesPayload>,
     /// Whether the titlebar site-switcher dropdown is open.
@@ -1555,6 +1557,7 @@ impl Workspace {
             manage_requests: ManageRequests::default(),
             user_home_tab: UserHomeTab::Home,
             personal_share,
+            pending_share_files: Vec::new(),
             _personal_share_sub: personal_share_sub,
             site_directory: None,
             site_menu_open: false,

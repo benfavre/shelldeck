@@ -182,3 +182,49 @@ fn sdtest_2896_stop_preserves_unshared_files_and_partial_success_restores_a_usab
         && !view.review_drafts));
     app.quit();
 }
+
+// "Share with Inklura" from the OS stages files and opens Review; nothing is
+// uploaded. A busy view refuses the hand-off with a visible explanation
+// instead of silently dropping it.
+#[::core::prelude::v1::test]
+fn external_share_intent_stages_files_for_review_without_uploading() {
+    let dir = std::env::temp_dir().join(format!("inklura-share-external-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let files = ["capture.png", "devis.pdf"].map(|name| {
+        let path = dir.join(name);
+        std::fs::write(&path, b"inklura").unwrap();
+        path
+    });
+    let mut app = TestAppContext::single();
+    app.update(|cx| {
+        adabraka_ui::init(cx);
+        adabraka_ui::components::input::init(cx);
+        ShellDeckColors::set_theme(&ThemePreference::Dark);
+        adabraka_ui::theme::install_theme(cx, crate::theme::adabraka_theme_from_palette());
+    });
+    let handle = app.add_window(|_, cx| ShareView::preview(snapshot(), vec![], cx));
+    let view = handle.root(&mut app).unwrap();
+    let mut window = VisualTestContext::from_window(*handle, &app);
+    window.simulate_resize(size(gpui::px(620.0), gpui::px(560.0)));
+    view.update(&mut app, |view, cx| view.stage_external(files.to_vec(), cx));
+    redraw(&mut window);
+    view.read_with(&app, |view, _| {
+        assert_eq!(view.drafts.len(), 2);
+        assert!(view.review_drafts, "external files open in Review");
+        assert!(
+            !view.busy && view.upload_progress.is_none(),
+            "nothing uploads"
+        );
+    });
+    assert!(window.debug_bounds("share-review-remove-1").is_some());
+
+    view.update(&mut app, |view, cx| {
+        view.busy = true;
+        view.stage_external(vec![files[0].clone()], cx);
+    });
+    view.read_with(&app, |view, _| {
+        assert_eq!(view.drafts.len(), 2, "busy view keeps its selection");
+        assert!(view.error.is_some(), "busy hand-off is explained");
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+}

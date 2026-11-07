@@ -420,6 +420,8 @@ impl Workspace {
         self.refresh_mention_people(cx);
         // Non-super-admins are forced to User mode; activate whatever mode applies.
         self.activate_current_mode(cx);
+        // Files sent to Inklura before signing in land in Share now.
+        self.resume_pending_share(cx);
         // Kick a whoami to populate `last_whoami` (device label, created_at,
         // last_seen_at) — the login response only carries the AccountInfo
         // subset, but "Mes informations" needs the richer payload.
@@ -625,6 +627,7 @@ impl Workspace {
         }
 
         self.invalidate_cloud_session(cx);
+        self.pending_share_files.clear();
         self.show_toast(t!("toast.logged_out").to_string(), ToastLevel::Info, cx);
         cx.notify();
     }

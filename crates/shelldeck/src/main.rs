@@ -10,6 +10,7 @@ use gpui::{AssetSource, SharedString, WindowDecorations};
 use shelldeck_core::ai::ClippyConfig;
 use shelldeck_core::config::app_config::{AppConfig, CompanionConfig};
 use shelldeck_core::config::deep_link::DeepLink;
+use shelldeck_core::config::share_intent::ShareIntent;
 use shelldeck_core::config::single_instance::{self, Acquire};
 use shelldeck_core::config::ssh_config::parse_ssh_config;
 use shelldeck_core::config::store::ConnectionStore;
@@ -1776,6 +1777,19 @@ fn dispatch_deep_link(
     window: gpui::AnyWindowHandle,
     cx: &mut gpui::App,
 ) {
+    if let Some(intent) = ShareIntent::decode(&payload) {
+        if let Err(error) = window.update(cx, |_, window, cx| {
+            window.show_window();
+            window.activate_window();
+            if let Some(root) = root.upgrade() {
+                let ws = root.update(cx, |root, cx| root.ensure_workspace(window, cx));
+                ws.update(cx, |ws, cx| ws.stage_external_share(intent.files, cx));
+            }
+        }) {
+            tracing::warn!(error = %error, "share intent could not activate the main window");
+        }
+        return;
+    }
     let link = DeepLink::parse(&payload);
     if matches!(link, Some(DeepLink::Assistant)) {
         show_ai_dock(root, window, cx);
@@ -1935,12 +1949,33 @@ fn main() -> Result<()> {
         Err(e) => tracing::warn!("autostart reconcile skipped: {e}"),
     }
 
+    // "Share with Inklura" in Linux file managers' Open With menu. Release
+    // builds only, so development binaries never claim the entry.
+    #[cfg(all(target_os = "linux", not(debug_assertions)))]
+    match shelldeck_core::config::share_intent::install_linux_share_entry() {
+        Ok(true) => tracing::info!("registered the Share with Inklura file entry"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("Share with Inklura file entry skipped: {e}"),
+    }
+
     // Launch Services delivers URLs as native events on macOS, rather than
     // additional argv. Register before run so cold-start URLs are queued too.
     // Both native callbacks use the same retained Workspace/auth dispatch as
     // an authenticated secondary-process handoff.
     let application = Application::new().with_assets(Assets);
     application.on_open_urls(move |urls| {
+        // Finder "Open With" / Dock drops arrive as local file URLs: stage
+        // them together as one Share intent instead of as deep links.
+        let (files, urls): (Vec<String>, Vec<String>) = urls
+            .into_iter()
+            .partition(|url| shelldeck_core::config::share_intent::is_file_url(url));
+        if let Some(payload) =
+            ShareIntent::from_file_urls(files.iter().map(String::as_str)).and_then(|i| i.encode())
+        {
+            if platform_url_tx.send(payload).is_err() {
+                tracing::debug!("platform share intent dropped during shutdown");
+            }
+        }
         for url in urls {
             if DeepLink::parse(&url).is_some() && platform_url_tx.send(url).is_err() {
                 tracing::debug!("platform URL dropped during shutdown");
