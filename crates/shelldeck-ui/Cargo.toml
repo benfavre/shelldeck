@@ -51,6 +51,11 @@ tree-sitter-css = "0.25"
 tree-sitter-md = "0.5"
 lopdf = "0.44"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Same version and runtime as GPUI's own dependency, so no second zbus stack.
+ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+zbus = { version = "5", default-features = false, features = ["async-io"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
 

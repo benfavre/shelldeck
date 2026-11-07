@@ -780,6 +780,19 @@ impl CompanionRoot {
             });
         }
 
+        // Linux capture fallback: when neither the Screenshot portal nor a capture
+        // tool exists, ask for the desktop's own screenshot key.
+        #[cfg(target_os = "linux")]
+        shelldeck_ui::linux_capture::set_capture_hint_sink(Box::new(|| {
+            std::thread::spawn(|| {
+                if let Err(error) =
+                    show_tray_notification(shelldeck_ui::TrayNotification::CaptureHint)
+                {
+                    tracing::warn!("Capture hint notification failed: {error}");
+                }
+            });
+        }));
+
         let (attention_tx, attention_rx) = std::sync::mpsc::channel();
         workspace.update(cx, |ws, _cx| {
             ws.set_platform_attention_notifier(Box::new(move |notification| {
