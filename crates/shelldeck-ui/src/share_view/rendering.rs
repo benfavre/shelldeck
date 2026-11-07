@@ -3,6 +3,7 @@ use crate::{icons::lucide_icon, scale::px, theme::ShellDeckColors};
 use adabraka_ui::components::{
     button::{Button, ButtonSize, ButtonVariant},
     confirm_dialog::Dialog,
+    icon_button::IconButton,
     icon_source::IconSource,
     input::{Input, InputSize},
     progress::{ProgressBar, ProgressSize},
@@ -283,6 +284,28 @@ impl ShareView {
                             }
                         }),
                     )
+                    .child({
+                        let rename_id = file.id.clone();
+                        let original = file.filename.clone();
+                        div()
+                            .id(SharedString::from(format!("share-rename-{}", file.id)))
+                            .debug_selector(|| format!("share-rename-{}", file.id))
+                            .child(
+                                IconButton::new("pencil")
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(gpui::px(28.0))
+                                    .icon_size(gpui::px(13.0))
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.begin_rename(
+                                            rename_id.clone(),
+                                            original.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                    })
                     .child(
                         Button::new(
                             SharedString::from(format!("share-delete-{}", file.id)),
@@ -296,6 +319,86 @@ impl ShareView {
                             this.confirm_delete = Some(id.clone());
                             cx.notify();
                         })),
+                    ),
+            )
+            .into_any_element()
+    }
+    fn rename_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(draft) = self.rename.as_ref() else {
+            return div().into_any_element();
+        };
+        let cancel = cx.entity();
+        let enter = cancel.clone();
+        let confirm = cancel.clone();
+        Dialog::new()
+            .width(gpui::px(440.0))
+            .on_backdrop_click({
+                let cancel = cancel.clone();
+                move |_, cx| {
+                    cancel.update(cx, |this, cx| {
+                        this.rename = None;
+                        cx.notify();
+                    })
+                }
+            })
+            .header(
+                div()
+                    .p(px(16.0))
+                    .text_size(px(16.0))
+                    .child(t!("share.rename_title").to_string()),
+            )
+            .content(
+                div()
+                    .p(px(16.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div().debug_selector(|| "share-rename-input".into()).child(
+                            Input::new(&draft.input)
+                                .size(InputSize::Sm)
+                                .on_enter(move |_, cx| {
+                                    enter.update(cx, |this, cx| this.rename_confirmed(cx))
+                                }),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("share.rename_help").to_string()),
+                    )
+                    .children(self.error.clone().map(|error| {
+                        div()
+                            .debug_selector(|| "share-rename-error".into())
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::error())
+                            .child(error)
+                    })),
+            )
+            .footer(
+                div()
+                    .p(px(16.0))
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        Button::new("share-rename-cancel", t!("share.cancel").to_string())
+                            .debug_selector(|| "share-rename-cancel".into())
+                            .variant(ButtonVariant::Outline)
+                            .on_click(move |_, _, cx| {
+                                cancel.update(cx, |this, cx| {
+                                    this.rename = None;
+                                    cx.notify();
+                                })
+                            }),
+                    )
+                    .child(
+                        Button::new("share-rename-confirm", t!("share.rename_save").to_string())
+                            .debug_selector(|| "share-rename-confirm".into())
+                            .on_click(move |_, _, cx| {
+                                confirm.update(cx, |this, cx| this.rename_confirmed(cx))
+                            }),
                     ),
             )
             .into_any_element()
@@ -374,6 +477,12 @@ impl Render for ShareView {
             .text_color(ShellDeckColors::text_primary())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && this.rename.is_some() {
+                    this.rename = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape" && this.review_drafts {
                     this.review_drafts = false;
                     cx.notify();
@@ -381,7 +490,8 @@ impl Render for ShareView {
                     return;
                 }
                 let modifiers = event.keystroke.modifiers;
-                if !this.search.read(cx).focus_handle(cx).is_focused(window)
+                if this.rename.is_none()
+                    && !this.search.read(cx).focus_handle(cx).is_focused(window)
                     && event.keystroke.key.eq_ignore_ascii_case("v")
                     && (modifiers.control || modifiers.platform)
                 {
@@ -699,6 +809,9 @@ impl Render for ShareView {
         }
         if self.confirm_delete.is_some() {
             root = root.child(self.delete_dialog(cx));
+        }
+        if self.rename.is_some() {
+            root = root.child(self.rename_dialog(cx));
         }
         root.into_any_element()
     }
