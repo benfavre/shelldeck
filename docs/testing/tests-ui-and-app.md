@@ -1018,6 +1018,8 @@ and deep-link walkthroughs remain manual acceptance checks.
 |---|---|---|---|---|
 | SDTEST-2893 | `share_view::tests::sdtest_2893_small_share_batches_keep_actions_reachable_and_account_switch_rejects_old_results` | SDUC-568 | Green | Render actual controls at 480×420, 620×560 and 1100×800 with 20 long drafts. Keep Send and Review visible without scrolling, inspect/remove selected files in a bounded dialog, copy a real viewer URL, cancel deletion, switch accounts with an outstanding completion and reject the stale gallery. Private test clipboard; no network. |
 | SDTEST-2896 | `share_view::tests::sdtest_2896_stop_preserves_unshared_files_and_partial_success_restores_a_usable_session` | SDUC-568 | Green | Render Stop and progress at 480×420, cancel, apply partial completion, retain only unshared drafts, copy the completed link and restore usable account state. Review/clear selection through actual controls. |
+| SDTEST-2904 | `linux_capture::tests::localized_pictures_dir_is_read_from_user_dirs` | SDUC-432 | Green | Resolve the localized XDG Pictures dir from `user-dirs.dirs`; a disabled entry (`$HOME/`) never makes the Print Screen fallback watch the whole home. |
+| SDTEST-2905 | `linux_capture::tests::only_a_fresh_non_empty_screenshot_is_picked_up` | SDUC-432 | Green | The Print Screen fallback ignores pre-existing, copied-in (older mtime) and empty files and returns only the fresh screenshot. |
 
 Native visual fixture: `cargo run -p shelldeck-ui --example share_preview` with
 disposable XDG homes, no device credential and no real files. Screenshot/capture

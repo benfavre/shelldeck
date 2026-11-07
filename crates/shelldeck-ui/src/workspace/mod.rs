@@ -895,6 +895,9 @@ pub enum TrayNotification {
         body: String,
         site: String,
     },
+    /// Region capture fell back to the desktop's own screenshot key (Linux
+    /// without a Screenshot portal or capture tool).
+    CaptureHint,
 }
 
 impl TrayNotification {
@@ -961,6 +964,10 @@ impl TrayNotification {
                     )
                 }
             }
+            Self::CaptureHint => (
+                t!("notification.capture.summary").to_string(),
+                t!("notification.capture.body").to_string(),
+            ),
         }
     }
 }

@@ -16,6 +16,7 @@ use shelldeck_core::config::issues::{
     IssueAttachment, IssueAttachmentUpload, ISSUE_ATTACHMENT_MAX_BYTES,
 };
 use std::path::Path;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -842,31 +843,9 @@ pub fn capture_region() -> Result<AttachmentDraft, String> {
     };
 
     #[cfg(target_os = "linux")]
-    let captured = {
-        let attempts: &[(&str, &[&str])] = &[
-            ("gnome-screenshot", &["-a", "-f"]),
-            ("spectacle", &["-r", "-b", "-n", "-o"]),
-            ("import", &[]),
-        ];
-        // Only try tools that are actually installed: when none is, the
-        // failure is a missing dependency, not a user cancellation, and it
-        // deserves its own message instead of "capture cancelled".
-        let installed: Vec<(&str, &[&str])> = attempts
-            .iter()
-            .copied()
-            .filter(|(program, _)| shelldeck_core::util::executable_on_path(program))
-            .collect();
-        if installed.is_empty() {
-            return Err(t!("attachments.capture.tool_missing").to_string());
-        }
-        installed.iter().any(|(program, args)| {
-            Command::new(program)
-                .args(*args)
-                .arg(&path)
-                .status()
-                .map(|s| s.success() && path.metadata().map(|m| m.len() > 0).unwrap_or(false))
-                .unwrap_or(false)
-        })
+    let (captured, path) = match crate::linux_capture::capture(&path) {
+        crate::linux_capture::LinuxCapture::Captured(saved) => (true, saved),
+        crate::linux_capture::LinuxCapture::Cancelled => (false, path),
     };
 
     if !captured {

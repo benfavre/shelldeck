@@ -2055,9 +2055,13 @@ internal-note composers accept up to five PNG, JPEG, or WebP images (9 Mo each,
 leaving multipart headroom below Bext's 10 MiB request cap) from an image URL, the native file picker,
 Ctrl/Cmd+V, drag-and-drop, or the platform's interactive area capture. Local
 drafts show a removable preview and are not uploaded until submission.
-On Linux, an area capture with no capture tool installed (none of
-`gnome-screenshot`, `spectacle`, or ImageMagick `import` on `PATH`) reports a
-dedicated localized missing-tool error distinct from user cancellation.
+On Linux, an area capture needs no extra package: ShellDeck tries the
+xdg-desktop-portal Screenshot interface, then GNOME Shell's own area selector
+(holding the allow-listed `org.gnome.Screenshot` bus name only for the call),
+then `gnome-screenshot`, `spectacle`, ImageMagick `import` or `grim` + `slurp`.
+When none answers, it shows an OS notification asking for Print Screen and
+picks up the new screenshot from the XDG Pictures directory (90 s window).
+Cancelling the selector is a cancellation, never an error.
 An area capture opens a native annotation editor before it becomes a draft,
 with freehand, arrow, rectangle, text, undo, clear, and color controls; saving
 exports a PNG while cancelling preserves the unedited capture.
