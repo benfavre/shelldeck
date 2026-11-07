@@ -613,28 +613,23 @@ impl SupportView {
             let count = f.count(&self.counts);
             let filter = f;
             chips_row = chips_row.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .child(
-                        Self::compact_filter_button(
-                            ElementId::from(SharedString::from(format!("sf-{}", f.label()))),
-                            f.label(),
-                        )
-                        .variant(ButtonVariant::Outline)
-                        .selected(active)
-                        .on_click({
-                            let entity = entity.clone();
-                            move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.filter = filter;
-                                    cx.notify();
-                                });
-                            }
-                        }),
+                div().flex().items_center().child(
+                    Self::compact_filter_button(
+                        ElementId::from(SharedString::from(format!("sf-{}", f.label()))),
+                        filter_chip_label(&f.label(), count),
                     )
-                    .child(Badge::new(count.to_string()).variant(BadgeVariant::Secondary)),
+                    .variant(ButtonVariant::Outline)
+                    .selected(active)
+                    .on_click({
+                        let entity = entity.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.filter = filter;
+                                cx.notify();
+                            });
+                        }
+                    }),
+                ),
             );
         }
 
@@ -2533,5 +2528,23 @@ impl SupportView {
             .when(self.attachment_panel_open, |composer| {
                 composer.child(self.render_attachment_picker(cx))
             })
+    }
+}
+
+/// Filter chip text with its count inside the chip ("Ouverts 2"): one wrap
+/// row instead of a chip plus a detached count pill.
+pub(super) fn filter_chip_label(label: &str, count: impl std::fmt::Display) -> String {
+    format!("{label} {count}")
+}
+
+#[cfg(test)]
+mod chip_label_tests {
+    use super::filter_chip_label;
+
+    // SDTEST-2906 — SDUC-463
+    #[test]
+    fn sdtest_2906_filter_chip_carries_its_count_inline() {
+        assert_eq!(filter_chip_label("Ouverts", 2usize), "Ouverts 2");
+        assert_eq!(filter_chip_label("Tous", 0u32), "Tous 0");
     }
 }

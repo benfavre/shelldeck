@@ -99,11 +99,20 @@ pub fn ai_provider_badge(backend: AiBackend, model: &str) -> impl IntoElement {
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .child(if model.is_empty() {
-                    backend.display_name().to_string()
+                    backend_label(backend)
                 } else {
-                    format!("{} · {}", backend.display_name(), model)
+                    format!("{} · {}", backend_label(backend), model)
                 }),
         )
+}
+
+/// Provider name for the UI. Product names stay as-is; only "Disabled",
+/// the one word in `AiBackend::display_name`, is localized.
+pub fn backend_label(backend: AiBackend) -> String {
+    match backend {
+        AiBackend::Disabled => rust_i18n::t!("settings.ai.backend.disabled").to_string(),
+        other => other.display_name().to_string(),
+    }
 }
 
 /// The same provider signal, sized for a composer footer: no border, no fill,
@@ -131,7 +140,7 @@ pub fn ai_provider_inline(backend: AiBackend, model: &str) -> impl IntoElement {
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .child(if model.is_empty() {
-                    backend.display_name().to_string()
+                    backend_label(backend)
                 } else {
                     model
                 }),
@@ -164,4 +173,24 @@ pub fn script_category_chip(cat: ScriptCategory, color: Hsla) -> impl IntoElemen
         .gap(px(4.0))
         .child(lucide_icon(cat.lucide_icon(), 12.0, color))
         .child(cat.label().to_string())
+}
+
+#[cfg(test)]
+mod backend_label_tests {
+    use super::backend_label;
+    use shelldeck_core::ai::AiBackend;
+
+    // SDTEST-2908 — SDUC-463
+    #[test]
+    fn sdtest_2908_disabled_backend_is_localized_and_products_keep_their_name() {
+        assert_eq!(
+            backend_label(AiBackend::Disabled),
+            rust_i18n::t!("settings.ai.backend.disabled").to_string()
+        );
+        assert_eq!(
+            rust_i18n::t!("settings.ai.backend.disabled", locale = "fr"),
+            "Désactivé"
+        );
+        assert_eq!(backend_label(AiBackend::ClaudeCli), "Claude Code");
+    }
 }
