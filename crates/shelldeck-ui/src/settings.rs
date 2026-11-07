@@ -1169,6 +1169,18 @@ impl SettingsView {
                     },
                 ),
             ))
+            .child(Self::render_setting_row(
+                t!("settings.tray.notify_inklura.label").as_ref(),
+                t!("settings.tray.notify_inklura.description").as_ref(),
+                Self::bind_toggle(
+                    "tray-notify-inklura",
+                    self.config.tray.notify_inklura,
+                    &entity,
+                    |this, value| {
+                        this.config.tray.notify_inklura = value;
+                    },
+                ),
+            ))
             .child(self.render_cloud_sync_settings(cx))
             .child(self.render_inklura_extension_settings(cx))
     }

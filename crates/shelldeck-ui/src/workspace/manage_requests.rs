@@ -14,6 +14,7 @@ pub(super) enum ManageRead {
     SupportDetail,
     Sync,
     People,
+    Notifications,
 }
 
 #[derive(Clone, Copy)]
@@ -25,7 +26,7 @@ pub(super) struct ManageRequest {
 #[derive(Default)]
 pub(super) struct ManageRequests {
     session: u64,
-    reads: [u64; 9],
+    reads: [u64; 10],
 }
 
 #[derive(Debug, PartialEq, Eq)]
