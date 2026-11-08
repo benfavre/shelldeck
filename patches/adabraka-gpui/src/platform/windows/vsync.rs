@@ -61,21 +61,21 @@ fn get_dwm_interval() -> Result<Duration> {
         ..Default::default()
     };
     unsafe { DwmGetCompositionTimingInfo(HWND::default(), &mut timing_info) }?;
-    let interval = retrieve_duration(timing_info.qpcRefreshPeriod, *QPC_TICKS_PER_SECOND);
+    // ShellDeck patch: SDPATCH-127 — preserve fractional/high refresh rates without integer division by zero.
+    let interval = super::super::refresh_interval::duration_from_ratio(
+        timing_info.qpcRefreshPeriod,
+        *QPC_TICKS_PER_SECOND,
+    )
+    .unwrap_or_default();
     // Check for interval values that are impossibly low. A 29 microsecond
     // interval was seen (from a qpcRefreshPeriod of 60).
     if interval < VSYNC_INTERVAL_THRESHOLD {
-        Ok(retrieve_duration(
+        super::super::refresh_interval::duration_from_ratio(
             timing_info.rateRefresh.uiDenominator as u64,
             timing_info.rateRefresh.uiNumerator as u64,
-        ))
+        )
+        .context("Invalid DWM refresh-rate ratio")
     } else {
         Ok(interval)
     }
-}
-
-#[inline]
-fn retrieve_duration(counts: u64, ticks_per_second: u64) -> Duration {
-    let ticks_per_microsecond = ticks_per_second / 1_000_000;
-    Duration::from_micros(counts / ticks_per_microsecond)
 }

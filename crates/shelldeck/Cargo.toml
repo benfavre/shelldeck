@@ -1,5 +1,6 @@
 [package]
 name = "shelldeck"
+default-run = "shelldeck"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +8,16 @@ license.workspace = true
 [[bin]]
 name = "shelldeck"
 path = "src/main.rs"
+
+# Build this fixture from the binary package so GPUI does not inherit the UI
+# package's test-support dev dependency and force eager test-platform redraws.
+[[bin]]
+name = "agent-console-preview"
+path = "src/agent_console_preview_main.rs"
+required-features = ["agent-preview"]
+
+[features]
+agent-preview = ["dep:automonique-protocol", "dep:serde_json"]
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
@@ -26,6 +37,8 @@ directories = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
 notify-rust = { workspace = true }
+automonique-protocol = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 image = { workspace = true }

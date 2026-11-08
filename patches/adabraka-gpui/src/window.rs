@@ -868,6 +868,8 @@ pub struct Window {
     hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
     pub(crate) last_input_timestamp: Rc<Cell<Instant>>,
+    // ShellDeck patch: SDPATCH-124 — retain the first pending input for opt-in submit latency.
+    unpresented_input: Cell<Option<Instant>>,
     pub(crate) refreshing: bool,
     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
     pub(crate) focus: Option<FocusId>,
@@ -1052,10 +1054,11 @@ impl Window {
                     measure("frame duration", || {
                         handle
                             .update(&mut cx, |_, window, cx| {
-                                let arena_clear_needed = window.draw(cx);
-                                window.present();
+                                // ShellDeck patch: SDPATCH-124 — opt-in frame phase timings separate CPU work from presentation waits.
+                                let arena_clear_needed = measure("frame cpu draw", || window.draw(cx));
+                                measure("frame gpu present", || window.present());
                                 // drop the arena elements after present to reduce latency
-                                arena_clear_needed.clear();
+                                measure("frame arena clear", || arena_clear_needed.clear());
                             })
                             .log_err();
                     })
@@ -1253,6 +1256,8 @@ impl Window {
             hovered,
             needs_present,
             last_input_timestamp,
+            // ShellDeck patch: SDPATCH-124 — no pending latency sample before native input.
+            unpresented_input: Cell::new(None),
             refreshing: false,
             activation_observers: SubscriberSet::new(),
             focus: None,
@@ -2020,6 +2025,10 @@ impl Window {
     #[profiling::function]
     fn present(&self) {
         self.platform_window.draw(&self.rendered_frame.scene);
+        // ShellDeck patch: SDPATCH-124 — input dispatch to GPU submission excludes compositor scanout.
+        if let Some(input) = self.unpresented_input.take() {
+            eprintln!("frame input-to-submit: {:?}", input.elapsed());
+        }
         self.needs_present.set(false);
         profiling::finish_frame!();
     }
@@ -3625,7 +3634,15 @@ impl Window {
     /// Dispatch a mouse or keyboard event on the window.
     #[profiling::function]
     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-        self.last_input_timestamp.set(Instant::now());
+        let now = Instant::now();
+        self.last_input_timestamp.set(now);
+        // ShellDeck patch: SDPATCH-124 — latency instrumentation is dormant without explicit opt-in.
+        static MEASURE_INPUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *MEASURE_INPUT.get_or_init(|| matches!(std::env::var("ZED_MEASUREMENTS").as_deref(), Ok("1" | "true")))
+            && self.unpresented_input.get().is_none()
+        {
+            self.unpresented_input.set(Some(now));
+        }
         // Handlers may set this to false by calling `stop_propagation`.
         cx.propagate_event = true;
         // Handlers may set this to true by calling `prevent_default`.

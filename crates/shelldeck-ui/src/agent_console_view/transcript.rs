@@ -21,7 +21,7 @@ impl TranscriptId {
 
 /// Recognize long base64/hex tokens, including wrapped and diff-prefixed lines.
 /// Require enough data to avoid folding hashes, paths and ordinary source text.
-fn encoded_spans(text: &str) -> Vec<Range<usize>> {
+pub(super) fn encoded_spans(text: &str) -> Vec<Range<usize>> {
     fn encoded_byte(byte: u8) -> bool {
         byte.is_ascii_alphanumeric() || b"+/=_-".contains(&byte)
     }
@@ -163,6 +163,7 @@ impl AgentConsoleView {
         if !ui.raw_transcripts.remove(id) {
             ui.raw_transcripts.insert(id.clone());
         }
+        self.timeline.pause_following();
         cx.notify();
         true
     }
