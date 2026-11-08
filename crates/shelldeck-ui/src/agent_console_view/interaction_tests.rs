@@ -3031,7 +3031,7 @@ fn rendered_timeline_motion_reuses_navigator_and_search_stays_live() {
     });
     ui.type_draft("Keep this unsent instruction");
     ui.wheel(180.0);
-    let search = ui.bounds("agent-nav-search").unwrap().center();
+    let search = ui.bounds("agent-nav-search-trigger").unwrap().center();
     let position = ui.bounds("agent-timeline-scroll").unwrap().center();
     ui.window
         .simulate_mouse_move(position, None, Modifiers::none());
@@ -3069,6 +3069,8 @@ fn rendered_timeline_motion_reuses_navigator_and_search_stays_live() {
     );
     // Hit the pre-cache control using its actual retained hitbox.
     ui.window.simulate_click(search, Modifiers::none());
+    ui.redraw();
+    assert!(ui.bounds("agent-nav-search").is_some());
     ui.window.simulate_input("freshneedle");
     ui.window.run_until_parked();
     assert!(
