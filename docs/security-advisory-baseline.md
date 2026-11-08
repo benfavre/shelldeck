@@ -45,6 +45,12 @@ The one substantive change is a correction, not progress: the claim that the
 is fixed under RUSTSEC-2024-0384 below. The real blocker there is stronger than
 the one previously recorded.
 
+## Resolved on 2026-11-08
+
+| Advisory / warning | Resolution |
+| --- | --- |
+| RUSTSEC-2026-0386 (`tokio` 1.52.3, unsound `AsyncFd` constructors) | Lockfile updated to 1.53.3. The 1.52 line has no patched release (patched: `>= 1.51.6, < 1.52.0` and `>= 1.53.3`). Tokio 1.53.3 has the same dependencies as 1.52.3. The workspace requirement is now `1.53.3`, so a lockfile refresh cannot fall back to an affected release. ShellDeck code does not call `AsyncFd`. |
+
 ## Reviewed transitive baseline
 
 | Owner / migration boundary | Advisory IDs | Current dependency path |
