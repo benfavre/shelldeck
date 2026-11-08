@@ -53,7 +53,7 @@ pub enum MenuCommand {
     TerminalZoomOut,
     TerminalZoomReset,
     // — Aller —
-    GoDashboard,
+    GoAgents,
     GoTerminal,
     GoScripts,
     GoRecent,
@@ -443,12 +443,12 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
         if dev {
             go.push(
                 MenuEntry::command(
-                    "go-dashboard",
-                    t!("menu.go.dashboard").to_string(),
-                    MenuCommand::GoDashboard,
+                    "go-agents",
+                    t!("menu.go.agents").to_string(),
+                    MenuCommand::GoAgents,
                 )
-                .icon("grid-2x2")
-                .checked(ctx.active_go == Some(MenuCommand::GoDashboard)),
+                .icon("bot")
+                .checked(ctx.active_go == Some(MenuCommand::GoAgents)),
             );
             go.push(
                 MenuEntry::command(
@@ -808,7 +808,8 @@ mod tests {
                 for entry in &menu.entries {
                     if let MenuEntry::Command { id, .. } = entry {
                         assert!(
-                            !["go-forwards", "go-server-sync", "go-sites"].contains(id),
+                            !["go-dashboard", "go-forwards", "go-server-sync", "go-sites"]
+                                .contains(id),
                             "retired tool is still offered in {mode:?}: {id}"
                         );
                         assert!(
