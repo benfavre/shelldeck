@@ -1260,6 +1260,14 @@ mod tests {
         assert_eq!(g.lock().title, "Win");
     }
 
+    // SDTEST-2911 : the program title feeds the tab label, so control
+    // characters are dropped and surrounding whitespace trimmed.
+    #[test]
+    fn osc_title_is_sanitized_for_display() {
+        let g = run(3, 10, b"\x1b]0; \x08vim a;b.rs\x7f \x07");
+        assert_eq!(g.lock().title, "vim a;b.rs");
+    }
+
     #[test]
     fn osc_palette_color_override() {
         let g = run(3, 10, b"\x1b]4;1;rgb:ff/00/00\x07");

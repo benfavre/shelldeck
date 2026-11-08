@@ -237,8 +237,11 @@ impl Workspace {
                     );
                     return;
                 }
-                self.switch_to_section(SidebarSection::Connections);
+                // The Connections panel is retired: the link lands on Agents,
+                // whose target picker lists the same saved hosts.
+                self.switch_to_section(SidebarSection::Agents);
                 self.sidebar.update(cx, |s, cx| {
+                    s.set_active_section(SidebarSection::Agents);
                     s.focus_connection(id);
                     cx.notify();
                 });

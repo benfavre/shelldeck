@@ -16,7 +16,7 @@ impl Workspace {
         let mode = self.effective_mode();
         let active_go = if mode == AppMode::Dev {
             match self.active_view {
-                ActiveView::Dashboard => Some(MenuCommand::GoDashboard),
+                ActiveView::Agents => Some(MenuCommand::GoAgents),
                 ActiveView::Terminal => Some(MenuCommand::GoTerminal),
                 ActiveView::Scripts => Some(MenuCommand::GoScripts),
                 ActiveView::Recent => Some(MenuCommand::GoRecent),
@@ -181,7 +181,7 @@ impl Workspace {
                     .update(cx, |settings, cx| settings.adjust_ui_font_size(delta, cx));
             }
 
-            Cmd::GoDashboard => self.activate_dev_section(SidebarSection::Connections, cx),
+            Cmd::GoAgents => self.activate_dev_section(SidebarSection::Agents, cx),
             Cmd::GoTerminal => self.activate_dev_section(SidebarSection::Terminals, cx),
             Cmd::GoScripts => self.activate_dev_section(SidebarSection::Scripts, cx),
             Cmd::GoRecent => self.execute_palette_action(&OpenRecent, cx),
