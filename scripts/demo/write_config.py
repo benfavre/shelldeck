@@ -9,6 +9,7 @@ faux serveur Manage.
 Le compte est indispensable : sans session, ShellDeck n'affiche que l'écran de
 bienvenue et aucune surface n'est visible.
 """
+import os
 import re
 import subprocess
 import sys
@@ -23,7 +24,7 @@ if not cfg.exists():
     root = Path(__file__).resolve().parents[2]
     binary = root / "target" / "debug" / "shelldeck"
     env = {"HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config"),
-           "PATH": "/usr/bin:/bin", "DISPLAY": ":0"}
+           "PATH": "/usr/bin:/bin", "DISPLAY": os.environ.get("DISPLAY", ":0")}
     proc = subprocess.Popen([str(binary)], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(60):
@@ -76,7 +77,13 @@ if "[cloud_sync]" in s:
         b = block.group(1)
         b = re.sub(r"^enabled = .*$", "enabled = true", b, flags=re.M)
         b = re.sub(r"^base_url = .*$", f"base_url = {base}", b, flags=re.M)
-        b = re.sub(r"^token = .*$", 'token = "demo-token"', b, flags=re.M)
+        # The real token now lives in the OS keychain, so a saved config has
+        # no `token` line: add one. ShellDeck migrates it to the keychain at
+        # startup and keeps using it even when no keychain is reachable.
+        if re.search(r"^token = ", b, flags=re.M):
+            b = re.sub(r"^token = .*$", 'token = "demo-token"', b, flags=re.M)
+        else:
+            b = b.rstrip("\n") + '\ntoken = "demo-token"\n\n'
         return b
     s = re.sub(r"(\[cloud_sync\][^\[]*)", patch, s, count=1)
 else:

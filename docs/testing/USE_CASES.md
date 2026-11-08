@@ -2275,11 +2275,19 @@ query. A query that matches none of an otherwise populated directory names the
 query, offers only a clear-search action, and restores the full directory when
 cleared. Manage and synchronization actions remain exclusive to a genuinely
 empty account.
-The account card keeps the identity and both Manage actions visible at every
-supported width. At 600 logical pixels or below its action group moves below
-the identity; above that breakpoint the original horizontal composition is
-preserved. The breakpoint follows UI scale, and neither the display name nor
-the role badge may collapse into vertical glyphs while flex space is resolved.
+The account strip shares the User tab row: the tabs on the left, then the
+avatar, display name, role badge, Open Manage and an icon-only synchronize
+action on the right, so no full-width card sits above the tabs. At 600 logical
+pixels or below only the avatar and both actions remain beside the wrapping
+tabs (the e-mail stays in Mes informations). The breakpoint follows UI scale;
+a long display name truncates with an ellipsis instead of pushing the actions
+out or collapsing into vertical glyphs. On Accueil the two counters are
+one-line shortcuts that open Mes sites and Mes demandes. The banner is 104 px
+tall from 1100 logical pixels, where its subtitle fits on one line, 132 px
+below that and 136 px at the compact breakpoint; below 1100 the quick actions
+sit in one row under their title instead of a tall right-hand column. Mes informations flows its
+cards two per row when the window is wide enough. Support ticket and request
+filters carry their count inside the chip ("Ouverts 2").
 The same breakpoint gives compact site and request rows two explicit levels:
 the site identity or request title remains above, while actions or metadata
 move below. A title that still exceeds its full row uses an ellipsis only
@@ -2288,7 +2296,7 @@ Their virtualized slots preserve a fixed 4 px interval,
 and request badges, counters, and relative dates retain an explicit 8 px
 separation instead of depending on component-internal padding. Above the
 breakpoint, the original single-line rows remain unchanged.
-The account card and four User tabs form fixed shell chrome while each tab
+The tab row with its account strip forms fixed shell chrome while each tab
 owns the remaining scrollable height. In Mes sites, the section title and live
 search also stay outside the virtualized directory, so scrolling hundreds of
 rows never removes the current-page identity, filter, or routes to another

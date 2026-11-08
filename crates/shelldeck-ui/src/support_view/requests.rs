@@ -5,6 +5,7 @@ use super::thread::{
     timeline_day, timeline_day_label, typing_indicator, HumanMessageMeta, ThreadDeliveryTone,
     ThreadMessageExtras, ThreadNoteKind,
 };
+use super::tickets::filter_chip_label;
 use super::*;
 use crate::icons::{ai_provider_icon, ai_provider_inline};
 use adabraka_ui::prelude::{tooltip, Composer};
@@ -242,36 +243,31 @@ impl SupportView {
             let value_owned: String = (*value).to_string();
             let entity = cx.entity();
             chips_row = chips_row.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .child(
-                        Self::compact_filter_button(
-                            ElementId::from(SharedString::from(format!(
-                                "iss-sf-{}",
-                                if value.is_empty() { "all" } else { value }
-                            ))),
-                            t!(*label_key).to_string(),
-                        )
-                        .variant(ButtonVariant::Outline)
-                        .selected(active)
-                        .on_click({
-                            let entity = entity.clone();
-                            move |_, _, cx| {
-                                let value = value_owned.clone();
-                                entity.update(cx, |this, cx| {
-                                    let q = this.issues_search_state.read(cx).content().to_string();
-                                    this.issues_filter.status = value;
-                                    this.issues_filter.q = q;
-                                    let filter = this.issues_filter.clone();
-                                    cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
-                                    cx.notify();
-                                });
-                            }
-                        }),
+                div().flex().items_center().child(
+                    Self::compact_filter_button(
+                        ElementId::from(SharedString::from(format!(
+                            "iss-sf-{}",
+                            if value.is_empty() { "all" } else { value }
+                        ))),
+                        filter_chip_label(&t!(*label_key), count),
                     )
-                    .child(Badge::new(count.to_string()).variant(BadgeVariant::Secondary)),
+                    .variant(ButtonVariant::Outline)
+                    .selected(active)
+                    .on_click({
+                        let entity = entity.clone();
+                        move |_, _, cx| {
+                            let value = value_owned.clone();
+                            entity.update(cx, |this, cx| {
+                                let q = this.issues_search_state.read(cx).content().to_string();
+                                this.issues_filter.status = value;
+                                this.issues_filter.q = q;
+                                let filter = this.issues_filter.clone();
+                                cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+                                cx.notify();
+                            });
+                        }
+                    }),
+                ),
             );
         }
 
@@ -391,7 +387,15 @@ impl SupportView {
             row = row.bg(ShellDeckColors::selected_bg());
         }
 
-        let mut meta = format!("{} · {}", iss.tenant_name, iss.source);
+        // Manage sends the source as a slug: show the localized word, and
+        // skip unknown or empty slugs rather than leaking them.
+        let mut meta = iss.tenant_name.clone();
+        if let Some(source) = issue_source_label(&iss.source) {
+            if !meta.is_empty() {
+                meta.push_str(" · ");
+            }
+            meta.push_str(&source);
+        }
         if iss.comment_count > 0 {
             meta.push_str(&format!(
                 " · {}",
@@ -2613,5 +2617,43 @@ mod tests {
             },
         )
         .is_none());
+    }
+}
+
+/// Localized label for an issue `source` slug, `None` when unknown.
+pub(super) fn issue_source_label(source: &str) -> Option<String> {
+    match source.trim() {
+        "user" => Some(t!("support.issues.source.user").to_string()),
+        "support" => Some(t!("support.issues.source.support").to_string()),
+        "slack" => Some("Slack".to_string()),
+        "github" => Some("GitHub".to_string()),
+        "manage" => Some("Manage".to_string()),
+        "email" => Some(t!("support.issues.source.email").to_string()),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod source_label_tests {
+    use super::issue_source_label;
+
+    // SDTEST-2907 — SDUC-463
+    #[test]
+    fn sdtest_2907_issue_source_slugs_are_localized_or_hidden() {
+        // Compare with the catalogue rather than set the process-global locale.
+        let tr = |key: &str| Some(rust_i18n::t!(key).to_string());
+        assert_eq!(issue_source_label("user"), tr("support.issues.source.user"));
+        assert_eq!(
+            issue_source_label(" support "),
+            tr("support.issues.source.support")
+        );
+        assert_eq!(
+            issue_source_label("email"),
+            tr("support.issues.source.email")
+        );
+        assert_ne!(issue_source_label("user").as_deref(), Some("user"));
+        assert_eq!(issue_source_label("github").as_deref(), Some("GitHub"));
+        assert_eq!(issue_source_label(""), None);
+        assert_eq!(issue_source_label("internal_migration"), None);
     }
 }

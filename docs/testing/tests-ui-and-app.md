@@ -1020,6 +1020,10 @@ and deep-link walkthroughs remain manual acceptance checks.
 | SDTEST-2896 | `share_view::tests::sdtest_2896_stop_preserves_unshared_files_and_partial_success_restores_a_usable_session` | SDUC-568 | Green | Render Stop and progress at 480×420, cancel, apply partial completion, retain only unshared drafts, copy the completed link and restore usable account state. Review/clear selection through actual controls. |
 | SDTEST-2904 | `linux_capture::tests::localized_pictures_dir_is_read_from_user_dirs` | SDUC-432 | Green | Resolve the localized XDG Pictures dir from `user-dirs.dirs`; a disabled entry (`$HOME/`) never makes the Print Screen fallback watch the whole home. |
 | SDTEST-2905 | `linux_capture::tests::only_a_fresh_non_empty_screenshot_is_picked_up` | SDUC-432 | Green | The Print Screen fallback ignores pre-existing, copied-in (older mtime) and empty files and returns only the fresh screenshot. |
+| SDTEST-2906 | `support_view::tickets::chip_label_tests::sdtest_2906_filter_chip_carries_its_count_inline` | SDUC-463 | Green | Ticket and request filter chips render "Label N" in one chip instead of a chip plus a detached count pill. |
+| SDTEST-2907 | `support_view::requests::source_label_tests::sdtest_2907_issue_source_slugs_are_localized_or_hidden` | SDUC-463 | Green | Request rows show the localized source (Utilisateur, Support, E-mail...) and drop unknown or empty slugs instead of printing "user". |
+| SDTEST-2908 | `icons::backend_label_tests::sdtest_2908_disabled_backend_is_localized_and_products_keep_their_name` | SDUC-463 | Green | The composer provider label localizes the disabled backend (fr "Désactivé") and keeps product names verbatim. |
+| SDTEST-2909 | `workspace::user_home::tests::sdtest_2909_short_banner_only_where_the_subtitle_fits_on_one_line` | SDUC-440 | Green | The 104 px home banner applies from 1100 logical pixels only, scaled with UI font size. |
 
 Native visual fixture: `cargo run -p shelldeck-ui --example share_preview` with
 disposable XDG homes, no device credential and no real files. Screenshot/capture
