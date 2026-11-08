@@ -1,6 +1,57 @@
 use super::*;
 
 impl Workspace {
+    pub(super) fn open_boat_console(&mut self, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
+        let Some(site) = self.active_site_info() else {
+            self.show_toast(
+                t!("toast.select_active_site_first").to_string(),
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        };
+        let base = self.account_base_url();
+        let token = self.app_config.cloud_sync.token.clone();
+        let expected_token = token.clone();
+        let tenant = site.tenant_id.clone();
+        let site_id = site.site_id.clone();
+        let expected_site = site_id.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    manage_sites::fetch_boat_console_url(&base, &token, &tenant, &site_id)
+                })
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                if !workspace.can_access_mode(AppMode::Dev)
+                    || workspace.app_config.cloud_sync.token != expected_token
+                    || workspace
+                        .active_site_info()
+                        .is_none_or(|site| site.site_id != expected_site)
+                {
+                    return;
+                }
+                match result.and_then(|url| cloud_account::open_in_browser(&url)) {
+                    Ok(_) => workspace.show_toast(
+                        t!("toast.opening_browser").to_string(),
+                        ToastLevel::Info,
+                        cx,
+                    ),
+                    Err(_) => workspace.show_toast(
+                        t!("toast.boat_console_unavailable").to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
+            });
+        })
+        .detach();
+    }
+
     // --- Manage sites (site switcher) ---
 
     pub(super) fn issue_site_option_label(site: &ManagedSiteInfo) -> String {

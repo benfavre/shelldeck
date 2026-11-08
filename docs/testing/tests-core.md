@@ -793,3 +793,9 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2900 | `config::manage_notifications::tests::updates_send_site_scoped_actions_and_a_cutoff` | SDUC-570 | Green | markRead/markAllRead/open bodies are site scoped; the mark-all cutoff round-trips as RFC 3339 to the exact millisecond. |
 | SDTEST-2901 | `config::manage_notifications::tests::open_rejects_a_non_https_link` | SDUC-570 | Green | A non-HTTPS link from the server is never handed to the OS opener. |
 | SDTEST-2902 | `config::manage_notifications::tests::first_load_seeds_silently_then_only_new_unread_items_surface` | SDUC-570 | Green | Launch does not replay old alerts; later polls surface only unseen unread items; local read marks keep the badge honest. |
+
+## Boat signed handoff
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2911 | `config::manage_sites::tests::sdtest_2911_boat_handoff_is_fresh_scoped_and_same_origin` | SDUC-571 | Green | Raw TCP contract covers the authenticated fresh directory request, exact tenant/site matching, same-origin signed target, missing-link and unsigned-link refusal. |

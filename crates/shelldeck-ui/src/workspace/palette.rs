@@ -166,6 +166,12 @@ impl Workspace {
                     Box::new(OpenFleet),
                 ),
                 PaletteAction::new(
+                    t!("palette.boat_open").to_string(),
+                    None,
+                    "cloud",
+                    Box::new(OpenBoatConsole),
+                ),
+                PaletteAction::new(
                     t!("palette.bext_open").to_string(),
                     None,
                     "cloud",
@@ -379,6 +385,8 @@ impl Workspace {
             self.share_files_now(cx);
         } else if action.as_any().is::<OpenSupportRequests>() {
             self.open_support_requests(cx);
+        } else if action.as_any().is::<OpenBoatConsole>() {
+            self.open_boat_console(cx);
         } else if action.as_any().is::<OpenBextCloud>() {
             self.open_bext_cloud(cx);
         } else if action.as_any().is::<ConnectBextCloud>() {
@@ -404,6 +412,37 @@ mod tests {
     };
     use crate::t;
     use gpui::Action;
+
+    // SDTEST-2910 / SDUC-571
+    #[test]
+    fn sdtest_2910_boat_console_is_offered_only_in_authorized_dev_mode() {
+        for (allowed, current, expected) in [
+            (&[][..], AppMode::User, false),
+            (&[AppMode::User][..], AppMode::User, false),
+            (
+                &[AppMode::User, AppMode::Support][..],
+                AppMode::Support,
+                false,
+            ),
+            (
+                &[AppMode::User, AppMode::Support, AppMode::Dev][..],
+                AppMode::User,
+                false,
+            ),
+            (
+                &[AppMode::User, AppMode::Support, AppMode::Dev][..],
+                AppMode::Dev,
+                true,
+            ),
+        ] {
+            let allowed = Box::leak(allowed.to_vec().into_boxed_slice());
+            let actions = Workspace::base_palette_actions(allowed, current, false, false);
+            assert_eq!(
+                contains_action::<super::OpenBoatConsole>(&actions),
+                expected
+            );
+        }
+    }
 
     /// SDTEST-1700 — « Quitter » ne doit jamais être la première ligne.
     ///

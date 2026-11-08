@@ -1030,3 +1030,9 @@ disposable XDG homes, no device credential and no real files. Screenshot/capture
 selection and installed PDF application handoff remain manual OS acceptance;
 transport and annotation reuse the existing request attachment implementation.
 | SDTEST-2903 | `workspace::inklura_notifications::tests::a_single_arrival_names_itself_and_a_burst_collapses_to_one_count` | SDUC-570 | Green | One arrival carries its title, body and space in the OS notification; a burst collapses to a single count. Panel paint and browser handoff remain manual native acceptance. |
+
+## Boat console
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2910 | `workspace::palette::tests::sdtest_2910_boat_console_is_offered_only_in_authorized_dev_mode` | SDUC-571 | Green | Covers role/mode visibility. Live active-site browser handoff requires the paired Manage deployment. |

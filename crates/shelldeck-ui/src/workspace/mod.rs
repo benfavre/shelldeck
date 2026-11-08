@@ -399,6 +399,7 @@ actions!(
         NewRequest,
         OpenSupportRequests,
         OpenBextCloud,
+        OpenBoatConsole,
         ConnectBextCloud,
         OpenAiAssistant,
         OpenClippy,
