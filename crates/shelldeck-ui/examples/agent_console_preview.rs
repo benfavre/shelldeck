@@ -297,10 +297,10 @@ pub fn main() -> anyhow::Result<()> {
                     view.set_project_groups(
                         vec![AgentProjectGroup {
                             id: "preview-project".into(),
-                            label: "Inklura Desktop".into(),
+                            label: if std::env::var_os("SHELLDECK_PREVIEW_NAVIGATION").is_some() { ".tmpcmdPCs".into() } else { "Inklura Desktop".into() },
                             worktrees: vec![AgentWorktreeOption {
                                 id: "preview-main".into(),
-                                label: "Inklura Desktop".into(),
+                                label: if std::env::var_os("SHELLDECK_PREVIEW_NAVIGATION").is_some() { ".tmpcmdPCs".into() } else { "Inklura Desktop".into() },
                                 path: preview_root.display().to_string(),
                                 branch: None,
                                 is_primary: true,
@@ -347,6 +347,12 @@ pub fn main() -> anyhow::Result<()> {
                     .unwrap()
                     .to_path_buf();
                 cx.subscribe(&view, move |view, event: &AgentConsoleEvent, cx| {
+                    if std::env::var_os("SHELLDECK_PREVIEW_NAVIGATION").is_some() {
+                        if let AgentConsoleEvent::RemoveProject(id) = event {
+                            view.update(cx, |view, cx| view.complete_navigator_project_removal(id, Ok(()), cx));
+                        }
+                    }
+
                     if std::env::var_os("SHELLDECK_PREVIEW_STREAM").is_some() {
                         if let AgentConsoleEvent::Run(request) = event {
                             view.update(cx, |view,cx| {

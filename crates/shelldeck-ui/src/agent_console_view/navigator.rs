@@ -609,7 +609,11 @@ impl AgentConsoleView {
             .into_any_element()
     }
 
-    fn new_worktree_session(&mut self, expected: &AgentWorktreeOption, cx: &mut Context<Self>) {
+    pub(super) fn new_worktree_session(
+        &mut self,
+        expected: &AgentWorktreeOption,
+        cx: &mut Context<Self>,
+    ) {
         let current = self
             .project_groups
             .iter()
@@ -706,6 +710,7 @@ impl AgentConsoleView {
         self.rendered_navigators
             .set(self.rendered_navigators.get() + 1);
         let parent = cx.entity();
+        let search_blur_parent = parent.clone();
         let running_count = self.sessions.active_count();
         let unread_count = self
             .sessions
@@ -751,7 +756,7 @@ impl AgentConsoleView {
                 .flex()
                 .items_center()
                 .min_w_0()
-                .gap(px(3.0))
+                .gap(px(6.0))
                 .pt(px(3.0))
                 .child(
                     Button::new(
@@ -843,6 +848,7 @@ impl AgentConsoleView {
                     header = header.child(collapsed_session_summary(&project.id, count, attention));
                 }
             }
+            header = header.child(self.project_actions_button(&project.id, cx));
             body = body.child(header);
             if collapsed {
                 let selected = self.navigator_selected_session();
@@ -965,35 +971,39 @@ impl AgentConsoleView {
                     .h(px(42.0))
                     .flex()
                     .items_center()
-                    .gap(px(7.0))
+                    .gap(px(6.0))
                     .px(px(10.0))
                     .border_b_1()
                     .border_color(ShellDeckColors::border())
-                    .child(lucide_icon("grid-2x2", 14.0, ShellDeckColors::primary()))
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(11.0))
+                            .text_size(px(12.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(t!("agents.title").to_string()),
+                            .child(t!("agents.navigator.projects").to_string()),
                     )
-                    .when(running_count > 0, |row| {
-                        row.child(
-                            Badge::new(running_count.to_string()).variant(BadgeVariant::Secondary),
-                        )
-                    })
                     .child(
-                        Button::new("agent-nav-add-project", "")
+                        Button::new("agent-nav-search-trigger", "")
+                            .debug_selector(|| "agent-nav-search-trigger".into())
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Icon)
-                            .icon(IconSource::from("folder"))
-                            .w(px(26.0))
-                            .h(px(26.0))
-                            .tooltip(t!("agents.project.create").to_string())
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(AgentConsoleEvent::OpenProjectSetup)
+                            .icon("search")
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .tooltip(t!("agents.navigator.search").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.library.search_open = !this.library.search_open;
+                                if this.library.search_open {
+                                    window.focus(&this.navigator_search.read(cx).focus_handle(cx));
+                                } else {
+                                    this.navigator_search.update(cx, |state, cx| {
+                                        state.replace_content(String::new(), cx)
+                                    });
+                                }
+                                cx.notify();
                             })),
                     )
+                    .child(self.navigator_actions_button(cx))
                     .child(
                         Button::new("agent-nav-new", "")
                             .variant(ButtonVariant::Ghost)
@@ -1005,47 +1015,70 @@ impl AgentConsoleView {
                             .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
                     ),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px(px(8.0))
-                    .py(px(6.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .child(lucide_icon("search", 11.0, ShellDeckColors::text_muted()))
-                    .child(
-                        div().flex().flex_col().flex_1().min_w(px(0.0)).child(
-                            Input::new(&self.navigator_search)
-                                .debug_selector("agent-nav-search")
-                                .variant(InputVariant::Bare)
-                                .size(InputSize::Sm)
-                                .w_full()
-                                .placeholder(t!("agents.navigator.search").to_string())
-                                .on_change(move |_value, cx| {
-                                    parent.update(cx, |_this, cx| cx.notify());
-                                }),
+            .when(self.library.search_open, |sidebar| {
+                sidebar.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .px(px(8.0))
+                        .py(px(6.0))
+                        .border_b_1()
+                        .border_color(ShellDeckColors::border())
+                        .child(lucide_icon("search", 11.0, ShellDeckColors::text_muted()))
+                        .child(
+                            div().flex().flex_col().flex_1().min_w(px(0.0)).child(
+                                Input::new(&self.navigator_search)
+                                    .debug_selector("agent-nav-search")
+                                    .variant(InputVariant::Bare)
+                                    .size(InputSize::Sm)
+                                    .w_full()
+                                    .placeholder(t!("agents.navigator.search").to_string())
+                                    .on_change(move |_value, cx| {
+                                        parent.update(cx, |_this, cx| cx.notify());
+                                    })
+                                    .on_blur(move |_, cx| {
+                                        search_blur_parent.update(cx, |view, cx| {
+                                            view.library.search_open = false;
+                                            view.navigator_search.update(cx, |state, cx| {
+                                                state.replace_content(String::new(), cx)
+                                            });
+                                            view.request_surface_focus(cx);
+                                            cx.notify();
+                                        });
+                                    }),
+                            ),
+                        )
+                        .child(
+                            Button::new("agent-nav-clear-search", "")
+                                .debug_selector(|| "agent-nav-clear-search".into())
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Icon)
+                                .icon("x")
+                                .w(px(24.0))
+                                .h(px(24.0))
+                                .when(query.is_empty(), |button| button.invisible())
+                                .tooltip(t!("agents.navigator.clear_search").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.navigator_search.update(cx, |state, cx| {
+                                        state.replace_content(String::new(), cx)
+                                    });
+                                    window.focus(&this.navigator_search.read(cx).focus_handle(cx));
+                                    cx.notify();
+                                })),
                         ),
-                    )
-                    .child(
-                        Button::new("agent-library-archived-filter", "")
-                            .variant(if self.library.show_archived() {
-                                ButtonVariant::Secondary
-                            } else {
-                                ButtonVariant::Ghost
-                            })
-                            .size(ButtonSize::Icon)
-                            .icon(IconSource::from("archive"))
-                            .tooltip(t!("agents.library.show_archived").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.library.preferences.show_archived =
-                                    !this.library.preferences.show_archived;
-                                this.schedule_library_save(cx);
-                                cx.notify();
-                            })),
-                    ),
-            )
+                )
+            })
+            .when(self.library.show_archived(), |sidebar| {
+                sidebar.child(
+                    div()
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("agents.navigator.archived_view").to_string()),
+                )
+            })
             .child(
                 div()
                     .id("agent-navigator-scroll")

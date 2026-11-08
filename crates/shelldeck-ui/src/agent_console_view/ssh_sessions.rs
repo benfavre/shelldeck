@@ -762,6 +762,9 @@ impl AgentConsoleView {
         if !self.tools.navigator_wide && self.tools.navigator_overlay {
             root = root.child(self.render_navigator_overlay(cx));
         }
+        if let Some(dialog) = self.render_project_removal(cx) {
+            root = root.child(dialog);
+        }
         root.into_any_element()
     }
 }

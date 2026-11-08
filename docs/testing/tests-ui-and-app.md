@@ -1040,6 +1040,9 @@ transport and annotation reuse the existing request attachment implementation.
 |---|---|---|---|---|
 | SDTEST-2913 | `workspace::palette::tests::sdtest_2913_boat_console_is_offered_only_in_authorized_dev_mode` | SDUC-571 | Green | Covers role/mode visibility. Live active-site browser handoff requires the paired Manage deployment. |
 
+| SDTEST-2923 | SDUC-564 | Rendered project menu copies the exact path and confirms metadata removal; failed persistence, newly active sessions, nested checkout ownership, remote identities, files and drafts remain protected | `agent_console_view/interaction_tests` | Green — rendered offline interaction regression |
+| SDTEST-2924 | SDUC-564 | Collapse/expand all, icon-triggered search, clear and Escape dismissal preserve selection and unsent drafts | `agent_console_view/interaction_tests` | Green — rendered offline interaction regression |
+
 | SDTEST-2915 | SDUC-475, SDUC-564 | Unchanged visible transcript rows reuse measured layout/paint across unrelated redraws; actual copy, streaming replacement, disclosure, typography/width changes and source switches remain current | `agent_console_view/interaction_tests` | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
 | SDTEST-2916 | SDUC-564 | Native performance fixture resolves the production GPUI feature set and refuses test-support redraw semantics; opt-in frame phases and first-input-to-submit measurements accompany short/large/streaming native benchmarks | `scripts/test-agent-frame-benchmark.py`, native fixture | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
 

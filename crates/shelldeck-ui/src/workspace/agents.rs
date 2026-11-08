@@ -142,6 +142,12 @@ impl Workspace {
                     );
                 }
                 match &event {
+                    AgentConsoleEvent::RemoveProject(id) => view
+                        .complete_navigator_project_removal(
+                            id,
+                            Err(t!("agents.live.authorization_lost").to_string()),
+                            cx,
+                        ),
                     AgentConsoleEvent::LoadSshHistory(request) => view.complete_native_history(
                         request.clone(),
                         Err(t!("agents.live.authorization_lost").to_string()),
@@ -170,6 +176,32 @@ impl Workspace {
         }
         match event {
             AgentConsoleEvent::NavigatorChanged => cx.notify(),
+            AgentConsoleEvent::RemoveProject(id) => {
+                if !self
+                    .agent_console
+                    .read(cx)
+                    .can_remove_navigator_project(&id)
+                {
+                    return;
+                }
+                let project = self
+                    .workspace_hub
+                    .read(cx)
+                    .catalog()
+                    .projects()
+                    .find(|project| project.id().to_string() == id)
+                    .map(|project| project.id());
+                let result = if let Some(project) = project {
+                    self.workspace_hub
+                        .update(cx, |hub, cx| hub.remove_project_from_navigator(project, cx))
+                } else {
+                    Err(t!("workspaces.projects.remove_blocked").to_string())
+                };
+                self.agent_console.update(cx, |view, cx| {
+                    view.complete_navigator_project_removal(&id, result, cx)
+                });
+                self.refresh_agent_projects(cx);
+            }
             AgentConsoleEvent::ReconnectProject {
                 checkout_id,
                 expected_connection,

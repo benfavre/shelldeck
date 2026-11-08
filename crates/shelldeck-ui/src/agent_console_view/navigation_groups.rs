@@ -83,6 +83,21 @@ fn conversation_folders<'a>(
 }
 
 impl AgentConsoleView {
+    pub(super) fn navigator_group_keys(&self) -> Vec<String> {
+        let mut keys = self
+            .project_groups
+            .iter()
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        keys.push("pinned-sessions".into());
+        keys.extend(
+            conversation_folders(self.sessions.sessions().iter(), &self.project_groups)
+                .into_iter()
+                .map(|folder| directory_group_key("chat-folder", folder.target, folder.path)),
+        );
+        keys
+    }
+
     pub(super) fn migrate_legacy_folder_collapse(&mut self) {
         if !self
             .library
@@ -146,32 +161,39 @@ impl AgentConsoleView {
         let key = key.to_owned();
         let summary_key = key.clone();
         let selector = format!("agent-folder-toggle-{key}");
-        let mut header = div().flex().items_center().min_w_0().gap(px(3.0)).child(
-            Button::new(SharedString::from(selector.clone()), label)
-                .debug_selector(move || selector.clone())
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::Sm)
-                .px(px(4.0))
-                .justify_start()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .icon(IconSource::from(if collapsed {
-                    "chevron-right"
-                } else {
-                    "chevron-down"
-                }))
-                .tooltip(tooltip)
-                .disabled(!query.trim().is_empty())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let query = this.navigator_search.read(cx).content().to_string();
-                    if toggle_project_group(&mut this.library.preferences, &key, &query) {
-                        this.schedule_library_save(cx);
-                        cx.notify();
-                    }
-                })),
-        );
+        let mut header = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .min_w_0()
+            .gap(px(6.0))
+            .child(
+                Button::new(SharedString::from(selector.clone()), label)
+                    .debug_selector(move || selector.clone())
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .h(px(30.0))
+                    .px(px(4.0))
+                    .justify_start()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .icon(IconSource::from(if collapsed {
+                        "chevron-right"
+                    } else {
+                        "chevron-down"
+                    }))
+                    .tooltip(tooltip)
+                    .disabled(!query.trim().is_empty())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let query = this.navigator_search.read(cx).content().to_string();
+                        if toggle_project_group(&mut this.library.preferences, &key, &query) {
+                            this.schedule_library_save(cx);
+                            cx.notify();
+                        }
+                    })),
+            );
         if collapsed && hidden.0 > 0 {
             header = header.child(collapsed_session_summary(&summary_key, hidden.0, hidden.1));
         }
@@ -201,6 +223,7 @@ impl AgentConsoleView {
             .collect::<HashSet<_>>();
         div()
             .debug_selector(|| format!("agent-folder-{key}"))
+            .w_full()
             .flex()
             .flex_col()
             .flex_shrink_0()
@@ -267,11 +290,10 @@ impl AgentConsoleView {
             } else {
                 name
             };
-            let label = format!("{title} · {}", target_label(folder.target));
             let tooltip = format!("{}\n{}", target_label(folder.target), folder.path);
             list = list.child(self.render_conversation_folder(
                 &directory_group_key("chat-folder", folder.target, folder.path),
-                label,
+                title,
                 tooltip,
                 &folder.sessions,
                 cx,

@@ -77,6 +77,7 @@ mod navigator;
 mod panes;
 #[path = "agent_console_view/progress.rs"]
 mod progress;
+mod project_actions;
 #[path = "agent_console_view/project_picker.rs"]
 mod project_picker;
 #[path = "agent_console_view/remote_sessions.rs"]
@@ -142,6 +143,7 @@ struct InspectorDiff {
 #[derive(Debug, Clone)]
 pub enum AgentConsoleEvent {
     NavigatorChanged,
+    RemoveProject(String),
     ReconnectProject {
         checkout_id: shelldeck_core::config::workspace_catalog::CatalogCheckoutId,
         expected_connection: Uuid,
@@ -2533,6 +2535,9 @@ impl Render for AgentConsoleView {
             root = root.child(dialog);
         }
         if let Some(dialog) = self.render_review_dialog() {
+            root = root.child(dialog);
+        }
+        if let Some(dialog) = self.render_project_removal(cx) {
             root = root.child(dialog);
         }
         if let Some(overlay) = self.render_composer_overlay() {
