@@ -370,7 +370,10 @@ pub enum ActiveView {
 impl ActiveView {
     /// Retained only for compatibility with legacy internal navigation.
     fn is_retired(self) -> bool {
-        matches!(self, Self::PortForwards | Self::ServerSync | Self::Sites)
+        matches!(
+            self,
+            Self::Dashboard | Self::PortForwards | Self::ServerSync | Self::Sites
+        )
     }
 }
 

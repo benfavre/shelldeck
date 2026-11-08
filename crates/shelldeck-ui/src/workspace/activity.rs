@@ -47,7 +47,7 @@ impl Workspace {
                         self.active_view = ActiveView::Terminal;
                     }
                 } else {
-                    self.active_view = ActiveView::Dashboard;
+                    self.active_view = ActiveView::Agents;
                 }
                 self.on_active_view_changed(cx);
                 cx.notify();

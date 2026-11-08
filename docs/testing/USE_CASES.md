@@ -2399,9 +2399,11 @@ marker; a divider separates primary work from secondary tools. Every glyph has
 its localized label in a tooltip, and Recent Activity uses the same clock icon
 as the Aller menu rather than an ambiguous pulse trace.
 
-Connections keeps its grouped host list with pins and per-row actions. Other
-activities use their main surface without duplicating its list in a contextual
-panel. The current rail and retirement behavior are specified in SDUC-567;
+Dev opens directly on Agents, the first rail entry. The Connections activity
+and its Dashboard view are retired (SDTEST-2910): saved hosts are reached from
+the Agents target picker, the quick-connect form and the terminal, and the
+`shelldeck://open/connection/<uuid>` link lands on Agents. No activity keeps a
+contextual panel, so every activity uses its main surface at full width. The current rail and retirement behavior are specified in SDUC-567;
 retained workspaces are reached through Agents.
 
 The rail is unconditional: no state renders the Dev sidebar without a
