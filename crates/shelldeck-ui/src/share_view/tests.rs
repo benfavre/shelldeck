@@ -1,0 +1,322 @@
+use super::*;
+use crate::theme::ShellDeckColors;
+use shelldeck_core::config::app_config::ThemePreference;
+
+fn snapshot() -> ShareSnapshot {
+    serde_json::from_value(serde_json::json!({
+        "owner":{"email":"preview@example.invalid","name":"Preview"},
+        "plan":{"id":"free","label":"Gratuit","max_file_bytes":104857600,"storage_bytes":1073741824,"max_files":1000,"retention_days":[1,7,30],"residency":"global","storage_ready":true},
+        "usage":{"bytes":1234,"files":1},"default_retention_seconds":604800,"list_limit":500,
+        "files":[{"id":"abcdef","filename":"Rapport de visite.pdf","bytes":1234,"content_type":"application/pdf","kind":"pdf","created_at":"2026-11-06T12:00:00Z","expires_at":null,"views":0,"url":"https://share.inklura.fr/r/abcdef.pdf","viewer_url":"https://share.inklura.fr/s/abcdef"}]
+    })).unwrap()
+}
+fn redraw(window: &mut VisualTestContext) {
+    window.run_until_parked();
+    for _ in 0..2 {
+        window.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        window.run_until_parked();
+    }
+}
+fn click(window: &mut VisualTestContext, selector: &str) {
+    let bounds = window
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("Missing {selector}"));
+    let viewport = window.update(|window, _| window.viewport_size());
+    assert!(
+        Bounds::new(point(gpui::px(0.0), gpui::px(0.0)), viewport).contains(&bounds.center()),
+        "Clipped {selector}: {bounds:?}"
+    );
+    window.simulate_mouse_move(bounds.center(), None, Modifiers::none());
+    window.simulate_click(bounds.center(), Modifiers::none());
+    redraw(window);
+}
+// SDTEST-2893 / SDUC-568 — production controls, layout, clipboard and stale-job fence.
+#[::core::prelude::v1::test]
+fn sdtest_2893_small_share_batches_keep_actions_reachable_and_account_switch_rejects_old_results() {
+    for (width, height) in [(480.0, 420.0), (620.0, 560.0), (1100.0, 800.0)] {
+        let mut app = TestAppContext::single();
+        app.update(|cx| {
+            adabraka_ui::init(cx);
+            adabraka_ui::components::input::init(cx);
+            ShellDeckColors::set_theme(&ThemePreference::Dark);
+            adabraka_ui::theme::install_theme(cx, crate::theme::adabraka_theme_from_palette());
+        });
+        let handle = app.add_window(|_, cx| {
+            ShareView::preview(
+                snapshot(),
+                (0..20)
+                    .map(|n| PathBuf::from(format!("a-very-long-local-file-to-share-{n}.pdf")))
+                    .collect(),
+                cx,
+            )
+        });
+        let view = handle.root(&mut app).unwrap();
+        let mut window = VisualTestContext::from_window(*handle, &app);
+        window.simulate_resize(size(gpui::px(width), gpui::px(height)));
+        redraw(&mut window);
+        let drafts = window.debug_bounds("share-drafts").unwrap();
+        assert!(drafts.size.height <= gpui::px(100.0));
+        let intake = window.debug_bounds("share-intake").unwrap();
+        let send = window.debug_bounds("share-send").unwrap();
+        assert!(
+            send.origin.y >= intake.bottom(),
+            "Send stays outside the scrolling intake"
+        );
+        let viewport = window.update(|window, _| window.viewport_size());
+        assert!(
+            send.bottom() <= viewport.height,
+            "Send is visible without scrolling"
+        );
+        click(&mut window, "share-review");
+        click(&mut window, "share-review-remove-0");
+        assert!(view.read_with(&app, |view, _| view.drafts.len() == 19
+            && view.drafts[0].upload.filename.ends_with("-1.pdf")));
+        click(&mut window, "share-review-close");
+        assert!(!view.read_with(&app, |view, _| view.review_drafts));
+        click(&mut window, "share-copy-abcdef");
+        assert_eq!(
+            app.read_from_clipboard().unwrap().text().unwrap(),
+            "https://share.inklura.fr/s/abcdef"
+        );
+        click(&mut window, "share-delete-abcdef");
+        assert!(view.read_with(&app, |view, _| view.confirm_delete.is_some()));
+        click(&mut window, "share-delete-cancel");
+        assert!(view.read_with(&app, |view, _| view.confirm_delete.is_none()
+            && view.snapshot.as_ref().unwrap().files.len() == 1));
+        let cancelled = view.read_with(&app, |view, _| view.cancelled.clone());
+        view.update(&mut app, |view, cx| {
+            view.manage = "https://manage.inklura.fr".into();
+            view.device = "synthetic".into();
+            view.run(|_| Ok(Outcome::snapshot(snapshot())), cx);
+            view.configure(
+                "https://manage.inklura.fr".into(),
+                "different-synthetic-device".into(),
+                cx,
+            );
+        });
+        redraw(&mut window);
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(view.read_with(&app, |view, _| view.snapshot.is_none()
+            && view.drafts.is_empty()
+            && !view.busy));
+        app.quit();
+    }
+}
+
+// SDTEST-2896 / SDUC-568 — real Stop control, partial completion and retry state.
+#[::core::prelude::v1::test]
+fn sdtest_2896_stop_preserves_unshared_files_and_partial_success_restores_a_usable_session() {
+    let mut app = TestAppContext::single();
+    app.update(|cx| {
+        adabraka_ui::init(cx);
+        adabraka_ui::components::input::init(cx);
+        ShellDeckColors::set_theme(&ThemePreference::Dark);
+        adabraka_ui::theme::install_theme(cx, crate::theme::adabraka_theme_from_palette());
+    });
+    let handle = app.add_window(|_, cx| {
+        ShareView::preview(
+            snapshot(),
+            vec!["first.pdf".into(), "second.pdf".into(), "third.pdf".into()],
+            cx,
+        )
+    });
+    let view = handle.root(&mut app).unwrap();
+    let mut window = VisualTestContext::from_window(*handle, &app);
+    window.simulate_resize(size(gpui::px(480.0), gpui::px(420.0)));
+    let progress = Arc::new(UploadProgress::default());
+    progress.begin(1);
+    progress.update(8 * 1024 * 1024, 16 * 1024 * 1024);
+    let cancellation = view.read_with(&app, |view, _| view.cancelled.clone());
+    view.update(&mut app, |view, cx| {
+        view.busy = true;
+        view.upload_progress = Some(progress);
+        cx.notify();
+    });
+    redraw(&mut window);
+    assert!(window.debug_bounds("share-transfer-progress").is_some());
+    click(&mut window, "share-stop");
+    assert!(cancellation.load(Ordering::Acquire));
+    assert!(view.read_with(&app, |view, _| view.drafts.len() == 3 && view.busy));
+    // One initiated upload completed; the remaining files must survive Stop.
+    view.update(&mut app, |view, cx| {
+        view.busy = false;
+        view.manage = "https://manage.inklura.fr".into();
+        view.device = "synthetic".into();
+        view.run(
+            |_| {
+                Ok(Outcome {
+                    snapshot: None,
+                    uploads: vec![SharedUpload {
+                        id: "fedcba".into(),
+                        url: "https://share.inklura.fr/r/fedcba.pdf".into(),
+                        viewer: "https://share.inklura.fr/s/fedcba".into(),
+                    }],
+                    completed: 1,
+                    warning: Some(ShareError::Cancelled),
+                    notice: None,
+                })
+            },
+            cx,
+        );
+    });
+    redraw(&mut window);
+    assert_eq!(
+        app.read_from_clipboard().unwrap().text().unwrap(),
+        "https://share.inklura.fr/s/fedcba"
+    );
+    assert!(view.read_with(&app, |view, _| view
+        .drafts
+        .iter()
+        .map(|draft| draft.upload.filename.as_str())
+        .collect::<Vec<_>>()
+        == vec!["second.pdf", "third.pdf"]
+        && !view.busy
+        && view.upload_progress.is_none()
+        && !view.cancelled.load(Ordering::Acquire)
+        && view.device == "synthetic"));
+    click(&mut window, "share-review");
+    click(&mut window, "share-review-clear");
+    assert!(view.read_with(&app, |view, _| view.drafts.is_empty()
+        && !view.review_drafts));
+    app.quit();
+}
+
+// "Share with Inklura" from the OS stages files and opens Review; nothing is
+// uploaded. A busy view refuses the hand-off with a visible explanation
+// instead of silently dropping it.
+#[::core::prelude::v1::test]
+fn external_share_intent_stages_files_for_review_without_uploading() {
+    let dir = std::env::temp_dir().join(format!("inklura-share-external-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let files = ["capture.png", "devis.pdf"].map(|name| {
+        let path = dir.join(name);
+        std::fs::write(&path, b"inklura").unwrap();
+        path
+    });
+    let mut app = TestAppContext::single();
+    app.update(|cx| {
+        adabraka_ui::init(cx);
+        adabraka_ui::components::input::init(cx);
+        ShellDeckColors::set_theme(&ThemePreference::Dark);
+        adabraka_ui::theme::install_theme(cx, crate::theme::adabraka_theme_from_palette());
+    });
+    let handle = app.add_window(|_, cx| ShareView::preview(snapshot(), vec![], cx));
+    let view = handle.root(&mut app).unwrap();
+    let mut window = VisualTestContext::from_window(*handle, &app);
+    window.simulate_resize(size(gpui::px(620.0), gpui::px(560.0)));
+    view.update(&mut app, |view, cx| view.stage_external(files.to_vec(), cx));
+    redraw(&mut window);
+    view.read_with(&app, |view, _| {
+        assert_eq!(view.drafts.len(), 2);
+        assert!(view.review_drafts, "external files open in Review");
+        assert!(
+            !view.busy && view.upload_progress.is_none(),
+            "nothing uploads"
+        );
+    });
+    assert!(window.debug_bounds("share-review-remove-1").is_some());
+
+    view.update(&mut app, |view, cx| {
+        view.busy = true;
+        view.stage_external(vec![files[0].clone()], cx);
+    });
+    view.read_with(&app, |view, _| {
+        assert_eq!(view.drafts.len(), 2, "busy view keeps its selection");
+        assert!(view.error.is_some(), "busy hand-off is explained");
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// Rename opens prefilled from the gallery row, refuses unsafe names inside
+// the dialog, closes on Escape and shows the success notice from the job.
+#[::core::prelude::v1::test]
+fn gallery_rename_prefills_validates_and_reports_success() {
+    let mut app = TestAppContext::single();
+    app.update(|cx| {
+        adabraka_ui::init(cx);
+        adabraka_ui::components::input::init(cx);
+        ShellDeckColors::set_theme(&ThemePreference::Dark);
+        adabraka_ui::theme::install_theme(cx, crate::theme::adabraka_theme_from_palette());
+    });
+    let handle = app.add_window(|_, cx| ShareView::preview(snapshot(), vec![], cx));
+    let view = handle.root(&mut app).unwrap();
+    let mut window = VisualTestContext::from_window(*handle, &app);
+    window.simulate_resize(size(gpui::px(480.0), gpui::px(420.0)));
+    redraw(&mut window);
+    click(&mut window, "share-rename-abcdef");
+    assert!(window.debug_bounds("share-rename-input").is_some());
+    view.read_with(&app, |view, cx| {
+        let draft = view.rename.as_ref().expect("rename dialog open");
+        assert_eq!(draft.input.read(cx).content(), "Rapport de visite.pdf");
+    });
+    window.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            let input = view.rename.as_ref().unwrap().input.clone();
+            input.update(cx, |state, cx| state.set_value("a/b", window, cx));
+            view.rename_confirmed(cx);
+        })
+    });
+    redraw(&mut window);
+    assert!(view.read_with(&app, |view, _| view.rename.is_some()
+        && view.error.is_some()));
+    assert!(window.debug_bounds("share-rename-error").is_some());
+    click(&mut window, "share-rename-cancel");
+    assert!(view.read_with(&app, |view, _| view.rename.is_none()));
+
+    view.update(&mut app, |view, cx| {
+        view.manage = "https://manage.inklura.fr".into();
+        view.device = "synthetic".into();
+        view.run(
+            |_| {
+                Ok(Outcome {
+                    notice: Some("share.renamed"),
+                    ..Outcome::snapshot(snapshot())
+                })
+            },
+            cx,
+        );
+    });
+    redraw(&mut window);
+    view.read_with(&app, |view, _| {
+        assert_eq!(view.notice.as_deref(), Some(t!("share.renamed").as_ref()));
+        assert!(!view.busy);
+    });
+}
+
+// The Home card summary lists the newest valid links first, at most three,
+// and reports storage use against the plan.
+#[::core::prelude::v1::test]
+fn home_summary_orders_recent_links_and_reports_usage() {
+    let mut snapshot = snapshot();
+    let base = snapshot.files[0].clone();
+    snapshot.files = ["2026-11-01", "2026-11-05", "2026-11-03", "2026-11-04"]
+        .iter()
+        .enumerate()
+        .map(|(index, day)| shelldeck_core::config::share::ShareFile {
+            id: format!("abcde{index}"),
+            filename: format!("{day}.pdf"),
+            created_at: format!("{day}T12:00:00Z"),
+            viewer_url: format!("https://share.inklura.fr/s/abcde{index}"),
+            ..base.clone()
+        })
+        .chain([shelldeck_core::config::share::ShareFile {
+            id: "unsafe".into(),
+            created_at: "2026-11-09T12:00:00Z".into(),
+            viewer_url: "https://attacker.example/s/x".into(),
+            ..base.clone()
+        }])
+        .collect();
+    snapshot.usage.bytes = snapshot.plan.storage_bytes / 4;
+    let summary = ShareSummary::from_snapshot(&snapshot);
+    let names: Vec<_> = summary.recent.iter().map(|f| f.filename.as_str()).collect();
+    assert_eq!(
+        names,
+        ["2026-11-05.pdf", "2026-11-04.pdf", "2026-11-03.pdf"]
+    );
+    assert!((summary.usage_ratio() - 0.25).abs() < 1e-6);
+    snapshot.plan.storage_bytes = 0;
+    assert_eq!(ShareSummary::from_snapshot(&snapshot).usage_ratio(), 0.0);
+}

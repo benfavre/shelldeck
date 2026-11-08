@@ -1,43 +1,6 @@
 use super::*;
 
 impl Workspace {
-    pub(super) fn handle_dashboard_event(
-        &mut self,
-        event: &DashboardEvent,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.can_access_mode(AppMode::Dev) {
-            return;
-        }
-        match event {
-            DashboardEvent::QuickConnect(id) => {
-                if let Some(conn) = self.connections.iter().find(|c| c.id == *id) {
-                    let conn = conn.clone();
-                    let title = conn.display_name().to_string();
-                    let conn_id = conn.id;
-                    self.connect_ssh(conn, cx);
-                    self.add_activity_entry(
-                        ActivityEntry::new(
-                            ActivityKind::Connection,
-                            t!("activity.quick_connecting_to", name = title.as_str()).to_string(),
-                        )
-                        .with_target(conn_id.to_string(), title)
-                        .with_action(ActivityAction::ConnectConnection),
-                        cx,
-                    );
-                    self.set_active_view(ActiveView::Terminal, cx);
-                    cx.notify();
-                } else {
-                    self.show_toast(
-                        t!("toast.deeplink.connection_not_found").to_string(),
-                        ToastLevel::Warning,
-                        cx,
-                    );
-                }
-            }
-        }
-    }
-
     pub(super) fn handle_recent_event(&mut self, event: RecentEvent, cx: &mut Context<Self>) {
         if !self.can_access_mode(AppMode::Dev) {
             return;
@@ -84,13 +47,21 @@ impl Workspace {
                         self.active_view = ActiveView::Terminal;
                     }
                 } else {
-                    self.active_view = ActiveView::Dashboard;
+                    self.active_view = ActiveView::Agents;
                 }
                 self.on_active_view_changed(cx);
                 cx.notify();
             }
             ActivityAction::OpenForward => {
-                self.activate_dev_section(SidebarSection::PortForwards, cx);
+                self.show_toast(
+                    t!(
+                        "navigation.retired_tool",
+                        app_name = shelldeck_core::APP_NAME
+                    )
+                    .to_string(),
+                    ToastLevel::Info,
+                    cx,
+                );
             }
             ActivityAction::OpenScript => {
                 let script_id = entry

@@ -1061,7 +1061,7 @@ impl<E: ReviewExecutor> AgentReviewBackend<E> {
                             &[
                                 "update-ref",
                                 "-m",
-                                "ShellDeck confirmed review commit",
+                                "Inklura Desktop confirmed review commit",
                                 plan.snapshot.head_ref.as_deref().unwrap_or_default(),
                                 &commit,
                                 plan.snapshot.head.as_deref().unwrap_or(""),

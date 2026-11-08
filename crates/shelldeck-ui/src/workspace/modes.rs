@@ -243,6 +243,7 @@ impl Workspace {
             return;
         }
         self.settings_open = true;
+        self.refresh_inklura_extension_panel(cx);
         self.account_menu_open = false;
         self.mode_menu_open = false;
         self.site_menu_open = false;
@@ -306,6 +307,8 @@ impl Workspace {
         self.update_fleet_availability(cx);
         self.sync_fleet_view_poll(cx);
         self.sync_issues_poll(cx);
+        self.sync_inklura_notifications_poll(cx);
+        self.prefetch_personal_share(cx);
         // Les entrées de la palette sont filtrées par mode à la construction :
         // sans cette reconstruction, passer de Dev à Support laissait « Nouveau
         // terminal », « Basculer barre latérale », « Fermer l'onglet » et

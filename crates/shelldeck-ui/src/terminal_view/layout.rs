@@ -10,6 +10,25 @@ pub struct TerminalTab {
     pub zoom_level: f32,
     /// The connection ID this tab is associated with, if any (None for local terminals).
     pub connection_id: Option<Uuid>,
+    /// Title the running program set through OSC 0 / OSC 2 (shell prompt,
+    /// vim, ssh, Claude Code...). Empty until a program sets one.
+    pub program_title: String,
+    /// The tab carries a deliberate name (AI naming) that program titles must
+    /// not override.
+    pub named: bool,
+}
+
+impl TerminalTab {
+    /// Label shown in the tab strip: the live program title, like other
+    /// terminal emulators, unless the tab was deliberately named.
+    pub fn display_title(&self) -> &str {
+        let program = self.program_title.trim();
+        if self.named || program.is_empty() {
+            &self.title
+        } else {
+            program
+        }
+    }
 }
 
 /// Terminal pane holding sessions
@@ -319,5 +338,39 @@ impl TabLayout {
             &mut dividers,
         );
         (leaves, dividers)
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::TerminalTab;
+    use shelldeck_terminal::session::SessionState;
+    use uuid::Uuid;
+
+    fn tab(program: &str, named: bool) -> TerminalTab {
+        TerminalTab {
+            id: Uuid::nil(),
+            title: "Terminal".into(),
+            is_active: true,
+            state: SessionState::Running,
+            zoom_level: 1.0,
+            connection_id: None,
+            program_title: program.into(),
+            named,
+        }
+    }
+
+    // SDTEST-2912 : tabs follow the running program's title like other
+    // terminal emulators, fall back to their base name, and a deliberate
+    // (AI) name wins over program titles.
+    #[test]
+    fn tab_label_follows_program_title_unless_named() {
+        assert_eq!(tab("", false).display_title(), "Terminal");
+        assert_eq!(tab("  ", false).display_title(), "Terminal");
+        assert_eq!(
+            tab("user@host: ~/dev", false).display_title(),
+            "user@host: ~/dev"
+        );
+        assert_eq!(tab("user@host: ~/dev", true).display_title(), "Terminal");
     }
 }

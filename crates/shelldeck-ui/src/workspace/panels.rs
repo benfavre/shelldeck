@@ -11,7 +11,6 @@ impl Workspace {
     /// rather than a clone of the underlying model.
     pub(super) fn refresh_sidebar_panels(&mut self, cx: &mut Context<Self>) {
         use crate::sidebar::PanelItem;
-        use shelldeck_core::models::port_forward::ForwardStatus;
         use shelldeck_terminal::session::SessionState;
 
         let terminals: Vec<PanelItem> = self
@@ -50,60 +49,6 @@ impl Workspace {
             })
             .collect();
 
-        let forwards: Vec<PanelItem> = self
-            .port_forwards
-            .read(cx)
-            .forwards
-            .iter()
-            .map(|fwd| PanelItem {
-                id: fwd.id,
-                label: fwd
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| format!("{} → {}", fwd.local_port, fwd.remote_port)),
-                detail: Some(format!(
-                    "{}:{} → {}:{}",
-                    fwd.local_host, fwd.local_port, fwd.remote_host, fwd.remote_port
-                )),
-                icon: "arrow-left-right",
-                is_active: false,
-                is_live: matches!(fwd.status, ForwardStatus::Active),
-            })
-            .collect();
-
-        // Manage keys the active site by its raw string id, so the comparison
-        // happens on that rather than on the row's synthesized UUID.
-        let active_site = self.app_config.cloud_sync.active_site_id.clone();
-        let sites: Vec<PanelItem> = self
-            .site_directory
-            .as_ref()
-            .map(|payload| {
-                payload
-                    .sites
-                    .iter()
-                    .map(|site| {
-                        // Site ids are strings server-side; fall back to a
-                        // stable name-derived id so rows keep distinct
-                        // ElementIds even when the id is absent.
-                        let id = Uuid::parse_str(&site.site_id)
-                            .unwrap_or_else(|_| uuid_from_key(&site.site_id, &site.name));
-                        PanelItem {
-                            id,
-                            label: if site.name.is_empty() {
-                                site.label.clone()
-                            } else {
-                                site.name.clone()
-                            },
-                            detail: (!site.host.is_empty()).then(|| site.host.clone()),
-                            icon: "globe",
-                            is_active: active_site.as_deref() == Some(site.site_id.as_str()),
-                            is_live: false,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
         let recent: Vec<PanelItem> = self
             .recent_activity
             .iter()
@@ -138,8 +83,6 @@ impl Workspace {
         self.sidebar.update(cx, |sidebar, _| {
             sidebar.set_panel_items(SidebarSection::Terminals, terminals);
             sidebar.set_panel_items(SidebarSection::Scripts, scripts);
-            sidebar.set_panel_items(SidebarSection::PortForwards, forwards);
-            sidebar.set_panel_items(SidebarSection::Sites, sites);
             sidebar.set_panel_items(SidebarSection::Recent, recent);
             sidebar.set_panel_items(SidebarSection::FileEditor, editor_files);
         });
@@ -154,6 +97,9 @@ impl Workspace {
         id: Uuid,
         cx: &mut Context<Self>,
     ) {
+        if section.is_retired() {
+            return;
+        }
         match section {
             SidebarSection::Terminals => {
                 self.active_view = ActiveView::Terminal;
@@ -168,12 +114,6 @@ impl Workspace {
                     editor.selected_script = Some(id);
                     cx.notify();
                 });
-            }
-            SidebarSection::PortForwards => {
-                self.active_view = ActiveView::PortForwards;
-            }
-            SidebarSection::Sites => {
-                self.active_view = ActiveView::Sites;
             }
             SidebarSection::Recent => {
                 self.active_view = ActiveView::Recent;

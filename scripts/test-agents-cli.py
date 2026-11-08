@@ -3,7 +3,7 @@
 
 Usage: python3 scripts/test-agents-cli.py target/debug/shelldeck
 The handoff fixture owns its loopback listener and discovery file. It never
-starts a provider or reads an existing ShellDeck profile.
+starts a provider or reads an existing Inklura Desktop profile.
 """
 from pathlib import Path
 import json
@@ -43,7 +43,7 @@ class AgentsCli(unittest.TestCase):
             self.assertIn("Usage: shelldeck", result.stdout)
         result = self.run_cli("--version")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertRegex(result.stdout, r"^ShellDeck \d+\.\d+\.\d+")
+        self.assertRegex(result.stdout, r"^Inklura Desktop \d+\.\d+\.\d+")
         for arguments in (("--unknown",), ("--agents", "shelldeck://issue/example")):
             result = self.run_cli(*arguments)
             self.assertNotEqual(result.returncode, 0)
@@ -104,7 +104,7 @@ class AgentsCli(unittest.TestCase):
         (config / "instance.json.startup.lock").mkdir()
         result = self.run_cli("--agents")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Unable to initialize ShellDeck single-instance routing", result.stderr)
+        self.assertIn("Unable to initialize Inklura Desktop single-instance routing", result.stderr)
         self.assertEqual([p for p in self.root.rglob("*") if p.is_file()], [])
 
 

@@ -101,7 +101,7 @@ fn discover_with_wire(wire: &mut impl CodexWire, timeout: Duration) -> Result<Co
     let deadline = Instant::now() + timeout;
     let mut budget = MAX_DISCOVERY_MESSAGES;
     wire.send(json!({"id":1,"method":"initialize","params":{
-        "clientInfo":{"name":"shelldeck","title":"ShellDeck","version":env!("CARGO_PKG_VERSION")},
+        "clientInfo":{"name":"shelldeck","title":"Inklura Desktop","version":env!("CARGO_PKG_VERSION")},
         "capabilities":{"experimentalApi":false}
     }}))?;
     discovery_response(wire, 1, deadline, &mut budget)?;

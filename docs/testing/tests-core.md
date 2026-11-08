@@ -761,3 +761,41 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-2856 | `agent_session::tests::sdtest_2856_long_remote_titles_reconnect_without_losing_identity_or_saved_work` | SDUC-562, SDUC-563 | Green — failed before the import correction | Valid discovery titles over 160 bytes import with a bounded UTF-8 display name, retain native ID/server/folder, preserve existing transcript and user rename, and never merge conversations by title prefix. Manual naming, control-character and identity validation stay strict. |
+
+## Inklura Chrome extension setup — 2026-11-04
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2875 | `config::inklura_extension::tests::sdtest_2875_unpacked_id_matches_chrome` | SDUC-565 | Green | Unpacked ID algorithm checked against an ID read from a real Chrome profile (POSIX path hashing). Windows UTF-16 branch is compile-checked by CI only. |
+| SDTEST-2876 | `config::inklura_extension::tests::sdtest_2876_install_downloads_unpacks_and_updates_in_place` | SDUC-565 | Green | Mock `TcpListener` asserts the `GET /extensions/inklura-assistant.zip` route; stale files vanish, the ID stays stable, `.py` files are executable. |
+| SDTEST-2877 | `config::inklura_extension::tests::sdtest_2877_rejects_escaping_or_invalid_packages_without_touching_install` | SDUC-565 | Green | `..` entries, packages without a manifest and HTML error pages are refused and the existing install is untouched. |
+| SDTEST-2878 | `config::inklura_extension::tests::sdtest_2878_native_bridge_args_carry_computed_id` | SDUC-565 | Green | The Craft bridge installer receives the computed 32-letter ID and the chosen folder; `python3` itself never runs in tests. |
+| SDTEST-2879 | `config::inklura_extension::tests::sdtest_2879_picks_chrome_profile_for_account` | SDUC-565 | Green | Chrome's `Local State` profile signed into the Manage account wins over `last_used` (case-insensitive); otherwise `last_used`; the profile's preferences report whether the extension ID is loaded. |
+| — | `config::inklura_extension::live_tests::live_install_real_manage_package` | SDUC-565 | Yellow — `#[ignore]`, network | Downloads the real package from manage.inklura.fr; verified 2026-11-04 (v0.1.0). |
+
+
+| SDTEST-2880 | `config::deep_link::tests::sdtest_2880_extension_settings_link_is_bounded` | SDUC-565 | Green | Browser/Manage setup handoff accepts only the extension settings route. Query values cannot request installation or file access. |
+
+
+### Personal Share and PDF launcher
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2889 | `config::share::tests::sdtest_2889_personal_share_auth_uses_separate_manage_and_share_credentials` | SDUC-568 | Green | Real local HTTP requests pin route/body shape, account parsing and device/session credential separation. |
+| SDTEST-2890 | `config::share::tests::sdtest_2890_untrusted_origin_and_cancelled_session_stop_before_upload` | SDUC-568 | Green | Foreign origins and cancellation stop before upload; hostile public and signed-storage URL forms are rejected. |
+| SDTEST-2891 | `config::share::tests::sdtest_2891_large_file_aborts_reservation_when_part_origin_is_invalid` | SDUC-568 | Green | Sparse 51 MiB source takes multipart path; hostile part URL and malformed start metadata both trigger reservation abort. |
+| SDTEST-2892 | `examples/share_live_smoke.rs` (opt-in executable) | SDUC-568 | Green — manual live, 2026-11-06 | Synthetic-account-only stdin credentials. Actual Manage/Share/native upload service: persisted retention, image bytes, 51 MiB multipart SHA-256, gallery/quota, deletion and cleanup. Never runs in CI. |
+| SDTEST-2894 | `config::share::tests::sdtest_2894_only_revoked_manage_devices_invalidate_login_and_mint_cancellation_stops_work` | SDUC-568 | Green | Manage device 401 alone invalidates login; Share grant 401 and service 503 preserve it. Cancellation during mint prevents subsequent operations. |
+| SDTEST-2895 | `config::desktop_pdf::tests::sdtest_2895_pdf_uses_installed_platform_identity_and_reports_download_fallback` | SDUC-569 | Green | Fake launcher pins macOS/Windows/Linux executable, arguments, wait policy and honest download fallback without spawning real processes. All branches use portable std APIs. Native installed-app walkthrough on Windows/macOS remains manual acceptance. |
+| SDTEST-2897 | `config::share::tests::sdtest_2897_upload_reports_total_and_honors_stop_before_credentials_leave_the_device` | SDUC-568 | Green | Initial progress exposes the true source length before authentication. Stop from that callback prevents all Manage/Share requests. |
+| SDTEST-2898 | `config::manage_notifications::tests::feed_parses_per_site_items_and_unknown_kinds_fall_back_to_info` | SDUC-570 | Green | Mock pins GET route + Bearer; the same feed id in two spaces stays two notifications; unknown `type` degrades to Info. |
+| SDTEST-2899 | `config::manage_notifications::tests::revoked_token_is_classified_as_auth_rejected` | SDUC-570 | Green | A 401 classifies as AuthRejected so the shared Manage session handling signs out once. |
+| SDTEST-2900 | `config::manage_notifications::tests::updates_send_site_scoped_actions_and_a_cutoff` | SDUC-570 | Green | markRead/markAllRead/open bodies are site scoped; the mark-all cutoff round-trips as RFC 3339 to the exact millisecond. |
+| SDTEST-2901 | `config::manage_notifications::tests::open_rejects_a_non_https_link` | SDUC-570 | Green | A non-HTTPS link from the server is never handed to the OS opener. |
+| SDTEST-2902 | `config::manage_notifications::tests::first_load_seeds_silently_then_only_new_unread_items_surface` | SDUC-570 | Green | Launch does not replay old alerts; later polls surface only unseen unread items; local read marks keep the badge honest. |
+
+## Boat signed handoff
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2914 | `config::manage_sites::tests::sdtest_2914_boat_handoff_is_fresh_scoped_and_same_origin` | SDUC-571 | Green | Raw TCP contract covers the authenticated fresh directory request, exact tenant/site matching, same-origin signed target, missing-link and unsigned-link refusal. |

@@ -18,6 +18,7 @@ fn ellipsize_site_switcher_label(label: &str, max_chars: usize) -> String {
 
 impl Workspace {
     pub(super) fn close_titlebar_menus(&mut self) {
+        self.inklura_notifications_open = false;
         close_titlebar_menu_flags(
             &mut self.account_menu_open,
             &mut self.mode_menu_open,
@@ -45,6 +46,7 @@ impl Workspace {
         ai_configured: bool,
         ai_dock_open: bool,
         ai_task_count: usize,
+        inklura_bell: Option<AnyElement>,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -252,6 +254,7 @@ impl Workspace {
             if this.account_menu_open {
                 this.mode_menu_open = false;
                 this.site_menu_open = false;
+                this.inklura_notifications_open = false;
             }
             cx.notify();
         }));
@@ -292,6 +295,7 @@ impl Workspace {
                     if this.mode_menu_open {
                         this.account_menu_open = false;
                         this.site_menu_open = false;
+                        this.inklura_notifications_open = false;
                     }
                     cx.notify();
                 }));
@@ -333,6 +337,7 @@ impl Workspace {
                     if this.site_menu_open {
                         this.account_menu_open = false;
                         this.mode_menu_open = false;
+                        this.inklura_notifications_open = false;
                     }
                     cx.notify();
                 }));
@@ -554,6 +559,7 @@ impl Workspace {
                     .children(restore_menu_button)
                     .children(ai_button)
                     .children(ai_dock_button)
+                    .children(inklura_bell)
                     .child(divider())
                     .child(account_btn)
                     .children(mode_switcher)

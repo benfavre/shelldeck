@@ -14,10 +14,10 @@ use crate::overlay::window_backdrop;
 use crate::t;
 use crate::theme::ShellDeckColors;
 use crate::workspace::{
-    CloseTab, NewRequest, NewScript, NewTerminal, NextTab, OpenAgents, OpenAiAssistant,
-    OpenBextCloud, OpenFileEditorView, OpenFleet, OpenLogin, OpenMoniqueConsole, OpenQuickConnect,
-    OpenRecent, OpenServerSync, OpenSettings, OpenSites, OpenSupportRequests, OpenTemplateBrowser,
-    PrevTab, SwitchSite, ToggleMenuBar, ToggleSidebar,
+    CaptureAndShare, CloseTab, NewRequest, NewScript, NewTerminal, NextTab, OpenAgents,
+    OpenAiAssistant, OpenBextCloud, OpenBoatConsole, OpenFileEditorView, OpenFleet, OpenLogin,
+    OpenMoniqueConsole, OpenQuickConnect, OpenRecent, OpenSettings, OpenSupportRequests,
+    OpenTemplateBrowser, PrevTab, ShareFiles, SwitchSite, ToggleMenuBar, ToggleSidebar,
 };
 
 actions!(shelldeck, [ToggleCommandPalette]);
@@ -136,8 +136,6 @@ pub fn action_opens_main_window(action: &dyn Action) -> bool {
         || action.as_any().is::<OpenTemplateBrowser>()
         || action.as_any().is::<OpenAgents>()
         || action.as_any().is::<NewScript>()
-        || action.as_any().is::<OpenServerSync>()
-        || action.as_any().is::<OpenSites>()
         || action.as_any().is::<OpenRecent>()
         || action.as_any().is::<OpenFileEditorView>()
         || action.as_any().is::<SwitchSite>()
@@ -146,7 +144,10 @@ pub fn action_opens_main_window(action: &dyn Action) -> bool {
         || action.as_any().is::<NewRequest>()
         || action.as_any().is::<OpenSupportRequests>()
         || action.as_any().is::<OpenBextCloud>()
+        || action.as_any().is::<OpenBoatConsole>()
         || action.as_any().is::<OpenAiAssistant>()
+        || action.as_any().is::<CaptureAndShare>()
+        || action.as_any().is::<ShareFiles>()
 }
 
 /// Events emitted by the command palette.

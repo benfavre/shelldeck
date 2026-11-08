@@ -71,8 +71,8 @@ def plist(destination: Path, executable: str, identifier: str, version: str) -> 
         plistlib.dump({
             "CFBundleExecutable": executable,
             "CFBundleIdentifier": identifier,
-            "CFBundleName": executable,
-            "CFBundleDisplayName": "ShellDeck Browser",
+            "CFBundleName": "Inklura Desktop Browser",
+            "CFBundleDisplayName": "Inklura Desktop Browser",
             "CFBundleVersion": version,
             "CFBundleShortVersionString": version,
             "CFBundleInfoDictionaryVersion": "6.0",

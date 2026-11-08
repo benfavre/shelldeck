@@ -25,6 +25,9 @@ use shelldeck_core::config::themes::TerminalTheme;
 use crate::theme::{palette_for, ShellDeckColors};
 use crate::workspace::CloudSyncNow;
 
+mod inklura_extension;
+pub use inklura_extension::InkluraExtensionPanel;
+
 /// Fixed shortlist of monospace families offered for the editor + terminal.
 /// Kept in sync between the two settings tabs; extend here to surface new
 /// picks everywhere.
@@ -218,7 +221,7 @@ enum ShortcutCaptureValidation {
 
 fn validate_shortcut_capture(
     keystroke: &Keystroke,
-    other_shortcut: &str,
+    other_shortcuts: &[&str],
 ) -> ShortcutCaptureValidation {
     let modifiers = keystroke.modifiers;
     let modifier_key = matches!(
@@ -229,7 +232,7 @@ fn validate_shortcut_capture(
         return ShortcutCaptureValidation::ModifierRequired;
     }
     let shortcut = keystroke.unparse();
-    if shortcut == other_shortcut {
+    if other_shortcuts.contains(&shortcut.as_str()) {
         ShortcutCaptureValidation::Conflict
     } else {
         ShortcutCaptureValidation::Accepted(shortcut)
@@ -280,6 +283,12 @@ pub enum SettingsEvent {
     },
     /// Run a real minimal completion through the selected backend.
     AiTestRequested(AppConfig),
+    /// Download/refresh the Inklura Chrome extension, then open Chrome.
+    InkluraExtensionInstallRequested,
+    /// Open `chrome://extensions` (the folder path is already copied).
+    InkluraExtensionOpenChromeRequested,
+    /// Install the Craft MCP native bridge for the chosen workspace folder.
+    InkluraExtensionBridgeRequested(std::path::PathBuf),
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -288,6 +297,71 @@ impl EventEmitter<SettingsEvent> for SettingsView {}
 enum CompanionShortcutKind {
     AiDock,
     CommandPalette,
+    CaptureShare,
+}
+
+impl CompanionShortcutKind {
+    const ALL: [Self; 3] = [Self::AiDock, Self::CommandPalette, Self::CaptureShare];
+
+    fn shortcut(self, config: &CompanionConfig) -> &String {
+        match self {
+            Self::AiDock => &config.global_shortcut,
+            Self::CommandPalette => &config.global_palette_shortcut,
+            Self::CaptureShare => &config.global_capture_shortcut,
+        }
+    }
+
+    fn shortcut_mut(self, config: &mut CompanionConfig) -> &mut String {
+        match self {
+            Self::AiDock => &mut config.global_shortcut,
+            Self::CommandPalette => &mut config.global_palette_shortcut,
+            Self::CaptureShare => &mut config.global_capture_shortcut,
+        }
+    }
+
+    fn set_enabled(self, config: &mut CompanionConfig, enabled: bool) {
+        match self {
+            Self::AiDock => config.global_shortcut_enabled = enabled,
+            Self::CommandPalette => config.global_palette_shortcut_enabled = enabled,
+            Self::CaptureShare => config.global_capture_shortcut_enabled = enabled,
+        }
+    }
+
+    fn default_shortcut(self) -> &'static str {
+        match self {
+            Self::AiDock => CompanionConfig::default_global_shortcut(),
+            Self::CommandPalette => CompanionConfig::default_global_palette_shortcut(),
+            Self::CaptureShare => CompanionConfig::default_global_capture_shortcut(),
+        }
+    }
+
+    fn element_id(self, action: &str) -> SharedString {
+        let name = match self {
+            Self::AiDock => "ai-dock",
+            Self::CommandPalette => "command-palette",
+            Self::CaptureShare => "capture-share",
+        };
+        SharedString::from(format!("{action}-{name}-shortcut"))
+    }
+
+    fn status(self, statuses: &CompanionShortcutStatuses) -> &ShortcutRegistrationStatus {
+        match self {
+            Self::AiDock => &statuses.ai_dock,
+            Self::CommandPalette => &statuses.command_palette,
+            Self::CaptureShare => &statuses.capture_share,
+        }
+    }
+
+    fn status_mut(
+        self,
+        statuses: &mut CompanionShortcutStatuses,
+    ) -> &mut ShortcutRegistrationStatus {
+        match self {
+            Self::AiDock => &mut statuses.ai_dock,
+            Self::CommandPalette => &mut statuses.command_palette,
+            Self::CaptureShare => &mut statuses.capture_share,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,6 +378,7 @@ pub enum ShortcutRegistrationStatus {
 pub struct CompanionShortcutStatuses {
     pub ai_dock: ShortcutRegistrationStatus,
     pub command_palette: ShortcutRegistrationStatus,
+    pub capture_share: ShortcutRegistrationStatus,
 }
 
 impl Default for CompanionShortcutStatuses {
@@ -311,6 +386,7 @@ impl Default for CompanionShortcutStatuses {
         Self {
             ai_dock: ShortcutRegistrationStatus::Disabled,
             command_palette: ShortcutRegistrationStatus::Disabled,
+            capture_share: ShortcutRegistrationStatus::Disabled,
         }
     }
 }
@@ -346,6 +422,7 @@ pub struct SettingsView {
     shortcut_status_before_capture: Option<(CompanionShortcutKind, ShortcutRegistrationStatus)>,
     shortcut_capture_focus: FocusHandle,
     companion_shortcut_statuses: CompanionShortcutStatuses,
+    inklura_extension: InkluraExtensionPanel,
 }
 
 impl SettingsView {
@@ -359,6 +436,8 @@ impl SettingsView {
         let ai_backend_select = build_ai_backend_select(&config, cx);
         let ai_model = config.ai.model.clone();
         let shortcut_capture_focus = cx.focus_handle();
+        let inklura_extension =
+            InkluraExtensionPanel::detect(config.account.as_ref().map(|a| a.email.as_str()));
         Self {
             config,
             active_tab: SettingsTab::General,
@@ -382,6 +461,7 @@ impl SettingsView {
             shortcut_status_before_capture: None,
             shortcut_capture_focus,
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),
+            inklura_extension,
         }
     }
 
@@ -478,10 +558,7 @@ impl SettingsView {
             return;
         }
         if let Some(kind) = self.shortcut_capture {
-            let status = match kind {
-                CompanionShortcutKind::AiDock => statuses.ai_dock.clone(),
-                CompanionShortcutKind::CommandPalette => statuses.command_palette.clone(),
-            };
+            let status = kind.status(&statuses).clone();
             self.shortcut_status_before_capture = Some((kind, status));
         }
         self.companion_shortcut_statuses = statuses;
@@ -489,12 +566,7 @@ impl SettingsView {
     }
 
     fn shortcut_status(&self, kind: CompanionShortcutKind) -> &ShortcutRegistrationStatus {
-        match kind {
-            CompanionShortcutKind::AiDock => &self.companion_shortcut_statuses.ai_dock,
-            CompanionShortcutKind::CommandPalette => {
-                &self.companion_shortcut_statuses.command_palette
-            }
-        }
+        kind.status(&self.companion_shortcut_statuses)
     }
 
     fn set_shortcut_status(
@@ -502,14 +574,7 @@ impl SettingsView {
         kind: CompanionShortcutKind,
         status: ShortcutRegistrationStatus,
     ) {
-        match kind {
-            CompanionShortcutKind::AiDock => {
-                self.companion_shortcut_statuses.ai_dock = status;
-            }
-            CompanionShortcutKind::CommandPalette => {
-                self.companion_shortcut_statuses.command_palette = status;
-            }
-        }
+        *kind.status_mut(&mut self.companion_shortcut_statuses) = status;
     }
 
     fn handle_shortcut_capture(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
@@ -523,11 +588,12 @@ impl SettingsView {
             return;
         }
 
-        let other = match kind {
-            CompanionShortcutKind::AiDock => &self.config.companion.global_palette_shortcut,
-            CompanionShortcutKind::CommandPalette => &self.config.companion.global_shortcut,
-        };
-        let shortcut = match validate_shortcut_capture(&event.keystroke, other) {
+        let others: Vec<&str> = CompanionShortcutKind::ALL
+            .into_iter()
+            .filter(|other| *other != kind)
+            .map(|other| other.shortcut(&self.config.companion).as_str())
+            .collect();
+        let shortcut = match validate_shortcut_capture(&event.keystroke, &others) {
             ShortcutCaptureValidation::Accepted(shortcut) => shortcut,
             ShortcutCaptureValidation::ModifierRequired => {
                 self.set_shortcut_status(
@@ -545,24 +611,13 @@ impl SettingsView {
                 return;
             }
         };
-        let current = match kind {
-            CompanionShortcutKind::AiDock => &self.config.companion.global_shortcut,
-            CompanionShortcutKind::CommandPalette => &self.config.companion.global_palette_shortcut,
-        };
-        if shortcut == *current {
+        if shortcut == *kind.shortcut(&self.config.companion) {
             self.cancel_shortcut_capture();
             cx.notify();
             return;
         }
 
-        match kind {
-            CompanionShortcutKind::AiDock => {
-                self.config.companion.global_shortcut = shortcut;
-            }
-            CompanionShortcutKind::CommandPalette => {
-                self.config.companion.global_palette_shortcut = shortcut;
-            }
-        }
+        *kind.shortcut_mut(&mut self.config.companion) = shortcut;
         self.shortcut_capture = None;
         self.shortcut_status_before_capture = None;
         self.set_shortcut_status(kind, ShortcutRegistrationStatus::Applying);
@@ -570,29 +625,13 @@ impl SettingsView {
     }
 
     fn reset_shortcut(&mut self, kind: CompanionShortcutKind, cx: &mut Context<Self>) {
-        let target = match kind {
-            CompanionShortcutKind::AiDock => CompanionConfig::default_global_shortcut(),
-            CompanionShortcutKind::CommandPalette => {
-                CompanionConfig::default_global_palette_shortcut()
-            }
-        };
-        let current = match kind {
-            CompanionShortcutKind::AiDock => &self.config.companion.global_shortcut,
-            CompanionShortcutKind::CommandPalette => &self.config.companion.global_palette_shortcut,
-        };
-        if current == target {
+        let target = kind.default_shortcut();
+        if kind.shortcut(&self.config.companion) == target {
             self.cancel_shortcut_capture();
             cx.notify();
             return;
         }
-        match kind {
-            CompanionShortcutKind::AiDock => {
-                self.config.companion.global_shortcut = target.to_string();
-            }
-            CompanionShortcutKind::CommandPalette => {
-                self.config.companion.global_palette_shortcut = target.to_string();
-            }
-        }
+        *kind.shortcut_mut(&mut self.config.companion) = target.to_string();
         self.shortcut_capture = None;
         self.shortcut_status_before_capture = None;
         self.set_shortcut_status(kind, ShortcutRegistrationStatus::Applying);
@@ -849,20 +888,15 @@ impl SettingsView {
                             CompanionShortcutKind::CommandPalette => {
                                 "companion-global-palette-shortcut"
                             }
+                            CompanionShortcutKind::CaptureShare => {
+                                "companion-global-capture-shortcut"
+                            }
                         })
                         .checked(enabled)
                         .on_click(move |value, _window, cx| {
                             let value = *value;
                             toggle_entity.update(cx, |this, cx| {
-                                match kind {
-                                    CompanionShortcutKind::AiDock => {
-                                        this.config.companion.global_shortcut_enabled = value;
-                                    }
-                                    CompanionShortcutKind::CommandPalette => {
-                                        this.config.companion.global_palette_shortcut_enabled =
-                                            value;
-                                    }
-                                }
+                                kind.set_enabled(&mut this.config.companion, value);
                                 this.set_shortcut_status(
                                     kind,
                                     if value {
@@ -876,37 +910,24 @@ impl SettingsView {
                         }),
                     )
                     .child(
-                        Button::new(
-                            match kind {
-                                CompanionShortcutKind::AiDock => "capture-ai-dock-shortcut",
-                                CompanionShortcutKind::CommandPalette => {
-                                    "capture-command-palette-shortcut"
-                                }
-                            },
-                            button_label,
-                        )
-                        .variant(ButtonVariant::Outline)
-                        .size(ButtonSize::Sm)
-                        .selected(capturing)
-                        .on_click(move |_, window, cx| {
-                            capture_entity.update(cx, |this, cx| {
-                                this.cancel_shortcut_capture();
-                                this.shortcut_capture = Some(kind);
-                                this.shortcut_status_before_capture =
-                                    Some((kind, this.shortcut_status(kind).clone()));
-                                this.shortcut_capture_focus.focus(window);
-                                cx.notify();
-                            });
-                        }),
+                        Button::new(kind.element_id("capture"), button_label)
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
+                            .selected(capturing)
+                            .on_click(move |_, window, cx| {
+                                capture_entity.update(cx, |this, cx| {
+                                    this.cancel_shortcut_capture();
+                                    this.shortcut_capture = Some(kind);
+                                    this.shortcut_status_before_capture =
+                                        Some((kind, this.shortcut_status(kind).clone()));
+                                    this.shortcut_capture_focus.focus(window);
+                                    cx.notify();
+                                });
+                            }),
                     )
                     .child(
                         Button::new(
-                            match kind {
-                                CompanionShortcutKind::AiDock => "reset-ai-dock-shortcut",
-                                CompanionShortcutKind::CommandPalette => {
-                                    "reset-command-palette-shortcut"
-                                }
-                            },
+                            kind.element_id("reset"),
                             t!("settings.companion.shortcut.reset").to_string(),
                         )
                         .variant(ButtonVariant::Ghost)
@@ -1051,6 +1072,16 @@ impl SettingsView {
                 ),
             ))
             .child(Self::render_setting_row(
+                t!("settings.companion.global_capture_shortcut.label").as_ref(),
+                t!("settings.companion.global_capture_shortcut.description").as_ref(),
+                self.render_shortcut_control(
+                    CompanionShortcutKind::CaptureShare,
+                    self.config.companion.global_capture_shortcut_enabled,
+                    &self.config.companion.global_capture_shortcut,
+                    cx,
+                ),
+            ))
+            .child(Self::render_setting_row(
                 t!("settings.general.onboarding_replay.label").as_ref(),
                 t!("settings.general.onboarding_replay.description").as_ref(),
                 Button::new(
@@ -1138,7 +1169,20 @@ impl SettingsView {
                     },
                 ),
             ))
+            .child(Self::render_setting_row(
+                t!("settings.tray.notify_inklura.label").as_ref(),
+                t!("settings.tray.notify_inklura.description").as_ref(),
+                Self::bind_toggle(
+                    "tray-notify-inklura",
+                    self.config.tray.notify_inklura,
+                    &entity,
+                    |this, value| {
+                        this.config.tray.notify_inklura = value;
+                    },
+                ),
+            ))
             .child(self.render_cloud_sync_settings(cx))
+            .child(self.render_inklura_extension_settings(cx))
     }
 
     /// Shared adabraka `Toggle` bound to a single `bool` config field. The
@@ -3424,19 +3468,19 @@ mod tests {
     fn shortcut_capture_requires_modifier_and_rejects_duplicate() {
         let bare = Keystroke::parse("space").unwrap();
         assert_eq!(
-            validate_shortcut_capture(&bare, "ctrl-alt-space"),
+            validate_shortcut_capture(&bare, &["ctrl-alt-space"]),
             ShortcutCaptureValidation::ModifierRequired
         );
 
         let duplicate = Keystroke::parse("ctrl-alt-space").unwrap();
         assert_eq!(
-            validate_shortcut_capture(&duplicate, "ctrl-alt-space"),
+            validate_shortcut_capture(&duplicate, &["ctrl-alt-space"]),
             ShortcutCaptureValidation::Conflict
         );
 
         let custom = Keystroke::parse("ctrl-shift-k").unwrap();
         assert_eq!(
-            validate_shortcut_capture(&custom, "ctrl-alt-space"),
+            validate_shortcut_capture(&custom, &["ctrl-alt-space"]),
             ShortcutCaptureValidation::Accepted("ctrl-shift-k".to_string())
         );
         assert_eq!(display_shortcut("ctrl-shift-k"), "Ctrl+Shift+K");

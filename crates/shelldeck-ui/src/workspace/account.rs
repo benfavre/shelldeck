@@ -386,6 +386,10 @@ impl Workspace {
         account: AccountInfo,
         cx: &mut Context<Self>,
     ) {
+        // An account replacement must never expose the previous Share gallery
+        // or let an in-flight capture/upload publish under the new UI session.
+        self.personal_share.update(cx, |view, cx| view.clear(cx));
+        self.user_home_tab = UserHomeTab::Home;
         self.manage_requests.change_session();
         if let Err(error) = shelldeck_core::config::keychain::store_manage_token(&token) {
             tracing::error!("Failed to store AI Operations token in OS keychain: {error}");
@@ -416,6 +420,8 @@ impl Workspace {
         self.refresh_mention_people(cx);
         // Non-super-admins are forced to User mode; activate whatever mode applies.
         self.activate_current_mode(cx);
+        // Files sent to Inklura before signing in land in Share now.
+        self.resume_pending_share(cx);
         // Kick a whoami to populate `last_whoami` (device label, created_at,
         // last_seen_at) — the login response only carries the AccountInfo
         // subset, but "Mes informations" needs the richer payload.
@@ -511,6 +517,7 @@ impl Workspace {
     /// Clear Inklura Manage credentials and stop cloud-backed polls/views.
     pub(super) fn invalidate_cloud_session(&mut self, cx: &mut Context<Self>) {
         self.manage_requests.change_session();
+        self.clear_inklura_notifications();
         self.stop_authenticated_runtime(cx);
         // Overwrite the persisted workspace after closing sessions. Otherwise
         // a later launch/account could restore terminals from the old session.
@@ -621,6 +628,7 @@ impl Workspace {
         }
 
         self.invalidate_cloud_session(cx);
+        self.pending_share_files.clear();
         self.show_toast(t!("toast.logged_out").to_string(), ToastLevel::Info, cx);
         cx.notify();
     }

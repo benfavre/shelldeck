@@ -134,7 +134,7 @@ mod tests {
         }
     }
 
-    // SDTEST-2879 / SDUC-564 — pointer motion and resize-cursor changes retain expensive content.
+    // SDTEST-2919 / SDUC-564 — pointer motion and resize-cursor changes retain expensive content.
     #[::core::prelude::v1::test]
     fn window_resize_pointer_updates_preserve_cached_content() {
         let mut app = TestAppContext::single();

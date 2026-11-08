@@ -2520,7 +2520,7 @@ fn rendered_large_native_history_keeps_paging_copy_and_drafts_with_bounded_work(
         .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
 }
 
-// SDTEST-2875 — real redraws reuse unchanged rows without freezing actual controls.
+// SDTEST-2915 — real redraws reuse unchanged rows without freezing actual controls.
 #[::core::prelude::v1::test]
 fn rendered_cached_rows_skip_unchanged_transcripts_and_keep_live_actions_current() {
     let mut ui = Cockpit::new(ThemePreference::Dark, 900.0, 700.0, false);
@@ -2652,13 +2652,13 @@ fn rendered_cached_rows_skip_unchanged_transcripts_and_keep_live_actions_current
     );
 }
 
-// SDTEST-2877 — cached native scenes retain the exact glyph and quad after sorting.
+// SDTEST-2917 — cached native scenes retain the exact glyph and quad after sorting.
 #[::core::prelude::v1::test]
 fn cached_scene_replay_preserves_glyph_and_quad_identity_after_batch_sorting() {
     gpui::verify_scene_replay_preserves_sorted_primitives();
 }
 
-// SDTEST-2878 / SDUC-564 — DWM fallback ratios must retain high-refresh timing without a panic.
+// SDTEST-2918 / SDUC-564 — DWM fallback ratios must retain high-refresh timing without a panic.
 #[::core::prelude::v1::test]
 fn display_refresh_ratios_retain_high_and_fractional_rates() {
     use gpui::refresh_interval::duration_from_ratio;
@@ -2680,7 +2680,7 @@ fn display_refresh_ratios_retain_high_and_fractional_rates() {
     assert!(duration_from_ratio(u64::MAX, 1).is_none());
 }
 
-// SDTEST-2880 / SDUC-475, SDUC-564 — long prose bounds layout within a single reply.
+// SDTEST-2920 / SDUC-475, SDUC-564 — long prose bounds layout within a single reply.
 #[::core::prelude::v1::test]
 fn rendered_long_prose_virtualizes_blocks_and_keeps_exact_actions_and_anchors() {
     for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
@@ -2780,7 +2780,7 @@ fn rendered_long_prose_virtualizes_blocks_and_keeps_exact_actions_and_anchors() 
     }
 }
 
-// SDTEST-2882 / SDUC-551, SDUC-564 — transcript repaint does not rebuild or disable the sidebar.
+// SDTEST-2922 / SDUC-551, SDUC-564 — transcript repaint does not rebuild or disable the sidebar.
 #[::core::prelude::v1::test]
 fn rendered_timeline_motion_reuses_navigator_and_search_stays_live() {
     let mut ui = Cockpit::new(ThemePreference::Dark, 1100.0, 800.0, false);

@@ -633,7 +633,7 @@ impl Workspace {
         let showcase = Issue {
             id: Self::FAKE_SHOWCASE_ID.to_string(),
             tenant_id: "shelldeck".to_string(),
-            tenant_name: "ShellDeck (démo)".to_string(),
+            tenant_name: "Inklura Desktop (démo)".to_string(),
             site_id: None,
             site_label: Some("Fil de démonstration".to_string()),
             title: "[DÉMO] Fil de démonstration — TOUS les cas d'affichage".to_string(),

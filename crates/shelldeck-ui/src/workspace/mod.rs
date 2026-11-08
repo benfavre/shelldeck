@@ -66,7 +66,7 @@ use crate::command_palette::{
     PaletteAction, SetAppMode, ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
-use crate::dashboard::{DashboardEvent, DashboardView};
+use crate::dashboard::DashboardView;
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::issue_attachments::{
@@ -86,6 +86,7 @@ use crate::server_sync_view::{ServerSyncEvent, ServerSyncView};
 use crate::settings::{
     CompanionShortcutStatuses, SettingsEvent, SettingsView, ShortcutRegistrationStatus,
 };
+use crate::share_view::ShareView;
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
@@ -125,6 +126,8 @@ mod cloud_sync;
 mod discovery;
 mod events;
 mod fleet;
+mod inklura_extension;
+mod inklura_notifications;
 pub(crate) mod platform_attention;
 pub use platform_attention::PlatformAttentionNotification;
 mod forwards;
@@ -149,6 +152,7 @@ mod request_views;
 mod requests;
 mod scripts;
 mod server_sync;
+mod share;
 mod sites;
 mod ssh;
 mod support;
@@ -273,6 +277,7 @@ pub enum UserHomeTab {
     #[default]
     Home,
     Sites,
+    Share,
     Requests,
     Infos,
 }
@@ -362,6 +367,16 @@ pub enum ActiveView {
     Settings,
 }
 
+impl ActiveView {
+    /// Retained only for compatibility with legacy internal navigation.
+    fn is_retired(self) -> bool {
+        matches!(
+            self,
+            Self::Dashboard | Self::PortForwards | Self::ServerSync | Self::Sites
+        )
+    }
+}
+
 // Actions for keyboard shortcuts
 actions!(
     shelldeck,
@@ -378,8 +393,6 @@ actions!(
         Quit,
         OpenTemplateBrowser,
         NewScript,
-        OpenServerSync,
-        OpenSites,
         OpenRecent,
         OpenFileEditorView,
         CloudSyncNow,
@@ -389,10 +402,14 @@ actions!(
         NewRequest,
         OpenSupportRequests,
         OpenBextCloud,
+        OpenBoatConsole,
         ConnectBextCloud,
         OpenAiAssistant,
         OpenClippy,
         OpenAgents,
+        SetupInkluraExtension,
+        CaptureAndShare,
+        ShareFiles,
     ]
 );
 
@@ -527,6 +544,11 @@ pub struct Workspace {
     >,
     // Keep subscriptions alive
     _sidebar_sub: Subscription,
+    _personal_share_sub: Subscription,
+    /// Re-renders User Home only when the Share summary actually changes.
+    _personal_share_observer: Subscription,
+    /// Personal Share summary for the User Home dashboard card.
+    share_summary: Option<crate::share_view::ShareSummary>,
     _workspace_hub_sub: Subscription,
     _terminal_sub: Subscription,
     _agent_console_sub: Subscription,
@@ -549,7 +571,6 @@ pub struct Workspace {
     _file_editor_sub: Subscription,
     _form_sub: Option<Subscription>,
     _pf_form_sub: Option<Subscription>,
-    _dashboard_sub: Subscription,
     _script_form_sub: Option<Subscription>,
     _template_browser_sub: Option<Subscription>,
     _variable_prompt_sub: Option<Subscription>,
@@ -584,10 +605,22 @@ pub struct Workspace {
     manage_requests: ManageRequests,
     /// Which User-mode home tab is showing (Sites / Demandes / Infos).
     user_home_tab: UserHomeTab,
+    personal_share: Entity<ShareView>,
+    /// Files from a "Share with Inklura" launch that arrived signed out.
+    pending_share_files: Vec<std::path::PathBuf>,
     /// Cached Inklura Manage sites directory + areas (fetched after sign-in).
     site_directory: Option<SitesPayload>,
     /// Whether the titlebar site-switcher dropdown is open.
     site_menu_open: bool,
+    /// Inklura Manage bell, merged across the account's spaces. `None` until
+    /// the first successful poll (and while the server lacks the endpoint).
+    inklura_notifications: Option<shelldeck_core::config::manage_notifications::NotificationFeed>,
+    /// Item keys already shown once, so a poll only raises OS notifications for
+    /// arrivals. `None` until the first poll seeds it.
+    inklura_notifications_seen: Option<std::collections::HashSet<(String, String)>>,
+    inklura_notifications_open: bool,
+    inklura_notifications_pos: Option<Point<Pixels>>,
+    _inklura_notifications_poll: Option<gpui::Task<()>>,
     /// Kebab menu open state for a sidebar host row: which connection and where
     /// (window-relative click position). `None` = closed.
     sidebar_kebab_menu: Option<(Uuid, Point<Pixels>)>,
@@ -826,7 +859,6 @@ pub struct Workspace {
 pub struct TrayCounters {
     pub signed_in: bool,
     pub active_ssh: usize,
-    pub open_tunnels: usize,
     pub unread_tickets: usize,
     pub monique_pending: usize,
     pub ai_tasks_running: usize,
@@ -859,6 +891,17 @@ pub enum TrayNotification {
     /// An AI generation or executable action finished while the main window
     /// was not active.
     AiTaskDone { success: bool },
+    /// New Inklura Manage bell items arrived. One item carries its own text;
+    /// a burst collapses to a count so a busy space cannot flood the desktop.
+    Inklura {
+        count: usize,
+        title: String,
+        body: String,
+        site: String,
+    },
+    /// Region capture fell back to the desktop's own screenshot key (Linux
+    /// without a Screenshot portal or capture tool).
+    CaptureHint,
 }
 
 impl TrayNotification {
@@ -899,6 +942,35 @@ impl TrayNotification {
                 } else {
                     t!("notification.ai.failed").to_string()
                 },
+            ),
+            Self::Inklura {
+                count,
+                title,
+                body,
+                site,
+            } => {
+                if *count == 1 {
+                    let summary = if site.is_empty() {
+                        t!("notification.inklura.summary").to_string()
+                    } else {
+                        format!("{} · {}", t!("notification.inklura.summary"), site)
+                    };
+                    let text = if body.trim().is_empty() {
+                        title.clone()
+                    } else {
+                        format!("{title}\n{body}")
+                    };
+                    (summary, text)
+                } else {
+                    (
+                        t!("notification.inklura.summary").to_string(),
+                        t!("notification.inklura.many", count = *count).to_string(),
+                    )
+                }
+            }
+            Self::CaptureHint => (
+                t!("notification.capture.summary").to_string(),
+                t!("notification.capture.body").to_string(),
             ),
         }
     }
@@ -982,7 +1054,6 @@ impl Workspace {
             .as_deref()
             .and_then(|s| Uuid::parse_str(s).ok());
         let initial_pinned_connections = config.pinned_connections.clone();
-        let initial_dashboard_pins = initial_pinned_connections.clone();
         let sidebar = cx.new(|cx| {
             let mut s = SidebarView::new(cx);
             s.set_active_section(SidebarSection::Agents);
@@ -1002,26 +1073,6 @@ impl Workspace {
 
         let dashboard = cx.new(|_| {
             let mut d = DashboardView::new();
-            let quick_connections: Vec<&Connection> = if initial_dashboard_pins.is_empty() {
-                connections.iter().take(5).collect()
-            } else {
-                initial_dashboard_pins
-                    .iter()
-                    .filter_map(|id| connections.iter().find(|connection| connection.id == *id))
-                    .take(5)
-                    .collect()
-            };
-            d.favorite_hosts = quick_connections
-                .into_iter()
-                .map(|c| {
-                    (
-                        c.id,
-                        c.display_name().to_string(),
-                        c.hostname.clone(),
-                        c.status == ConnectionStatus::Connected,
-                    )
-                })
-                .collect();
             d.recent_activity = recent_activity.iter().take(8).cloned().collect();
             d
         });
@@ -1151,6 +1202,20 @@ impl Workspace {
                 .menu_min_width(gpui::px(240.0))
         });
         let support = cx.new(SupportView::new);
+        let personal_share = cx.new(ShareView::new);
+        let personal_share_sub = cx.subscribe(
+            &personal_share,
+            |this, _, _: &crate::share_view::ShareViewEvent, cx| {
+                this.invalidate_cloud_session(cx);
+            },
+        );
+        let personal_share_observer = cx.observe(&personal_share, |this, share, cx| {
+            let summary = share.read(cx).summary();
+            if summary != this.share_summary {
+                this.share_summary = summary;
+                cx.notify();
+            }
+        });
         let monique_view = cx.new(MoniqueView::new);
         let fleet_view = cx.new(FleetView::new);
         agent_console.update(cx, |view, cx| {
@@ -1404,14 +1469,6 @@ impl Workspace {
             },
         );
 
-        // Subscribe to dashboard events
-        let dashboard_sub = cx.subscribe(
-            &dashboard,
-            |this, _dashboard, event: &DashboardEvent, cx| {
-                this.handle_dashboard_event(event, cx);
-            },
-        );
-
         // Subscribe to auto-updater events
         let update_sub = cx.subscribe(
             &auto_updater,
@@ -1546,7 +1603,6 @@ impl Workspace {
             _sites_sub: sites_sub,
             _recent_sub: recent_sub,
             _file_editor_sub: file_editor_sub,
-            _dashboard_sub: dashboard_sub,
             _form_sub: None,
             _pf_form_sub: None,
             _script_form_sub: None,
@@ -1567,8 +1623,18 @@ impl Workspace {
             last_whoami: None,
             manage_requests: ManageRequests::default(),
             user_home_tab: UserHomeTab::Home,
+            personal_share,
+            pending_share_files: Vec::new(),
+            _personal_share_sub: personal_share_sub,
+            _personal_share_observer: personal_share_observer,
+            share_summary: None,
             site_directory: None,
             site_menu_open: false,
+            inklura_notifications: None,
+            inklura_notifications_seen: None,
+            inklura_notifications_open: false,
+            inklura_notifications_pos: None,
+            _inklura_notifications_poll: None,
             sidebar_kebab_menu: None,
             account_menu_pos: None,
             mode_menu_pos: None,
@@ -1792,25 +1858,6 @@ fn shortcut_failure_toasts(
         &t!("shortcut.name.command_palette"),
     );
     toasts
-}
-
-/// Deterministic stand-in id for a Manage site whose `site_id` is not a UUID.
-///
-/// Sidebar rows need a stable id for their `ElementId` and for selection
-/// matching. Manage sends `site_id` as a string that is normally a UUID; when
-/// it is not, hashing the id and name keeps the row stable across renders
-/// instead of it churning an id every frame. Not a real v5 UUID — the `uuid`
-/// crate is built with `v4` + `serde` only — and never persisted.
-fn uuid_from_key(site_id: &str, name: &str) -> Uuid {
-    use std::hash::{Hash, Hasher};
-
-    let mut hi = std::collections::hash_map::DefaultHasher::new();
-    site_id.hash(&mut hi);
-    name.hash(&mut hi);
-    let mut lo = std::collections::hash_map::DefaultHasher::new();
-    name.hash(&mut lo);
-    site_id.hash(&mut lo);
-    Uuid::from_u128(((hi.finish() as u128) << 64) | lo.finish() as u128)
 }
 
 #[cfg(test)]

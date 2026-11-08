@@ -3,7 +3,6 @@ use adabraka_ui::display::card::Card;
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::activity::{ActivityEntry, ActivityKind};
-use uuid::Uuid;
 
 use crate::icons::lucide_icon;
 use crate::shortcut_reference::{
@@ -12,22 +11,9 @@ use crate::shortcut_reference::{
 use crate::t;
 use crate::theme::ShellDeckColors;
 
-/// Events emitted by the dashboard.
-#[derive(Debug, Clone)]
-pub enum DashboardEvent {
-    /// User clicked a quick-connect host button.
-    QuickConnect(Uuid),
-}
-
-impl EventEmitter<DashboardEvent> for DashboardView {}
-
 pub struct DashboardView {
-    pub active_connections: usize,
     pub active_terminals: usize,
-    pub running_scripts: usize,
-    pub active_forwards: usize,
     pub recent_activity: Vec<ActivityEntry>,
-    pub favorite_hosts: Vec<(Uuid, String, String, bool)>,
 }
 
 impl Default for DashboardView {
@@ -39,12 +25,8 @@ impl Default for DashboardView {
 impl DashboardView {
     pub fn new() -> Self {
         Self {
-            active_connections: 0,
             active_terminals: 0,
-            running_scripts: 0,
-            active_forwards: 0,
             recent_activity: Vec::new(),
-            favorite_hosts: Vec::new(),
         }
     }
 
@@ -136,68 +118,10 @@ impl DashboardView {
                     .child(crate::i18n::rel_time(at_ms)),
             )
     }
-
-    fn render_quick_connect_button(
-        id: Uuid,
-        alias: &str,
-        hostname: &str,
-        is_connected: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let alias_str = alias.to_string();
-        let status_color = if is_connected {
-            ShellDeckColors::status_connected()
-        } else {
-            ShellDeckColors::status_disconnected()
-        };
-
-        div()
-            .id(ElementId::from(SharedString::from(format!(
-                "qc-{}",
-                alias_str
-            ))))
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .px(px(12.0))
-            .py(px(8.0))
-            .rounded(px(8.0))
-            .bg(ShellDeckColors::bg_surface())
-            .border_1()
-            .border_color(ShellDeckColors::border())
-            .cursor_pointer()
-            .hover(|el| {
-                el.border_color(ShellDeckColors::primary())
-                    .bg(ShellDeckColors::primary().opacity(0.08))
-            })
-            .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                cx.emit(DashboardEvent::QuickConnect(id));
-            }))
-            // Status indicator
-            .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(alias.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(hostname.to_string()),
-                    ),
-            )
-    }
 }
 
 impl Render for DashboardView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let mut container = div()
             .flex()
             .flex_col()
@@ -234,66 +158,12 @@ impl Render for DashboardView {
                     .flex_wrap()
                     .gap(px(16.0))
                     .child(Self::render_stat_card(
-                        "server",
-                        t!("dashboard.stats.connections").as_ref(),
-                        self.active_connections,
-                        ShellDeckColors::success(),
-                    ))
-                    .child(Self::render_stat_card(
                         "terminal",
                         t!("dashboard.stats.terminals").as_ref(),
                         self.active_terminals,
                         ShellDeckColors::primary(),
-                    ))
-                    .child(Self::render_stat_card(
-                        "scroll-text",
-                        t!("dashboard.stats.scripts").as_ref(),
-                        self.running_scripts,
-                        ShellDeckColors::warning(),
-                    ))
-                    .child(Self::render_stat_card(
-                        "arrow-left-right",
-                        t!("dashboard.stats.forwards").as_ref(),
-                        self.active_forwards,
-                        ShellDeckColors::primary_hover(),
                     )),
             );
-
-        // Quick connect section
-        if !self.favorite_hosts.is_empty() {
-            let hosts = self.favorite_hosts.clone();
-            let mut host_buttons = div().flex().flex_wrap().gap(px(8.0));
-            for (id, alias, hostname, is_connected) in &hosts {
-                host_buttons = host_buttons.child(Self::render_quick_connect_button(
-                    *id,
-                    alias,
-                    hostname,
-                    *is_connected,
-                    cx,
-                ));
-            }
-            container = container.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(lucide_icon("zap", 16.0, ShellDeckColors::text_muted()))
-                            .child(
-                                div()
-                                    .text_size(px(16.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(t!("dashboard.quick_connect").to_string()),
-                            ),
-                    )
-                    .child(host_buttons),
-            );
-        }
 
         // Activity feed
         let mut activity_panel = div()

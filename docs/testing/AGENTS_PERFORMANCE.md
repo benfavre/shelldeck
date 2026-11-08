@@ -71,7 +71,7 @@ rows and changing footer/history controls remain uncached. Content, expansion,
 source identity, typography, locale and width changes trigger fresh layout.
 Canonical copy/reveal and draft behavior remain authoritative.
 
-SDTEST-2875 checks actual cached hitboxes and copied content, streaming
+SDTEST-2915 checks actual cached hitboxes and copied content, streaming
 replacement, resize/font/theme changes and source/draft switching. Existing large
 timeline, paging, disclosure, focus, motion and pruning scenarios remain required.
 
@@ -79,7 +79,7 @@ The unmaximized Workspace resize cursor no longer forces `Window::refresh` for
 ordinary pointer motion. It notifies the Workspace only when the resize edge
 changes, allowing retained transcript paint to survive. Windows' DWM timing
 fallback now converts full rational periods instead of truncating the frequency
-to ticks per microsecond (which could produce a zero divisor). SDTEST-2878 covers
+to ticks per microsecond (which could produce a zero divisor). SDTEST-2918 covers
 60/120/144/240 Hz, fractional rates, invalid values and QPC conversion; Windows
 CI compiles the native call site. Native high-refresh presentation on Windows
 still requires a suitable display.
@@ -102,6 +102,6 @@ background updates, active search and non-text events notify the parent, keeping
 navigation and controls current. Other parent notifications invalidate the
 navigator through its ordinary GPUI observer.
 
-SDTEST-2880–2882 check long-message layout counts, exact full-source copy,
+SDTEST-2920–2922 check long-message layout counts, exact full-source copy,
 same-length snapshot anchors, complete-document references and structures,
 bounded AST retention, actual wheel/cache hitboxes and live transcript search.

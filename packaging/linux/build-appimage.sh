@@ -36,7 +36,7 @@ if [ ! -f "$ICON_SOURCE" ]; then
     exit 1
 fi
 
-echo "==> Building AppImage for ShellDeck $VERSION"
+echo "==> Building AppImage for Inklura Desktop $VERSION"
 TOOLS_DIR="$PROJECT_ROOT/.build-tools"
 mkdir -p "$TOOLS_DIR"
 download_tool() {
@@ -117,7 +117,7 @@ if ! LD_LIBRARY_PATH="$APPDIR/usr/bin/browser/$VERSION${LD_LIBRARY_PATH:+:$LD_LI
     --deploy-deps-only "$BROWSER_HELPER" \
     --deploy-deps-only "$APPDIR/usr/bin/browser/$VERSION" \
     --desktop-file "$APPDIR/usr/share/applications/shelldeck.desktop"; then
-    echo "ERROR: Could not bundle ShellDeck and Chromium's shared-library dependencies" >&2
+    echo "ERROR: Could not bundle Inklura Desktop and Chromium's shared-library dependencies" >&2
     exit 1
 fi
 

@@ -107,13 +107,19 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.window_active = _window.is_window_active();
+        if self.active_view.is_retired() {
+            self.active_view = ActiveView::Agents;
+            self.sidebar.update(_cx, |sidebar, _| {
+                sidebar.set_active_section(SidebarSection::Agents);
+            });
+        }
         let agents_presentation = self.agents_presentation_active();
         let native_title = (_window.window_handle().window_id(), agents_presentation);
         if self.native_title != Some(native_title) {
             _window.set_window_title(if agents_presentation {
-                "ShellDeck Agents"
+                shelldeck_core::AGENTS_APP_NAME
             } else {
-                "ShellDeck"
+                shelldeck_core::APP_NAME
             });
             self.native_title = Some(native_title);
         }
@@ -240,8 +246,6 @@ impl Render for Workspace {
         let h9 = handle.clone();
         let h10 = handle.clone();
         let h11 = handle.clone();
-        let h12 = handle.clone();
-        let h13 = handle.clone();
         let h14 = handle.clone();
         let h15 = handle.clone();
         let h16 = handle.clone();
@@ -343,20 +347,6 @@ impl Render for Workspace {
                         ws.set_active_view(ActiveView::Scripts, cx);
                         ws.show_script_form(cx);
                         cx.notify();
-                    });
-                }
-            })
-            .on_action(move |_: &OpenServerSync, _window, cx| {
-                if let Some(ws) = h12.upgrade() {
-                    ws.update(cx, |ws, cx| {
-                        ws.activate_dev_section(SidebarSection::ServerSync, cx)
-                    });
-                }
-            })
-            .on_action(move |_: &OpenSites, _window, cx| {
-                if let Some(ws) = h13.upgrade() {
-                    ws.update(cx, |ws, cx| {
-                        ws.activate_dev_section(SidebarSection::Sites, cx)
                     });
                 }
             })
@@ -574,6 +564,7 @@ impl Render for Workspace {
 
         // Custom titlebar with drag area + window controls
         let compact_titlebar = logical_width < 760.0;
+        let inklura_bell = self.render_inklura_bell(_cx);
         let titlebar = Self::render_titlebar(
             is_maximized,
             compact_titlebar,
@@ -606,6 +597,7 @@ impl Render for Workspace {
                         || matches!(task.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
                 })
                 .count(),
+            inklura_bell,
             &handle,
             _cx,
         );
@@ -632,6 +624,11 @@ impl Render for Workspace {
         // Titlebar site-switcher dropdown overlay
         if self.site_menu_open {
             root = root.child(self.render_site_menu(_cx));
+        }
+
+        // Inklura Manage notifications panel under the bell.
+        if self.inklura_notifications_open && self.inklura_notifications.is_some() {
+            root = root.child(self.render_inklura_notifications_menu(_window, _cx));
         }
 
         // Sidebar kebab (⋮) row-action menu

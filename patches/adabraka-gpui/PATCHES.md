@@ -45,7 +45,7 @@ Cargo.toml-only and outside the src-scoped marker convention.)
   - `src/window.rs` — `// ShellDeck patch: SDPATCH-124 — input dispatch to GPU submission excludes compositor scanout.`
   - `src/window.rs` — `// ShellDeck patch: SDPATCH-124 — latency instrumentation is dormant without explicit opt-in.`
 - **Why**: Separate CPU layout/paint from GPU presentation and arena cleanup under the existing ZED_MEASUREMENTS opt-in. First pending native input is recorded only when enabled, then measured at GPU submission; compositor/scanout latency is excluded.
-- **Validation**: SDTEST-2875/2876 and the shared list interaction suite; native short/large/active frame benchmarks and cross-platform CI fixture compilation.
+- **Validation**: SDTEST-2915/2916 and the shared list interaction suite; native short/large/active frame benchmarks and cross-platform CI fixture compilation.
 - **Upstream status**: not filed; opt-in extension in the existing fork.
 
 ### SDPATCH-125 — Size-aware virtual-list row rendering
@@ -61,7 +61,7 @@ Cargo.toml-only and outside the src-scoped marker convention.)
   - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-125 — retain focused-row measurement when rendering it offscreen.`
   - `src/elements/list.rs` — `// ShellDeck patch: SDPATCH-125 — autoscroll measures unknown rows naturally.`
 - **Why**: Expose already-known row measurements to an opt-in renderer without re-borrowing ListState while layout holds its intrusive state. Existing list callbacks retain their original contract. Unknown or width-invalidated rows receive no measurement and lay out naturally.
-- **Validation**: SDTEST-2875/2876 and the shared list interaction suite; native short/large/active frame benchmarks and cross-platform CI fixture compilation.
+- **Validation**: SDTEST-2915/2916 and the shared list interaction suite; native short/large/active frame benchmarks and cross-platform CI fixture compilation.
 - **Upstream status**: not filed; opt-in extension in the existing fork.
 
 ### SDPATCH-123 — Estimated heights for virtual conversation rows

@@ -570,7 +570,7 @@ impl SshSession {
         handle
             .disconnect(
                 russh::Disconnect::ByApplication,
-                "ShellDeck disconnect",
+                "Inklura Desktop disconnect",
                 "en",
             )
             .await

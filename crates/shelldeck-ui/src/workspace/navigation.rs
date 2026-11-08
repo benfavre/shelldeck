@@ -28,7 +28,6 @@ impl Workspace {
 
     pub(super) fn update_dashboard_stats(&mut self, cx: &mut Context<Self>) {
         let terminal_count = self.terminal.read(cx).tab_count();
-        let active_forwards = self.active_tunnels.len();
         let running_scripts = if self.scripts.read(cx).is_running() {
             1
         } else {
@@ -45,41 +44,11 @@ impl Workspace {
             })
             .count();
 
-        let quick_connections: Vec<&Connection> = if self.app_config.pinned_connections.is_empty() {
-            self.connections.iter().take(5).collect()
-        } else {
-            self.app_config
-                .pinned_connections
-                .iter()
-                .filter_map(|id| {
-                    self.connections
-                        .iter()
-                        .find(|connection| connection.id == *id)
-                })
-                .take(5)
-                .collect()
-        };
-        let favorite_hosts: Vec<(Uuid, String, String, bool)> = quick_connections
-            .into_iter()
-            .map(|c| {
-                (
-                    c.id,
-                    c.display_name().to_string(),
-                    c.hostname.clone(),
-                    c.status == ConnectionStatus::Connected,
-                )
-            })
-            .collect();
-
         self.dashboard.update(cx, |d, _| {
             d.active_terminals = terminal_count;
-            d.active_forwards = active_forwards;
-            d.running_scripts = running_scripts;
-            d.active_connections = active_connections;
-            d.favorite_hosts = favorite_hosts;
         });
         self.status_bar.update(cx, |bar, _| {
-            bar.set_counts(active_connections, active_forwards, running_scripts);
+            bar.set_counts(active_connections, running_scripts);
         });
         // Also push the fresh state to the tray. The tray publisher
         // dedups against its last state, so this is cheap even when
@@ -132,7 +101,7 @@ impl Workspace {
 
     /// Gracefully shut down: close all terminal sessions, stop tunnels, stop background tasks.
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {
-        tracing::info!("ShellDeck shutting down gracefully...");
+        tracing::info!("Inklura Desktop shutting down gracefully...");
         // Persist open tabs before tearing sessions down so there is something
         // to restore next launch. Best-effort; never blocks shutdown.
         self.save_workspace_state(cx);
@@ -162,6 +131,7 @@ impl Workspace {
     /// Stop runtime resources that must never survive an account boundary.
     /// Unlike `shutdown`, this keeps the Workspace itself alive for login.
     pub(super) fn stop_authenticated_runtime(&mut self, cx: &mut Context<Self>) {
+        self.personal_share.update(cx, |view, cx| view.clear(cx));
         self.workspace_hub
             .update(cx, |hub, cx| hub.cancel_remote_folder_picker(cx));
         // Retire setup attempts before stopping completed tunnels.
@@ -196,6 +166,9 @@ impl Workspace {
     }
 
     pub fn set_active_view(&mut self, view: ActiveView, cx: &mut Context<Self>) {
+        if view.is_retired() {
+            return;
+        }
         self.close_titlebar_menus();
         self.active_view = view;
         self.on_active_view_changed(cx);
@@ -245,6 +218,13 @@ impl Workspace {
             // authenticates before forwarding, so keep this arm inert if
             // another caller accidentally routes it into Workspace.
             DeepLink::Assistant | DeepLink::Agents => {}
+            DeepLink::ExtensionSettings => {
+                self.settings.update(cx, |settings, cx| {
+                    settings.set_active_tab(crate::settings::SettingsTab::General, cx);
+                });
+                self.refresh_inklura_extension_panel(cx);
+                self.open_settings(cx);
+            }
             DeepLink::OpenConnection(id) => {
                 if !self.enter_dev_mode(cx) {
                     return;
@@ -257,8 +237,11 @@ impl Workspace {
                     );
                     return;
                 }
-                self.switch_to_section(SidebarSection::Connections);
+                // The Connections panel is retired: the link lands on Agents,
+                // whose target picker lists the same saved hosts.
+                self.switch_to_section(SidebarSection::Agents);
                 self.sidebar.update(cx, |s, cx| {
+                    s.set_active_section(SidebarSection::Agents);
                     s.focus_connection(id);
                     cx.notify();
                 });
@@ -292,14 +275,16 @@ impl Workspace {
                     );
                 }
             }
-            DeepLink::TunnelStart(id) => {
-                if !self.enter_dev_mode(cx) {
-                    return;
-                }
-                self.switch_to_section(SidebarSection::PortForwards);
-                self.on_active_view_changed(cx);
-                self.handle_forward_event(&PortForwardEvent::StartForward(id), cx);
-                cx.notify();
+            DeepLink::TunnelStart(_) => {
+                self.show_toast(
+                    t!(
+                        "navigation.retired_tool",
+                        app_name = shelldeck_core::APP_NAME
+                    )
+                    .to_string(),
+                    ToastLevel::Info,
+                    cx,
+                );
             }
             DeepLink::OpenSite(id) => {
                 if self.can_switch_mode() {
@@ -459,6 +444,9 @@ impl Workspace {
     }
 
     pub fn switch_to_section(&mut self, section: SidebarSection) {
+        if section.is_retired() {
+            return;
+        }
         self.close_titlebar_menus();
         self.active_view = match section {
             SidebarSection::Connections => ActiveView::Dashboard,
@@ -479,6 +467,9 @@ impl Workspace {
     }
 
     pub(super) fn activate_dev_section(&mut self, section: SidebarSection, cx: &mut Context<Self>) {
+        if section.is_retired() {
+            return;
+        }
         if !self.enter_dev_mode(cx) {
             return;
         }

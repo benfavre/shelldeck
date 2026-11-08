@@ -261,6 +261,9 @@ pub struct TrayConfig {
     /// Show an OS notification when an AI task completes while the
     /// ShellDeck window is not active.
     pub notify_ai_tasks: bool,
+    /// Show an OS notification when new Inklura Manage bell items arrive
+    /// (exports, automations, agent alerts) in any of the account's spaces.
+    pub notify_inklura: bool,
 }
 
 impl Default for TrayConfig {
@@ -275,6 +278,7 @@ impl Default for TrayConfig {
             notify_ssh_disconnect: true,
             notify_fleet_done: true,
             notify_ai_tasks: true,
+            notify_inklura: true,
         }
     }
 }
@@ -293,6 +297,11 @@ pub struct CompanionConfig {
     pub global_shortcut: String,
     /// GPUI keystroke syntax for the command-palette global shortcut.
     pub global_palette_shortcut: String,
+    /// Register the system-wide "Capture & share" shortcut (region capture
+    /// into Share). Off by default so upgrades never claim a new key.
+    pub global_capture_shortcut_enabled: bool,
+    /// GPUI keystroke syntax for the "Capture & share" global shortcut.
+    pub global_capture_shortcut: String,
 }
 
 impl Default for CompanionConfig {
@@ -303,6 +312,8 @@ impl Default for CompanionConfig {
             global_palette_shortcut_enabled: true,
             global_shortcut: Self::default_global_shortcut().to_string(),
             global_palette_shortcut: Self::default_global_palette_shortcut().to_string(),
+            global_capture_shortcut_enabled: false,
+            global_capture_shortcut: Self::default_global_capture_shortcut().to_string(),
         }
     }
 }
@@ -313,6 +324,14 @@ impl CompanionConfig {
             "cmd-shift-space"
         } else {
             "ctrl-shift-space"
+        }
+    }
+
+    pub fn default_global_capture_shortcut() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "cmd-alt-s"
+        } else {
+            "ctrl-alt-s"
         }
     }
 

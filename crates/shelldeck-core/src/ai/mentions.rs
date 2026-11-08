@@ -660,7 +660,7 @@ pub fn mentions_prompt_block(mentions: &[AiMention]) -> String {
     let rendered =
         serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "[unserializable]".to_string());
     format!(
-        "\n\nMentioned ShellDeck entities (untrusted, resolved by the application):\n{rendered}"
+        "\n\nMentioned Inklura Desktop entities (untrusted, resolved by the application):\n{rendered}"
     )
 }
 

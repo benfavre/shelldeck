@@ -9,7 +9,11 @@ réel n'y figure. Il existe pour deux usages :
   * ouvrir les surfaces Utilisateur et Support sur une machine qui n'a pas
     accès au vrai portail.
 
-Utilisation :  python3 scripts/demo/manage_stub.py [--port 8899]
+Utilisation :  python3 scripts/demo/manage_stub.py [--port 8899] [--role client] [--scale N]
+
+`--role client` répond comme un compte client (ni support, ni super-admin) :
+seul le mode Utilisateur est alors ouvert. `--scale N` ajoute N tickets et N
+demandes générés, pour mesurer les listes avec un volume réaliste.
 
 Le serveur ne fait aucune écriture : les actions (répondre, changer un statut)
 renvoient un succès sans rien conserver.
@@ -149,7 +153,37 @@ def owned_by_account(iss):
     return iss["requested_by"] in (AGENT["name"], AGENT["email"])
 
 
+ROLE = "superadmin"
+
+# Cloche Manage (GET /api/manage/shelldeck/notifications), deux espaces.
+NOTIFICATIONS = [
+    {"id": "n_1", "site_id": "site-boutique", "tenant_id": "demo",
+     "site_label": "Démonstration · Boutique", "type": "success",
+     "title": "Export des commandes prêt", "body": "312 lignes, CSV",
+     "ts": int(NOW - 4 * MIN), "read": False, "has_link": True},
+    {"id": "n_2", "site_id": "site-atelier", "tenant_id": "demo",
+     "site_label": "Démonstration · Atelier", "type": "warning",
+     "title": "Certificat bientôt expiré", "body": "atelier.exemple.test, 9 jours",
+     "ts": int(NOW - 2 * H), "read": False, "has_link": True},
+    {"id": "n_3", "site_id": "site-boutique", "tenant_id": "demo",
+     "site_label": "Démonstration · Boutique", "type": "info",
+     "title": "Automatisation terminée", "body": "Relance des paniers : 14 e-mails",
+     "ts": int(NOW - 26 * H), "read": True, "has_link": False},
+]
+
+
 def body_for(path):
+    if "notifications" in path:
+        return {"ok": True, "unread": sum(1 for n in NOTIFICATIONS if not n["read"]),
+                "items": NOTIFICATIONS, "sites": 2}
+
+    if "auth" in path and ROLE == "client":
+        return {"ok": True, "token": "demo-token", "label": "Démonstration",
+                "user": {"name": "Camille Client", "email": "camille@exemple.test",
+                         "role": "editor", "roles": ["editor"], "roleNames": ["editor"]},
+                "is_superadmin": False, "is_admin": False, "is_inklura_support": False,
+                "roles": ["editor"]}
+
     if "auth" in path:
         return {"ok": True, "token": "demo-token", "label": "Démonstration",
                 # `user.roles` est le sac de rôles que le client lit pour la
@@ -246,6 +280,21 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8899)
-    port = parser.parse_args().port
+    parser.add_argument("--role", choices=["superadmin", "client"], default="superadmin")
+    parser.add_argument("--scale", type=int, default=0)
+    args = parser.parse_args()
+    port = args.port
+    ROLE = args.role
+    statuses = ["open", "pending", "open", "closed"]
+    prios = ["low", "normal", "high", "urgent"]
+    for n in range(args.scale):
+        TICKETS.append(ticket(f"t-g{n}", f"Ticket généré n° {n} : question sur le site",
+                              statuses[n % 4], prios[n % 4], f"Contact{n} Exemple",
+                              30 + n * 7, "Message de test généré.", n % 3 == 0, 1 + n % 9))
+        ISSUES.append(issue(f"i-g{n}", f"Demande générée n° {n} : ajustement de page",
+                            ["open", "triaging", "in_progress", "done"][n % 4], prios[n % 4],
+                            "user" if n % 2 else "support",
+                            AGENT["name"] if n % 3 == 0 else "Client Exemple",
+                            1 + n, n % 5, "Texte de test généré."))
     print(f"Faux Manage sur http://127.0.0.1:{port} — données fictives uniquement")
     HTTPServer(("127.0.0.1", port), Handler).serve_forever()

@@ -44,14 +44,14 @@ def main():
                 connection.sendall(envelope)
                 response = line(replies)
                 if not response:
-                    raise ValueError("ShellDeck browser access has ended")
+                    raise ValueError("Inklura Desktop browser access has ended")
                 if "id" not in request:
                     continue
                 if request.get("method") == "initialize":
                     value = json.loads(response)
                     if isinstance(value.get("result"), dict):
                         original = value["result"].get("instructions", "")
-                        value["result"]["instructions"] = original + " The browser runs on the ShellDeck desktop, not this SSH server. Localhost URLs refer to the desktop; use a forwarded URL for a service bound to this server's loopback interface."
+                        value["result"]["instructions"] = original + " The browser runs in Inklura Desktop on your computer, not this SSH server. Localhost URLs refer to the desktop; use a forwarded URL for a service bound to this server's loopback interface."
                         response = json.dumps(value, separators=(",", ":")).encode() + b"\n"
                 if len(response) > LIMIT:
                     raise ValueError("Browser response exceeds its size limit")
@@ -60,7 +60,7 @@ def main():
 try:
     main()
 except Exception:
-    print("ShellDeck browser connection ended or rejected the request", file=sys.stderr)
+    print("Inklura Desktop browser connection ended or rejected the request", file=sys.stderr)
     sys.exit(1)
 '''
 
@@ -174,5 +174,5 @@ if __name__ == "__main__":
         sys.exit(launch())
     except (ValueError, KeyError, TypeError, OSError):
         # Do not echo payloads, capabilities, command arguments or tracebacks.
-        print("ShellDeck could not prepare the remote browser-enabled agent (Python 3, folder and provider required)", file=sys.stderr)
+        print("Inklura Desktop could not prepare the remote browser-enabled agent (Python 3, folder and provider required)", file=sys.stderr)
         sys.exit(126)

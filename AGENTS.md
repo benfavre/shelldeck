@@ -1,6 +1,6 @@
-# ShellDeck - AGENTS.md
+# Inklura Desktop - AGENTS.md
 
-> This is the canonical agent instruction file for ShellDeck. `CLAUDE.md` at the
+> This is the canonical agent instruction file for Inklura Desktop. `CLAUDE.md` at the
 > repo root is a thin pointer that imports this file, so Claude Code, Cursor,
 > Codex, and any other AGENTS.md-aware tool all read the same source of truth.
 >
@@ -9,7 +9,34 @@
 
 ## Project Overview
 
-ShellDeck is a GPU-accelerated native desktop SSH & Terminal companion app built with Rust. It provides a unified control plane for managing terminal sessions, SSH connections, remote script execution, and port forwarding from a polished sidebar/dashboard UI.
+Inklura Desktop (formerly ShellDeck) is a GPU-accelerated native desktop SSH & Terminal companion app built with Rust. It provides a unified control plane for managing terminal sessions, SSH connections, remote script execution, and port forwarding from a polished sidebar/dashboard UI.
+
+## Product identity
+
+The public product name is **Inklura Desktop** (`shelldeck_core::APP_NAME`).
+Use it in windows, menus, notifications, onboarding and installer display names.
+The repository/crates/executables, profile directories, keychain services,
+autostart registration identity, bundle IDs, `shelldeck://` links, release asset
+filenames and signed-manifest domain separator retain their ShellDeck identifiers
+for upgrade compatibility. Do not rename those as a display-copy cleanup.
+The canonical visual mark is `crates/shelldeck/assets/images/brand/inklura-desktop.svg`.
+Regenerate icons, theme badges, tray masks and motion assets with
+`python3 scripts/export-inklura-brand.py`; the legacy Monolith export command
+forwards to it. Keep the Inklura blue-and-white identity across platforms.
+The exporter also writes the committed `packaging/icons/shelldeck.icns`.
+macOS packaging must fail if the source or bundled icon is missing; native
+Apple icon decoding and ZIP inclusion are checked in CI.
+New macOS packages contain `Inklura Desktop.app`; the download installer accepts
+both that bundle and legacy `ShellDeck.app` and preserves an existing location.
+
+## Retired Dev tools
+
+The server-sync, detected-site scan and manual port-forward screens are retired
+from navigation, menus, palette actions and tunnel deep links. Preserve their
+saved records and the SSH/browser transport layers. Do not reintroduce their
+entry points when adding navigation. Retained Workspaces belongs under Agents
+and does not get a separate rail icon. Manage site context and cloud profile
+synchronization remain active features.
 
 ## Tech Stack
 
@@ -149,6 +176,10 @@ if condition {
 
 `shelldeck-core::config::platform` wraps `automonique-platform-client`; all resource, session, receipt, attachment and control-lease values come from the shared protocol crate. The native cockpit reads the authenticated HTTPS projection and may send typed attach/detach/claim/release requests. ShellDeck has no provider executor, runtime configuration, heartbeat, claim loop, or handwritten platform wire model. AI Operations owns federated authentication and global actions; Automonique owns its sessions and control leases.
 
+### Inklura notifications (Manage bell)
+
+`shelldeck-core::config::manage_notifications` reads the Manage bell through `GET|POST {base}/api/manage/shelldeck/notifications` (Bearer device token; server in the bext repo, `routes/shelldeck-notifications.ts`). The server merges the shared per-space feed of every site in the token's directory (capped at 30 sites, 100 items), masks prospect details unless the token is super-admin or admin in its own tenant, and never returns raw links: `open_url` asks for a two-minute user-bound signed switch URL at click time. `mark_read(site_id,id)` / `mark_all_read(before_ms)` / `open_url(site_id,id)`; item identity is `(site_id,id)` because feed ids are only unique per space. UI lives in `workspace/inklura_notifications.rs`: `sync_inklura_notifications_poll` (started from `activate_current_mode`, cleared in `invalidate_cloud_session`) polls every 60 s for the whole signed-in session, tray-hidden included, unlike the surface polls in `polling.rs`. `fresh_unread` seeds silently on the first load, then `TrayNotification::Inklura` fires one OS notification per batch when `tray.notify_inklura` is on. The titlebar bell (`render_inklura_bell`, passed into `render_titlebar`) is hidden until a feed arrives, so a Manage that answers 404 shows nothing. The web bell's personal staff inbox (`mobile.inbox.*`) needs a browser session and is deliberately absent.
+
 ### Hosted issue management (requests)
 
 `shelldeck-core::config::issues` — per tenant/site request tracker, GitHub-synced + fleet-dispatchable (`GET|POST {base}/api/manage/shelldeck/issues`, Bearer, **snake_case + ISO timestamps** like the fleet API → `de_flex_millis`). `Issue`/`IssueComment`/`IssueList` (+ `IssueInstance` for dispatch). Client fns: `list_issues`/`get_issue`/`create_issue`/`comment_issue` (anyone) + staff-only `set_status`/`assign`/`set_priority`/`dispatch_issue`/`github_push`/`github_refresh` (403 for non-super-admin → surfaced); `delete_issue` is owner-or-staff (the original filer may also delete). `delete_issue` is a **soft delete**: the server stamps `deleted_at` (retained in KV for audit) and hides the row from every read path — the ShellDeck client posts `{action:"delete", id}` and both the Support Requests kebab (staff) and the User-mode detail sheet (own requests) open a destructive confirm modal (`render_delete_issue_modal`, `SupportViewEvent::IssueDelete`/`Workspace::confirm_issue_delete` → `Workspace::delete_issue_now`, which closes the detail pane + refreshes). ⚠️ the server side (`deleted_at` field + `action="delete"` in `lib/issues.ts` / `routes/{shelldeck-issues,issues}.ts`) lives in the `bext` repo (`inklura-manage-prism`) and ships via a **separate PR** — the ShellDeck client will 400 (`unknown action`) until that lands. The Workspace owns the issues cache (`refresh_issues` + 15s `sync_issues_poll` while User/Support visible; `select_issue`/`create_issue_now`/`comment_issue_now`/`issue_staff_action`) and pushes it to `SupportView` via `set_issues`/`set_issue_detail`. UI: User `render_user_requests` ("Mes demandes": create composer + list + expand-to-comment, `IssueField` key-capture); Support `SupportSection::{Tickets,Requests}` tab (`render_requests` list/detail/composer + `render_issue_staff_bar` when `issues_staff`) + a "Convertir en demande" button on tickets (`ConvertToIssue`→`create_issue(source="support")`). Palette `NewRequest`/`OpenSupportRequests`. ⚠️ verification = `issues.rs` mock TcpListener (list/detail parse, create/comment bodies, staff-403, 401) + live list/create/comment/get (no github-push / dispatch — those hit real GitHub / create fleet jobs). ⚠️ throwaway issue `7313c010-816a-41bf-96ea-cb3a4f29ac29` (source=user) left for wipe.
@@ -156,6 +187,17 @@ if condition {
 ### bext Cloud + single instance
 
 Core clients (committed by the lead, `3d961cf`): `shelldeck-core::config::bext_cloud` (Bearer `bext_…`; `whoami`/`list_sites`/`create_site`/`site_action`/`dashboard`/`list_instances`; `cli_login_url` + `browser_connect_listen`→`CloudConnect` — the cloud CLI flow has **NO state param**, server-side port cookie; `BextCloudConfig` in `AppConfig.bext_cloud`) and `bext_instance` (`BextInstance{base_url,app_id}` + `list_sites`/`get_site`/`create_site`/`go_live`/`config_site`/`destroy_site` over `/__bext/sdk/site/*` with `X-Bext-App-Id`). UI (this round, `bext_cloud_view.rs`, `ActiveView::BextCloud` + Dev sidebar nav): two tabs — **Cloud** (`render_connection_card` connect/whoami/disconnect via `Workspace::connect_bext`/`disconnect_bext`; dashboard strip; sites list + create + go_live/config/destroy-with-confirm via `bext_cloud_action`; super-admin instances) and **Instance** (target base+app-id → `refresh_bext_instance`/`bext_instance_action` list/create/go_live/destroy). `Workspace::refresh_bext_cloud` (whoami+sites+dashboard+instances in one bg spawn) + 15s `sync_bext_poll` while visible. Per-connection **bext** hover button → `SidebarEvent::ConnectionManageBext` → `manage_bext_for_connection` (⚠️ v1 targets `http://127.0.0.1` local loopback; remote-over-SSH-tunnel is the follow-up). Palette `OpenBextCloud`/`ConnectBextCloud`. ⚠️ verification: the clients' mock tests (lead) + live whoami(super_admin)/sites(empty,max 8)/dashboard/admin-instances(1: activ-2) via `--resolve cloud.bext.dev:443:127.0.0.1` + the on-box instance SDK `/__bext/sdk/site/list` (site `testcool`) — no real WordPress site created.
+
+### Inklura Chrome extension setup
+
+`shelldeck-core::config::inklura_extension` installs the browser assistant whose source lives in `bext/extensions/inklura-assistant` and that Manage serves at `/extensions/inklura-assistant.zip`. It downloads and unpacks the package (own CRC-checked zip reader on `flate2`, staging folder, no `..` entries) into `<data dir>/inklura-assistant`, computes the unpacked-extension ID from that path (SHA-256 → `a`–`p`, the Chrome algorithm), launches Chrome/Chromium on `chrome://extensions` (`xdg-open` refuses `chrome://` URLs), and runs the package's `native/install.py` for the optional Craft bridge (macOS/Linux). **Keep the install path stable**: the Chrome ID, permissions and pinned icon depend on it. Chrome does not allow a program to load an unpacked extension for the user, so the « Load unpacked » click stays manual and the Settings → Général section spells it out. UI: `settings/inklura_extension.rs` (state + intents) and `workspace/inklura_extension.rs` (background work, toasts); palette `SetupInkluraExtension`.
+
+### Share with Inklura (OS hand-off)
+
+`shelldeck-core::config::share_intent` turns OS file hand-offs into staged Share drafts. Entry points: `shelldeck --share FILE…` (every remaining argument is a file, resolved against the launching directory), the Windows Explorer « Send to → Inklura Share » shortcut (NSIS), the hidden Linux `inklura-desktop-share.desktop` « Open With » entry that release builds self-register at startup (`$APPIMAGE` path for AppImages), and macOS `CFBundleDocumentTypes` whose `file://` URLs arrive through `on_open_urls`. The single-instance payload is `inklura-share:` + a JSON array of absolute paths. **It is deliberately not a `shelldeck://` URL**: web pages can open deep links, only local processes reach the authenticated loopback channel, so a browser can never pre-stage local files. `Workspace::stage_external_share` switches to User → Share and calls `ShareView::stage_external`, which opens Review; nothing uploads until the user clicks Share. Signed-out hand-offs wait in `pending_share_files` until `apply_login` (cleared on logout); a busy Share view refuses with `share.error.busy`.
+
+Share shortcuts: the tray (« Capturer et partager… », « Partager des fichiers… », signed-in only), the palette (`CaptureAndShare`, `ShareFiles`) and User Home quick actions call `Workspace::capture_and_share` / `share_files_now`. The tray capture selects the region **before** showing the main window (`ShareView::capture_external` runs its `CaptureReady` callback afterwards), so the window is not in the way of the selection.
+An opt-in global shortcut (`[companion] global_capture_shortcut_enabled`, default off, `ctrl-alt-s` / `cmd-alt-s`, hotkey id 3) runs the same flow through `capture_and_share` in `main.rs`. `GlobalShortcutRegistrationState::sync` resolves collisions in priority order AI Dock → palette → Capture & share; the later shortcut is unregistered and reported as `Conflict`.
 
 ## Releasing & Auto-Update
 

@@ -16,12 +16,9 @@ impl Workspace {
         let mode = self.effective_mode();
         let active_go = if mode == AppMode::Dev {
             match self.active_view {
-                ActiveView::Dashboard => Some(MenuCommand::GoDashboard),
+                ActiveView::Agents => Some(MenuCommand::GoAgents),
                 ActiveView::Terminal => Some(MenuCommand::GoTerminal),
                 ActiveView::Scripts => Some(MenuCommand::GoScripts),
-                ActiveView::PortForwards => Some(MenuCommand::GoPortForwards),
-                ActiveView::ServerSync => Some(MenuCommand::GoServerSync),
-                ActiveView::Sites => Some(MenuCommand::GoSites),
                 ActiveView::Recent => Some(MenuCommand::GoRecent),
                 ActiveView::FileEditor => Some(MenuCommand::GoFileEditor),
                 ActiveView::MoniqueConsole => Some(MenuCommand::GoMonique),
@@ -184,12 +181,9 @@ impl Workspace {
                     .update(cx, |settings, cx| settings.adjust_ui_font_size(delta, cx));
             }
 
-            Cmd::GoDashboard => self.activate_dev_section(SidebarSection::Connections, cx),
+            Cmd::GoAgents => self.activate_dev_section(SidebarSection::Agents, cx),
             Cmd::GoTerminal => self.activate_dev_section(SidebarSection::Terminals, cx),
             Cmd::GoScripts => self.activate_dev_section(SidebarSection::Scripts, cx),
-            Cmd::GoPortForwards => self.activate_dev_section(SidebarSection::PortForwards, cx),
-            Cmd::GoServerSync => self.execute_palette_action(&OpenServerSync, cx),
-            Cmd::GoSites => self.execute_palette_action(&OpenSites, cx),
             Cmd::GoRecent => self.execute_palette_action(&OpenRecent, cx),
             Cmd::GoFileEditor => self.execute_palette_action(&OpenFileEditorView, cx),
             Cmd::GoMonique => self.execute_palette_action(&OpenMoniqueConsole, cx),

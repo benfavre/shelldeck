@@ -1,17 +1,17 @@
-# ShellDeck
+# Inklura Desktop
 
 <p align="center">
-  <img src="crates/shelldeck/assets/images/shelldeck-icon.png" alt="ShellDeck Monolith logo" width="120" height="120" />
+  <img src="crates/shelldeck/assets/images/shelldeck-icon.png" alt="Inklura Desktop logo" width="120" height="120" />
 </p>
 
 A GPU-accelerated native desktop SSH, terminal, and operations companion built
-with Rust. ShellDeck brings infrastructure work, Inklura Manage sites, support
+with Rust. Inklura Desktop brings infrastructure work, Inklura Manage sites, support
 requests, and automation into one role-aware control plane.
 
 ## Preview
 
 <p align="center">
-  <img src="docs/screenshots/03-support-request-detail.png" alt="ShellDeck support request detail view" width="100%" />
+  <img src="docs/screenshots/03-support-request-detail.png" alt="Inklura Desktop support request detail view" width="100%" />
 </p>
 
 <table>
@@ -20,15 +20,15 @@ requests, and automation into one role-aware control plane.
     <td align="center"><strong>App and terminal themes</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/02-support-home.png" alt="ShellDeck support dashboard" /></td>
-    <td><img src="docs/screenshots/04-appearance-themes.png" alt="ShellDeck appearance and terminal theme settings" /></td>
+    <td><img src="docs/screenshots/02-support-home.png" alt="Inklura Desktop support dashboard" /></td>
+    <td><img src="docs/screenshots/04-appearance-themes.png" alt="Inklura Desktop appearance and terminal theme settings" /></td>
   </tr>
 </table>
 
 <details>
   <summary>Dark theme preview</summary>
   <br />
-  <img src="docs/screenshots/05-support-request-dark.png" alt="ShellDeck support request detail view in the dark theme" width="100%" />
+  <img src="docs/screenshots/05-support-request-dark.png" alt="Inklura Desktop support request detail view in the dark theme" width="100%" />
 </details>
 
 ## Features
@@ -68,7 +68,12 @@ curl -fsSL https://shelldeck.bext.dev/install.sh | bash
 powershell -c "irm https://shelldeck.bext.dev/install.ps1 | iex"
 ```
 
-ShellDeck auto-updates itself once installed. To build from source instead, see below.
+Inklura Desktop auto-updates itself once installed. To build from source instead, see below.
+
+Formerly ShellDeck, the app keeps its existing `shelldeck` command, profile
+directories, keychain entries, `shelldeck://` links and update download names.
+Upgrading keeps your settings, connections and sign-in. New macOS installs use
+`Inklura Desktop.app`; existing bundles can continue updating in place.
 
 ### Open Agents directly
 
@@ -79,8 +84,8 @@ shelldeck --agents
 This opens the Agents interface in the production application, using the same
 account and conversation library. Existing login and Dev access checks remain
 in force. Linux desktop launchers offer **Open Agents**, and Windows installers
-add **ShellDeck Agents** to the Start Menu. On macOS use
-`open -na ShellDeck --args --agents`. Launch ShellDeck normally to return to the
+add **Inklura Desktop Agents** to the Start Menu. On macOS use
+`open -na "Inklura Desktop" --args --agents`. Launch Inklura Desktop normally to return to the
 full interface. See [launching Agents](docs/agents-launch.md) for single-instance
 behavior, AppImage usage and development commands.
 
@@ -149,7 +154,7 @@ shelldeck/
 
 ## Configuration
 
-ShellDeck stores its state in the platform configuration directory returned by
+Inklura Desktop stores its state in the platform configuration directory returned by
 the operating system. On Linux this is `$XDG_CONFIG_HOME/shelldeck/`, or
 `~/.config/shelldeck/` when `XDG_CONFIG_HOME` is not set.
 
@@ -163,17 +168,17 @@ SSH credentials are stored securely in your OS keychain -- never in config files
 
 ## Cloud Sync (Inklura Manage)
 
-ShellDeck can pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal so a team's server inventory stays in sync across machines. Synced connections show up alongside your `~/.ssh/config` and manual entries, tagged as **cloud**-sourced; they are refreshed on every sync and removed automatically when they disappear from the portal. Your local **manual** and **SSH-config** connections are never modified by sync.
+Inklura Desktop can pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal so a team's server inventory stays in sync across machines. Synced connections show up alongside your `~/.ssh/config` and manual entries, tagged as **cloud**-sourced; they are refreshed on every sync and removed automatically when they disappear from the portal. Your local **manual** and **SSH-config** connections are never modified by sync.
 
 ### Sign in from the titlebar
 
 The quickest way to connect is the **account chip in the titlebar** (top-right, next to the theme switcher). Click **Se connecter** and either:
 
 - enter your Inklura Manage **email + password**, or
-- use **single sign-on** — *SSO 1clic.pro*, *Google*, or *GitHub*. This opens your system browser to authorize the device, then hands a token back to ShellDeck automatically.
+- use **single sign-on** — *SSO 1clic.pro*, *Google*, or *GitHub*. This opens your system browser to authorize the device, then hands a token back to Inklura Desktop automatically.
 - or **Via le navigateur (mot de passe)** — opens the browser to the Manage password login page (handy when you already have a Manage session or a browser password manager), then authorizes and returns.
 
-On success ShellDeck stores an account-bound sync token, enables Cloud Sync, and pulls your profiles. The chip then shows your name and a status dot (green = connected, gray = offline/unchecked, red = token rejected — sign in again). Use the chip's dropdown to **Synchroniser** on demand or **Se déconnecter** (which revokes the token server-side).
+On success Inklura Desktop stores an account-bound sync token, enables Cloud Sync, and pulls your profiles. The chip then shows your name and a status dot (green = connected, gray = offline/unchecked, red = token rejected — sign in again). Use the chip's dropdown to **Synchroniser** on demand or **Se déconnecter** (which revokes the token server-side).
 
 ### Sites & Manage areas
 
@@ -187,7 +192,7 @@ The command palette (`Ctrl+Shift+P`) also has a **Switch Active Site** entry and
 ### Manual configuration
 
 You can also configure Cloud Sync by hand — add a `[cloud_sync]` section to
-`config.toml` in ShellDeck's platform configuration directory:
+`config.toml` in Inklura Desktop's platform configuration directory:
 
 ```toml
 [cloud_sync]
@@ -196,9 +201,9 @@ base_url = "https://manage.inklura.fr"
 sync_on_startup = true     # pull profiles automatically at launch
 ```
 
-- **Sign in** from ShellDeck to bind the account token; its durable value lives
+- **Sign in** from Inklura Desktop to bind the account token; its durable value lives
   in the operating-system keychain, never in `config.toml`.
-- With `sync_on_startup = true`, ShellDeck syncs at launch (bounded by a 4s connect / 10s total timeout, so a portal outage never blocks startup).
+- With `sync_on_startup = true`, Inklura Desktop syncs at launch (bounded by a 4s connect / 10s total timeout, so a portal outage never blocks startup).
 - Trigger a sync anytime via the command palette (**Cloud Sync Now**) or the **Sync now** button under Settings → General → Cloud Sync.
 - The Settings screen only ever shows a masked account hint.
 
@@ -209,7 +214,7 @@ Inklura Manage account:
 
 - **User** — available to every authenticated account. It provides dedicated **Accueil**, **Mes sites**, **Mes demandes**, and **Mes informations** tabs with one-click Manage links and account-scoped data.
 - **Support** — a native two-pane helpdesk console for support.inklura.fr: view filters (Tous / Non attribués / Les miens / Ouverts / En attente / SLA / Résolus) with live counts, the ticket list, and a conversation pane with a reply/note composer and an action bar (status, priority, assign, resolve). The list refreshes every ~30s while open.
-- **Dev** — the full ShellDeck workspace: terminals, SSH, port forwards, scripts, server sync, sites, the shared platform cockpit, and bext Cloud.
+- **Dev** — the full Inklura Desktop workspace: terminals, SSH, port forwards, scripts, server sync, sites, the shared platform cockpit, and bext Cloud.
 
 Regular and customer-admin accounts are restricted to User mode. Accounts with
 the dedicated `inklura_support` role can switch between User and Support.
@@ -218,12 +223,12 @@ show modes the account can reach.
 
 Switching modes never closes running terminal sessions — Dev surfaces are
 hidden, not destroyed. The selected mode is remembered across restarts. When
-no account is signed in, ShellDeck displays its mandatory welcome and login
+no account is signed in, Inklura Desktop displays its mandatory welcome and login
 screen; Dev mode is never used as a logged-out fallback.
 
 ## Monique / Automonique
 
-ShellDeck includes a native staff console for Monique, the production Automonique runtime. It reads typed health, generation, queue, reconciliation and process state, shares Monique's durable dashboard conversation, and presents any state-changing Manage action for an explicit approve/reject decision.
+Inklura Desktop includes a native staff console for Monique, the production Automonique runtime. It reads typed health, generation, queue, reconciliation and process state, shares Monique's durable dashboard conversation, and presents any state-changing Manage action for an explicit approve/reject decision.
 
 The console is available only to super-admins with a complete configuration, sourced with this precedence:
 
@@ -236,7 +241,7 @@ The console is available only to super-admins with a complete configuration, sou
    ```
 2. Otherwise the config delivered by the server in the sites feed (super-admin tokens only).
 
-Basic credentials are sent only to the configured canonical URL; redirects are refused. ShellDeck has no alternate bot transport or fallback.
+Basic credentials are sent only to the configured canonical URL; redirects are refused. Inklura Desktop has no alternate bot transport or fallback.
 
 ### Platform cockpit
 
@@ -245,14 +250,14 @@ Automonique platform contract. It presents federated resources, capabilities,
 models, receipts, and every attachable session. Operators may attach or detach
 observation and explicitly claim or release a short control lease.
 
-ShellDeck is always a client. It contains no provider executor, job claim loop,
+Inklura Desktop is always a client. It contains no provider executor, job claim loop,
 runtime switch, or duplicate platform wire types. The signed-in AI Operations
 bearer is validated by the platform gateway; Basic credentials remain scoped
 to the dashboard's browser-style APIs.
 
 ## Requests (hosted issue management)
 
-ShellDeck has a built-in **request tracker** — per tenant/site issues that are synced to GitHub and can be dispatched through AI Operations.
+Inklura Desktop has a built-in **request tracker** — per tenant/site issues that are synced to GitHub and can be dispatched through AI Operations.
 
 - **User mode** — a dedicated **Mes demandes** tab: file a **Nouvelle demande** (title + details + priority), see your tenant's requests with their status and GitHub number, and open any one to read its body/comments and add your own. The quick **Ask Monique** card stages one-off operational asks through the same reviewed conversation workflow.
 - **Support mode** — a **Demandes** tab in the console: the request queue for your scope (all tenants for staff). Open a request to see its thread and comment; staff get a triage action bar — set status, cycle priority, assign to me, dispatch through AI Operations, and **Créer sur GitHub** / refresh from GitHub. Any support ticket can be **Convertir[i] en demande** to become a tracked request.
@@ -272,7 +277,7 @@ Each SSH connection has a **bext** hover action that opens the Instance tab for 
 
 In **Settings → AI**, choose **Codex CLI (ChatGPT subscription)** or
 **Claude Code CLI (subscription)**. These backends reuse the provider CLI's
-local login and do not require a ShellDeck API key.
+local login and do not require a Inklura Desktop API key.
 
 Install the CLI and sign in on the computer where it will run:
 
@@ -289,7 +294,7 @@ claude auth status
 Settings shows the matching setup command, a copy button, the official sign-in
 guide, and an explicit connection test. The **Agents** empty state shows the same
 setup for its selected provider. For an SSH target, install and sign in on that
-host; ShellDeck does not forward this computer's provider credentials.
+host; Inklura Desktop does not forward this computer's provider credentials.
 
 The CLI determines authentication and billing. Existing API credentials in its
 configuration or environment can select API usage instead of the subscription;

@@ -7406,7 +7406,7 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shelldeck"
-version = "0.14.2"
+version = "0.18.0"
 dependencies = [
  "adabraka-gpui",
  "adabraka-ui",
@@ -7430,7 +7430,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-browser"
-version = "0.14.2"
+version = "0.18.0"
 dependencies = [
  "base64 0.22.1",
  "cef",
@@ -7446,7 +7446,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-core"
-version = "0.14.2"
+version = "0.18.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -7455,7 +7455,9 @@ dependencies = [
  "automonique-protocol",
  "base64 0.22.1",
  "chrono",
+ "crc32fast",
  "directories",
+ "flate2",
  "fs2",
  "futures",
  "keyring",
@@ -7478,7 +7480,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-ssh"
-version = "0.14.2"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7502,7 +7504,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-terminal"
-version = "0.14.2"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7523,11 +7525,12 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-ui"
-version = "0.14.2"
+version = "0.18.0"
 dependencies = [
  "adabraka-gpui",
  "adabraka-ui",
  "anyhow",
+ "ashpd 0.11.1",
  "async-io",
  "async-process",
  "automonique-protocol",
@@ -7573,11 +7576,12 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.60.2",
+ "zbus 5.17.0",
 ]
 
 [[package]]
 name = "shelldeck-update"
-version = "0.14.2"
+version = "0.18.0"
 dependencies = [
  "adabraka-gpui",
  "anyhow",
@@ -8505,9 +8509,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.52.3"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",

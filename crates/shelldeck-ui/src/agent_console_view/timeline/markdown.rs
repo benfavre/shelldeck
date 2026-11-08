@@ -154,7 +154,7 @@ impl AgentConsoleView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // SDTEST-2881 / SDUC-475, SDUC-564 — chunks share the full-document parser and bounded AST cache.
+    // SDTEST-2921 / SDUC-475, SDUC-564 — chunks share the full-document parser and bounded AST cache.
     #[::core::prelude::v1::test]
     fn prose_block_plans_preserve_references_structures_and_bounded_source_cache() {
         let source=format!("[reference link][target]\n\n{}\n```rust\nfn main() {{}}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n[target]: https://example.test/document\n",

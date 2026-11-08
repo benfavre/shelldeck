@@ -123,6 +123,85 @@ pub fn fetch_sites(base_url: &str, token: &str) -> Result<SitesPayload> {
         .map_err(|e| ShellDeckError::Serialization(format!("invalid sites payload: {}", e)))
 }
 
+/// Mint a fresh signed Boat handoff at click time. Cached directory links expire;
+/// the legacy unsigned scope-switch URL is not accepted by current Manage hosts.
+pub fn fetch_boat_console_url(
+    base_url: &str,
+    token: &str,
+    tenant_id: &str,
+    site_id: &str,
+) -> Result<String> {
+    let base = reqwest::Url::parse(base_url)
+        .map_err(|_| ShellDeckError::Connection("invalid Manage origin".into()))?;
+    let loopback = matches!(base.host_str(), Some("127.0.0.1" | "[::1]" | "::1"));
+    if (base.scheme() != "https" && !(base.scheme() == "http" && loopback))
+        || !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+    {
+        return Err(ShellDeckError::Connection("invalid Manage origin".into()));
+    }
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| ShellDeckError::Connection("failed to build Manage client".into()))?;
+    let response = client
+        .get(format!(
+            "{}/api/manage/shelldeck/sites",
+            base_url.trim_end_matches('/')
+        ))
+        .bearer_auth(token)
+        .send()
+        .map_err(|_| ShellDeckError::Connection("Boat handoff request failed".into()))?;
+    if !response.status().is_success() {
+        return Err(ShellDeckError::Connection(
+            "Boat handoff was refused".into(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(response, 2 * 1024 * 1024 + 1),
+        &mut bytes,
+    )
+    .map_err(|_| ShellDeckError::Connection("Boat directory read failed".into()))?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(ShellDeckError::Serialization(
+            "Boat directory is too large".into(),
+        ));
+    }
+    let directory: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| ShellDeckError::Serialization("invalid Boat handoff directory".into()))?;
+    let target = directory["sites"]
+        .as_array()
+        .and_then(|sites| {
+            sites
+                .iter()
+                .find(|site| site["tenant_id"] == tenant_id && site["site_id"] == site_id)
+        })
+        .and_then(|site| site["switch_urls"]["boat"].as_str())
+        .ok_or_else(|| {
+            ShellDeckError::Connection("Boat console is unavailable for this site".into())
+        })?;
+    let url = reqwest::Url::parse(target)
+        .map_err(|_| ShellDeckError::Connection("invalid Boat handoff".into()))?;
+    if url.origin() != base.origin()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/api/manage/switch"
+        || !url
+            .query_pairs()
+            .any(|(key, value)| key == "handoff" && !value.is_empty())
+        || url.query_pairs().any(|(key, _)| key != "handoff")
+    {
+        return Err(ShellDeckError::Connection("invalid Boat handoff".into()));
+    }
+    Ok(url.to_string())
+}
+
 /// Build the browser deep link that switches the manage scope to `site` and
 /// lands on `area_path`:
 /// `{manage_origin}/api/manage/switch?tenantId=&siteId=&host=&label=&next=`.
@@ -141,6 +220,56 @@ pub fn manage_area_url(manage_origin: &str, site: &ManagedSiteInfo, area_path: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SDTEST-2914 / SDUC-571: the server chooses the scope and signs it; no unsigned fallback.
+    #[test]
+    fn sdtest_2914_boat_handoff_is_fresh_scoped_and_same_origin() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        for variant in ["valid", "other-site", "other-origin", "unsigned", "missing"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let target = match variant {
+                "other-origin" => {
+                    "https://untrusted.example/api/manage/switch?handoff=secret".to_string()
+                }
+                "unsigned" => format!("{origin}/api/manage/switch?tenantId=t&siteId=s"),
+                _ => format!("{origin}/api/manage/switch?handoff=fresh-signature"),
+            };
+            let body = serde_json::json!({"sites": [{
+                "tenant_id": "t", "site_id": if variant == "other-site" { "other" } else { "s" },
+                "switch_urls": if variant == "missing" { serde_json::json!({}) } else { serde_json::json!({"boat": target}) }
+            }]}).to_string();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut byte = [0];
+                while !bytes.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    bytes.push(byte[0]);
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                assert!(request.starts_with("GET /api/manage/shelldeck/sites HTTP/1.1"));
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer sd_test"));
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            });
+            let result = fetch_boat_console_url(&origin, "sd_test", "t", "s");
+            server.join().unwrap();
+            if variant == "valid" {
+                assert_eq!(
+                    result.unwrap(),
+                    format!("{origin}/api/manage/switch?handoff=fresh-signature")
+                );
+            } else {
+                assert!(result.is_err(), "accepted {variant}");
+            }
+        }
+    }
 
     fn site() -> ManagedSiteInfo {
         ManagedSiteInfo {

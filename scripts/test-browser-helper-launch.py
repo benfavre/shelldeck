@@ -37,7 +37,7 @@ def sdtest_2598_packaged_helper_entry_point(bundle: Path) -> None:
         environment["PATH"] = str(executable.parent) + os.pathsep + environment.get("PATH", "")
     result = subprocess.run([str(executable), "--mcp"], env=environment,
                             capture_output=True, text=True, timeout=15)
-    if result.returncode != 1 or "ShellDeck browser bridge:" not in result.stderr:
+    if result.returncode != 1 or "Inklura Desktop browser bridge:" not in result.stderr:
         raise RuntimeError(f"Packaged helper failed before its MCP entry point: exit={result.returncode}, stderr={result.stderr[:2000]}")
     print("SDTEST-2598 passed: packaged native helper reached its scoped MCP entry point")
 

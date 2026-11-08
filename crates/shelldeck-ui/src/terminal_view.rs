@@ -765,6 +765,8 @@ impl TerminalView {
             state: session.state.clone(),
             zoom_level: 1.0,
             connection_id,
+            program_title: String::new(),
+            named: false,
         };
 
         // Deactivate other tabs
@@ -1017,6 +1019,7 @@ impl TerminalView {
         self.pane.sessions[index].title = name.clone();
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == expected_session) {
             tab.title = name;
+            tab.named = true;
         }
         cx.notify();
         Ok(())
@@ -1674,6 +1677,16 @@ impl TerminalView {
                                 any_sync = true;
                             }
                         }
+                        // Follow the title each program sets (OSC 0 / OSC 2).
+                        for s in this.pane.sessions.iter() {
+                            let g = s.grid.lock();
+                            if let Some(tab) = this.tabs.iter_mut().find(|t| t.id == s.id) {
+                                if tab.program_title != g.title {
+                                    tab.program_title.clone_from(&g.title);
+                                    any_dirty = true;
+                                }
+                            }
+                        }
                         // Extra (split) panes of the active tab.
                         for session in this.layout.extra.values() {
                             let g = session.grid.lock();
@@ -1842,11 +1855,12 @@ impl TerminalView {
 
             // Coarse char cap; the flex layout + overflow clip handles the rest.
             let max_chars = 28;
-            let display_title = if tab.title.chars().count() > max_chars {
-                let truncated: String = tab.title.chars().take(max_chars).collect();
+            let label = tab.display_title();
+            let display_title = if label.chars().count() > max_chars {
+                let truncated: String = label.chars().take(max_chars).collect();
                 format!("{}\u{2026}", truncated) // ellipsis
             } else {
-                tab.title.clone()
+                label.to_string()
             };
 
             // Clickable content area (dot + title) — selects the tab. Grows to

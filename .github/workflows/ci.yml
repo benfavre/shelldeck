@@ -36,6 +36,23 @@ jobs:
           python3 -B crates/shelldeck-core/src/agent_remote_history_test.py
           python3 -B scripts/test-remote-browser-bridge.py
 
+  macos-branding:
+    name: Native macOS icon packaging
+    runs-on: macos-15
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Decode the shipped icon and verify archive failures
+        run: |
+          command -v iconutil
+          command -v ditto
+          python3 scripts/test-macos-branding.py
+
   agents-packaging:
     name: Agents launcher and packaging contracts
     runs-on: ubuntu-latest
@@ -61,6 +78,7 @@ jobs:
           command -v makensis
           python3 scripts/test-automonique-dependency-access.py
           python3 scripts/test-agents-packaging.py
+          python3 scripts/test-macos-branding.py
           python3 scripts/test-browser-packaging.py
           bash -n packaging/linux/build-appimage.sh
           bash -n packaging/windows/build-nsis.sh

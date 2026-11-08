@@ -24,6 +24,14 @@ if [ ! -f "$BINARY" ]; then
     exit 1
 fi
 
+# A missing icon is a release error; never ship an unbranded .app.
+ICON_SRC="$PROJECT_ROOT/packaging/icons/shelldeck.icns"
+if [ ! -s "$ICON_SRC" ]; then
+    echo "ERROR: Required macOS icon is missing: $ICON_SRC" >&2
+    echo "Regenerate it with python3 scripts/export-inklura-brand.py" >&2
+    exit 1
+fi
+
 VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -32,12 +40,12 @@ case "$ARCH" in
     *)             PLATFORM="macos-$ARCH" ;;
 esac
 
-echo "==> Building DMG for ShellDeck $VERSION ($PLATFORM)"
+echo "==> Building DMG for Inklura Desktop $VERSION ($PLATFORM)"
 
 # ---------------------------------------------------------------------------
 # Create .app bundle
 # ---------------------------------------------------------------------------
-APP_DIR="$PROJECT_ROOT/dist/ShellDeck.app"
+APP_DIR="$PROJECT_ROOT/dist/Inklura Desktop.app"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
@@ -64,9 +72,9 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>ShellDeck</string>
+    <string>Inklura Desktop</string>
     <key>CFBundleDisplayName</key>
-    <string>ShellDeck</string>
+    <string>Inklura Desktop</string>
     <key>CFBundleIdentifier</key>
     <string>com.shelldeck.app</string>
     <key>CFBundleVersion</key>
@@ -87,6 +95,31 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
     <string>11.0</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Inklura Share file</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.image</string>
+                <string>public.movie</string>
+                <string>public.audio</string>
+                <string>com.adobe.pdf</string>
+                <string>public.plain-text</string>
+                <string>public.comma-separated-values-text</string>
+                <string>public.json</string>
+                <string>net.daringfireball.markdown</string>
+                <string>public.zip-archive</string>
+                <string>org.gnu.gnu-zip-archive</string>
+                <string>org.7-zip.7-zip-archive</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -102,53 +135,9 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
 </plist>
 PLIST
 
-# Copy icon if available, else build one from the committed iconset,
-# else fall back to the dark-blue placeholder as a last resort.
-ICON_SRC="$PROJECT_ROOT/packaging/icons/shelldeck.icns"
-ICONSET_SRC="$PROJECT_ROOT/packaging/icons/iconset"
-if [ -f "$ICON_SRC" ]; then
-    cp "$ICON_SRC" "$APP_DIR/Contents/Resources/shelldeck.icns"
-elif [ -d "$ICONSET_SRC" ] && command -v iconutil &>/dev/null; then
-    echo "==> Building shelldeck.icns from $ICONSET_SRC"
-    iconutil -c icns "$ICONSET_SRC" -o "$APP_DIR/Contents/Resources/shelldeck.icns" || {
-        echo "  WARNING: iconutil failed on iconset, .app will have no icon"
-    }
-else
-    echo "==> No shelldeck.icns and no usable iconset, generating placeholder..."
-    # Create a simple PNG and convert to icns using sips (macOS built-in)
-    TEMP_PNG="$(mktemp /tmp/shelldeck-icon-XXXX.png)"
-    if command -v sips &>/dev/null; then
-        # Create a 256x256 PNG placeholder with Python
-        python3 -c "
-import struct, zlib
-w, h = 256, 256
-# RGBA: dark blue #1a1b26
-row = b''
-for x in range(w):
-    row += b'\\x1a\\x1b\\x26\\xff'
-raw = b''
-for y in range(h):
-    raw += b'\\x00' + row
-compressed = zlib.compress(raw)
-def chunk(t, d):
-    c = t + d
-    return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-with open('$TEMP_PNG', 'wb') as f:
-    f.write(b'\\x89PNG\\r\\n\\x1a\\n')
-    f.write(chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)))
-    f.write(chunk(b'IDAT', compressed))
-    f.write(chunk(b'IEND', b''))
-" 2>/dev/null
-        # Convert PNG to iconset to icns
-        ICONSET="$(mktemp -d /tmp/shelldeck-XXXX.iconset)"
-        sips -z 256 256 "$TEMP_PNG" --out "$ICONSET/icon_256x256.png" &>/dev/null || true
-        sips -z 128 128 "$TEMP_PNG" --out "$ICONSET/icon_128x128.png" &>/dev/null || true
-        iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/shelldeck.icns" 2>/dev/null || {
-            echo "  WARNING: iconutil failed, .app will have no icon"
-        }
-        rm -rf "$ICONSET" "$TEMP_PNG"
-    fi
-fi
+# The canonical exporter commits this native icon alongside the other formats.
+cp "$ICON_SRC" "$APP_DIR/Contents/Resources/shelldeck.icns"
+
 
 SIGNING_IDENTITY="${SHELLDECK_MACOS_SIGNING_IDENTITY:--}"
 if [ "${SHELLDECK_REQUIRE_SIGNING:-0}" = "1" ] && [ "$SIGNING_IDENTITY" = "-" ]; then
@@ -190,7 +179,7 @@ codesign "${SIGN_ARGS[@]}" --options runtime "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 if [ "${SHELLDECK_MACOS_APP_ONLY:-0}" = "1" ]; then
-    echo "==> App bundle ready at dist/ShellDeck.app"
+    echo "==> App bundle ready at dist/Inklura Desktop.app"
     exit 0
 fi
 
@@ -214,24 +203,24 @@ ln -s /Applications "$DMG_TEMP/Applications"
 # Try create-dmg for pretty DMG, fall back to hdiutil
 if command -v create-dmg &>/dev/null; then
     create-dmg \
-        --volname "ShellDeck" \
+        --volname "Inklura Desktop" \
         --window-pos 200 120 \
         --window-size 600 400 \
         --icon-size 100 \
-        --icon "ShellDeck.app" 150 190 \
+        --icon "Inklura Desktop.app" 150 190 \
         --icon "Applications" 450 190 \
-        --hide-extension "ShellDeck.app" \
+        --hide-extension "Inklura Desktop.app" \
         --app-drop-link 450 190 \
         --no-internet-enable \
         "$DMG_PATH" \
         "$DMG_TEMP" || {
         echo "==> create-dmg failed, falling back to hdiutil..."
-        hdiutil create -volname "ShellDeck" -srcfolder "$DMG_TEMP" \
+        hdiutil create -volname "Inklura Desktop" -srcfolder "$DMG_TEMP" \
             -ov -format UDZO "$DMG_PATH"
     }
 else
     echo "==> Using hdiutil..."
-    hdiutil create -volname "ShellDeck" -srcfolder "$DMG_TEMP" \
+    hdiutil create -volname "Inklura Desktop" -srcfolder "$DMG_TEMP" \
         -ov -format UDZO "$DMG_PATH"
 fi
 

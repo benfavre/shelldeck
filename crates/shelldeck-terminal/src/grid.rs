@@ -1540,8 +1540,17 @@ impl TerminalGrid {
         }
     }
 
+    /// Store the title a program set (OSC 0 / OSC 2). Control characters are
+    /// dropped and the length is capped, since the title is shown in the UI.
     pub fn set_title(&mut self, title: String) {
-        self.title = title;
+        const MAX_TITLE_CHARS: usize = 256;
+        self.title = title
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_TITLE_CHARS)
+            .collect::<String>()
+            .trim()
+            .to_string();
     }
 
     // -- Scrollback viewing --

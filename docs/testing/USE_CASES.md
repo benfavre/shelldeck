@@ -2055,9 +2055,13 @@ internal-note composers accept up to five PNG, JPEG, or WebP images (9 Mo each,
 leaving multipart headroom below Bext's 10 MiB request cap) from an image URL, the native file picker,
 Ctrl/Cmd+V, drag-and-drop, or the platform's interactive area capture. Local
 drafts show a removable preview and are not uploaded until submission.
-On Linux, an area capture with no capture tool installed (none of
-`gnome-screenshot`, `spectacle`, or ImageMagick `import` on `PATH`) reports a
-dedicated localized missing-tool error distinct from user cancellation.
+On Linux, an area capture needs no extra package: ShellDeck tries the
+xdg-desktop-portal Screenshot interface, then GNOME Shell's own area selector
+(holding the allow-listed `org.gnome.Screenshot` bus name only for the call),
+then `gnome-screenshot`, `spectacle`, ImageMagick `import` or `grim` + `slurp`.
+When none answers, it shows an OS notification asking for Print Screen and
+picks up the new screenshot from the XDG Pictures directory (90 s window).
+Cancelling the selector is a cancellation, never an error.
 An area capture opens a native annotation editor before it becomes a draft,
 with freehand, arrow, rectangle, text, undo, clear, and color controls; saving
 exports a PNG while cancelling preserves the unedited capture.
@@ -2271,11 +2275,19 @@ query. A query that matches none of an otherwise populated directory names the
 query, offers only a clear-search action, and restores the full directory when
 cleared. Manage and synchronization actions remain exclusive to a genuinely
 empty account.
-The account card keeps the identity and both Manage actions visible at every
-supported width. At 600 logical pixels or below its action group moves below
-the identity; above that breakpoint the original horizontal composition is
-preserved. The breakpoint follows UI scale, and neither the display name nor
-the role badge may collapse into vertical glyphs while flex space is resolved.
+The account strip shares the User tab row: the tabs on the left, then the
+avatar, display name, role badge, Open Manage and an icon-only synchronize
+action on the right, so no full-width card sits above the tabs. At 600 logical
+pixels or below only the avatar and both actions remain beside the wrapping
+tabs (the e-mail stays in Mes informations). The breakpoint follows UI scale;
+a long display name truncates with an ellipsis instead of pushing the actions
+out or collapsing into vertical glyphs. On Accueil the two counters are
+one-line shortcuts that open Mes sites and Mes demandes. The banner is 104 px
+tall from 1100 logical pixels, where its subtitle fits on one line, 132 px
+below that and 136 px at the compact breakpoint; below 1100 the quick actions
+sit in one row under their title instead of a tall right-hand column. Mes informations flows its
+cards two per row when the window is wide enough. Support ticket and request
+filters carry their count inside the chip ("Ouverts 2").
 The same breakpoint gives compact site and request rows two explicit levels:
 the site identity or request title remains above, while actions or metadata
 move below. A title that still exceeds its full row uses an ellipsis only
@@ -2284,7 +2296,7 @@ Their virtualized slots preserve a fixed 4 px interval,
 and request badges, counters, and relative dates retain an explicit 8 px
 separation instead of depending on component-internal padding. Above the
 breakpoint, the original single-line rows remain unchanged.
-The account card and four User tabs form fixed shell chrome while each tab
+The tab row with its account strip forms fixed shell chrome while each tab
 owns the remaining scrollable height. In Mes sites, the section title and live
 search also stay outside the virtualized directory, so scrolling hundreds of
 rows never removes the current-page identity, filter, or routes to another
@@ -2395,14 +2407,12 @@ marker; a divider separates primary work from secondary tools. Every glyph has
 its localized label in a tooltip, and Recent Activity uses the same clock icon
 as the Aller menu rather than an ambiguous pulse trace.
 
-The panel follows the selected activity: Connections keeps its grouped host
-list with pins and per-row actions, while Terminals lists open tabs, Scripts
-the saved scripts, Port Forwards the configured forwards, Sites the available
-sites, Recent the activity feed, and Editor the open buffers. Each row reports
-whether it is the active one and whether it is live, and selecting it performs
-that activity's own open/focus action. An activity with no rows shows a
-localized empty state; an activity with no panel at all hides the panel so its
-main view takes the full width.
+Dev opens directly on Agents, the first rail entry. The Connections activity
+and its Dashboard view are retired (SDTEST-2910): saved hosts are reached from
+the Agents target picker, the quick-connect form and the terminal, and the
+`shelldeck://open/connection/<uuid>` link lands on Agents. No activity keeps a
+contextual panel, so every activity uses its main surface at full width. The current rail and retirement behavior are specified in SDUC-567;
+retained workspaces are reached through Agents.
 
 The rail is unconditional: no state renders the Dev sidebar without a
 navigation surface, and there is no setting to hide it. The panel collapses
@@ -3329,7 +3339,9 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
-- **2026-10-31** — SDUC-475/564: reuse unchanged visible row layout/paint with bounded retained views; invalidate on content, source, typography/locale and width changes. Correct native benchmarking to exclude GPUI test-support and per-frame font discovery; record frame phases and input-to-submit separately (SDTEST-2875/2876, AGENTS_PERFORMANCE.md).
+- **2026-11-04** — SDUC-565: Settings → Général and the palette set up the Inklura Chrome extension (download, stable folder, computed ID, chrome://extensions, optional Craft bridge). SDTEST-2875–2879.
+
+- **2026-10-31** — SDUC-475/564: reuse unchanged visible row layout/paint with bounded retained views; invalidate on content, source, typography/locale and width changes. Correct native benchmarking to exclude GPUI test-support and per-frame font discovery; record frame phases and input-to-submit separately (SDTEST-2915/2916, AGENTS_PERFORMANCE.md).
 
 - **2026-10-31** — SDUC-475/563/564: readable operation summaries, visible status motion and floating group collapse; large local/native timelines render viewport rows lazily while preserving drafts, reading anchors, source identity, exact copying and paging (SDTEST-2868–2874).
 
@@ -4805,3 +4817,131 @@ after chat selection and durable reload, independent transcript scrolling,
 footer retry, exact copy/disclosure, once-only queued admission, and duplicate
 question/approval click prevention with correlated failure recovery. They use
 production controls with provider-event fixtures and a private test clipboard.
+
+### SDUC-565 — Set up the Inklura Chrome extension from ShellDeck
+
+A signed-in user can install the Inklura browser assistant from Settings →
+Général (« Extension Chrome Inklura ») or the palette command « Installer
+l’extension Chrome Inklura ». ShellDeck downloads
+`{manage}/extensions/inklura-assistant.zip`, validates and unpacks it into a
+stable folder under its data directory (a failed or hostile package never
+replaces a working copy), copies the `extension/` path to the clipboard and
+opens `chrome://extensions` in the Chrome profile signed into the same Google account as the ShellDeck/Manage account (else the last-used profile, via `--profile-directory`); Settings names that profile and reports when the extension is loaded in it. Chrome reserves the « Load
+unpacked » click for the user; the section lists that step. Updates replace the
+files in place so Chrome keeps the same unpacked-extension ID, which ShellDeck
+computes and shows. On macOS and Linux, « Activer les MCP Craft locaux » runs
+the package's `native/install.py` with that ID and a user-chosen folder, so
+the ID never has to be copied by hand. Without Chrome the section says so
+instead of offering a dead button.
+
+
+The SDUC-565 setup flow is also reachable from Manage and the Chrome panel through `shelldeck://extension`. It opens General settings after the existing sign-in gate; downloading and granting a Craft workspace still require the user’s setup controls.
+
+
+### SDUC-566 — Inklura Desktop product identity with upgrade continuity
+
+The application presents itself as Inklura Desktop in French and English: the
+wordmark, window and Agents titles, welcome/onboarding, About, tray, notifications,
+CLI version output, browser callbacks and installer display names agree. Existing
+profiles, keychain entries, executable names, single-instance and URL-protocol
+identities, startup registrations, release download names and update signatures
+remain compatible with ShellDeck installations. macOS packaging includes
+`Inklura Desktop.app` with its complete browser runtime; generated installers
+accept old and new bundles and update existing bundle locations in place. Windows
+keeps the existing install/uninstall registry identity while naming the app and
+new shortcuts Inklura Desktop.
+
+SDUC-566 visual identity: the blue-and-white Inklura figure replaces the
+terminal mascot in app/package icons, the template tray mask, theme badges and
+all six loading/mode motions. Exports come from the retained canonical SVG;
+reduced-motion still uses the static Inklura mark. Existing filenames remain
+loader-compatible. The NSIS fixture now compiles with the actual exported ICO.
+
+
+### SDUC-567 — Simplified Dev navigation and retired server tools
+
+Server synchronization, detected-site scans and manual port-forward management
+are retired from the application navigation, Go menu and command palette.
+Their dashboard/status/tray counters are removed. Legacy tunnel deep links and
+activity entries explain retirement without opening a screen or starting a
+tunnel. Saved sync profiles, detected sites and forwarding configurations remain
+on disk, and internal SSH/browser transport capabilities remain available.
+
+Workspaces no longer occupy a rail slot. Opening a retained workspace keeps
+Agents selected; the Agents project/workspace flows remain available. The Dev
+rail contains Connections, Agents, Terminals, Scripts, Recent and File Editor,
+with the secondary group starting at Recent and Settings pinned separately.
+Manage site context and account/profile synchronization remain available.
+
+
+SDUC-567 dashboard cleanup: Dev home keeps its terminal counter, recent activity
+and shortcut reference. The active-connection and running-script cards and the
+dashboard Quick Connect section are removed, including their host-list copying
+and event subscription. The separate Connections sidebar, global Quick Connect
+command, saved hosts and script execution remain available.
+
+
+SDUC-566 macOS packaging correction: the canonical exporter now commits a native
+ICNS. DMG creation requires this icon before replacing a bundle, and update ZIP
+creation independently refuses a missing bundle icon. Native macOS CI decodes
+the actual ICNS through Apple's iconutil and checks its inclusion through ditto.
+This replaces the iconutil fallback that silently shipped v0.15.1 without an icon.
+
+
+### SDUC-568 — Personal Share in Inklura Desktop
+
+In User mode, a signed-in customer can stage files, paste clipboard images or
+capture and annotate a region, then explicitly send the selected batch. Desktop
+uses the same personal account, gallery, quota, storage residency and retention
+policies as share.inklura.fr. It copies a successful viewer link and supports
+search, open, copy, confirmed deletion and a saved retention default. Files above
+50 MiB use bounded multipart transfer; failures abort reservations. Temporary
+service failures preserve the Manage login. Account changes cancel pending work
+and discard old results, drafts and gallery data. Desktop never requests a Share
+API key or receives administrative, team-management or billing permissions.
+
+### SDUC-569 — Existing Inklura PDF application from Desktop
+
+The Share surface launches the installed Inklura PDF app using its existing
+platform identity. If it cannot launch, it opens the official download page and
+reports that destination accurately. This entry point never uploads a PDF.
+
+2026-11-06: Added SDUC-568 and SDUC-569. Inklura Desktop houses the personal
+sharing workspace; existing ShareX configuration remains optional compatibility.
+
+2026-11-06: SDUC-568 adds file review/removal/clear without uploading, per-file
+transfer progress and Stop. Stop waits for the current HTTP request; already
+shared files keep their links and unshared files stay selected. A cancelled
+operation does not poison the next operation or clear the Inklura login.
+
+### SDUC-570: Inklura Manage notifications in Desktop
+
+A signed-in Desktop shows the Manage bell for every space in the account's site
+directory: a titlebar bell with an unread badge opens a panel listing exports,
+automation and agent alerts with their space and age. Opening an item marks it
+read and opens Manage in the browser on that space and page through a two-minute,
+user-bound signed switch link minted at click time. "Mark all as read" stops at
+the newest item on screen. A minute-level background poll raises one OS
+notification per arrival batch (opt-out: Settings → tray "Notify Inklura
+activity"); the first load after launch or login is silent. Prospect names stay
+masked unless the device token proves the right to read them (platform
+super-admin, or an admin role inside its own tenant). The personal staff inbox
+of the web bell needs a browser session and is not part of this feed. A Manage
+without the endpoint answers 404 and the bell stays hidden.
+
+2026-11-07: Added SDUC-570. Server side: `GET|POST /api/manage/shelldeck/notifications`
+in the bext repository (`sites/shared/manage/src/routes/shelldeck-notifications.ts`).
+
+
+### SDUC-571: Boat sandbox console
+
+Super-admin users in Dev mode can open “Boat” from the command palette. It
+opens the active site's signed Manage handoff for `/manage/infrastructure/boat`,
+where lifecycle, command/task tracking, files, SSH keys and desktop access share
+Company Manager's tenant/site-scoped Boat backend. An active site is required.
+No Boat API key is stored in ShellDeck. Other roles have no Boat palette action;
+the server independently requires super-admin access.
+
+2026-11-08: Added SDUC-571. The server supplies the Boat area and signed switch
+URL through the existing site directory; an older server without that area
+refuses the handoff rather than fabricating a scope-switch URL.

@@ -250,7 +250,7 @@ fn bound_text(text: &str) -> (String, bool) {
         return (text.to_string(), false);
     }
     let mut bounded: String = text.chars().take(AI_ATTACHMENT_TEXT_MAX_CHARS).collect();
-    bounded.push_str("\n…[truncated by ShellDeck]");
+    bounded.push_str("\n…[truncated by Inklura Desktop]");
     (bounded, true)
 }
 
@@ -339,7 +339,9 @@ mod tests {
         let body = "z".repeat(AI_ATTACHMENT_TEXT_MAX_CHARS + 100);
         let attachment = AiAttachment::from_bytes("app.log", body.into_bytes()).unwrap();
         assert!(attachment.truncated);
-        assert!(attachment.payload.ends_with("…[truncated by ShellDeck]"));
+        assert!(attachment
+            .payload
+            .ends_with("…[truncated by Inklura Desktop]"));
         assert_eq!(attachment.bytes, AI_ATTACHMENT_TEXT_MAX_CHARS + 100);
     }
 

@@ -54,6 +54,24 @@ impl Workspace {
                     "plus",
                     Box::new(NewRequest),
                 ),
+                PaletteAction::new(
+                    t!("palette.capture_share").to_string(),
+                    None,
+                    "scan",
+                    Box::new(CaptureAndShare),
+                ),
+                PaletteAction::new(
+                    t!("palette.share_files").to_string(),
+                    None,
+                    "upload",
+                    Box::new(ShareFiles),
+                ),
+                PaletteAction::new(
+                    t!("palette.setup_inklura_extension").to_string(),
+                    None,
+                    "download",
+                    Box::new(SetupInkluraExtension),
+                ),
             ]);
         } else {
             actions.push(PaletteAction::new(
@@ -118,22 +136,10 @@ impl Workspace {
                     Box::new(NewScript),
                 ),
                 PaletteAction::new(
-                    t!("palette.open_server_sync").to_string(),
-                    None,
-                    "refresh-cw",
-                    Box::new(OpenServerSync),
-                ),
-                PaletteAction::new(
                     t!("palette.open_agents").to_string(),
                     None,
                     "bot",
                     Box::new(OpenAgents),
-                ),
-                PaletteAction::new(
-                    t!("palette.open_sites").to_string(),
-                    None,
-                    "globe",
-                    Box::new(OpenSites),
                 ),
                 PaletteAction::new(
                     t!("palette.open_recent").to_string(),
@@ -158,6 +164,12 @@ impl Workspace {
                     None,
                     "box",
                     Box::new(OpenFleet),
+                ),
+                PaletteAction::new(
+                    t!("palette.boat_open").to_string(),
+                    None,
+                    "cloud",
+                    Box::new(OpenBoatConsole),
                 ),
                 PaletteAction::new(
                     t!("palette.bext_open").to_string(),
@@ -345,18 +357,16 @@ impl Workspace {
             }
             self.set_active_view(ActiveView::Scripts, cx);
             self.show_script_form(cx);
-        } else if action.as_any().is::<OpenServerSync>() {
-            self.activate_dev_section(SidebarSection::ServerSync, cx);
         } else if action.as_any().is::<OpenAgents>() {
             self.activate_dev_section(SidebarSection::Agents, cx);
-        } else if action.as_any().is::<OpenSites>() {
-            self.activate_dev_section(SidebarSection::Sites, cx);
         } else if action.as_any().is::<OpenRecent>() {
             self.activate_dev_section(SidebarSection::Recent, cx);
         } else if action.as_any().is::<OpenFileEditorView>() {
             self.activate_dev_section(SidebarSection::FileEditor, cx);
         } else if action.as_any().is::<CloudSyncNow>() {
             self.cloud_sync_now(cx);
+        } else if action.as_any().is::<SetupInkluraExtension>() {
+            self.setup_inklura_extension(cx);
         } else if action.as_any().is::<SwitchSite>() {
             self.open_site_switcher(cx);
         } else if let Some(area) = action.as_any().downcast_ref::<OpenManageArea>() {
@@ -369,8 +379,14 @@ impl Workspace {
             self.open_fleet(cx);
         } else if action.as_any().is::<NewRequest>() {
             self.open_new_request(cx);
+        } else if action.as_any().is::<CaptureAndShare>() {
+            self.capture_and_share(Box::new(|_| {}), cx);
+        } else if action.as_any().is::<ShareFiles>() {
+            self.share_files_now(cx);
         } else if action.as_any().is::<OpenSupportRequests>() {
             self.open_support_requests(cx);
+        } else if action.as_any().is::<OpenBoatConsole>() {
+            self.open_boat_console(cx);
         } else if action.as_any().is::<OpenBextCloud>() {
             self.open_bext_cloud(cx);
         } else if action.as_any().is::<ConnectBextCloud>() {
@@ -388,13 +404,45 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppMode, ApplyTerminalTheme, CloudSyncNow, NewRequest, NewScript, NewTerminal, OpenAgents,
-        OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView, OpenFleet, OpenLogin,
-        OpenMoniqueConsole, OpenRecent, OpenServerSync, OpenSettings, OpenSites,
-        OpenSupportRequests, OpenTemplateBrowser, PaletteAction, Quit, SetAppMode, SwitchSite,
+        AppMode, ApplyTerminalTheme, CaptureAndShare, CloudSyncNow, NewRequest, NewScript,
+        NewTerminal, OpenAgents, OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView,
+        OpenFleet, OpenLogin, OpenMoniqueConsole, OpenRecent, OpenSettings, OpenSupportRequests,
+        OpenTemplateBrowser, PaletteAction, Quit, SetAppMode, ShareFiles, SwitchSite,
         ToggleMenuBar, Workspace,
     };
+    use crate::t;
     use gpui::Action;
+
+    // SDTEST-2913 / SDUC-571
+    #[test]
+    fn sdtest_2913_boat_console_is_offered_only_in_authorized_dev_mode() {
+        for (allowed, current, expected) in [
+            (&[][..], AppMode::User, false),
+            (&[AppMode::User][..], AppMode::User, false),
+            (
+                &[AppMode::User, AppMode::Support][..],
+                AppMode::Support,
+                false,
+            ),
+            (
+                &[AppMode::User, AppMode::Support, AppMode::Dev][..],
+                AppMode::User,
+                false,
+            ),
+            (
+                &[AppMode::User, AppMode::Support, AppMode::Dev][..],
+                AppMode::Dev,
+                true,
+            ),
+        ] {
+            let allowed = Box::leak(allowed.to_vec().into_boxed_slice());
+            let actions = Workspace::base_palette_actions(allowed, current, false, false);
+            assert_eq!(
+                contains_action::<super::OpenBoatConsole>(&actions),
+                expected
+            );
+        }
+    }
 
     /// SDTEST-1700 — « Quitter » ne doit jamais être la première ligne.
     ///
@@ -438,9 +486,7 @@ mod tests {
     fn assert_no_dev_actions(actions: &[PaletteAction], context: &str) {
         assert!(!contains_action::<NewTerminal>(actions), "{context}");
         assert!(!contains_action::<OpenFileEditorView>(actions), "{context}");
-        assert!(!contains_action::<OpenServerSync>(actions), "{context}");
         assert!(!contains_action::<OpenAgents>(actions), "{context}");
-        assert!(!contains_action::<OpenSites>(actions), "{context}");
         assert!(!contains_action::<OpenRecent>(actions), "{context}");
         assert!(!contains_action::<NewScript>(actions), "{context}");
         assert!(
@@ -464,6 +510,8 @@ mod tests {
 
         assert!(contains_action::<OpenSettings>(&actions));
         assert!(contains_action::<NewRequest>(&actions));
+        assert!(contains_action::<CaptureAndShare>(&actions));
+        assert!(contains_action::<ShareFiles>(&actions));
         assert!(!contains_action::<OpenSupportRequests>(&actions));
         assert_no_dev_actions(&actions, "regular account");
 
@@ -499,6 +547,14 @@ mod tests {
         let allowed: &'static [AppMode] = &[AppMode::User, AppMode::Support, AppMode::Dev];
 
         let in_dev = Workspace::base_palette_actions(allowed, AppMode::Dev, true, true);
+        for retired_name in [t!("palette.open_server_sync"), t!("palette.open_sites")] {
+            assert!(
+                in_dev
+                    .iter()
+                    .all(|entry| entry.name != retired_name.as_ref()),
+                "retired tool must not be offered in Dev: {retired_name}"
+            );
+        }
         assert!(contains_action::<NewTerminal>(&in_dev));
         assert!(contains_action::<OpenAgents>(&in_dev));
         assert!(contains_action::<OpenMoniqueConsole>(&in_dev));
@@ -542,6 +598,8 @@ mod tests {
         assert!(!contains_action::<CloudSyncNow>(&actions));
         assert!(!contains_action::<SwitchSite>(&actions));
         assert!(!contains_action::<NewRequest>(&actions));
+        assert!(!contains_action::<CaptureAndShare>(&actions));
+        assert!(!contains_action::<ShareFiles>(&actions));
         assert!(!contains_action::<OpenAiAssistant>(&actions));
         assert!(!contains_action::<OpenClippy>(&actions));
         assert!(!contains_action::<NewTerminal>(&actions));

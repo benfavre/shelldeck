@@ -584,15 +584,15 @@ pub fn browser_connect_listen(
 }
 
 const SUCCESS_HTML: &str = "<!doctype html><html lang=\"fr\"><head><meta charset=\"utf-8\">\
-<title>ShellDeck</title><style>body{font-family:system-ui,sans-serif;background:#0f1115;\
+<title>Inklura Desktop</title><style>body{font-family:system-ui,sans-serif;background:#0f1115;\
 color:#e6e6e6;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}\
 .c{text-align:center}.d{font-size:15px;color:#9aa4b2;margin-top:8px}h1{font-size:20px;margin:0}\
-</style></head><body><div class=\"c\"><h1>ShellDeck connecté ✓</h1>\
+</style></head><body><div class=\"c\"><h1>Inklura Desktop connecté ✓</h1>\
 <div class=\"d\">Vous pouvez fermer cet onglet.</div></div></body></html>";
 
 const MISMATCH_HTML: &str = "<!doctype html><html lang=\"fr\"><head><meta charset=\"utf-8\">\
-<title>ShellDeck</title></head><body style=\"font-family:system-ui,sans-serif\">\
-<p>Requête de connexion invalide. Relancez la connexion depuis ShellDeck.</p></body></html>";
+<title>Inklura Desktop</title></head><body style=\"font-family:system-ui,sans-serif\">\
+<p>Requête de connexion invalide. Relancez la connexion depuis Inklura Desktop.</p></body></html>";
 
 /// Parse one callback request on `stream`. Returns `Ok(Some(token))` only for a
 /// `/callback` whose `state` matches; `Ok(None)` for anything else (so the

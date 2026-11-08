@@ -22,6 +22,8 @@ pub mod glyph_cache;
 pub mod i18n;
 pub mod icons;
 pub mod issue_attachments;
+#[cfg(target_os = "linux")]
+pub mod linux_capture;
 pub mod login_form;
 pub(crate) mod markdown;
 pub mod menu_bar;
@@ -39,6 +41,7 @@ pub mod script_editor;
 pub mod script_form;
 pub mod server_sync_view;
 pub mod settings;
+pub mod share_view;
 pub mod shortcut_reference;
 pub mod sidebar;
 pub mod sites_view;

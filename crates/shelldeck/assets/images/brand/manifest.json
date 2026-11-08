@@ -1,12 +1,8 @@
 {
-  "name": "ShellDeck Monolith",
-  "version": 1,
-  "expression_default": ">_<",
-  "expressions": [
-    "default",
-    "neutral",
-    "wink"
-  ],
+  "name": "Inklura Desktop",
+  "version": 2,
+  "source": "crates/shelldeck/assets/images/brand/inklura-desktop.svg",
+  "primary": "#146BFF",
   "themes": [
     "dark",
     "light",
@@ -22,22 +18,6 @@
     "monokai",
     "rose-pine"
   ],
-  "paths": {
-    "brand_root": "crates/shelldeck/assets/images/brand",
-    "in_app": {
-      "icon_png": "crates/shelldeck/assets/images/shelldeck-icon.png",
-      "icon_svg": "crates/shelldeck/assets/images/shelldeck-icon.svg",
-      "mark": "crates/shelldeck/assets/images/shelldeck-mark.svg",
-      "expressions": "crates/shelldeck/assets/images/brand/svg/expressions/dark-{expression}-logo.svg"
-    },
-    "themes": "crates/shelldeck/assets/images/brand/svg/themes/{theme}-logo.svg",
-    "packaging": {
-      "png": "packaging/icons/shelldeck-{size}.png",
-      "ico": "packaging/icons/shelldeck.ico",
-      "iconset": "packaging/icons/iconset/",
-      "icns": "packaging/icons/shelldeck.icns (macOS: iconutil -c icns iconset -o shelldeck.icns)",
-      "tray_template_macos": "packaging/icons/shelldeck-tray-template-macos.png"
-    }
-  },
-  "regenerate": "python3 scripts/export-monolith-brand.py"
+  "note": "Legacy filenames are retained for loader and package compatibility.",
+  "regenerate": "python3 scripts/export-inklura-brand.py"
 }

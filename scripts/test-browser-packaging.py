@@ -89,12 +89,56 @@ class BrowserPackaging(unittest.TestCase):
                      f"browser/{VERSION}/libcef.so", f"browser/{VERSION}/libcef.dll"):
             self.put(path)
         (self.browser / "locales/en-US.pak").unlink()
-        (self.root / "dist/ShellDeck.app").mkdir(parents=True)
+        (self.root / "dist/Inklura Desktop.app").mkdir(parents=True)
         for platform in ("linux-x86_64", "windows-x86_64", "macos-aarch64"):
             with self.subTest(platform=platform):
                 result = self.package(platform)
                 self.assertNotEqual(result.returncode, 0)
         self.assertEqual(list((self.root / "dist").glob("shelldeck-*")), [])
+
+    # SDTEST-2883 — SDUC-566: the production packager passes the renamed,
+    # spaced bundle as one argument and retains its signed browser hierarchy.
+    def test_sdtest_2883_macos_archive_keeps_renamed_bundle_and_legacy_payload_names(self):
+        app = self.root / "dist/Inklura Desktop.app"
+        browser = app / "Contents/Frameworks/browser/ShellDeck Browser.app/Contents"
+        executable = browser / "MacOS/shelldeck-browser"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"signed browser fixture")
+        executable.chmod(0o755)
+        framework = browser / "Frameworks/Chromium Embedded Framework.framework"
+        framework.mkdir(parents=True)
+        (framework / "Chromium Embedded Framework").write_bytes(b"matching CEF fixture")
+        main = app / "Contents/MacOS/shelldeck"
+        main.parent.mkdir(parents=True)
+        main.write_bytes(b"signed application fixture")
+        icon = app / "Contents/Resources/shelldeck.icns"
+        icon.parent.mkdir(parents=True)
+        shutil.copyfile(REPOSITORY / "packaging/icons/shelldeck.icns", icon)
+        tools = self.root / "native archive tool"
+        tools.mkdir()
+        ditto = tools / "ditto"
+        ditto.write_text('''#!/usr/bin/env python3
+from pathlib import Path
+import sys, zipfile
+assert len(sys.argv) == 7, sys.argv
+source, destination = map(Path, sys.argv[-2:])
+with zipfile.ZipFile(destination, "w") as archive:
+    for path in source.rglob("*"):
+        if path.is_file():
+            archive.write(path, path.relative_to(source.parent).as_posix())
+''')
+        ditto.chmod(0o755)
+        environment = dict(os.environ, SHELLDECK_RELEASE_PLATFORM="macos-aarch64",
+                           PATH=str(tools) + os.pathsep + os.environ["PATH"])
+        result = subprocess.run(["bash", "scripts/package-release.sh"], cwd=self.root,
+                                env=environment, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        with zipfile.ZipFile(self.root / "dist/shelldeck-macos-aarch64.zip") as archive:
+            self.assertEqual(archive.read(icon.relative_to(app.parent).as_posix()), icon.read_bytes())
+            self.assertEqual(archive.read("Inklura Desktop.app/Contents/MacOS/shelldeck"),
+                             b"signed application fixture")
+            self.assertEqual(archive.read(executable.relative_to(app.parent).as_posix()),
+                             b"signed browser fixture")
 
     # SDTEST-2642 — SDUC-557, SDUC-558: public generated runtime modes are
     # independent from private staging/source modes, without dereferencing macOS

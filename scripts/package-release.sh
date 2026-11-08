@@ -45,12 +45,16 @@ case "$PLATFORM" in
         ARCHIVE="dist/shelldeck-linux-x86_64.tar.gz"
         ;;
     macos-aarch64)
-        test -d dist/ShellDeck.app
-        test -x "dist/ShellDeck.app/Contents/Frameworks/browser/ShellDeck Browser.app/Contents/MacOS/shelldeck-browser"
-        test -f "dist/ShellDeck.app/Contents/Frameworks/browser/ShellDeck Browser.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
+        test -d "dist/Inklura Desktop.app"
+        if [ ! -s "dist/Inklura Desktop.app/Contents/Resources/shelldeck.icns" ]; then
+            echo "ERROR: macOS bundle icon is missing; refusing to publish the archive" >&2
+            exit 1
+        fi
+        test -x "dist/Inklura Desktop.app/Contents/Frameworks/browser/ShellDeck Browser.app/Contents/MacOS/shelldeck-browser"
+        test -f "dist/Inklura Desktop.app/Contents/Frameworks/browser/ShellDeck Browser.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
         rm -f dist/shelldeck-macos-aarch64.zip
         ditto -c -k --sequesterRsrc --keepParent \
-            dist/ShellDeck.app dist/shelldeck-macos-aarch64.zip
+            "dist/Inklura Desktop.app" dist/shelldeck-macos-aarch64.zip
         ARCHIVE="dist/shelldeck-macos-aarch64.zip"
         ;;
     windows-x86_64)

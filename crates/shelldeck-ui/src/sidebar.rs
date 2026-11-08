@@ -212,22 +212,26 @@ impl SidebarSection {
     /// it separately at the bottom.
     pub fn rail_activities() -> &'static [SidebarSection] {
         &[
-            SidebarSection::Connections,
             SidebarSection::Agents,
-            SidebarSection::Workspaces,
             SidebarSection::Terminals,
             SidebarSection::Scripts,
-            SidebarSection::PortForwards,
-            SidebarSection::ServerSync,
-            SidebarSection::Sites,
             SidebarSection::Recent,
             SidebarSection::FileEditor,
         ]
     }
 
+    /// Legacy identifiers remain accepted internally, but these tools are retired
+    /// from the product. Keep this separate from account/role authorization.
+    pub fn is_retired(&self) -> bool {
+        matches!(
+            self,
+            Self::Connections | Self::PortForwards | Self::ServerSync | Self::Sites
+        )
+    }
+
     /// Starts the secondary/tool group in the compact activity rail.
     pub fn starts_rail_tool_group(&self) -> bool {
-        matches!(self, SidebarSection::ServerSync)
+        matches!(self, SidebarSection::Recent)
     }
 
     /// Whether this activity backs its rail icon with a contextual panel.
@@ -418,7 +422,7 @@ impl SidebarView {
             connections: Vec::new(),
             pinned_connections: Vec::new(),
             selected_connection: None,
-            active_section: SidebarSection::Connections,
+            active_section: SidebarSection::Agents,
             collapsed: false,
             width: 260.0,
             resizing: false,
@@ -501,7 +505,6 @@ impl SidebarView {
     /// SSH session. Used by the `shelldeck://open/connection/<uuid>` deep
     /// link so a link can point the user at a connection without connecting.
     pub fn focus_connection(&mut self, id: Uuid) {
-        self.active_section = SidebarSection::Connections;
         self.selected_connection = Some(id);
     }
 
@@ -522,6 +525,14 @@ impl SidebarView {
     }
 
     pub fn set_active_section(&mut self, section: SidebarSection) {
+        if section.is_retired() {
+            return;
+        }
+        let section = if section == SidebarSection::Workspaces {
+            SidebarSection::Agents
+        } else {
+            section
+        };
         self.active_section = section;
         if let Some(index) = rail_scroll_child_index(section) {
             self.rail_scroll.scroll_to_item(index);
@@ -1442,13 +1453,18 @@ mod tests {
     }
 
     // SDTEST-1214 — the rail lists activities that have a panel behind them,
-    // plus Server Sync and Agents as deliberate main-view-only entries. The four
+    // plus Agents and its supporting tools as main-view-only entries. The
     // destinations reached from the Aller menu must never take a rail slot,
     // and Settings is pinned separately rather than living in the list.
     #[test]
     fn rail_lists_activities_not_destinations() {
         let rail = super::SidebarSection::rail_activities();
         for excluded in [
+            super::SidebarSection::Connections,
+            super::SidebarSection::Workspaces,
+            super::SidebarSection::ServerSync,
+            super::SidebarSection::Sites,
+            super::SidebarSection::PortForwards,
             super::SidebarSection::MoniqueConsole,
             super::SidebarSection::Fleet,
             super::SidebarSection::BextCloud,
@@ -1470,10 +1486,58 @@ mod tests {
             .collect();
         assert_eq!(
             with_panel,
-            vec![super::SidebarSection::Connections],
+            Vec::<super::SidebarSection>::new(),
             "seules les activités dont le panneau apporte une information \
              absente de leur vue en gardent un"
         );
+    }
+
+    // SDTEST-2910 : Dev opens on Agents. The Connections activity and its
+    // Dashboard view are retired, so the rail starts with Agents, a fresh
+    // sidebar selects it and no activity keeps a contextual panel.
+    #[test]
+    fn dev_rail_opens_on_agents_without_connections() {
+        use super::{SidebarSection, SidebarView};
+        use gpui::{AppContext, TestAppContext};
+        assert!(SidebarSection::Connections.is_retired());
+        assert_eq!(
+            SidebarSection::rail_activities().first(),
+            Some(&SidebarSection::Agents)
+        );
+        let mut cx = TestAppContext::single();
+        let sidebar = cx.update(|cx| cx.new(SidebarView::new));
+        sidebar.update(&mut cx, |sidebar, _| {
+            assert_eq!(sidebar.active_section, SidebarSection::Agents);
+            assert_eq!(
+                sidebar.total_width(),
+                sidebar_total_width(false, false, sidebar.width)
+            );
+        });
+    }
+
+    // SDTEST-2884 — workspace navigation remains in the Agents activity, and
+    // stale navigation requests cannot select a retired tool.
+    #[test]
+    fn workspace_and_retired_navigation_keep_the_agents_activity() {
+        use super::{SidebarSection, SidebarView};
+        use gpui::{AppContext, TestAppContext};
+        let mut cx = TestAppContext::single();
+        let sidebar = cx.update(|cx| cx.new(SidebarView::new));
+        sidebar.update(&mut cx, |sidebar, _| {
+            sidebar.set_active_section(SidebarSection::Workspaces);
+            assert_eq!(sidebar.active_section, SidebarSection::Agents);
+            for retired in [
+                SidebarSection::Connections,
+                SidebarSection::PortForwards,
+                SidebarSection::ServerSync,
+                SidebarSection::Sites,
+            ] {
+                sidebar.set_active_section(retired);
+                assert_eq!(sidebar.active_section, SidebarSection::Agents);
+            }
+            sidebar.set_active_section(SidebarSection::Scripts);
+            assert_eq!(sidebar.active_section, SidebarSection::Scripts);
+        });
     }
 
     // SDTEST-1721 — the compact rail relies on icon semantics and one stable
@@ -1484,7 +1548,6 @@ mod tests {
     fn rail_landmarks_keep_clear_icons_and_one_tool_group() {
         use super::SidebarSection;
 
-        assert_eq!(SidebarSection::ServerSync.lucide_icon(), "refresh-cw");
         assert_eq!(SidebarSection::Recent.lucide_icon(), "clock");
 
         let group_starts: Vec<_> = SidebarSection::rail_activities()
@@ -1492,14 +1555,14 @@ mod tests {
             .copied()
             .filter(SidebarSection::starts_rail_tool_group)
             .collect();
-        assert_eq!(group_starts, vec![SidebarSection::ServerSync]);
+        assert_eq!(group_starts, vec![SidebarSection::Recent]);
         let tools_index = SidebarSection::rail_activities()
             .iter()
-            .position(|section| *section == SidebarSection::ServerSync)
+            .position(|section| *section == SidebarSection::Recent)
             .unwrap();
         assert_eq!(
             SidebarSection::rail_activities()[tools_index - 1],
-            SidebarSection::PortForwards
+            SidebarSection::Scripts
         );
     }
 
@@ -1510,19 +1573,18 @@ mod tests {
     fn rail_scroll_index_accounts_for_tool_group_divider() {
         use super::SidebarSection;
 
-        assert_eq!(
-            rail_scroll_child_index(SidebarSection::Connections),
-            Some(0)
-        );
-        assert_eq!(
-            rail_scroll_child_index(SidebarSection::PortForwards),
-            Some(5)
-        );
-        assert_eq!(rail_scroll_child_index(SidebarSection::ServerSync), Some(7));
-        assert_eq!(
-            rail_scroll_child_index(SidebarSection::FileEditor),
-            Some(10)
-        );
+        assert_eq!(rail_scroll_child_index(SidebarSection::Agents), Some(0));
+        assert_eq!(rail_scroll_child_index(SidebarSection::Recent), Some(4));
+        assert_eq!(rail_scroll_child_index(SidebarSection::FileEditor), Some(5));
+        for removed in [
+            SidebarSection::Connections,
+            SidebarSection::Workspaces,
+            SidebarSection::PortForwards,
+            SidebarSection::ServerSync,
+            SidebarSection::Sites,
+        ] {
+            assert_eq!(rail_scroll_child_index(removed), None);
+        }
         assert_eq!(rail_scroll_child_index(SidebarSection::Settings), None);
     }
 
