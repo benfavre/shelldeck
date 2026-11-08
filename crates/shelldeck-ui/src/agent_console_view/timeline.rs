@@ -2,8 +2,7 @@
 //! GPUI's variable-height list measures only the viewport and a small overdraw.
 use super::*;
 use std::{cell::RefCell, rc::Rc};
-
-const VIRTUAL_THRESHOLD: usize = 128;
+mod markdown;
 
 pub(super) enum TimelineItemRef<'a> {
     Message(&'a AgentMessage),
@@ -15,6 +14,7 @@ pub(super) enum TimelineItemRef<'a> {
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Kind {
     Message(usize),
+    MessagePart(usize, usize),
     Trace(usize),
     Boundary(usize),
     Group(Rc<Vec<usize>>),
@@ -30,6 +30,82 @@ pub(super) struct Row {
     pub(super) group: Option<Uuid>,
     stamp: (usize, u64, bool),
 }
+type RowKey = (Uuid, std::mem::Discriminant<Kind>, usize);
+struct RetainedRow {
+    view: Entity<TimelineRowView>,
+    seen: u64,
+}
+struct TimelineRowView {
+    parent: WeakEntity<AgentConsoleView>,
+    session: Uuid,
+    row: Row,
+    wide: bool,
+    provider: AgentProvider,
+    index: usize,
+    last: bool,
+}
+impl Render for TimelineRowView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = self
+            .parent
+            .update(cx, |parent, cx| {
+                if parent.sessions.selected_id() != Some(self.session) {
+                    return div().into_any_element();
+                }
+                parent.render_indexed_timeline_row(
+                    &self.row,
+                    activity::ActivityFrame::default(),
+                    false,
+                    window,
+                    cx,
+                )
+            })
+            .unwrap_or_else(|_| div().into_any_element());
+        row_shell(
+            body,
+            self.wide,
+            self.index,
+            self.last,
+            matches!(self.row.kind, Kind::MessagePart(_, part) if part > 0),
+        )
+    }
+}
+fn row_shell(
+    body: AnyElement,
+    wide: bool,
+    index: usize,
+    last: bool,
+    continuation: bool,
+) -> AnyElement {
+    div()
+        .w_full()
+        .px(if wide { px(24.0) } else { px(12.0) })
+        .pt(px(if continuation {
+            0.0
+        } else if index == 0 {
+            16.0
+        } else {
+            8.0
+        }))
+        .pb(px(if last { 16.0 } else { 0.0 }))
+        .child(div().w_full().max_w(px(800.0)).mx_auto().child(body))
+        .into_any_element()
+}
+fn row_key(row: &Row) -> RowKey {
+    (
+        row.id,
+        std::mem::discriminant(if matches!(row.kind, Kind::MessagePart(_, _)) {
+            &Kind::Message(0)
+        } else {
+            &row.kind
+        }),
+        match row.kind {
+            Kind::MessagePart(_, part) => part,
+            _ => 0,
+        },
+    )
+}
+
 type PaintedRows = Rc<RefCell<Vec<(usize, Bounds<Pixels>)>>>;
 
 pub(super) struct TimelineUi {
@@ -42,6 +118,11 @@ pub(super) struct TimelineUi {
     frame: u64,
     rem: Pixels,
     painted: PaintedRows,
+    row_views: RefCell<HashMap<RowKey, RetainedRow>>,
+    typography: Option<TextStyle>,
+    locale: String,
+    explicit_top: bool,
+    markdown: markdown::MarkdownRows,
 }
 impl Default for TimelineUi {
     fn default() -> Self {
@@ -55,6 +136,11 @@ impl Default for TimelineUi {
             frame: 0,
             rem: gpui::px(0.0),
             painted: Rc::default(),
+            row_views: RefCell::default(),
+            typography: None,
+            locale: String::new(),
+            explicit_top: false,
+            markdown: Default::default(),
         }
     }
 }
@@ -63,6 +149,7 @@ impl Row {
     fn estimated_height(&self, rem: Pixels) -> Pixels {
         let height = match self.kind {
             Kind::Message(_) => 54.0 + (self.stamp.0 / 80).clamp(1, 120) as f32 * 18.0,
+            Kind::MessagePart(_, _) => 32.0 + (self.stamp.0 / 80).clamp(1, 120) as f32 * 18.0,
             Kind::Trace(_) => 150.0,
             Kind::Group(_) => 58.0,
             Kind::Boundary(_) => 36.0,
@@ -163,9 +250,18 @@ fn project(
 }
 
 impl TimelineUi {
+    #[cfg(test)]
+    pub(super) fn take_markdown_work(&self) -> usize {
+        self.markdown.rendered_blocks.replace(0)
+    }
+    #[cfg(test)]
+    pub(super) fn row_cache_len(&self) -> usize {
+        self.row_views.borrow().len()
+    }
     pub(super) fn pin(&mut self, scroll: &ScrollHandle) {
         pin_to_latest(scroll);
         self.following = true;
+        self.explicit_top = false;
         if self.virtualized {
             self.list.scroll_to(ListOffset {
                 item_ix: self.rows.len(),
@@ -195,10 +291,33 @@ impl TimelineUi {
     pub(super) fn top(&mut self, scroll: &ScrollHandle) {
         scroll.set_offset(point(gpui::px(0.0), gpui::px(0.0)));
         self.following = false;
+        self.explicit_top = true;
         self.list.scroll_to(ListOffset {
             item_ix: 0,
             offset_in_item: gpui::px(0.0),
         });
+    }
+    pub(super) fn pause_following(&mut self) {
+        self.following = false;
+        // Bottom alignment can represent the position as the end sentinel.
+        // Resolve that to a visible row before a disclosure changes its height.
+        if self.list.logical_scroll_top().item_ix >= self.rows.len() {
+            let viewport = self.list.viewport_bounds();
+            if let Some((index, bounds)) = self
+                .painted
+                .borrow()
+                .iter()
+                .filter(|(_, bounds)| {
+                    bounds.bottom() > viewport.top() && bounds.top() < viewport.bottom()
+                })
+                .min_by(|(_, a), (_, b)| a.top().partial_cmp(&b.top()).unwrap())
+            {
+                self.list.scroll_to(ListOffset {
+                    item_ix: *index,
+                    offset_in_item: (viewport.top() - bounds.top()).max(gpui::px(0.0)),
+                });
+            }
+        }
     }
     pub(super) fn project(
         &mut self,
@@ -207,6 +326,7 @@ impl TimelineUi {
         focused: Option<Uuid>,
         rem: Pixels,
         native: Option<&native_history::NativeHistoryUi>,
+        typography: &TextStyle,
     ) -> Vec<Row> {
         let rows = if native.is_some_and(|state| state.fresh_view) {
             Vec::new()
@@ -234,13 +354,31 @@ impl TimelineUi {
             self.rows = Rc::default();
             self.list.reset(0);
             self.session = Some(session.id);
+            self.row_views.borrow_mut().clear();
+            self.markdown = Default::default();
         }
-        self.virtualized |= displayed + native_count >= VIRTUAL_THRESHOLD || native_count >= 32;
+        // The same measured-row path serves short chats: an eager small-chat
+        // tree still rebuilds every message during each animation and scroll.
+        self.virtualized |= displayed > 0 || session.remote_history.is_some();
         if !self.virtualized {
             return rows;
         }
         let mut flattened = Vec::with_capacity(displayed + 1);
         for mut row in rows {
+            if let Kind::Message(index) = row.kind {
+                let message = &session.messages[index];
+                if !row.stamp.2 {
+                    if let Some(parts) = self.markdown.parts(message, row.stamp.1) {
+                        for part in 0..parts {
+                            let mut fragment = row.clone();
+                            fragment.kind = Kind::MessagePart(index, part);
+                            fragment.stamp.0 = message.text.len() / parts;
+                            flattened.push(fragment);
+                        }
+                        continue;
+                    }
+                }
+            }
             if let Kind::Group(indices) = &row.kind {
                 row.stamp.0 = indices.len();
                 row.stamp.2 = expanded(indices);
@@ -325,16 +463,18 @@ impl TimelineUi {
             flattened = prefix;
         }
         let old_top = self.list.logical_scroll_top();
-        let anchor = self
-            .rows
-            .get(old_top.item_ix)
-            .map(|row| (row.id, std::mem::discriminant(&row.kind)));
-        if self.rem != rem {
+        let anchor = self.rows.get(old_top.item_ix).map(row_key);
+        let current_locale = rust_i18n::locale();
+        let locale: &str = current_locale.as_ref();
+        if self.rem != rem || self.typography.as_ref() != Some(typography) || self.locale != locale
+        {
             self.list.splice_with_estimates(
                 0..self.rows.len(),
                 flattened.iter().map(|row| row.estimated_height(rem)),
             );
             self.rem = rem;
+            self.typography = Some(typography.clone());
+            self.locale = locale.to_string();
         } else if self.rows.len() == flattened.len()
             && self.rows.iter().zip(&flattened).all(|(a, b)| {
                 a.id == b.id && std::mem::discriminant(&a.kind) == std::mem::discriminant(&b.kind)
@@ -376,21 +516,31 @@ impl TimelineUi {
                     .map(|row| row.estimated_height(rem)),
             );
         }
-        if self.following {
+        if self.explicit_top {
+            self.list.scroll_to(ListOffset {
+                item_ix: 0,
+                offset_in_item: gpui::px(0.0),
+            });
+            self.following = false;
+            self.explicit_top = false;
+        } else if self.following {
             self.list.scroll_to(ListOffset {
                 item_ix: flattened.len(),
                 offset_in_item: gpui::px(0.0),
             });
-        } else if let Some(index) = anchor.and_then(|(id, kind)| {
-            flattened
-                .iter()
-                .position(|row| row.id == id && std::mem::discriminant(&row.kind) == kind)
-        }) {
+        } else if let Some(index) =
+            anchor.and_then(|key| flattened.iter().position(|row| row_key(row) == key))
+        {
             self.list.scroll_to(ListOffset {
                 item_ix: index,
                 offset_in_item: old_top.offset_in_item,
             });
         }
+        let valid = flattened.iter().map(row_key).collect::<HashSet<_>>();
+        self.row_views
+            .borrow_mut()
+            .retain(|key, _| valid.contains(key));
+        self.markdown.retain(session);
         self.rows = Rc::new(flattened);
         Vec::new()
     }
@@ -442,6 +592,15 @@ impl AgentConsoleView {
         };
         let item = match &row.kind {
             Kind::Message(index) => session.messages.get(*index).map(TimelineItemRef::Message),
+            Kind::MessagePart(index, part) => {
+                return self.render_message_part(
+                    &session.messages[*index],
+                    *part,
+                    row.stamp.1,
+                    window,
+                    cx,
+                );
+            }
             Kind::Trace(index) => session.trace.get(*index).map(TimelineItemRef::Trace),
             Kind::Boundary(index) => session
                 .boundaries
@@ -455,7 +614,7 @@ impl AgentConsoleView {
             )),
             Kind::HistoryHeader | Kind::HistoryFooter => {
                 return self.render_native_history_part(
-                    &session.presentation_snapshot(),
+                    session,
                     if matches!(row.kind, Kind::HistoryHeader) {
                         native_history::HistoryPart::Header
                     } else {
@@ -468,9 +627,7 @@ impl AgentConsoleView {
             Kind::HistoryEntry(index) => {
                 return self.render_native_history_entry(session.id, *index, window, cx)
             }
-            Kind::Footer => {
-                return self.render_timeline_footer(&session.presentation_snapshot(), cx)
-            }
+            Kind::Footer => return self.render_timeline_footer(session, cx),
         };
         match item {
             Some(item) => self.render_timeline_item_ref(item, frame, inline, window, cx),
@@ -483,50 +640,120 @@ impl AgentConsoleView {
         let painted = self.timeline.painted.clone();
         let session = self.sessions.selected_id();
         let parent = cx.entity().downgrade();
+        let provider = self.displayed_context(cx).provider;
         self.timeline.list.set_scroll_handler({
             let parent = parent.clone();
             move |event, _, cx| {
                 let _ = parent.update(cx, |view, cx| {
                     if view.sessions.selected_id() == session {
-                        view.timeline.following = !event.is_scrolled;
-                        cx.notify();
+                        let following = !event.is_scrolled;
+                        if view.timeline.following != following {
+                            view.timeline.following = following;
+                            cx.notify();
+                        }
                     }
                 });
             }
         });
-        let transcript = list(self.timeline.list.clone(), move |index, window, cx| {
-            let item = parent
-                .update(cx, |view, cx| {
-                    if view.sessions.selected_id() != session {
-                        return div().into_any_element();
-                    }
-                    rows.get(index)
-                        .map(|row| {
-                            view.render_indexed_timeline_row(
-                                row,
-                                activity::ActivityFrame::default(),
-                                false,
-                                window,
-                                cx,
-                            )
-                        })
-                        .unwrap_or_else(|| div().into_any_element())
-                })
-                .unwrap_or_else(|_| div().into_any_element());
-            let frame = painted.clone();
-            div()
-                .w_full()
-                .px(if wide { px(24.0) } else { px(12.0) })
-                .pt(px(if index == 0 { 16.0 } else { 8.0 }))
-                .pb(px(if index + 1 == rows.len() { 16.0 } else { 0.0 }))
-                .child(div().w_full().max_w(px(800.0)).mx_auto().child(item))
-                .on_children_prepainted(move |bounds, _, _| {
-                    if let Some(bounds) = bounds.first() {
-                        frame.borrow_mut().push((index, *bounds));
-                    }
-                })
-                .into_any_element()
-        })
+        let transcript = list_with_cached_sizes(
+            self.timeline.list.clone(),
+            move |index, measured, window, cx| {
+                let item = parent
+                    .update(cx, |view, cx| {
+                        if view.sessions.selected_id() != session {
+                            return div().into_any_element();
+                        }
+                        let Some(row) = rows.get(index) else {
+                            return div().into_any_element();
+                        };
+                        let cacheable = match row.kind {
+                            Kind::Footer | Kind::HistoryHeader | Kind::HistoryFooter => false,
+                            Kind::Trace(trace) => view
+                                .sessions
+                                .selected()
+                                .and_then(|session| session.trace.get(trace))
+                                .is_some_and(|trace| {
+                                    !matches!(
+                                        activity::operation_status(&trace.detail),
+                                        Some(AgentTraceStatus::Running | AgentTraceStatus::Pending)
+                                    )
+                                }),
+                            _ => true,
+                        };
+                        if !cacheable {
+                            return row_shell(
+                                view.render_indexed_timeline_row(
+                                    row,
+                                    activity::ActivityFrame::default(),
+                                    false,
+                                    window,
+                                    cx,
+                                ),
+                                wide,
+                                index,
+                                index + 1 == rows.len(),
+                                matches!(row.kind, Kind::MessagePart(_, part) if part > 0),
+                            );
+                        }
+                        let mut retained = view.timeline.row_views.borrow_mut();
+                        if retained.len() >= 64 && !retained.contains_key(&row_key(row)) {
+                            if let Some(key) = retained
+                                .iter()
+                                .min_by_key(|(_, entry)| entry.seen)
+                                .map(|(key, _)| *key)
+                            {
+                                retained.remove(&key);
+                            }
+                        }
+                        let entry = retained.entry(row_key(row)).or_insert_with(|| RetainedRow {
+                            seen: view.timeline.frame,
+                            view: cx.new(|_| TimelineRowView {
+                                parent: parent.clone(),
+                                session: session.expect("selected session"),
+                                row: row.clone(),
+                                wide,
+                                provider,
+                                index,
+                                last: index + 1 == rows.len(),
+                            }),
+                        });
+                        entry.seen = view.timeline.frame;
+                        let changed = entry.view.read(cx).row != *row
+                            || entry.view.read(cx).wide != wide
+                            || entry.view.read(cx).provider != provider
+                            || entry.view.read(cx).index != index
+                            || entry.view.read(cx).last != (index + 1 == rows.len());
+                        if changed {
+                            entry.view.update(cx, |item, cx| {
+                                item.row = row.clone();
+                                item.wide = wide;
+                                item.provider = provider;
+                                item.index = index;
+                                item.last = index + 1 == rows.len();
+                                cx.notify();
+                            });
+                        }
+                        let item = AnyView::from(entry.view.clone());
+                        if let Some(measured) = measured.filter(|_| !changed) {
+                            item.cached(StyleRefinement::default().w_full().h(measured.height))
+                                .into_any_element()
+                        } else {
+                            item.into_any_element()
+                        }
+                    })
+                    .unwrap_or_else(|_| div().into_any_element());
+                let frame = painted.clone();
+                div()
+                    .w_full()
+                    .child(item)
+                    .on_children_prepainted(move |bounds, _, _| {
+                        if let Some(bounds) = bounds.first() {
+                            frame.borrow_mut().push((index, *bounds));
+                        }
+                    })
+                    .into_any_element()
+            },
+        )
         .flex_1()
         .min_h_0()
         .w_full();

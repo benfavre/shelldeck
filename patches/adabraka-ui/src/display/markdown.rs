@@ -191,8 +191,10 @@ struct TableState {
     in_head: bool,
 }
 
+/// Parse the complete document before rendering independent viewport block ranges.
+// ShellDeck patch: SDPATCH-128 — preserve document-wide references while virtualizing long prose.
 #[cfg(feature = "markdown")]
-fn parse_markdown_with_urls(source: &str) -> Vec<RichBlock> {
+pub fn parse_markdown_with_urls(source: &str) -> Vec<RichBlock> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);

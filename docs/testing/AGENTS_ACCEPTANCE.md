@@ -443,6 +443,13 @@ single-instance tests also execute two nested subprocess probes. Strict workspac
 all-target Clippy, formatting and whitespace checks passed (the fork retains
 CRLF; whitespace verification uses `core.whitespace=cr-at-eol`).
 
+**Measurement correction:** the native cadence figures below came from a preview
+that enabled GPUI test-support and enumerated the OS font catalogue per root
+render. They are retained as historical fixture observations, not production FPS.
+The corrected production fixture and follow-up are documented in
+[AGENTS_PERFORMANCE.md](AGENTS_PERFORMANCE.md). The headless render-work counts
+remain useful as test-platform measurements.
+
 The 80-exchange rendered fixture at 900×700 fell from **320 transcript body
 renders / 1.469 s** to **3 renders / about 29 ms** for the two-frame harness redraw.
 Steady redraw median was about 26 ms. These are test-platform layout measurements,

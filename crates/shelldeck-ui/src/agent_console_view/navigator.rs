@@ -706,6 +706,9 @@ impl AgentConsoleView {
     }
 
     pub(super) fn render_navigator(&self, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(test)]
+        self.rendered_navigators
+            .set(self.rendered_navigators.get() + 1);
         let parent = cx.entity();
         let search_blur_parent = parent.clone();
         let running_count = self.sessions.active_count();
