@@ -413,9 +413,9 @@ mod tests {
     use crate::t;
     use gpui::Action;
 
-    // SDTEST-2910 / SDUC-571
+    // SDTEST-2913 / SDUC-571
     #[test]
-    fn sdtest_2910_boat_console_is_offered_only_in_authorized_dev_mode() {
+    fn sdtest_2913_boat_console_is_offered_only_in_authorized_dev_mode() {
         for (allowed, current, expected) in [
             (&[][..], AppMode::User, false),
             (&[AppMode::User][..], AppMode::User, false),

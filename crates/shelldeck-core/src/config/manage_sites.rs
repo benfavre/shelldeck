@@ -221,9 +221,9 @@ pub fn manage_area_url(manage_origin: &str, site: &ManagedSiteInfo, area_path: &
 mod tests {
     use super::*;
 
-    // SDTEST-2911 / SDUC-571: the server chooses the scope and signs it; no unsigned fallback.
+    // SDTEST-2914 / SDUC-571: the server chooses the scope and signs it; no unsigned fallback.
     #[test]
-    fn sdtest_2911_boat_handoff_is_fresh_scoped_and_same_origin() {
+    fn sdtest_2914_boat_handoff_is_fresh_scoped_and_same_origin() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         for variant in ["valid", "other-site", "other-origin", "unsigned", "missing"] {

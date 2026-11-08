@@ -1038,4 +1038,4 @@ transport and annotation reuse the existing request attachment implementation.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-2910 | `workspace::palette::tests::sdtest_2910_boat_console_is_offered_only_in_authorized_dev_mode` | SDUC-571 | Green | Covers role/mode visibility. Live active-site browser handoff requires the paired Manage deployment. |
+| SDTEST-2913 | `workspace::palette::tests::sdtest_2913_boat_console_is_offered_only_in_authorized_dev_mode` | SDUC-571 | Green | Covers role/mode visibility. Live active-site browser handoff requires the paired Manage deployment. |

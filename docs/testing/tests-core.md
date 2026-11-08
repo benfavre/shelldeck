@@ -798,4 +798,4 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-2911 | `config::manage_sites::tests::sdtest_2911_boat_handoff_is_fresh_scoped_and_same_origin` | SDUC-571 | Green | Raw TCP contract covers the authenticated fresh directory request, exact tenant/site matching, same-origin signed target, missing-link and unsigned-link refusal. |
+| SDTEST-2914 | `config::manage_sites::tests::sdtest_2914_boat_handoff_is_fresh_scoped_and_same_origin` | SDUC-571 | Green | Raw TCP contract covers the authenticated fresh directory request, exact tenant/site matching, same-origin signed target, missing-link and unsigned-link refusal. |
