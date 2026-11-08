@@ -4925,3 +4925,16 @@ without the endpoint answers 404 and the bell stays hidden.
 2026-11-07: Added SDUC-570. Server side: `GET|POST /api/manage/shelldeck/notifications`
 in the bext repository (`sites/shared/manage/src/routes/shelldeck-notifications.ts`).
 
+
+### SDUC-571: Boat sandbox console
+
+Super-admin users in Dev mode can open “Boat” from the command palette. It
+opens the active site's signed Manage handoff for `/manage/infrastructure/boat`,
+where lifecycle, command/task tracking, files, SSH keys and desktop access share
+Company Manager's tenant/site-scoped Boat backend. An active site is required.
+No Boat API key is stored in ShellDeck. Other roles have no Boat palette action;
+the server independently requires super-admin access.
+
+2026-11-08: Added SDUC-571. The server supplies the Boat area and signed switch
+URL through the existing site directory; an older server without that area
+refuses the handoff rather than fabricating a scope-switch URL.

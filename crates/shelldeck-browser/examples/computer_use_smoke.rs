@@ -300,8 +300,28 @@ fn main() -> Result<()> {
         artifact_dir.join("mcp-observe.png"),
         observer.screenshot(id)?,
     )?;
-    let accessibility =
-        observer.text_tool("browser_snapshot", json!({"browser_id":id.to_string()}))?;
+    // Enabling native accessibility starts an asynchronous tree update on macOS.
+    // A painted, fully loaded page can still return the first empty AX snapshot.
+    let mut accessibility = Value::Null;
+    until(
+        || {
+            if let Ok(snapshot) =
+                observer.text_tool("browser_snapshot", json!({"browser_id":id.to_string()}))
+            {
+                accessibility = snapshot;
+            }
+            accessibility["accessibility"]["nodes"]
+                .as_array()
+                .is_some_and(|nodes| {
+                    nodes.iter().any(|node| {
+                        node["name"]["value"]
+                            .as_str()
+                            .is_some_and(|name| name.contains("Native computer use fixture"))
+                    })
+                })
+        },
+        "native accessibility fixture",
+    )?;
     assert_eq!(accessibility["untrusted_page_content"], true);
     assert!(accessibility["accessibility"]["nodes"]
         .as_array()
