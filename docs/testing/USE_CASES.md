@@ -4766,6 +4766,8 @@ copy/reveal actions against that exact current page rather than retained widgets
 
 ### SDUC-564 — Complete Agents workflows remain coherent across navigation and recovery
 
+Project menus expose conversation creation, copying the checkout path and confirmed project removal. Removal preserves files and archives conversations under their exact checkout and machine; running conversations and retained workspaces block removal. Search opens from a toolbar icon and can be cleared or dismissed with Escape, groups can be collapsed or expanded together, and remote lists can be expanded or reduced in bounded pages.
+
 The acceptance journeys in `AGENTS_ACCEPTANCE.md` connect project entry, session
 management, native discovery, context selection and queued execution. Project
 search and opening respect hierarchy and archive state; saved SSH choices refresh

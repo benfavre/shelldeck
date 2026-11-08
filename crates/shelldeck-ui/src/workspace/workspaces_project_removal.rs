@@ -13,6 +13,22 @@ fn settled_attempt_matches(
 }
 
 impl WorkspaceHubView {
+    pub(in crate::workspace) fn remove_project_from_navigator(
+        &mut self,
+        project: CatalogProjectId,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        self.remove_project(project, cx);
+        if self.catalog.projects().any(|record| record.id() == project) {
+            Err(self
+                .error
+                .clone()
+                .unwrap_or_else(|| t!("workspaces.projects.remove_blocked").to_string()))
+        } else {
+            Ok(())
+        }
+    }
+
     pub(super) fn can_remove_project(&self, project: CatalogProjectId) -> bool {
         self.load_error.is_none()
             && !self.recovery_pending

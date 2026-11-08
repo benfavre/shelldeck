@@ -3,6 +3,8 @@ use super::*;
 use crate::fleet_view::{remote_session_title, FleetView};
 use shelldeck_core::config::platform::{FreshnessState, SessionRecord};
 
+const REMOTE_PAGE_SIZE: usize = 8;
+
 #[derive(Default)]
 pub(super) struct RemoteAgentSessionsUi {
     source: Option<Entity<FleetView>>,
@@ -63,9 +65,9 @@ fn matching_sessions<'a>(sessions: &'a [SessionRecord], query: &str) -> Vec<&'a 
 
 fn remote_page_limit(page_query: &str, query: &str, visible_limit: usize) -> usize {
     if page_query == query {
-        visible_limit.max(20)
+        visible_limit.max(REMOTE_PAGE_SIZE)
     } else {
-        20
+        REMOTE_PAGE_SIZE
     }
 }
 
@@ -175,6 +177,9 @@ impl AgentConsoleView {
         let shown = sessions.len().min(limit);
         list = list.child(
             div()
+                .border_t_1()
+                .border_color(ShellDeckColors::border())
+                .mt(px(8.0))
                 .flex()
                 .items_center()
                 .gap(px(6.0))
@@ -265,7 +270,7 @@ impl AgentConsoleView {
                         .size(ButtonSize::Sm)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.library.preferences.remote_sessions_available_only = false;
-                            this.remote_sessions.visible_limit = 20;
+                            this.remote_sessions.visible_limit = REMOTE_PAGE_SIZE;
                             this.schedule_library_save(cx);
                             cx.notify();
                         })),
@@ -284,7 +289,7 @@ impl AgentConsoleView {
                     .tooltip(t!("agents.remote.available_hint").to_string())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.library.preferences.remote_sessions_available_only = true;
-                        this.remote_sessions.visible_limit = 20;
+                        this.remote_sessions.visible_limit = REMOTE_PAGE_SIZE;
                         this.schedule_library_save(cx);
                         cx.notify();
                     })),
@@ -401,7 +406,22 @@ impl AgentConsoleView {
                 .size(ButtonSize::Sm)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.remote_sessions.page_query = page_query.clone();
-                    this.remote_sessions.visible_limit = shown.saturating_add(20);
+                    this.remote_sessions.visible_limit = shown.saturating_add(REMOTE_PAGE_SIZE);
+                    cx.notify();
+                })),
+            );
+        }
+        if shown > REMOTE_PAGE_SIZE {
+            list = list.child(
+                Button::new(
+                    "agent-remote-less",
+                    t!("agents.remote.show_less").to_string(),
+                )
+                .debug_selector(|| "agent-remote-less".into())
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.remote_sessions.visible_limit = REMOTE_PAGE_SIZE;
                     cx.notify();
                 })),
             );
@@ -437,6 +457,9 @@ impl AgentConsoleView {
         }
         if !self.tools.navigator_wide && self.tools.navigator_overlay {
             root = root.child(self.render_navigator_overlay(cx));
+        }
+        if let Some(dialog) = self.render_project_removal(cx) {
+            root = root.child(dialog);
         }
         root.into_any_element()
     }
@@ -547,9 +570,9 @@ mod tests {
             "observation-only entries stay reachable"
         );
         assert_eq!(matches[0].session.resource, directory[100].session.resource);
-        assert_eq!(remote_page_limit("", "", 0), 20);
+        assert_eq!(remote_page_limit("", "", 0), 8);
         assert_eq!(remote_page_limit("", "", 40), 40);
-        assert_eq!(remote_page_limit("", "bear", 40), 20);
+        assert_eq!(remote_page_limit("", "bear", 40), 8);
         assert_eq!(matching_sessions(&directory, "_0118_").len(), 1);
         assert_eq!(matching_sessions(&directory, "automonique").len(), 119);
         let label = remote_session_title(&directory[0]);

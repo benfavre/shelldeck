@@ -1039,3 +1039,6 @@ transport and annotation reuse the existing request attachment implementation.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-2913 | `workspace::palette::tests::sdtest_2913_boat_console_is_offered_only_in_authorized_dev_mode` | SDUC-571 | Green | Covers role/mode visibility. Live active-site browser handoff requires the paired Manage deployment. |
+
+| SDTEST-2923 | SDUC-564 | Rendered project menu copies the exact path and confirms metadata removal; failed persistence, newly active sessions, nested checkout ownership, remote identities, files and drafts remain protected | `agent_console_view/interaction_tests` | Green — rendered offline interaction regression |
+| SDTEST-2924 | SDUC-564 | Collapse/expand all, icon-triggered search, clear and Escape dismissal preserve selection and unsent drafts | `agent_console_view/interaction_tests` | Green — rendered offline interaction regression |

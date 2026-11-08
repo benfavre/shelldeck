@@ -176,6 +176,12 @@ impl Cockpit {
     }
 
     fn click(&mut self, selector: &str) {
+        if selector == "agent-nav-search" && self.bounds(selector).is_none() {
+            self.click("agent-nav-search-trigger");
+        }
+        if selector == "agent-library-archived-filter" && self.bounds(selector).is_none() {
+            self.click("agent-navigator-actions-trigger");
+        }
         let bounds = self
             .bounds(selector)
             .unwrap_or_else(|| panic!("Missing rendered control: {selector}"));
@@ -2504,4 +2510,230 @@ fn rendered_large_native_history_keeps_paging_copy_and_drafts_with_bounded_work(
         .borrow()
         .iter()
         .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+}
+
+// SDTEST-2923 / SDUC-564: real project-menu input, safe removal and failed-write recovery.
+#[::core::prelude::v1::test]
+fn rendered_project_removal_keeps_files_drafts_and_other_checkout_conversations() {
+    for (theme, language, width, height) in [
+        (ThemePreference::Dark, "en", 1000.0, 720.0),
+        (ThemePreference::SolarizedLight, "fr", 620.0, 560.0),
+    ] {
+        let mut ui = Cockpit::new(theme, width, height, false);
+        rust_i18n::set_locale(language);
+        ui.type_draft("Keep the temporary project's unsent work · é🌍");
+        let original = ui.session;
+        let (path, nested, remote) = ui.view.update(&mut ui.app, |view, cx| {
+            let context = view.sessions.get(original).unwrap().context.clone();
+            let mut child_context = context.clone();
+            child_context.workdir = format!("{}/nested", context.workdir);
+            let nested = view
+                .create_session("Nested checkout", child_context.clone(), cx)
+                .unwrap();
+            let mut remote_context = context.clone();
+            remote_context.target = AgentTarget::Ssh {
+                connection_id: Uuid::from_u128(2884),
+                connection_label: "Same path, another machine".into(),
+            };
+            let remote = view
+                .create_session("Remote conversation", remote_context, cx)
+                .unwrap();
+            view.set_project_groups(
+                vec![
+                    AgentProjectGroup {
+                        id: "temporary".into(),
+                        label: ".tmpcmdPCs".into(),
+                        worktrees: vec![AgentWorktreeOption {
+                            id: "tmp-checkout".into(),
+                            label: ".tmpcmdPCs".into(),
+                            path: context.workdir.clone(),
+                            target: AgentTarget::Local,
+                            branch: None,
+                            is_primary: true,
+                        }],
+                    },
+                    AgentProjectGroup {
+                        id: "nested".into(),
+                        label: "Nested checkout".into(),
+                        worktrees: vec![AgentWorktreeOption {
+                            id: "nested-checkout".into(),
+                            label: "Nested checkout".into(),
+                            path: child_context.workdir,
+                            target: AgentTarget::Local,
+                            branch: None,
+                            is_primary: true,
+                        }],
+                    },
+                ],
+                cx,
+            );
+            view.select_session(original, cx);
+            (context.workdir, nested, remote)
+        });
+        let sentinel = std::path::Path::new(&path).join("user-work.txt");
+        std::fs::write(&sentinel, "Preserve these files").unwrap();
+        ui.open_navigator();
+        ui.click_navigation("agent-project-menu-temporary");
+        ui.click("agent-project-copy-path");
+        assert_eq!(ui.app.read_from_clipboard().unwrap().text().unwrap(), path);
+        ui.click_navigation("agent-project-menu-temporary");
+        ui.click("agent-project-remove");
+        assert!(ui.bounds("agent-project-remove-confirm").is_some());
+        assert!(!ui
+            .events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, AgentConsoleEvent::RemoveProject(_))));
+        ui.click("agent-project-remove-cancel");
+        ui.view.read_with(&ui.app, |view, _| {
+            assert!(view.library.remove_project.is_none());
+            assert!(!view.sessions.get(original).unwrap().archived);
+        });
+        assert!(ui
+            .events
+            .borrow()
+            .iter()
+            .all(|event| matches!(event, AgentConsoleEvent::NavigatorChanged)));
+        ui.click_navigation("agent-project-menu-temporary");
+        ui.click("agent-project-remove");
+        ui.click("agent-project-remove-confirm");
+        assert_eq!(ui.events.borrow().iter().filter(|event| matches!(event, AgentConsoleEvent::RemoveProject(id) if id == "temporary")).count(), 1);
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.complete_navigator_project_removal(
+                "temporary",
+                Err("fixture: catalog save failed".into()),
+                cx,
+            );
+            assert!(view.library.remove_project.is_some());
+            assert!(!view.sessions.get(original).unwrap().archived);
+            assert!(view
+                .project_groups
+                .iter()
+                .any(|group| group.id == "temporary"));
+        });
+        ui.redraw();
+        assert!(ui.bounds("agent-project-remove-confirm").is_some());
+        assert_eq!(ui.draft(), "Keep the temporary project's unsent work · é🌍");
+        ui.events.borrow_mut().clear();
+        let run = ui.start();
+        ui.click("agent-project-remove-confirm");
+        assert!(
+            !ui.events
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, AgentConsoleEvent::RemoveProject(_))),
+            "an open dialog must revalidate a newly running conversation"
+        );
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.finish_run(run, Some(0), None, cx)
+        });
+        ui.redraw();
+        ui.click("agent-project-remove-confirm");
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.complete_navigator_project_removal("temporary", Ok(()), cx);
+            assert!(!view
+                .project_groups
+                .iter()
+                .any(|group| group.id == "temporary"));
+            assert!(view.sessions.get(original).unwrap().archived);
+            assert!(
+                !view.sessions.get(nested).unwrap().archived,
+                "the nested checkout owns its own conversations"
+            );
+            assert!(
+                !view.sessions.get(remote).unwrap().archived,
+                "equal paths on different machines stay separate"
+            );
+            assert_eq!(
+                view.session_ui[&original].prompt.read(cx).content(),
+                "Keep the temporary project's unsent work · é🌍"
+            );
+        });
+        ui.redraw();
+        assert!(ui.bounds("agent-project-menu-temporary").is_none());
+        assert!(ui.bounds("agent-project-remove-confirm").is_none());
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "Preserve these files"
+        );
+        assert!(!ui
+            .events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+        ui.click("agent-library-archived-filter");
+        let folder_key = super::navigation_groups::directory_group_key(
+            "chat-folder",
+            &AgentTarget::Local,
+            &path,
+        );
+        ui.click_navigation(&format!("agent-nav-session-{original}"));
+        ui.session = original;
+        assert_eq!(ui.draft(), "Keep the temporary project's unsent work · é🌍");
+        ui.open_navigator();
+        assert!(ui.bounds(&format!("agent-folder-{folder_key}")).is_some());
+    }
+}
+
+// SDTEST-2924 / SDUC-564: global navigation actions retain selection/drafts and searchable groups.
+#[::core::prelude::v1::test]
+fn rendered_sidebar_organization_and_clear_search_preserve_navigation() {
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        let mut ui = Cockpit::new(theme, 1000.0, 720.0, false);
+        let original = ui.session;
+        ui.type_draft("Retain the working draft");
+        let background = ui.view.update(&mut ui.app, |view, cx| {
+            let context = view.sessions.get(original).unwrap().context.clone();
+            let id = view
+                .create_session("Other conversation", context, cx)
+                .unwrap();
+            view.select_session(original, cx);
+            id
+        });
+        ui.open_navigator();
+        assert!(
+            ui.bounds("agent-nav-search").is_none(),
+            "search stays out of the resting sidebar"
+        );
+        ui.click("agent-navigator-actions-trigger");
+        ui.click("agent-collapse-all");
+        assert!(ui
+            .bounds(&format!("agent-nav-session-{original}"))
+            .is_some());
+        assert!(ui
+            .bounds(&format!("agent-nav-session-{background}"))
+            .is_none());
+        ui.search_navigator("Other conversation");
+        assert!(ui
+            .bounds(&format!("agent-nav-session-{background}"))
+            .is_some());
+        ui.click("agent-nav-clear-search");
+        assert!(
+            ui.bounds(&format!("agent-nav-session-{background}"))
+                .is_none(),
+            "clearing search restores the saved collapse"
+        );
+        ui.click("agent-navigator-actions-trigger");
+        ui.click("agent-expand-all");
+        assert!(ui
+            .bounds(&format!("agent-nav-session-{background}"))
+            .is_some());
+        ui.view.read_with(&ui.app, |view, _| {
+            assert_eq!(view.sessions.selected_id(), Some(original))
+        });
+        assert_eq!(ui.draft(), "Retain the working draft");
+        ui.search_navigator("Other conversation");
+        ui.window.simulate_keystrokes("escape");
+        ui.redraw();
+        assert!(ui.bounds("agent-nav-search").is_none());
+        ui.view.read_with(&ui.app, |view, cx| {
+            assert!(view.navigator_search.read(cx).content().is_empty());
+            assert_eq!(view.sessions.selected_id(), Some(original));
+        });
+        assert!(!ui
+            .events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+    }
 }
