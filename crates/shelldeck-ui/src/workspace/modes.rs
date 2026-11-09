@@ -80,6 +80,7 @@ impl Workspace {
             self.set_mode(AppMode::Dev, cx);
         }
         self.settings_open = false;
+        self.settings_dialog = None;
         if was_settings_open {
             self.activate_current_mode(cx);
         }
@@ -125,6 +126,7 @@ impl Workspace {
         // Close transient chrome immediately, but keep rendering the current
         // surface until it has faded to zero opacity.
         self.settings_open = false;
+        self.settings_dialog = None;
         self.account_menu_open = false;
         self.mode_menu_open = false;
         self.site_menu_open = false;
@@ -243,6 +245,19 @@ impl Workspace {
             return;
         }
         self.settings_open = true;
+        let settings = self.settings.clone();
+        let workspace = cx.entity().downgrade();
+        self.settings_dialog = Some(cx.new(move |cx| {
+            crate::settings::settings_dialog(
+                settings,
+                move |_, cx| {
+                    let _ = workspace.update(cx, |workspace, cx| {
+                        workspace.close_settings(cx);
+                    });
+                },
+                cx,
+            )
+        }));
         self.refresh_inklura_extension_panel(cx);
         self.account_menu_open = false;
         self.mode_menu_open = false;
@@ -251,14 +266,21 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Open Settings directly on the character cards. The Appearance tab puts
-    /// companion controls first so this route is immediately actionable.
+    pub(super) fn close_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_open = false;
+        self.settings_dialog = None;
+        self.activate_current_mode(cx);
+        cx.notify();
+    }
+
+    /// Open Settings directly on the character cards. The dedicated
+    /// Companion category keeps this route immediately actionable.
     pub fn open_companion_settings(&mut self, cx: &mut Context<Self>) {
         if !self.signed_in() {
             return;
         }
         self.settings.update(cx, |settings, cx| {
-            settings.set_active_tab(crate::settings::SettingsTab::Appearance, cx);
+            settings.set_active_tab(crate::settings::SettingsTab::Companion, cx);
         });
         self.open_settings(cx);
     }

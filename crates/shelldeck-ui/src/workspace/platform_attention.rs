@@ -614,6 +614,7 @@ impl Workspace {
         }
         if self.mode_transition.is_some() {
             self.settings_open = false;
+            self.settings_dialog = None;
             return;
         }
         if self.effective_mode() != AppMode::Dev {
@@ -621,6 +622,7 @@ impl Workspace {
             return;
         }
         self.settings_open = false;
+        self.settings_dialog = None;
         let Some(activation) = self.platform_attention_pending_activations.pop_front() else {
             return;
         };

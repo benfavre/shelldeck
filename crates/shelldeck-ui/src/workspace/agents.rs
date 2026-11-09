@@ -6,7 +6,6 @@ use shelldeck_core::agent_runtime::{
     AgentStreamFramer, AgentStreamParser, AgentTarget, LocalProcessTree,
     AGENT_STREAM_OVERSIZED_LABEL,
 };
-use shelldeck_core::agent_session::DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS;
 use shelldeck_core::config::workspace_catalog::{
     CatalogCheckoutId, CatalogWorkspaceId, CheckoutHost, ProjectCatalog, RemotePosixPath,
     UserWorkspaceLifecycle, WorkspaceRelativePath,
@@ -90,8 +89,8 @@ type AgentDone = (Option<i32>, Option<String>);
 /// Keep parallel coding work useful without allowing an accidental prompt
 /// fan-out to exhaust the desktop host. Every admitted run still owns an
 /// independently stoppable process tree or SSH channel.
-fn agent_run_has_capacity(active: usize) -> bool {
-    active < DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS
+fn agent_run_has_capacity(active: usize, limit: usize) -> bool {
+    active < limit
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +175,12 @@ impl Workspace {
         }
         match event {
             AgentConsoleEvent::NavigatorChanged => cx.notify(),
+            AgentConsoleEvent::OpenSettings => {
+                self.settings.update(cx, |settings, cx| {
+                    settings.set_active_tab(crate::settings::SettingsTab::Appearance, cx);
+                });
+                self.open_settings(cx);
+            }
             AgentConsoleEvent::RemoveProject(id) => {
                 if !self
                     .agent_console
@@ -366,12 +371,9 @@ impl Workspace {
             );
             return;
         }
-        if !agent_run_has_capacity(self.active_agent_runs.len()) {
-            let message = t!(
-                "agents.error.parallel_limit",
-                count = DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS.to_string()
-            )
-            .to_string();
+        let limit = self.agent_console.read(cx).max_concurrent_runs();
+        if !agent_run_has_capacity(self.active_agent_runs.len(), limit) {
+            let message = t!("agents.error.parallel_limit", count = limit.to_string()).to_string();
             self.agent_console.update(cx, |view, cx| {
                 view.reject_run_for(request.id, message.clone(), cx)
             });
@@ -1390,7 +1392,6 @@ mod tests {
         agent_run_has_capacity, automonique_agent_admission, forward_local_stream,
         mapped_remote_agent_workdir, spawn_local_agent, AgentCommandSpec, AgentStreamEvent,
         AgentStreamFrame, AgentStreamFramer, AGENT_STREAM_OVERSIZED_LABEL,
-        DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS,
     };
     use shelldeck_core::agent_runtime::{
         AgentAccessMode, AgentProvider, AgentRunRequest, AgentTarget,
@@ -1589,16 +1590,11 @@ mod tests {
     // SDTEST-1883 — SDUC-475
     #[test]
     fn sdtest_1883_parallel_agent_runs_are_bounded_without_a_singleton_gate() {
-        assert!(agent_run_has_capacity(0));
-        assert!(agent_run_has_capacity(1));
-        assert!(agent_run_has_capacity(
-            DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS - 1
-        ));
-        assert!(!agent_run_has_capacity(
-            DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS
-        ));
-        assert!(!agent_run_has_capacity(
-            DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS + 1
-        ));
+        for limit in 1..=8 {
+            assert!(agent_run_has_capacity(0, limit));
+            assert!(agent_run_has_capacity(limit - 1, limit));
+            assert!(!agent_run_has_capacity(limit, limit));
+            assert!(!agent_run_has_capacity(limit + 1, limit));
+        }
     }
 }

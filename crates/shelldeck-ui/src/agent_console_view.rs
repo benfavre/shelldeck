@@ -27,7 +27,7 @@ use shelldeck_core::agent_runtime::{
 use shelldeck_core::agent_session::{
     AgentExecutionContext, AgentMessage, AgentMessageRole, AgentSession, AgentSessionAttention,
     AgentSessionCollection, AgentSessionStatus, AgentTraceEvent, AgentTraceKind, AgentTraceStatus,
-    DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS,
+    MAX_CONCURRENT_AGENT_SESSIONS,
 };
 use uuid::Uuid;
 
@@ -41,6 +41,8 @@ use crate::theme::ShellDeckColors;
 
 #[path = "agent_console_view/activity.rs"]
 mod activity;
+#[path = "agent_console_view/activity_controls.rs"]
+mod activity_controls;
 #[path = "agent_console_view/auth_recovery.rs"]
 mod auth_recovery;
 #[path = "agent_console_view/composer.rs"]
@@ -143,6 +145,7 @@ struct InspectorDiff {
 #[derive(Debug, Clone)]
 pub enum AgentConsoleEvent {
     NavigatorChanged,
+    OpenSettings,
     RemoveProject(String),
     ReconnectProject {
         checkout_id: shelldeck_core::config::workspace_catalog::CatalogCheckoutId,

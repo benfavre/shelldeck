@@ -2544,7 +2544,7 @@ closed, permission-denied, and stale targets preserve Copy as the fallback.
 
 ### SDUC-447 — The selected companion character persists everywhere
 
-Appearance settings offer no character plus Clippy, Shelly, Spark, Byte, Orbit,
+Companion settings offer no character plus Clippy, Shelly, Spark, Byte, Orbit,
 and Nox with real embedded previews. Character, motion preference, scale,
 desktop enablement, roaming level, window-climbing preference, and multi-screen
 preference persist in `[clippy]`. Unknown future character IDs fall back safely
@@ -4947,3 +4947,17 @@ the server independently requires super-admin access.
 2026-11-08: Added SDUC-571. The server supplies the Boat area and signed switch
 URL through the existing site directory; an older server without that area
 refuses the handoff rather than fabricating a scope-switch URL.
+
+SDUC-499 / SDUC-550 / SDUC-564 activity controls: the Agents footer opens a live
+list of active and unread conversations. Each row opens that conversation or
+stops its own run. A persisted limit from one to eight gates both collection
+and runtime admission; lowering it lets existing runs finish. The settings
+gear opens the existing personal preferences in a bounded, centered dialog
+with category navigation, live theme previews and independent content scrolling.
+Escape, close and backdrop dismiss return to the current surface without
+discarding its drafts. Bottom connection/script counters open their Dev views
+through the existing permission-gated navigation.
+
+Personal Settings separates Companion preferences from Appearance, keeping app
+themes and interface sizing immediately available. Existing companion entry
+points open the Companion category directly.

@@ -711,13 +711,6 @@ impl AgentConsoleView {
             .set(self.rendered_navigators.get() + 1);
         let parent = cx.entity();
         let search_blur_parent = parent.clone();
-        let running_count = self.sessions.active_count();
-        let unread_count = self
-            .sessions
-            .sessions()
-            .iter()
-            .map(|session| u64::from(session.unread_count))
-            .sum::<u64>();
         let mut body = div()
             .flex()
             .flex_col()
@@ -1089,29 +1082,7 @@ impl AgentConsoleView {
                     .child(body),
             )
             .child(self.render_archive_undo(cx))
-            .child(
-                div()
-                    .h(px(30.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px(px(10.0))
-                    .border_t_1()
-                    .border_color(ShellDeckColors::border())
-                    .text_size(px(9.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(lucide_icon("activity", 11.0, ShellDeckColors::warning()))
-                    .child(format!(
-                        "{running_count}/{DEFAULT_MAX_CONCURRENT_AGENT_SESSIONS}"
-                    ))
-                    .child(t!("workspaces.agent.running").to_string())
-                    .child(div().flex_1())
-                    .when(unread_count > 0, |row| {
-                        row.child(lucide_icon("activity", 10.0, ShellDeckColors::primary()))
-                            .child(unread_count.to_string())
-                            .child(t!("workspaces.attention.unread").to_string())
-                    }),
-            )
+            .child(self.render_activity_footer(cx))
             .into_any_element()
     }
 

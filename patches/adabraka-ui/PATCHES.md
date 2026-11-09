@@ -1191,3 +1191,15 @@ inventory. SDPATCH-008 is an adapter and carries no marker of its own.)
 - **Why**: Stable test selectors on the actual controls let Agents integration scenarios click and measure shared widgets without introducing wrapper layouts or copying their implementation. GPUI omits selector storage outside test-support builds.
 - **Validation**: SDTEST-2848 and SDTEST-1713 exercise production cockpit rendering, input dispatch and composer containment; pixel painting remains a separate native check.
 - **Upstream status**: not filed yet — backward-compatible test observability API.
+
+### SDPATCH-052 — Retain live, self-scrolling dialog bodies
+
+- **Files / symbols**: `src/overlays/dialog.rs` — `Dialog::body` and render.
+- **Markers**:
+  - `src/overlays/dialog.rs` — `// ShellDeck patch: SDPATCH-052 — render persistent entity bodies on every frame.`
+  - `src/overlays/dialog.rs` — `// ShellDeck patch: SDPATCH-052 — static dialogs keep their existing layout.`
+  - `src/overlays/dialog.rs` — `// ShellDeck patch: SDPATCH-052 — an unpadded, shrinkable slot for self-scrolling views.`
+  - `src/overlays/dialog.rs` — `// ShellDeck patch: SDPATCH-052 — retain body content through focus and config updates.`
+- **Why**: Personal Settings owns its own header, navigation and scrolling body. A reusable render callback keeps that entity visible across dialog repaints without nesting another padded scroll surface; existing static dialog callers are unchanged.
+- **Validation**: Rendered Settings dialog interaction and narrow viewport checks.
+- **Upstream status**: not filed yet — backward-compatible content slot.

@@ -1,7 +1,6 @@
 use adabraka_ui::prelude::use_theme;
 use gpui::*;
 
-use crate::icons::lucide_icon;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -9,31 +8,11 @@ fn status_bar_uses_compact_layout(viewport_width: Pixels, rem_size: Pixels) -> b
     viewport_width < crate::scale::px(800.0).to_pixels(rem_size)
 }
 
-struct StatusBarTooltip {
-    label: SharedString,
-}
-
-impl Render for StatusBarTooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px(px(8.0))
-            .py(px(4.0))
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_surface())
-            .shadow_md()
-            .text_size(px(11.0))
-            .font_family(use_theme().tokens.font_family.clone())
-            .text_color(ShellDeckColors::text_primary())
-            .whitespace_nowrap()
-            .child(self.label.clone())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum StatusBarEvent {
     UpdateClicked,
+    ConnectionsClicked,
+    ScriptsClicked,
 }
 
 pub struct StatusBar {
@@ -72,34 +51,21 @@ impl StatusBar {
         self.notification = msg;
     }
 
-    fn status_item(metric: StatusMetric, count: usize) -> impl IntoElement {
-        let tooltip_label: SharedString = status_count_label(metric, count).into();
-        div()
-            .id(metric.element_id())
-            .flex()
-            .items_center()
-            .gap(px(4.0))
-            .h(px(20.0))
+    fn status_item(metric: StatusMetric, count: usize, cx: &Context<Self>) -> impl IntoElement {
+        adabraka_ui::prelude::Button::new(metric.element_id(), count.to_string())
+            .debug_selector(move || metric.element_id().into())
+            .variant(adabraka_ui::prelude::ButtonVariant::Ghost)
+            .size(adabraka_ui::prelude::ButtonSize::Sm)
+            .icon(metric.icon())
+            .h(px(22.0))
             .px(px(4.0))
-            .rounded(px(4.0))
-            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-            .tooltip(move |_, cx| {
-                cx.new(|_| StatusBarTooltip {
-                    label: tooltip_label.clone(),
-                })
-                .into()
-            })
-            .child(lucide_icon(
-                metric.icon(),
-                12.0,
-                ShellDeckColors::text_muted(),
-            ))
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(count.to_string()),
-            )
+            .tooltip(status_count_label(metric, count))
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.emit(match metric {
+                    StatusMetric::ActiveConnections => StatusBarEvent::ConnectionsClicked,
+                    StatusMetric::RunningScripts => StatusBarEvent::ScriptsClicked,
+                });
+            }))
     }
 
     fn trailing_status(&self, compact: bool, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
@@ -237,10 +203,12 @@ impl Render for StatusBar {
                 .child(Self::status_item(
                     StatusMetric::ActiveConnections,
                     self.active_connections,
+                    cx,
                 ))
                 .child(Self::status_item(
                     StatusMetric::RunningScripts,
                     self.running_scripts,
+                    cx,
                 )),
         );
 

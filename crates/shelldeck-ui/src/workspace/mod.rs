@@ -506,6 +506,7 @@ pub struct Workspace {
     /// Keeping this separate from `active_view` preserves the hidden Dev view
     /// (including live terminal tabs) while Settings is open.
     settings_open: bool,
+    settings_dialog: Option<Entity<adabraka_ui::overlays::dialog::Dialog>>,
     /// The application menu row. Present in every mode (and on the welcome
     /// screen); its contents are rebuilt from `menu_bar_spec` whenever the
     /// state it reads changes. See `crate::menu_bar`.
@@ -1485,6 +1486,12 @@ impl Workspace {
                     StatusBarEvent::UpdateClicked => {
                         this.auto_updater.update(cx, |u, cx| u.trigger_update(cx));
                     }
+                    StatusBarEvent::ConnectionsClicked => {
+                        this.activate_dev_section(SidebarSection::Connections, cx);
+                    }
+                    StatusBarEvent::ScriptsClicked => {
+                        this.activate_dev_section(SidebarSection::Scripts, cx);
+                    }
                 },
             );
 
@@ -1573,6 +1580,7 @@ impl Workspace {
             agents_focus_pending: false,
             native_title: None,
             settings_open: false,
+            settings_dialog: None,
             menu_bar,
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),
             sidebar_visible: true,

@@ -3095,3 +3095,172 @@ fn rendered_timeline_motion_reuses_navigator_and_search_stays_live() {
         .is_some());
     assert_eq!(ui.draft(), "Keep this unsent instruction");
 }
+
+// SDTEST-2925 / SDUC-499, SDUC-550, SDUC-564 — footer controls affect real admission and preserve drafts.
+#[::core::prelude::v1::test]
+fn rendered_activity_controls_change_capacity_open_and_stop_individual_runs() {
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        let mut ui = Cockpit::new(theme, 1000.0, 700.0, false);
+        ui.open_navigator();
+        let run = ui.start();
+        let original = ui.session;
+        let other = ui.view.update(&mut ui.app, |view, cx| {
+            let context = view.sessions.get(original).unwrap().context.clone();
+            let other = view.sessions.create("Parallel work", context, 6).unwrap();
+            view.select_session(other, cx);
+            let request = view
+                .sessions
+                .begin_run(other, "Independent work", 7)
+                .unwrap();
+            let other_run = request.id;
+            view.begin_run(request, cx);
+            view.push_stream_event_for(other_run, AgentStreamEvent::Ready, cx);
+            view.select_session(original, cx);
+            other
+        });
+        ui.redraw();
+        ui.type_draft("Keep this follow-up");
+        ui.click("agent-activity-trigger");
+        ui.click("agent-limit-decrease");
+        assert_eq!(
+            ui.view.read_with(&ui.app, |v, _| v.max_concurrent_runs()),
+            3
+        );
+        let saved = ui.view.update(&mut ui.app, |view, cx| {
+            view.flush_library(cx).unwrap();
+            view.draft_store().load(now_ms()).unwrap()
+        });
+        assert_eq!(saved.collection.max_concurrent(), 3);
+        assert_eq!(saved.drafts[&ui.session], "Keep this follow-up");
+        ui.click("agent-limit-increase");
+        assert_eq!(
+            ui.view.read_with(&ui.app, |v, _| v.max_concurrent_runs()),
+            4
+        );
+        ui.click(&format!("agent-activity-open-{}", ui.session));
+        assert_eq!(
+            ui.view.read_with(&ui.app, |v, _| v.sessions.selected_id()),
+            Some(ui.session)
+        );
+        ui.click(&format!("agent-activity-stop-{}", ui.session));
+        assert!(ui
+            .events
+            .borrow()
+            .iter()
+            .any(|e| matches!(e, AgentConsoleEvent::Stop(id) if *id == run)));
+        assert_eq!(
+            ui.view.read_with(&ui.app, |v, _| v
+                .sessions
+                .get(ui.session)
+                .unwrap()
+                .status
+                .clone()),
+            AgentSessionStatus::Stopping
+        );
+        assert_eq!(
+            ui.view.read_with(&ui.app, |v, _| v
+                .sessions
+                .get(other)
+                .unwrap()
+                .status
+                .clone()),
+            AgentSessionStatus::Running
+        );
+        assert_eq!(ui.draft(), "Keep this follow-up");
+        // Dismiss the activity popover before opening settings.
+        ui.window.simulate_keystrokes("escape");
+        ui.redraw();
+        ui.click("agent-footer-settings");
+        assert!(ui
+            .events
+            .borrow()
+            .iter()
+            .any(|e| matches!(e, AgentConsoleEvent::OpenSettings)));
+    }
+}
+
+// SDTEST-2926 / SDUC-153, SDUC-564 — the real modal retains settings across paints and fits narrow windows.
+struct SettingsDialogHost(Entity<adabraka_ui::overlays::dialog::Dialog>);
+
+impl Render for SettingsDialogHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // Match Workspace's full-window containing block for absolute overlays.
+        div().relative().size_full().child(self.0.clone())
+    }
+}
+
+#[::core::prelude::v1::test]
+fn rendered_settings_dialog_keeps_live_navigation_and_theme_controls() {
+    for (theme, width, height) in [
+        (ThemePreference::Dark, 1200.0, 800.0),
+        (ThemePreference::SolarizedLight, 480.0, 600.0),
+    ] {
+        let mut ui = Cockpit::new(theme, width, height, false);
+        let settings = ui.app.update(|cx| {
+            cx.new(|cx| {
+                let mut settings = crate::settings::SettingsView::new(
+                    shelldeck_core::config::app_config::AppConfig::default(),
+                    cx,
+                );
+                settings.set_active_tab(crate::settings::SettingsTab::Appearance, cx);
+                settings
+            })
+        });
+        let view = settings.clone();
+        let handle = ui.app.add_window(move |_, cx| {
+            SettingsDialogHost(cx.new(|cx| crate::settings::settings_dialog(view, |_, _| {}, cx)))
+        });
+        let mut window = VisualTestContext::from_window(*handle, &ui.app);
+        window.simulate_resize(size(gpui::px(width), gpui::px(height)));
+        for _ in 0..3 {
+            window.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            window.run_until_parked();
+        }
+        for selector in [
+            "settings-view",
+            "settings-close",
+            "settings-tab-Appearance",
+            "settings-tab-General",
+        ] {
+            let bounds = window
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("Missing {selector}"));
+            assert!(bounds.origin.x >= gpui::px(0.0) && bounds.origin.y >= gpui::px(0.0));
+            assert!(
+                bounds.bottom_right().x <= gpui::px(width)
+                    && bounds.bottom_right().y <= gpui::px(height),
+                "{selector} outside viewport: {bounds:?}"
+            );
+        }
+        let general = window
+            .debug_bounds("settings-tab-General")
+            .unwrap()
+            .center();
+        window.simulate_click(general, Modifiers::none());
+        window.run_until_parked();
+        assert_eq!(
+            settings.read_with(&ui.app, |s, _| s.active_tab),
+            crate::settings::SettingsTab::General
+        );
+        let appearance = window
+            .debug_bounds("settings-tab-Appearance")
+            .unwrap()
+            .center();
+        window.simulate_click(appearance, Modifiers::none());
+        window.run_until_parked();
+        let light = window.debug_bounds("app-theme-Light").unwrap().center();
+        window.simulate_click(light, Modifiers::none());
+        window.run_until_parked();
+        assert_eq!(
+            settings.read_with(&ui.app, |s, _| s.config.theme.clone()),
+            ThemePreference::Light
+        );
+        assert!(
+            window.debug_bounds("settings-close").is_some(),
+            "dialog must survive a theme/config repaint"
+        );
+    }
+}

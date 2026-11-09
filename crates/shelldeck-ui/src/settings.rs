@@ -28,6 +28,22 @@ use crate::workspace::CloudSyncNow;
 mod inklura_extension;
 pub use inklura_extension::InkluraExtensionPanel;
 
+/// Shared modal host keeps the live settings entity and its own scroll layout.
+pub fn settings_dialog(
+    settings: Entity<SettingsView>,
+    on_close: impl Fn(&mut Window, &mut App) + 'static,
+    cx: &mut Context<adabraka_ui::overlays::dialog::Dialog>,
+) -> adabraka_ui::overlays::dialog::Dialog {
+    adabraka_ui::overlays::dialog::Dialog::new(cx)
+        .size(adabraka_ui::overlays::dialog::DialogSize::Xl)
+        .show_close_button(false)
+        .body(move |_, _| settings.clone().into_any_element())
+        .w(px(880.0))
+        .max_w(relative(0.95))
+        .h(px(650.0))
+        .on_close(on_close)
+}
+
 /// Fixed shortlist of monospace families offered for the editor + terminal.
 /// Kept in sync between the two settings tabs; extend here to surface new
 /// picks everywhere.
@@ -246,6 +262,7 @@ pub enum SettingsTab {
     Editor,
     Ai,
     Appearance,
+    Companion,
     About,
 }
 
@@ -724,34 +741,30 @@ impl SettingsView {
         compact: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let is_active = self.active_tab == tab;
-
-        let mut el = div()
-            .id(ElementId::from(SharedString::from(format!(
-                "settings-tab-{tab:?}"
-            ))))
-            .px(px(if compact { 10.0 } else { 16.0 }))
-            .py(px(8.0))
-            .cursor_pointer()
-            .rounded(px(6.0))
-            .text_size(px(13.0));
-
-        if is_active {
-            el = el
-                .bg(ShellDeckColors::primary().opacity(0.15))
-                .text_color(ShellDeckColors::primary())
-                .font_weight(FontWeight::MEDIUM);
+        let icon = match tab {
+            SettingsTab::General => "settings",
+            SettingsTab::Terminal => "terminal",
+            SettingsTab::Editor => "file-text",
+            SettingsTab::Ai => "sparkles",
+            SettingsTab::Appearance => "eye",
+            SettingsTab::Companion => "bot",
+            SettingsTab::About => "info",
+        };
+        Button::new(
+            SharedString::from(format!("settings-tab-{tab:?}")),
+            label.to_string(),
+        )
+        .debug_selector(move || format!("settings-tab-{tab:?}"))
+        .variant(if self.active_tab == tab {
+            ButtonVariant::Secondary
         } else {
-            el = el
-                .text_color(ShellDeckColors::text_muted())
-                .hover(|el| el.bg(ShellDeckColors::hover_bg()));
-        }
-
-        el.on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-            this.active_tab = tab;
-            cx.notify();
-        }))
-        .child(label.to_string())
+            ButtonVariant::Ghost
+        })
+        .size(ButtonSize::Sm)
+        .icon(icon)
+        .justify_start()
+        .when(!compact, |button| button.w_full())
+        .on_click(cx.listener(move |this, _, _, cx| this.set_active_tab(tab, cx)))
     }
 
     fn render_setting_row(
@@ -1994,6 +2007,10 @@ impl SettingsView {
                     "app-theme-{}",
                     label
                 ))))
+                .debug_selector({
+                    let label = label.clone();
+                    move || format!("app-theme-{label}")
+                })
                 .w(px(132.0))
                 .h(px(92.0))
                 .rounded(px(6.0))
@@ -2159,6 +2176,102 @@ impl SettingsView {
             theme_cards = theme_cards.child(card);
         }
 
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .py(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("settings.appearance.app_theme.title").to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("settings.appearance.app_theme.description").to_string()),
+                    )
+                    .child(app_theme_cards),
+            )
+            .child(
+                div()
+                    .py(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("settings.appearance.terminal_themes.title").to_string()),
+                    )
+                    .child(theme_cards),
+            )
+            .child(Self::render_setting_row(
+                t!("settings.appearance.sidebar_width.label").as_ref(),
+                t!("settings.appearance.sidebar_width.description").as_ref(),
+                Self::render_number_stepper(
+                    "sidebar-width",
+                    format!("{}px", self.config.general.sidebar_width),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.general.sidebar_width - 20.0).max(140.0);
+                        if (new - this.config.general.sidebar_width).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.general.sidebar_width = new;
+                        this.save_config(cx);
+                    }),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.general.sidebar_width + 20.0).min(400.0);
+                        if (new - this.config.general.sidebar_width).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.general.sidebar_width = new;
+                        this.save_config(cx);
+                    }),
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.appearance.ui_font_size.label").as_ref(),
+                t!("settings.appearance.ui_font_size.description").as_ref(),
+                Self::render_number_stepper(
+                    "ui-font-size",
+                    format!("{}px", self.config.general.ui_font_size),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.general.ui_font_size - 1.0).max(10.0);
+                        if (new - this.config.general.ui_font_size).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.general.ui_font_size = new;
+                        this.save_config(cx);
+                    }),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.general.ui_font_size + 1.0).min(22.0);
+                        if (new - this.config.general.ui_font_size).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.general.ui_font_size = new;
+                        this.save_config(cx);
+                    }),
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.appearance.ui_font.label").as_ref(),
+                t!("settings.appearance.ui_font.description").as_ref(),
+                div().w(px(200.0)).child(self.ui_font_family_select.clone()),
+            ))
+    }
+
+    fn render_companion_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut character_cards = div().flex().gap(px(8.0)).flex_wrap();
         for (id, label, accent) in [
             (
@@ -2460,95 +2573,6 @@ impl SettingsView {
                     |this, value| this.config.clippy.appearance.desktop.allow_multi_monitor = value,
                 ),
             ))
-            .child(
-                div()
-                    .py(px(12.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("settings.appearance.app_theme.title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("settings.appearance.app_theme.description").to_string()),
-                    )
-                    .child(app_theme_cards),
-            )
-            .child(
-                div()
-                    .py(px(12.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("settings.appearance.terminal_themes.title").to_string()),
-                    )
-                    .child(theme_cards),
-            )
-            .child(Self::render_setting_row(
-                t!("settings.appearance.sidebar_width.label").as_ref(),
-                t!("settings.appearance.sidebar_width.description").as_ref(),
-                Self::render_number_stepper(
-                    "sidebar-width",
-                    format!("{}px", self.config.general.sidebar_width),
-                    cx.listener(|this, _, _, cx| {
-                        let new = (this.config.general.sidebar_width - 20.0).max(140.0);
-                        if (new - this.config.general.sidebar_width).abs() < f32::EPSILON {
-                            return;
-                        }
-                        this.config.general.sidebar_width = new;
-                        this.save_config(cx);
-                    }),
-                    cx.listener(|this, _, _, cx| {
-                        let new = (this.config.general.sidebar_width + 20.0).min(400.0);
-                        if (new - this.config.general.sidebar_width).abs() < f32::EPSILON {
-                            return;
-                        }
-                        this.config.general.sidebar_width = new;
-                        this.save_config(cx);
-                    }),
-                ),
-            ))
-            .child(Self::render_setting_row(
-                t!("settings.appearance.ui_font_size.label").as_ref(),
-                t!("settings.appearance.ui_font_size.description").as_ref(),
-                Self::render_number_stepper(
-                    "ui-font-size",
-                    format!("{}px", self.config.general.ui_font_size),
-                    cx.listener(|this, _, _, cx| {
-                        let new = (this.config.general.ui_font_size - 1.0).max(10.0);
-                        if (new - this.config.general.ui_font_size).abs() < f32::EPSILON {
-                            return;
-                        }
-                        this.config.general.ui_font_size = new;
-                        this.save_config(cx);
-                    }),
-                    cx.listener(|this, _, _, cx| {
-                        let new = (this.config.general.ui_font_size + 1.0).min(22.0);
-                        if (new - this.config.general.ui_font_size).abs() < f32::EPSILON {
-                            return;
-                        }
-                        this.config.general.ui_font_size = new;
-                        this.save_config(cx);
-                    }),
-                ),
-            ))
-            .child(Self::render_setting_row(
-                t!("settings.appearance.ui_font.label").as_ref(),
-                t!("settings.appearance.ui_font.description").as_ref(),
-                div().w(px(200.0)).child(self.ui_font_family_select.clone()),
-            ))
     }
 
     fn render_about_section(title: &str) -> Div {
@@ -2733,10 +2757,14 @@ impl Render for SettingsView {
             window.viewport_size().width.to_f64() as f32,
             self.config.general.ui_font_size,
         );
-        let close_button = IconButton::new("x")
+        let close_button = Button::new("settings-close", "")
+            .debug_selector(|| "settings-close".into())
             .variant(ButtonVariant::Ghost)
-            .size(gpui::px(30.0))
-            .icon_size(gpui::px(14.0))
+            .size(ButtonSize::Icon)
+            .icon("x")
+            .tooltip(t!("settings.close").to_string())
+            .w(px(30.0))
+            .h(px(30.0))
             .on_click(cx.listener(|_this, _, _, cx| {
                 cx.emit(SettingsEvent::CloseRequested);
             }));
@@ -2787,6 +2815,7 @@ impl Render for SettingsView {
         // Tab content — scrolls vertically inside its own column.
         let mut tab_content = div()
             .id("settings-tab-content")
+            .debug_selector(|| "settings-tab-content".into())
             .flex()
             .flex_col()
             .w_full()
@@ -2810,6 +2839,9 @@ impl Render for SettingsView {
             SettingsTab::Appearance => {
                 tab_content = tab_content.child(self.render_appearance_settings(cx));
             }
+            SettingsTab::Companion => {
+                tab_content = tab_content.child(self.render_companion_settings(cx));
+            }
             SettingsTab::About => {
                 tab_content = tab_content.child(Self::render_about());
             }
@@ -2818,6 +2850,7 @@ impl Render for SettingsView {
         let mut tabs = div().flex().flex_shrink_0().gap(px(2.0));
         tabs = if compact {
             tabs.w_full()
+                .flex_wrap()
                 .px(px(12.0))
                 .py(px(8.0))
                 .border_b_1()
@@ -2864,6 +2897,12 @@ impl Render for SettingsView {
                 cx,
             ))
             .child(self.render_tab_button(
+                SettingsTab::Companion,
+                t!("settings.tab.companion").as_ref(),
+                compact,
+                cx,
+            ))
+            .child(self.render_tab_button(
                 SettingsTab::About,
                 t!("settings.tab.about").as_ref(),
                 compact,
@@ -2895,9 +2934,12 @@ impl Render for SettingsView {
 
         round_window_bottom(
             div()
+                .id("settings-view")
+                .debug_selector(|| "settings-view".into())
                 .flex()
                 .flex_col()
                 .size_full()
+                .min_h(px(0.0))
                 .track_focus(&self.shortcut_capture_focus)
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                     this.handle_shortcut_capture(event, cx);

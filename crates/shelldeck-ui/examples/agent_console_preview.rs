@@ -15,11 +15,7 @@ use shelldeck_ui::agent_console_view::{
 use std::{borrow::Cow, path::PathBuf, time::Duration};
 
 struct Assets;
-struct PreviewRoot(
-    Entity<AgentConsoleView>,
-    Option<PreviewProfile>,
-    SharedString,
-);
+struct PreviewRoot(AnyView, Option<PreviewProfile>, SharedString);
 
 // Opt-in native frame-cadence measurement; never touches provider or desktop input.
 struct PreviewProfile {
@@ -287,6 +283,15 @@ pub fn main() -> anyhow::Result<()> {
                 ..Default::default()
             },
             |_, cx| {
+                if std::env::var_os("SHELLDECK_PREVIEW_SETTINGS").is_some() {
+                    let settings = cx.new(|cx| {
+                        let mut settings = shelldeck_ui::settings::SettingsView::new(shelldeck_core::config::app_config::AppConfig::default(), cx);
+                        settings.set_active_tab(shelldeck_ui::settings::SettingsTab::Appearance, cx);
+                        settings
+                    });
+                    let dialog = cx.new(|cx| shelldeck_ui::settings::settings_dialog(settings, |_, _| {}, cx));
+                    return cx.new(|cx| PreviewRoot(dialog.into(), None, shelldeck_ui::settings::normalize_ui_font_family("Inter",cx).into()));
+                }
                 let remote = cx.new(shelldeck_ui::fleet_view::FleetView::new);
                 if preview_remote {
                     remote.update(cx, |view, _| view.set_snapshot(remote_fixture()));
@@ -504,7 +509,7 @@ pub fn main() -> anyhow::Result<()> {
                         });
                     }).detach();
                 }
-                cx.new(|cx| PreviewRoot(view, std::env::var_os("SHELLDECK_PREVIEW_PROFILE").map(|_| PreviewProfile::new()), shelldeck_ui::settings::normalize_ui_font_family("Inter",cx).into()))
+                cx.new(|cx| PreviewRoot(view.into(), std::env::var_os("SHELLDECK_PREVIEW_PROFILE").map(|_| PreviewProfile::new()), shelldeck_ui::settings::normalize_ui_font_family("Inter",cx).into()))
             },
         )
         .unwrap();

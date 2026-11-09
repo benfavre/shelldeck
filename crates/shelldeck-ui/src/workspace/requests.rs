@@ -54,6 +54,7 @@ impl Workspace {
         self.issue_new_source = "user";
         self.reset_new_request_site_to_active(cx);
         self.settings_open = false;
+        self.settings_dialog = None;
         self.user_new_request_sheet_open = true;
         self.user_new_request_needs_focus = true;
         self.sync_issues_poll(cx);
@@ -87,6 +88,7 @@ impl Workspace {
         }
         self.user_new_request_sheet_open = true;
         self.settings_open = false;
+        self.settings_dialog = None;
         self.user_new_request_needs_focus = true;
         self.sync_issues_poll(cx);
         cx.notify();

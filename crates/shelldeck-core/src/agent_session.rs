@@ -1331,6 +1331,21 @@ impl AgentSessionCollection {
         self.active_count() < self.max_concurrent
     }
 
+    pub fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+    }
+
+    /// Lowering the limit leaves admitted runs alone; new runs wait for capacity.
+    pub fn set_max_concurrent(&mut self, limit: usize) -> Result<()> {
+        if !(1..=MAX_CONCURRENT_AGENT_SESSIONS).contains(&limit) {
+            return Err(ShellDeckError::Config(format!(
+                "agent concurrency limit must be between 1 and {MAX_CONCURRENT_AGENT_SESSIONS}"
+            )));
+        }
+        self.max_concurrent = limit;
+        Ok(())
+    }
+
     pub fn create(
         &mut self,
         name: impl Into<String>,
@@ -2430,6 +2445,39 @@ mod tests {
         assert_eq!(legacy.messages[1].text, "Claude reply");
         assert_eq!(legacy.messages[3].text, "Codex reply");
         assert!(legacy.messages.iter().all(|m| m.provider.is_none()));
+    }
+
+    // SDTEST-2927 — SDUC-499, SDUC-550: changed limits affect admission, never existing work.
+    #[test]
+    fn sdtest_2927_concurrency_changes_preserve_runs_and_reject_invalid_limits() {
+        let mut sessions = AgentSessionCollection::new(2).unwrap();
+        let first = sessions
+            .create("First", context(AgentProvider::Codex), 1)
+            .unwrap();
+        let second = sessions
+            .create("Second", context(AgentProvider::Codex), 2)
+            .unwrap();
+        let third = sessions
+            .create("Third", context(AgentProvider::Codex), 3)
+            .unwrap();
+        sessions.begin_run(first, "one", 4).unwrap();
+        sessions.begin_run(second, "two", 5).unwrap();
+        sessions.set_max_concurrent(1).unwrap();
+        assert_eq!(sessions.active_count(), 2);
+        assert!(sessions.begin_run(third, "three", 6).is_err());
+        for invalid in [0, MAX_CONCURRENT_AGENT_SESSIONS + 1, usize::MAX] {
+            assert!(sessions.set_max_concurrent(invalid).is_err());
+            assert_eq!(sessions.max_concurrent(), 1);
+        }
+        sessions
+            .finish(first, AgentSessionStatus::Completed, 7)
+            .unwrap();
+        assert!(!sessions.has_capacity());
+        sessions
+            .set_max_concurrent(MAX_CONCURRENT_AGENT_SESSIONS)
+            .unwrap();
+        assert!(sessions.begin_run(third, "three", 8).is_ok());
+        assert_eq!(sessions.active_count(), 2);
     }
 
     // SDTEST-1879 — SDUC-499
