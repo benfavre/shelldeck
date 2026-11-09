@@ -846,7 +846,7 @@ full shell. Pending signed-out requests do not auto-open a login modal.
 | SDTEST-2726 | `workspace::workspaces::native_lifecycle::tests::sdtest_2726_connection_refresh_identifies_only_retired_authority` | SDUC-491 | Green | Refresh reports removed/retargeted SSH authority for synchronous pending-creation cancellation, while label/status/tag updates preserve active preparation. Passed in the final 46-test workspace UI sweep (2026-10-29). |
 
 | SDTEST-2725 | `workspace::workspaces::tests_file::tests::dismiss_failed_workspace_preserves_catalog_and_fences_late_events` | SDUC-488, SDUC-491 | Green | Removing failed/cancelled attempts preserves catalog and files, refuses active/cancelling operations, and rejects stale dismissal/callbacks and operation reuse. Passed in the isolated 255-test UI library suite on 2026-10-29. |
-| SDTEST-2728 | `workspace::workspaces::project_removal::tests::removal_refuses_live_or_unknown_attempts_and_rolls_back_failed_persistence` | SDUC-488 | Green | Project removal refuses live/unknown/mismatched attempts; a failed catalog save rolls back removal. Passed in the isolated 255-test UI library suite on 2026-10-29. |
+| SDTEST-2728 | `workspace::workspaces::project_removal::tests::removal_refuses_live_or_unknown_attempts_and_rolls_back_failed_persistence` | SDUC-488, SDUC-564 | Green | Project removal refuses live/unknown/mismatched attempts; a failed catalog save rolls back removal or renaming, including the original revision. Passed in the isolated 255-test UI library suite on 2026-10-29. |
 
 | SDTEST-2731 | `workspace::workspaces::native_lifecycle::tests::sdtest_2731_ordinary_ssh_folder_errors_do_not_require_server_installation` | SDUC-491 | Green | Distinguishes unavailable folder, SSH timeout, connection failure and cancellation without requiring server installation. Passed in the full 258-test UI suite (2026-10-29). |
 | SDTEST-2732 | `workspace::workspaces::native_lifecycle::tests::sdtest_2732_ssh_terminal_resumes_only_after_commit_activation` | SDUC-491 | Green | Fake controller sees no Resume during preparation or after shutdown/drop, exactly one after activation (including duplicate activation), and releases bridge custody after failure. Passed in the full 258-test UI suite (2026-10-29). |
@@ -1062,3 +1062,5 @@ transport and annotation reuse the existing request attachment implementation.
 
 SDTEST-1883 now checks the runtime admission boundary for every configurable
 limit from one to eight.
+
+| SDTEST-2929 | SDUC-564 | Rendered project rename validates blank names, cancels, submits via Enter, recovers failed saves and preserves draft/selection in EN/Dark and FR/Light narrow layouts | `agent_console_view/interaction_tests::rendered_project_rename_validates_cancels_and_recovers_failed_save` | Green — rendered offline input regression |

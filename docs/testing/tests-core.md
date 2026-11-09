@@ -801,3 +801,5 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2914 | `config::manage_sites::tests::sdtest_2914_boat_handoff_is_fresh_scoped_and_same_origin` | SDUC-571 | Green | Raw TCP contract covers the authenticated fresh directory request, exact tenant/site matching, same-origin signed target, missing-link and unsigned-link refusal. |
 
 | SDTEST-2927 | `agent_session::tests::sdtest_2927_concurrency_changes_preserve_runs_and_reject_invalid_limits` | SDUC-499, SDUC-550 | Green | Lowering capacity preserves admitted runs, rejects new runs until capacity returns, and refuses invalid limits without changing the previous bound. Raising it admits waiting work. |
+
+| SDTEST-2928 | SDUC-564 | Project rename persists Unicode names, rejects blank/missing projects and retains checkout identities/paths | `config/workspace_catalog::tests::project_rename_persists_without_changing_checkouts` | Green |

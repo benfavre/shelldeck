@@ -3264,3 +3264,96 @@ fn rendered_settings_dialog_keeps_live_navigation_and_theme_controls() {
         );
     }
 }
+
+// SDTEST-2929 / SDUC-564: production project rename controls preserve drafts and recover failed saves.
+#[::core::prelude::v1::test]
+fn rendered_project_rename_validates_cancels_and_recovers_failed_save() {
+    for (theme, locale, width, height) in [
+        (ThemePreference::Dark, "en", 1000.0, 720.0),
+        (ThemePreference::SolarizedLight, "fr", 620.0, 560.0),
+    ] {
+        let mut ui = Cockpit::new(theme, width, height, false);
+        rust_i18n::set_locale(locale);
+        ui.type_draft("Keep my unsent work · é🌍");
+        let session = ui.session;
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.set_project_groups(
+                vec![AgentProjectGroup {
+                    id: "rename-me".into(),
+                    label: "Original project".into(),
+                    worktrees: vec![AgentWorktreeOption {
+                        id: "rename-checkout".into(),
+                        label: "Checkout".into(),
+                        path: view.sessions.get(session).unwrap().context.workdir.clone(),
+                        target: AgentTarget::Local,
+                        branch: None,
+                        is_primary: true,
+                    }],
+                }],
+                cx,
+            );
+        });
+        ui.open_navigator();
+        ui.click_navigation("agent-project-menu-rename-me");
+        ui.click("agent-project-rename");
+        ui.click("agent-project-rename-cancel");
+        ui.click_navigation("agent-project-menu-rename-me");
+        ui.click("agent-project-rename");
+        ui.click("agent-project-name");
+        ui.window.simulate_keystrokes("escape");
+        ui.redraw();
+        ui.view.read_with(&ui.app, |view, _| {
+            assert!(view.library.rename_project.is_none())
+        });
+        ui.click_navigation("agent-project-menu-rename-me");
+        ui.click("agent-project-rename");
+        ui.click("agent-project-name");
+        ui.window.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        });
+        ui.window.simulate_keystrokes("backspace");
+        ui.click("agent-project-rename-save");
+        assert!(!ui
+            .events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, AgentConsoleEvent::RenameProject { .. })));
+        ui.click("agent-project-name");
+        ui.window.simulate_input("  Équipe 🌍  ");
+        ui.window.simulate_keystrokes("enter");
+        ui.redraw();
+        assert_eq!(ui.events.borrow().iter().filter(|event| matches!(event,
+            AgentConsoleEvent::RenameProject { id, name } if id == "rename-me" && name == "Équipe 🌍")).count(), 1);
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.complete_navigator_project_rename(
+                "rename-me",
+                Err("fixture write refusal".into()),
+                cx,
+            );
+            assert_eq!(
+                view.library.project_name.read(cx).content(),
+                "  Équipe 🌍  "
+            );
+            assert_eq!(view.project_groups[0].label, "Original project");
+        });
+        ui.redraw();
+        assert!(ui.bounds("agent-project-rename-save").is_some());
+        ui.click("agent-project-rename-save");
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.project_groups[0].label = "Équipe 🌍".into();
+            view.complete_navigator_project_rename("rename-me", Ok(()), cx);
+            assert!(view.library.rename_project.is_none());
+            assert_eq!(view.sessions.selected_id(), Some(session));
+        });
+        ui.redraw();
+        assert!(ui.bounds("agent-project-rename-save").is_none());
+        assert_eq!(ui.draft(), "Keep my unsent work · é🌍");
+        assert!(!ui
+            .events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+    }
+}

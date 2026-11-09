@@ -1,3 +1,7 @@
+agents.project.rename = "Rename project"
+agents.project.name = "Project name"
+agents.project.name_required = "Enter a project name."
+agents.project.unavailable = "This project is no longer available or its catalog needs recovery."
 settings.tab.companion = "Companion"
 settings.close = "Close settings"
 agents.activity_controls.summary = "%{running}/%{limit} running"

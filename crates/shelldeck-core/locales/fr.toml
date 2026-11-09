@@ -1,3 +1,7 @@
+agents.project.rename = "Renommer le projet"
+agents.project.name = "Nom du projet"
+agents.project.name_required = "Saisissez un nom de projet."
+agents.project.unavailable = "Ce projet est indisponible ou son catalogue doit être restauré."
 settings.tab.companion = "Compagnon"
 settings.close = "Fermer les paramètres"
 agents.activity_controls.summary = "%{running}/%{limit} en cours"

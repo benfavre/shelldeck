@@ -720,6 +720,30 @@ impl ProjectCatalog {
         Ok(())
     }
 
+    /// Rename display metadata without changing project/checkout identities or paths.
+    pub fn rename_project(
+        &mut self,
+        project_id: CatalogProjectId,
+        name: &str,
+    ) -> std::result::Result<(), WorkspaceCatalogError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(WorkspaceCatalogError::BlankName);
+        }
+        let index = self
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+            .ok_or(WorkspaceCatalogError::UnknownProject(project_id))?;
+        if self.projects[index].name == name {
+            return Ok(());
+        }
+        let revision = self.next_revision()?;
+        self.projects[index].name = name.to_owned();
+        self.revision = revision;
+        Ok(())
+    }
+
     /// Remove only an empty project's catalog metadata, never its local or remote files.
     /// Archived workspaces still belong to their project and block removal.
     pub fn remove_empty_project(
@@ -1405,6 +1429,52 @@ mod tests {
         let mut catalog = ProjectCatalog::default();
         catalog.insert_project(project).unwrap();
         catalog
+    }
+
+    // SDTEST-2928 / SDUC-564: rename persists display metadata and keeps checkout ownership.
+    #[test]
+    fn project_rename_persists_without_changing_checkouts() {
+        let mut catalog = catalog_with_local_and_ssh();
+        let project = catalog.projects().next().unwrap().clone();
+        catalog
+            .create_workspace(WorkspaceLaunchRequest {
+                id: CatalogWorkspaceId::new(),
+                project_id: project.id(),
+                checkout_id: project.checkouts().next().unwrap().id(),
+                name: "Retained workspace".into(),
+                intake: WorkspaceLaunchIntake::Manual,
+            })
+            .unwrap();
+        let path = temp_path();
+        catalog.save_to(&path).unwrap();
+        let before = catalog.clone();
+        assert_eq!(
+            catalog.rename_project(project.id(), "  "),
+            Err(WorkspaceCatalogError::BlankName)
+        );
+        assert_eq!(catalog, before);
+        assert!(catalog
+            .rename_project(CatalogProjectId::new(), "Missing")
+            .is_err());
+        assert_eq!(catalog, before);
+        catalog
+            .rename_project(project.id(), "  Équipe 🌍  ")
+            .unwrap();
+        assert!(catalog.revision() > before.revision());
+        catalog.save_to(&path).unwrap();
+        let loaded = ProjectCatalog::load_from(&path).unwrap();
+        let renamed = loaded.projects().next().unwrap();
+        assert_eq!(renamed.name(), "Équipe 🌍");
+        assert_eq!(renamed.id(), project.id());
+        assert_eq!(
+            renamed.checkouts().collect::<Vec<_>>(),
+            project.checkouts().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            loaded.workspaces().collect::<Vec<_>>(),
+            before.workspaces().collect::<Vec<_>>()
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     // SDTEST-2727 — catalog removal preserves files and refuses active or archived workspaces.

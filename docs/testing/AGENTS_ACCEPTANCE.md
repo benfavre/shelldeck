@@ -487,3 +487,33 @@ Logs: `/tmp/shelldeck-operations-workspace-reviewed.log`,
 `/tmp/shelldeck-operations-status-final-test.log` and strict all-target Clippy in
 `/tmp/shelldeck-operations-status-reviewed-clippy.log`. This is controlled ShellDeck
 fixture evidence, not a live model or remote-server performance claim.
+
+
+### Project renaming — 2026-11-09
+
+The catalog project's kebab menu now opens the shared Dialog with its current
+name and focused text field. Save/Enter trims surrounding whitespace and changes
+only the catalog display name. Cancel, Escape from the focused input, close and
+backdrop dismissal preserve the original name. Failed saves retain the typed
+name and show the error so the user can retry.
+
+SDTEST-2928 saves and reloads a Unicode project name with local/SSH checkouts and
+a retained workspace, rejects blank/missing-project changes, and checks stable
+IDs, paths and workspace ownership. SDTEST-2728 also verifies failed rename
+persistence rolls back both the name and revision. SDTEST-2929 dispatches the
+production menu, input, Enter, Save, Cancel and Escape in EN/Dark at 1000×720
+and FR/Solarized Light at 620×560; it covers blank validation, failed-write retry,
+selection and draft retention without admitting a provider run.
+
+The native Linux production preview verified menu discovery, autofocus, full-width
+input and right-aligned actions, visible blank-name validation, and Escape
+returning focus to the composer in Dark at 1100×900. French/Solarized Light at
+620×900 also verified the same modal over the narrow navigator overlay. It used a disposable XDG profile, a masked home,
+a private Xvfb/compositor and disabled networking. Native preview interaction is
+fixture coverage; catalog save/reload and failed-write recovery are covered by
+the automated workflows above. No real provider or saved SSH server was used.
+
+Validation: all 368 UI library tests passed in an isolated XDG profile; the
+focused core rename persistence test, strict UI library Clippy, production
+preview build, formatting and whitespace checks passed. This is local source
+validation, not a published release or an installed-app update.

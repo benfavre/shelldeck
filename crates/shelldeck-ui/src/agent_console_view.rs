@@ -147,6 +147,10 @@ pub enum AgentConsoleEvent {
     NavigatorChanged,
     OpenSettings,
     RemoveProject(String),
+    RenameProject {
+        id: String,
+        name: String,
+    },
     ReconnectProject {
         checkout_id: shelldeck_core::config::workspace_catalog::CatalogCheckoutId,
         expected_connection: Uuid,
@@ -2538,6 +2542,9 @@ impl Render for AgentConsoleView {
             root = root.child(dialog);
         }
         if let Some(dialog) = self.render_review_dialog() {
+            root = root.child(dialog);
+        }
+        if let Some(dialog) = self.render_project_rename(cx) {
             root = root.child(dialog);
         }
         if let Some(dialog) = self.render_project_removal(cx) {

@@ -141,6 +141,12 @@ impl Workspace {
                     );
                 }
                 match &event {
+                    AgentConsoleEvent::RenameProject { id, .. } => view
+                        .complete_navigator_project_rename(
+                            id,
+                            Err(t!("agents.live.authorization_lost").to_string()),
+                            cx,
+                        ),
                     AgentConsoleEvent::RemoveProject(id) => view
                         .complete_navigator_project_removal(
                             id,
@@ -180,6 +186,15 @@ impl Workspace {
                     settings.set_active_tab(crate::settings::SettingsTab::Appearance, cx);
                 });
                 self.open_settings(cx);
+            }
+            AgentConsoleEvent::RenameProject { id, name } => {
+                let result = self.workspace_hub.update(cx, |hub, cx| {
+                    hub.rename_project_from_navigator(&id, &name, cx)
+                });
+                self.agent_console.update(cx, |view, cx| {
+                    view.complete_navigator_project_rename(&id, result, cx)
+                });
+                self.refresh_agent_projects(cx);
             }
             AgentConsoleEvent::RemoveProject(id) => {
                 if !self
