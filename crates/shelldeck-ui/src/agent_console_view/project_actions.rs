@@ -278,6 +278,34 @@ impl AgentConsoleView {
                                 .truncate()
                                 .child(project.label.clone()),
                         );
+                        let rename_parent = parent.clone();
+                        let rename_id = id.clone();
+                        let name = project.label.clone();
+                        menu = menu.child(
+                            Button::new(
+                                "agent-project-rename",
+                                t!("agents.project.rename").to_string(),
+                            )
+                            .debug_selector(|| "agent-project-rename".into())
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .w_full()
+                            .justify_start()
+                            .icon("pencil")
+                            .on_click(cx.listener(
+                                move |_, _, window, cx| {
+                                    rename_parent.update(cx, |view, cx| {
+                                        view.open_project_rename(
+                                            rename_id.clone(),
+                                            name.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                    cx.emit(DismissEvent);
+                                },
+                            )),
+                        );
                         if let Some(tree) = project.worktrees.first() {
                             let tree_new = tree.clone();
                             let path = tree.path.clone();
@@ -365,6 +393,162 @@ impl AgentConsoleView {
                     })
                 })
             })
+            .into_any_element()
+    }
+
+    pub(super) fn submit_project_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.library.rename_project.clone() else {
+            return;
+        };
+        let name = self
+            .library
+            .project_name
+            .read(cx)
+            .content()
+            .trim()
+            .to_owned();
+        if name.is_empty() {
+            self.library.error = Some(t!("agents.project.name_required").to_string());
+            cx.notify();
+            return;
+        }
+        cx.emit(AgentConsoleEvent::RenameProject { id, name });
+    }
+
+    pub fn complete_navigator_project_rename(
+        &mut self,
+        id: &str,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.library.rename_project.as_deref() != Some(id) {
+            return;
+        }
+        match result {
+            Ok(()) => {
+                self.cancel_project_rename(cx);
+            }
+            Err(error) => self.library.error = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn open_project_rename(
+        &mut self,
+        id: String,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.library.rename_project = Some(id);
+        self.library.project_name = input_state(cx, name);
+        self.library.error = None;
+        let parent = cx.weak_entity();
+        let close_parent = parent.clone();
+        let observed_parent = cx.entity();
+        self.library.project_rename_dialog = Some(cx.new(|cx| {
+            cx.observe(&observed_parent, |_, _, cx| cx.notify())
+                .detach();
+            adabraka_ui::overlays::dialog::Dialog::new(cx)
+                .title(t!("agents.project.rename").to_string())
+                .size(adabraka_ui::overlays::dialog::DialogSize::Sm)
+                .body(move |_, cx| {
+                    parent
+                        .update(cx, |view, cx| view.render_project_rename_body(cx))
+                        .unwrap_or_else(|_| div().into_any_element())
+                })
+                .on_close(move |_, cx| {
+                    let _ = close_parent.update(cx, |view, cx| view.cancel_project_rename(cx));
+                })
+        }));
+        let parent = cx.weak_entity();
+        window.on_next_frame(move |window, _| {
+            // Dialog takes initial focus on its first render; focus its field afterward.
+            window.on_next_frame(move |window, cx| {
+                let _ = parent.update(cx, |view, cx| {
+                    if view.library.rename_project.is_some() {
+                        window.focus(&view.library.project_name.read(cx).focus_handle(cx));
+                    }
+                });
+            });
+        });
+        cx.notify();
+    }
+
+    fn cancel_project_rename(&mut self, cx: &mut Context<Self>) {
+        self.library.rename_project = None;
+        self.library.project_rename_dialog = None;
+        self.library.error = None;
+        self.request_surface_focus(cx);
+    }
+
+    pub(super) fn render_project_rename(&self, _cx: &Context<Self>) -> Option<AnyElement> {
+        self.library.rename_project.as_ref()?;
+        self.library
+            .project_rename_dialog
+            .clone()
+            .map(|dialog| dialog.into_any_element())
+    }
+
+    fn render_project_rename_body(&self, cx: &Context<Self>) -> AnyElement {
+        let enter_parent = cx.weak_entity();
+        div()
+            .w_full()
+            .p(px(24.0))
+            .flex()
+            .flex_col()
+            .min_h(px(0.0))
+            .gap(px(12.0))
+            .capture_action(cx.listener(|view, _: &crate::overlay::InputEscape, _, cx| {
+                view.cancel_project_rename(cx);
+                cx.stop_propagation();
+            }))
+            .child(
+                Input::new(&self.library.project_name)
+                    .debug_selector("agent-project-name")
+                    .w_full()
+                    .placeholder(t!("agents.project.name").to_string())
+                    .on_enter(move |_, cx| {
+                        let _ = enter_parent.update(cx, |view, cx| view.submit_project_rename(cx));
+                    }),
+            )
+            .when_some(self.library.error.clone(), |body, error| {
+                body.child(
+                    div()
+                        .w_full()
+                        .min_w(px(0.0))
+                        .text_size(px(12.0))
+                        .line_clamp(4)
+                        .text_color(ShellDeckColors::error())
+                        .child(error),
+                )
+            })
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        Button::new(
+                            "agent-project-rename-cancel",
+                            t!("scripts.cancel").to_string(),
+                        )
+                        .debug_selector(|| "agent-project-rename-cancel".into())
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .on_click(cx.listener(|view, _, _, cx| view.cancel_project_rename(cx))),
+                    )
+                    .child(
+                        Button::new(
+                            "agent-project-rename-save",
+                            t!("agents.library.save").to_string(),
+                        )
+                        .debug_selector(|| "agent-project-rename-save".into())
+                        .size(ButtonSize::Sm)
+                        .on_click(cx.listener(|view, _, _, cx| view.submit_project_rename(cx))),
+                    ),
+            )
             .into_any_element()
     }
 

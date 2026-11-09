@@ -3347,6 +3347,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 - **2026-10-31** — SDUC-557: Claude Code and Codex runs over SSH can share the desktop browser through a scoped reverse forward and private temporary MCP adapter. SDTEST-2862–2867 cover transport, launch configuration, lifecycle and native CEF.
 
+- **2026-11-09** — SDUC-564: project menus support durable project renaming with validation and failed-write recovery.
+
 - **2026-10-31** — SDUC-564: themed tree guides and indented children make folder/worktree ownership visible in the Agents navigator. SDTEST-2860 also checks guide alignment, containment and nested checkout indentation.
 
 - **2026-10-31** — SDUC-551/562/564: pins stay above project folders; uncatalogued chats and native SSH history group by exact machine/server and workdir across providers. Closed folders retain the current chat/preview and summarize hidden work. Search preserves saved collapse; per-folder native pagination and legacy collapse migration are covered by SDTEST-2859–2861.
@@ -4768,7 +4770,7 @@ copy/reveal actions against that exact current page rather than retained widgets
 
 ### SDUC-564 — Complete Agents workflows remain coherent across navigation and recovery
 
-Project menus expose conversation creation, copying the checkout path and confirmed project removal. Removal preserves files and archives conversations under their exact checkout and machine; running conversations and retained workspaces block removal. Search opens from a toolbar icon and can be cleared or dismissed with Escape, groups can be collapsed or expanded together, and remote lists can be expanded or reduced in bounded pages.
+Project menus expose conversation creation, copying the checkout path, renaming the saved project display name, and confirmed project removal. Renaming trims surrounding whitespace, rejects blank names, preserves checkout/session identity and drafts, and keeps the original name and editable input after a failed catalog save. Removal preserves files and archives conversations under their exact checkout and machine; running conversations and retained workspaces block removal. Search opens from a toolbar icon and can be cleared or dismissed with Escape, groups can be collapsed or expanded together, and remote lists can be expanded or reduced in bounded pages.
 
 The acceptance journeys in `AGENTS_ACCEPTANCE.md` connect project entry, session
 management, native discovery, context selection and queued execution. Project

@@ -13,6 +13,31 @@ fn settled_attempt_matches(
 }
 
 impl WorkspaceHubView {
+    pub(in crate::workspace) fn rename_project_from_navigator(
+        &mut self,
+        id: &str,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if self.load_error.is_some() || self.recovery_pending {
+            return Err(t!("agents.project.unavailable").to_string());
+        }
+        let project = self
+            .catalog
+            .projects()
+            .find(|project| project.id().to_string() == id)
+            .map(|project| project.id())
+            .ok_or_else(|| t!("agents.project.unavailable").to_string())?;
+        mutate_and_save(&mut self.catalog, |catalog| {
+            catalog
+                .rename_project(project, name)
+                .map_err(|error| error.to_string())
+        })?;
+        cx.emit(WorkspaceHubEvent::CatalogChanged);
+        cx.notify();
+        Ok(())
+    }
+
     pub(in crate::workspace) fn remove_project_from_navigator(
         &mut self,
         project: CatalogProjectId,
@@ -140,5 +165,19 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(catalog, before);
+        let result = mutate_and_persist(
+            &mut catalog,
+            |catalog| {
+                catalog
+                    .rename_project(project, "Renamed project")
+                    .map_err(|error| error.to_string())
+            },
+            |_| Err("fixture write refusal".into()),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            catalog, before,
+            "a failed rename write must retain the original name and revision"
+        );
     }
 }
