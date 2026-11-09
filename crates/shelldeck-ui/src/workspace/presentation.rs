@@ -42,6 +42,7 @@ impl Workspace {
         self.presentation = WorkspacePresentation::Agents;
         self.agents_focus_pending = true;
         self.settings_open = false;
+        self.settings_dialog = None;
         self.mode_transition = None;
         self.close_titlebar_menus();
         self.activate_current_mode(cx);
@@ -53,6 +54,7 @@ impl Workspace {
         self.presentation = WorkspacePresentation::Main;
         self.agents_focus_pending = false;
         self.settings_open = false;
+        self.settings_dialog = None;
         self.mode_transition = None;
         self.close_titlebar_menus();
         self.select_agents_landing(cx);

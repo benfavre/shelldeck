@@ -184,8 +184,6 @@ impl Render for Workspace {
                 main_area.child(self.render_welcome_screen(is_maximized, compact_height, _cx));
             // Fall through to render titlebar + status bar chrome around
             // the welcome — no sidebar, no mode-specific children.
-        } else if self.settings_open {
-            main_area = main_area.child(self.settings.clone());
         } else {
             // The app mode selects the whole surface. User/Support are full-pane
             // manage surfaces (no sidebar); Dev is the classic terminal workspace.
@@ -660,6 +658,12 @@ impl Render for Workspace {
 
             if let Some(sheet) = sheet {
                 root = root.child(sheet);
+            }
+        }
+
+        if self.settings_open {
+            if let Some(dialog) = &self.settings_dialog {
+                root = root.child(dialog.clone());
             }
         }
 

@@ -15,6 +15,7 @@ impl Workspace {
                     return;
                 }
                 self.settings_open = false;
+                self.settings_dialog = None;
                 self.switch_to_section(*section);
                 if *section == SidebarSection::Scripts {
                     self.populate_script_editor_connections(cx);
@@ -453,9 +454,7 @@ impl Workspace {
     pub(super) fn handle_settings_event(&mut self, event: &SettingsEvent, cx: &mut Context<Self>) {
         match event {
             SettingsEvent::CloseRequested => {
-                self.settings_open = false;
-                self.activate_current_mode(cx);
-                cx.notify();
+                self.close_settings(cx);
             }
             SettingsEvent::ConfigChanged(config) => {
                 tracing::info!("Config changed, applying settings");

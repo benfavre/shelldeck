@@ -1056,3 +1056,9 @@ transport and annotation reuse the existing request attachment implementation.
 | SDTEST-2921 | SDUC-475, SDUC-564 | Full-document references, code and table blocks survive prose partitioning; parsed ASTs are bounded and encoded payloads retain their disclosure path | `agent_console_view/timeline/markdown` | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
 
 | SDTEST-2922 | SDUC-551, SDUC-564 | Actual wheel motion and selected text deltas reuse sidebar paint; its cached search hitbox remains interactive and live transcript search matches refresh during streaming without changing drafts | `agent_console_view/interaction_tests` | Green — offline regression; native measurement/paint scope in AGENTS_PERFORMANCE.md |
+
+| SDTEST-2925 | `agent_console_view::interaction_tests::rendered_activity_controls_change_capacity_open_and_stop_individual_runs` | SDUC-499, SDUC-550, SDUC-564 | Green | Production footer controls adjust/persist capacity, open a conversation, stop its own run, preserve the draft and emit the settings request in dark and light themes. |
+| SDTEST-2926 | `agent_console_view::interaction_tests::rendered_settings_dialog_keeps_live_navigation_and_theme_controls` | SDUC-153, SDUC-564 | Green | The production modal host retains category/theme controls through repaints and contains its header/navigation at desktop and narrow sizes. GPUI layout/input evidence; native pixel painting is separate. |
+
+SDTEST-1883 now checks the runtime admission boundary for every configurable
+limit from one to eight.
