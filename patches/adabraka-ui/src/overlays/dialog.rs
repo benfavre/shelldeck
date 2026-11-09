@@ -47,6 +47,8 @@ pub struct Dialog {
     children: Vec<AnyElement>,
     // ShellDeck patch: SDPATCH-052 — render persistent entity bodies on every frame.
     body: Option<Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>>,
+    // ShellDeck patch: SDPATCH-052 — opt in only when the backdrop owns the window corners.
+    window_backdrop: bool,
     footer: Option<AnyElement>,
     show_close_button: bool,
     close_on_backdrop_click: bool,
@@ -69,6 +71,8 @@ impl Dialog {
             children: vec![],
             // ShellDeck patch: SDPATCH-052 — static dialogs keep their existing layout.
             body: None,
+            // ShellDeck patch: SDPATCH-052 — pane-local dialogs retain their existing backdrop.
+            window_backdrop: false,
             footer: None,
             show_close_button: true,
             close_on_backdrop_click: true,
@@ -109,6 +113,12 @@ impl Dialog {
     // ShellDeck patch: SDPATCH-052 — an unpadded, shrinkable slot for self-scrolling views.
     pub fn body(mut self, render: impl Fn(&mut Window, &mut App) -> AnyElement + 'static) -> Self {
         self.body = Some(Rc::new(render));
+        self
+    }
+
+    // ShellDeck patch: SDPATCH-052 — distinguish full-window and pane-local modal hosts.
+    pub fn window_backdrop(mut self, enabled: bool) -> Self {
+        self.window_backdrop = enabled;
         self
     }
 
@@ -204,6 +214,10 @@ impl Render for Dialog {
             .items_center()
             .justify_center()
             .bg(gpui::black().opacity(0.5))
+            // ShellDeck patch: SDPATCH-052 — round the actual paint layer, only while floating.
+            .when(self.window_backdrop && !window.is_maximized(), |overlay| {
+                overlay.rounded(theme.tokens.radius_xl)
+            })
             .child(
                 div()
                     .id("dialog-content")

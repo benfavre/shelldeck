@@ -37,6 +37,7 @@ pub fn settings_dialog(
     adabraka_ui::overlays::dialog::Dialog::new(cx)
         .size(adabraka_ui::overlays::dialog::DialogSize::Xl)
         .show_close_button(false)
+        .window_backdrop(true)
         .body(move |_, _| settings.clone().into_any_element())
         .w(px(880.0))
         .max_w(relative(0.95))
