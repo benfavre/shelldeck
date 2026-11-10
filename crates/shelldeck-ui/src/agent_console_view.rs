@@ -119,6 +119,7 @@ actions!(
 );
 
 const MAX_ACTIVITY_BYTES: usize = 4 * 1024;
+const CONVERSATION_MIN_WIDTH: f32 = 360.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum AgentInspectorTab {
@@ -2128,14 +2129,12 @@ impl Render for AgentConsoleView {
         let has_content = !timeline.is_empty() || self.timeline.virtualized;
         let context_expanded = self.context_expanded;
 
-        let header = div()
-            .h(px(42.0))
-            .flex()
-            .items_center()
-            .flex_shrink_0()
+        let header = tools::agent_toolbar()
+            .debug_selector(|| "agent-tabs-header".into())
+            .h(px(tools::AGENT_TOOLBAR_HEIGHT))
+            .px(px(0.0))
+            .gap(px(0.0))
             .bg(ShellDeckColors::bg_sidebar())
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
             .child(self.render_tabs(cx))
             .child(
                 Button::new("agent-add-tab", "")
@@ -2152,16 +2151,10 @@ impl Render for AgentConsoleView {
             .and_then(|name| name.to_str())
             .unwrap_or(&context.workdir)
             .to_owned();
-        let metadata = div()
-            .h(px(46.0))
-            .flex()
-            .items_center()
-            .flex_shrink_0()
-            .min_w_0()
+        let metadata = tools::agent_toolbar()
+            .debug_selector(|| "agent-conversation-header".into())
             .gap(px(8.0))
             .px(px(12.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
             .when(wide, |row| {
                 row.child(
                     Button::new("agent-header-sessions", "")
@@ -2486,23 +2479,24 @@ impl Render for AgentConsoleView {
             .min_h(px(0.0))
             .bg(ShellDeckColors::bg_primary())
             .text_color(ShellDeckColors::text_primary());
-        if wide && self.tools.navigator_visible {
+        let navigator_width = if wide && self.tools.navigator_visible {
+            self.navigator_width(window)
+        } else {
+            0.0
+        };
+        if navigator_width > 0.0 {
             root = root.child(
                 AnyView::from(self.navigator_pane.clone()).cached(
                     StyleRefinement::default()
-                        .w(px(self.navigator_width(window)))
+                        .w(px(navigator_width))
                         .h_full()
                         .flex_shrink_0(),
                 ),
             );
         }
         if self.live_browser_visible(cx) {
-            let available_width = width / window.rem_size().to_f64() as f32 * 16.0
-                - if wide && self.tools.navigator_visible {
-                    self.navigator_width(window)
-                } else {
-                    0.0
-                };
+            let available_width =
+                width / window.rem_size().to_f64() as f32 * 16.0 - navigator_width;
             root = root.child(
                 div()
                     .flex_1()
@@ -2515,19 +2509,23 @@ impl Render for AgentConsoleView {
             root = root.child(content);
         }
         if self.tools.panel_visible {
+            let reserve = if inspector_wide {
+                navigator_width + CONVERSATION_MIN_WIDTH
+            } else {
+                80.0
+            };
+            let panel_width_limit =
+                (width / window.rem_size().to_f64() as f32 * 16.0 - reserve).clamp(240.0, 900.0);
+            let panel_width = self.tools.panel_width.min(panel_width_limit);
             let panel = if self.tools.active.is_some() {
-                self.render_tools_panel(&session, cx)
+                self.render_tools_panel(&session, panel_width, panel_width_limit, cx)
             } else if self.inspector_tab == AgentInspectorTab::Changes {
                 self.render_review_panel(&session, cx)
             } else {
                 self.render_inspector(&session, cx)
             };
-            let width = self
-                .tools
-                .panel_width
-                .min((width / window.rem_size().to_f64() as f32 * 16.0 - 80.0).max(240.0));
             let panel = div()
-                .w(px(width))
+                .w(px(panel_width))
                 .h_full()
                 .flex_shrink_0()
                 .min_h_0()

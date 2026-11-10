@@ -17,7 +17,7 @@ impl AgentConsoleView {
             window.viewport_size().width.to_f64() as f32
         } / scale;
         let reserve = if self.tools.navigator_wide {
-            360.0
+            CONVERSATION_MIN_WIDTH
         } else {
             32.0
         };

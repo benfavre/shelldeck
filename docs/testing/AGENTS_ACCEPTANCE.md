@@ -626,3 +626,18 @@ The user's native screenshot confirmed local discovery and provider marks render
   binaries built successfully. The application contains the update verification
   key. No Windows/macOS native Chrome wrapper is claimed; those platforms retain
   CEF, with compilation left to the existing CI matrix.
+
+## Evidence recorded 2026-11-10 — Agents headers and Conversations panel
+
+- **Automated regression:** SDTEST-2955 passed in docked and overlay layouts
+  at 16 and 20 px rem sizes. It checks header alignment, row and icon insets,
+  narrowing from the visible width limit, a per-row pin on another conversation,
+  a panel-only filter, and creation from an empty search while retaining a draft.
+  Six adjacent sidebar, focus, resize and transcript layout tests passed.
+- **Native fixture clicked:** the final Linux `agent-console-preview` ran on
+  GNOME/X11 with disposable XDG roots in English/Dark and French/Solarized Light.
+  Verified the aligned bars, full row insets, action menu, empty filter result,
+  New session clearing the filter, and draft retention. Screenshots and receipts:
+  `/tmp/shelldeck-conversations-panel-native-jffr42id` and
+  `/tmp/shelldeck-conversations-panel-native-o3bjwla2`. The walkthrough used
+  fixture sessions and did not launch an agent or access a live SSH host.
