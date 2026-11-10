@@ -1055,14 +1055,27 @@ impl WorkspaceHubView {
         host: Entity<AgentConsoleView>,
         cx: &mut Context<Self>,
     ) {
-        self.agent_host = Some(host.clone());
+        self.set_agent_host(Some(host), cx);
+    }
+
+    pub(super) fn set_agent_host(
+        &mut self,
+        host: Option<Entity<AgentConsoleView>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.agent_host = host.clone();
         for retained in self.retained.values() {
             retained.update(cx, |retained, cx| {
-                retained.agent_host = Some(host.clone());
+                retained.agent_host = host.clone();
                 cx.notify();
             });
         }
         cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(super) fn attached_agent_host_id(&self) -> Option<EntityId> {
+        self.agent_host.as_ref().map(|host| host.entity_id())
     }
 
     /// Remove all retained navigation references to a closed local agent
@@ -2185,6 +2198,30 @@ impl WorkspaceHubView {
             })
             .map(ProjectCheckout::id);
         if let Some(checkout) = existing_checkout {
+            let project = self
+                .catalog
+                .projects()
+                .find(|project| {
+                    project.hidden_from_navigator()
+                        && project.checkouts().any(|record| record.id() == checkout)
+                })
+                .map(ProjectRecord::id);
+            if let Some(project) = project {
+                if let Err(error) = mutate_and_persist(
+                    &mut self.catalog,
+                    |catalog| {
+                        catalog
+                            .set_project_navigator_hidden(project, false)
+                            .map_err(|error| error.to_string())
+                    },
+                    persist,
+                ) {
+                    self.error = Some(error);
+                    cx.notify();
+                    return;
+                }
+                cx.emit(WorkspaceHubEvent::CatalogChanged);
+            }
             self.error = None;
             self.open_project_agents(checkout, cx);
             return;

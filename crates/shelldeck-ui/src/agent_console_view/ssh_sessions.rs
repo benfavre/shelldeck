@@ -302,33 +302,29 @@ impl AgentConsoleView {
             .to_lowercase();
         let expanded = !self.ssh_sessions.collapsed || !query.is_empty();
         let mut list = div()
+            .id("agent-ssh-section")
             .flex()
             .flex_col()
             .gap(px(4.0))
-            .px(px(6.0))
             .py(px(8.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(
-                Button::new(
+                self.render_navigation_section_toggle(
                     "ssh-sessions-toggle",
                     t!("agents.ssh_sessions.title").to_string(),
+                    !expanded,
+                    "server",
+                    cx,
+                    |this, cx| {
+                        this.ssh_sessions.collapsed = !this.ssh_sessions.collapsed;
+                        this.library.preferences.ssh_sessions_collapsed =
+                            this.ssh_sessions.collapsed;
+                        this.schedule_library_save(cx);
+                        cx.notify();
+                    },
                 )
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::Sm)
-                .justify_start()
-                .icon(IconSource::from(if expanded {
-                    "chevron-down"
-                } else {
-                    "chevron-right"
-                }))
-                .disabled(!query.is_empty())
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.ssh_sessions.collapsed = !this.ssh_sessions.collapsed;
-                    this.library.preferences.ssh_sessions_collapsed = this.ssh_sessions.collapsed;
-                    this.schedule_library_save(cx);
-                    cx.notify();
-                })),
+                .hover(|style| style.bg(ShellDeckColors::hover_bg())),
             );
         if !expanded {
             return list.into_any_element();
@@ -368,19 +364,10 @@ impl AgentConsoleView {
                 .as_ref()
                 .filter(|(connection, _)| *connection == id)
                 .map(|(_, session)| session);
-            let count = server.inventory.as_ref().map_or(0, |inventory| {
-                inventory
-                    .sessions
-                    .iter()
-                    .filter(|session| {
-                        !selected.is_some_and(|current| {
-                            current.provider == session.provider
-                                && current.session_id == session.session_id
-                                && current.workdir == session.workdir
-                        })
-                    })
-                    .count()
-            });
+            let count = server
+                .inventory
+                .as_ref()
+                .map_or(0, |inventory| inventory.sessions.len());
             list = list.child(
                 div()
                     .flex()
@@ -513,7 +500,7 @@ impl AgentConsoleView {
                             && current.workdir == session.workdir
                     })
                 };
-                if server_collapsed && !sessions.iter().any(is_selected) {
+                if server_collapsed {
                     continue;
                 }
                 let key = directory_group_key("ssh-folder", &target, path);
@@ -524,12 +511,7 @@ impl AgentConsoleView {
                     .keys()
                     .any(|other| other != path && directory_name(&target, other) == name);
                 let title = if duplicate { (*path).to_owned() } else { name };
-                let hidden = sessions.len().saturating_sub(
-                    sessions
-                        .iter()
-                        .filter(|session| is_selected(session))
-                        .count(),
-                );
+                let hidden = sessions.len();
                 let mut folder = div()
                     .debug_selector(|| format!("agent-folder-{key}"))
                     .flex()
@@ -551,7 +533,7 @@ impl AgentConsoleView {
                 let limit = server.visible_limits.get(&key).copied().unwrap_or(10);
                 for session in sessions.iter().enumerate().filter_map(|(index, session)| {
                     let selected = is_selected(session);
-                    ((!collapsed && index < limit) || selected).then_some(*session)
+                    (!collapsed && (index < limit || selected)).then_some(*session)
                 }) {
                     let remote = session.clone();
                     let selected = is_selected(&session);
@@ -573,7 +555,8 @@ impl AgentConsoleView {
                             .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .icon(IconSource::from(provider_icon(session.provider)))
+                            .h(px(32.0))
+                            .text_size(px(13.0))
                             .tooltip(format!(
                                 "{}\n{}\n{}\n{}",
                                 session.title,

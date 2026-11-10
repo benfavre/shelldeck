@@ -84,6 +84,10 @@ impl NavigatorState {
     }
 }
 
+pub(super) fn collapsed_session_is_visible(session: &AgentSession, selected: Option<Uuid>) -> bool {
+    Some(session.id) == selected && session.status.is_active()
+}
+
 fn project_session_summary(
     project: &AgentProjectGroup,
     groups: &[AgentProjectGroup],
@@ -94,7 +98,7 @@ fn project_session_summary(
     session_group_summary(sessions.iter().filter(|session| {
         (include_archived || !session.archived)
             && !super::navigation_groups::navigator_pin(session)
-            && Some(session.id) != selected
+            && !collapsed_session_is_visible(session, selected)
             && navigator_worktree(session, groups).is_some_and(|owner| {
                 project
                     .worktrees
@@ -626,13 +630,26 @@ impl AgentConsoleView {
         }
     }
 
+    fn toggle_navigator_project(&mut self, id: &str, cx: &mut Context<Self>) {
+        if !self.project_groups.iter().any(|group| group.id == id) {
+            return;
+        }
+        let query = self.navigator_search.read(cx).content().to_string();
+        if toggle_project_group(&mut self.library.preferences, id, &query) {
+            self.schedule_library_save(cx);
+            cx.notify();
+        }
+    }
+
     fn new_worktree_button(&self, worktree: &AgentWorktreeOption, cx: &Context<Self>) -> Button {
         let worktree = worktree.clone();
         Button::new(
             SharedString::from(format!("agent-worktree-new-{}", worktree.id)),
             "",
         )
+        .debug_selector(|| format!("agent-worktree-new-{}", worktree.id))
         .variant(ButtonVariant::Ghost)
+        .hover_background(gpui::transparent_black())
         .size(ButtonSize::Icon)
         .icon(IconSource::from("plus"))
         .w(px(24.0))
@@ -745,89 +762,95 @@ impl AgentConsoleView {
             }
             let collapsed = project_group_collapsed(&self.library.preferences, &project.id, &query);
             let project_id = project.id.clone();
-            let mut header = div()
-                .flex()
-                .items_center()
-                .min_w_0()
-                .gap(px(6.0))
-                .pt(px(3.0))
-                .child(
-                    Button::new(
-                        SharedString::from(format!("agent-project-collapse-{}", project.id)),
-                        "",
-                    )
-                    .debug_selector(|| format!("agent-project-collapse-{}", project.id))
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Icon)
-                    .icon(IconSource::from(if collapsed {
-                        "chevron-right"
+            let header_group: SharedString = format!("agent-project-hover-{}", project.id).into();
+            let mut header = super::navigation_groups::navigation_header_surface(
+                SharedString::from(format!("agent-project-header-{}", project.id)),
+                header_group.clone(),
+            )
+            .child(
+                Button::new(
+                    SharedString::from(format!("agent-project-collapse-{}", project.id)),
+                    "",
+                )
+                .debug_selector(|| format!("agent-project-collapse-{}", project.id))
+                .icon_visible_on_hover(header_group.clone())
+                .icon_when_not_hovered(
+                    if project
+                        .worktrees
+                        .iter()
+                        .any(|tree| matches!(tree.target, AgentTarget::Ssh { .. }))
+                    {
+                        "globe"
                     } else {
-                        "chevron-down"
-                    }))
-                    .w(px(24.0))
-                    .h(px(24.0))
-                    .flex_shrink_0()
-                    .disabled(!query.trim().is_empty())
-                    .tooltip(
-                        t!(if collapsed {
-                            "agents.navigator.expand_project"
-                        } else {
-                            "agents.navigator.collapse_project"
-                        })
-                        .to_string(),
+                        "folder"
+                    },
+                )
+                .p_0()
+                .variant(ButtonVariant::Ghost)
+                .hover_background(gpui::transparent_black())
+                .size(ButtonSize::Icon)
+                .icon(IconSource::from(if collapsed {
+                    "chevron-right"
+                } else {
+                    "chevron-down"
+                }))
+                .w(px(24.0))
+                .h(px(24.0))
+                .flex_shrink_0()
+                .disabled(!query.trim().is_empty())
+                .tooltip(
+                    t!(if collapsed {
+                        "agents.navigator.expand_project"
+                    } else {
+                        "agents.navigator.collapse_project"
+                    })
+                    .to_string(),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_navigator_project(&project_id, cx);
+                })),
+            );
+            let label_id = project.id.clone();
+            let tooltip = project
+                .worktrees
+                .iter()
+                .map(|tree| match &tree.branch {
+                    Some(branch) => format!("{} · {}\n{}", tree.label, branch, tree.path),
+                    None => tree.path.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            header = header.child(
+                div().flex_1().min_w_0().overflow_hidden().child(
+                    Button::new(
+                        SharedString::from(format!("agent-project-{}", project.id)),
+                        project.label.clone(),
                     )
+                    .debug_selector(|| format!("agent-project-label-{}", project.id))
+                    .variant(ButtonVariant::Ghost)
+                    .hover_background(gpui::transparent_black())
+                    .size(ButtonSize::Sm)
+                    .h(px(30.0))
+                    .w_full()
+                    .px(px(4.0))
+                    .justify_start()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .tooltip(tooltip)
+                    .disabled(!query.trim().is_empty())
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this
-                            .project_groups
-                            .iter()
-                            .any(|group| group.id == project_id)
-                        {
-                            return;
-                        }
-                        let query = this.navigator_search.read(cx).content().to_string();
-                        if toggle_project_group(&mut this.library.preferences, &project_id, &query)
-                        {
-                            this.schedule_library_save(cx);
-                            cx.notify();
-                        }
+                        this.toggle_navigator_project(&label_id, cx);
                     })),
-                );
+                ),
+            );
             if let [worktree] = project.worktrees.as_slice() {
-                // Name navigation remains separate from the collapse control.
-                let worktree_option = worktree.clone();
                 header = header.child(
-                    div().flex_1().min_w_0().overflow_hidden().child(
-                        Button::new(
-                            SharedString::from(format!("agent-project-{}", project.id)),
-                            project.label.clone(),
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .w_full()
-                        .justify_start()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .icon(IconSource::from("folder"))
-                        .tooltip(worktree.path.clone())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_worktree_session(&worktree_option, cx);
-                        })),
-                    ),
+                    div()
+                        .flex_shrink_0()
+                        .opacity(0.0)
+                        .group_hover(header_group.clone(), |style| style.opacity(1.0))
+                        .child(self.new_worktree_button(worktree, cx)),
                 );
-                header = header.child(self.new_worktree_button(worktree, cx));
-            } else {
-                header = header
-                    .child(lucide_icon("folder", 12.0, ShellDeckColors::text_muted()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(project.label.clone()),
-                    );
             }
             if collapsed {
                 let (count, attention) = project_session_summary(
@@ -841,7 +864,7 @@ impl AgentConsoleView {
                     header = header.child(collapsed_session_summary(&project.id, count, attention));
                 }
             }
-            header = header.child(self.project_actions_button(&project.id, cx));
+            header = header.child(self.project_actions_button(&project.id, header_group, cx));
             body = body.child(header);
             if collapsed {
                 let selected = self.navigator_selected_session();
@@ -849,7 +872,7 @@ impl AgentConsoleView {
                     &project.id,
                     self.render_session_rows_matching(
                         |session| {
-                            Some(session.id) == selected
+                            collapsed_session_is_visible(session, selected)
                                 && !super::navigation_groups::navigator_pin(session)
                                 && navigator_worktree(session, &self.project_groups).is_some_and(
                                     |owner| {
@@ -865,81 +888,70 @@ impl AgentConsoleView {
                 ));
                 continue;
             }
-            // A single primary checkout sharing the project name stays one row.
+            // A single checkout is already represented by the project header,
+            // regardless of its saved name or branch.
             if let [worktree] = project.worktrees.as_slice() {
-                if worktree.label == project.label && worktree.branch.is_none() {
-                    body = body.child(super::navigation_groups::navigation_children(
-                        &project.id,
-                        self.render_project_session_rows(worktree, cx),
-                    ));
-                    continue;
-                }
+                body = body.child(super::navigation_groups::navigation_children(
+                    &project.id,
+                    self.render_project_session_rows(worktree, cx),
+                ));
+                continue;
             }
             let mut checkout_rows = div().flex().flex_col().min_w_0().gap(px(4.0));
             for worktree in visible_worktrees {
-                let worktree_option = worktree.clone();
-                let worktree_selected = self
-                    .navigator_selected_session()
-                    .and_then(|id| self.sessions.get(id))
-                    .is_some_and(|session| session_worktree_matches(session, worktree));
-                checkout_rows = checkout_rows.child(
-                    div()
-                        .id(("agent-worktree", stable_string_key(&worktree.id)))
-                        .flex()
-                        .items_center()
-                        .gap(px(5.0))
-                        .px(px(11.0))
-                        .py(px(3.0))
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .when(worktree_selected, |row| {
-                            row.bg(ShellDeckColors::selected_bg())
-                        })
-                        .when(!worktree_selected, |row| {
-                            row.hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_worktree_session(&worktree_option, cx);
-                        }))
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(lucide_icon(
-                            "git-branch",
-                            10.0,
-                            ShellDeckColors::text_muted(),
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(worktree.label.clone()),
-                        )
-                        .when_some(worktree.branch.clone(), |row, branch| {
-                            row.child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .font_family("JetBrains Mono")
-                                    .text_size(px(10.0))
-                                    .child(branch),
-                            )
-                        })
-                        .when(worktree.is_primary, |row| {
-                            row.child(
-                                div()
-                                    .size(px(5.0))
-                                    .rounded_full()
-                                    .bg(ShellDeckColors::success()),
-                            )
-                        })
-                        .child(self.new_worktree_button(worktree, cx)),
+                let key = format!("worktree-{}", worktree.id);
+                let checkout_collapsed =
+                    project_group_collapsed(&self.library.preferences, &key, &query);
+                let selected = self.navigator_selected_session();
+                let owns_session = |session: &AgentSession| {
+                    !super::navigation_groups::navigator_pin(session)
+                        && navigator_worktree(session, &self.project_groups)
+                            .is_some_and(|owner| owner.id == worktree.id)
+                };
+                let hidden = session_group_summary(
+                    self.sessions
+                        .library_sessions(self.library.show_archived())
+                        .into_iter()
+                        .filter(|session| {
+                            owns_session(session)
+                                && !collapsed_session_is_visible(session, selected)
+                        }),
                 );
-                checkout_rows = checkout_rows.child(super::navigation_groups::navigation_children(
-                    &format!("worktree-{}", worktree.id),
-                    self.render_project_session_rows(worktree, cx),
+                let label = match &worktree.branch {
+                    Some(branch) if branch != &worktree.label => {
+                        format!("{} · {}", worktree.label, branch)
+                    }
+                    _ => worktree.label.clone(),
+                };
+                checkout_rows =
+                    checkout_rows.child(
+                        div()
+                            .debug_selector(|| format!("agent-worktree-{}", worktree.id))
+                            .flex()
+                            .items_center()
+                            .min_w_0()
+                            .gap(px(6.0))
+                            .child(div().flex_1().min_w_0().child(
+                                self.render_navigation_group_header(
+                                    &key,
+                                    label,
+                                    worktree.path.clone(),
+                                    hidden,
+                                    cx,
+                                ),
+                            ))
+                            .child(self.new_worktree_button(worktree, cx)),
+                    );
+                // One guide per project; checkout disclosure preserves the selected chat.
+                checkout_rows = checkout_rows.child(div().min_w_0().ml(px(12.0)).child(
+                    self.render_session_rows_matching(
+                        |session| {
+                            owns_session(session)
+                                && (!checkout_collapsed
+                                    || collapsed_session_is_visible(session, selected))
+                        },
+                        cx,
+                    ),
                 ));
             }
             body = body.child(super::navigation_groups::navigation_children(
@@ -1126,12 +1138,14 @@ impl AgentConsoleView {
             let id = session.id;
             let selected = self.navigator_selected_session() == Some(id);
             let state = NavigatorState::for_session(session);
+            let row_group: SharedString = format!("agent-conversation-hover-{id}").into();
             let hint = format!(
-                "{}\n{} · {}\n{}",
+                "{}\n{} · {}\n{}\n{}",
                 session.name,
                 session.context.provider.display_name(),
                 target_label(&session.context.target),
-                session.context.workdir
+                session.context.workdir,
+                state.label().unwrap_or_default(),
             );
             let row = div()
                 .id(("agent-nav-session", uuid_key(id)))
@@ -1139,7 +1153,7 @@ impl AgentConsoleView {
                 .flex()
                 .items_center()
                 .gap(px(7.0))
-                .h(px(38.0))
+                .h(px(32.0))
                 .w_full()
                 .min_w_0()
                 .cursor_pointer()
@@ -1147,16 +1161,13 @@ impl AgentConsoleView {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_session(id, cx);
                 }))
-                .child(div().size(px(6.0)).rounded_full().bg(state.color()))
-                .child(lucide_icon(
-                    if session.archived {
-                        "archive"
-                    } else {
-                        provider_icon(session.context.provider)
-                    },
-                    12.0,
-                    ShellDeckColors::text_muted(),
-                ))
+                .when(session.archived, |row| {
+                    row.child(div().flex_shrink_0().child(lucide_icon(
+                        "archive",
+                        12.0,
+                        ShellDeckColors::text_muted(),
+                    )))
+                })
                 .child(
                     div()
                         .flex_1()
@@ -1164,12 +1175,9 @@ impl AgentConsoleView {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .text_size(px(12.0))
-                        .font_weight(if selected {
-                            FontWeight::SEMIBOLD
-                        } else {
-                            FontWeight::NORMAL
-                        })
+                        .debug_selector(|| format!("agent-nav-title-{id}"))
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::NORMAL)
                         .child(session.name.clone()),
                 )
                 .when(self.has_unsent_draft(id, cx), |row| {
@@ -1188,13 +1196,13 @@ impl AgentConsoleView {
                             .child(lucide_icon("pencil", 12.0, ShellDeckColors::text_muted())),
                     )
                 })
-                .when_some(state.label(), |row, label| {
+                .when(state.priority() > 0, |row| {
                     row.child(
                         div()
+                            .size(px(6.0))
                             .flex_shrink_0()
-                            .text_size(px(10.0))
-                            .text_color(state.color())
-                            .child(label),
+                            .rounded_full()
+                            .bg(state.color()),
                     )
                 })
                 .when(session.unread_count > 0, |row| {
@@ -1207,29 +1215,39 @@ impl AgentConsoleView {
             // selecting the conversation when its ellipsis is opened.
             let actions = self.conversation_actions_menu(
                 id,
-                Button::new(("agent-conversation-actions", uuid_key(id)), "")
-                    .debug_selector(|| format!("agent-nav-menu-{id}"))
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Icon)
-                    .w(px(22.0))
-                    .h(px(22.0))
+                div()
                     .flex_shrink_0()
-                    .icon(IconSource::from("ellipsis"))
-                    .tooltip(t!("agents.library.actions").to_string())
+                    .opacity(if selected { 1.0 } else { 0.0 })
+                    .group_hover(row_group.clone(), |style| style.opacity(1.0))
+                    .child(
+                        Button::new(("agent-conversation-actions", uuid_key(id)), "")
+                            .debug_selector(|| format!("agent-nav-menu-{id}"))
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Icon)
+                            .w(px(22.0))
+                            .h(px(22.0))
+                            .flex_shrink_0()
+                            .icon(IconSource::from("ellipsis"))
+                            .tooltip(t!("agents.library.actions").to_string()),
+                    )
                     .into_any_element(),
                 MouseButton::Left,
                 cx,
             );
             list = list.child(
                 div()
+                    .id(("agent-nav-row", uuid_key(id)))
+                    .group(row_group.clone())
                     .flex()
                     .items_center()
                     .gap(px(7.0))
-                    .h(px(38.0))
+                    .h(px(32.0))
                     .px(px(8.0))
                     .min_w_0()
                     .rounded(px(5.0))
-                    .when(selected, |row| row.bg(ShellDeckColors::selected_bg()))
+                    .when(selected, |row| {
+                        row.bg(ShellDeckColors::selected_bg().opacity(0.65))
+                    })
                     .when(!selected, |row| {
                         row.hover(|style| style.bg(ShellDeckColors::hover_bg()))
                     })

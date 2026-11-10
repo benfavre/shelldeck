@@ -1,11 +1,33 @@
 //! Project folders for conversations that have no catalog checkout.
 //! Group identities are presentation state; execution always uses the session.
 use super::navigator::{
-    collapsed_session_summary, navigator_session_matches_query, navigator_worktree,
-    project_group_collapsed, session_group_summary, toggle_project_group, NavigatorState,
+    collapsed_session_is_visible, collapsed_session_summary, navigator_session_matches_query,
+    navigator_worktree, project_group_collapsed, session_group_summary, toggle_project_group,
+    NavigatorState,
 };
 use super::*;
 use std::collections::BTreeMap;
+
+// Shared geometry keeps embedded section controls aligned with complete header rows.
+fn navigation_header_layout(id: impl Into<ElementId>, group: SharedString) -> Stateful<Div> {
+    div()
+        .id(id)
+        .group(group)
+        .flex()
+        .items_center()
+        .min_w_0()
+        .gap(px(6.0))
+        .h(px(34.0))
+        .px(px(4.0))
+        .rounded(px(8.0))
+}
+
+pub(super) fn navigation_header_surface(
+    id: impl Into<ElementId>,
+    group: SharedString,
+) -> Stateful<Div> {
+    navigation_header_layout(id, group).hover(|style| style.bg(ShellDeckColors::hover_bg()))
+}
 
 pub(super) fn navigator_pin(session: &AgentSession) -> bool {
     session.pinned && !session.archived
@@ -18,10 +40,8 @@ pub(super) fn navigation_children(key: &str, children: AnyElement) -> AnyElement
         .debug_selector(|| format!("agent-tree-children-{key}"))
         .min_w_0()
         .flex_shrink_0()
-        .ml(px(12.0))
-        .pl(px(6.0))
-        .border_l_1()
-        .border_color(ShellDeckColors::border())
+        .ml(px(16.0))
+        .pl(px(14.0))
         .child(children)
         .into_any_element()
 }
@@ -89,6 +109,13 @@ impl AgentConsoleView {
             .iter()
             .map(|group| group.id.clone())
             .collect::<Vec<_>>();
+        keys.extend(
+            self.project_groups
+                .iter()
+                .filter(|group| group.worktrees.len() > 1)
+                .flat_map(|group| &group.worktrees)
+                .map(|tree| format!("worktree-{}", tree.id)),
+        );
         keys.push("pinned-sessions".into());
         keys.extend(
             conversation_folders(self.sessions.sessions().iter(), &self.project_groups)
@@ -148,6 +175,56 @@ impl AgentConsoleView {
         }
     }
 
+    // Match project headers: one 24px icon slot, 6px gap and a label with 4px padding.
+    pub(super) fn render_navigation_section_toggle(
+        &self,
+        id: &'static str,
+        label: String,
+        collapsed: bool,
+        icon: &'static str,
+        cx: &Context<Self>,
+        toggle: fn(&mut Self, &mut Context<Self>),
+    ) -> Stateful<Div> {
+        let searching = !self.navigator_search.read(cx).content().trim().is_empty();
+        let group: SharedString = format!("{id}-hover").into();
+        navigation_header_layout(SharedString::from(format!("{id}-header")), group.clone())
+            .child(
+                Button::new(SharedString::from(format!("{id}-chevron")), "")
+                    .variant(ButtonVariant::Ghost)
+                    .hover_background(gpui::transparent_black())
+                    .size(ButtonSize::Icon)
+                    .p_0()
+                    .w(px(24.0))
+                    .h(px(24.0))
+                    .flex_shrink_0()
+                    .icon(if collapsed {
+                        "chevron-right"
+                    } else {
+                        "chevron-down"
+                    })
+                    .icon_visible_on_hover(group)
+                    .icon_when_not_hovered(icon)
+                    .disabled(searching)
+                    .on_click(cx.listener(move |this, _, _, cx| toggle(this, cx))),
+            )
+            .child(
+                Button::new(id, label)
+                    .debug_selector(move || id.into())
+                    .variant(ButtonVariant::Ghost)
+                    .hover_background(gpui::transparent_black())
+                    .size(ButtonSize::Sm)
+                    .h(px(30.0))
+                    .px(px(4.0))
+                    .flex_1()
+                    .min_w_0()
+                    .justify_start()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .disabled(searching)
+                    .on_click(cx.listener(move |this, _, _, cx| toggle(this, cx))),
+            )
+    }
+
     pub(super) fn render_navigation_group_header(
         &self,
         key: &str,
@@ -161,39 +238,53 @@ impl AgentConsoleView {
         let key = key.to_owned();
         let summary_key = key.clone();
         let selector = format!("agent-folder-toggle-{key}");
-        let mut header = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .min_w_0()
-            .gap(px(6.0))
-            .child(
-                Button::new(SharedString::from(selector.clone()), label)
-                    .debug_selector(move || selector.clone())
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Sm)
-                    .h(px(30.0))
-                    .px(px(4.0))
-                    .justify_start()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .icon(IconSource::from(if collapsed {
-                        "chevron-right"
-                    } else {
-                        "chevron-down"
-                    }))
-                    .tooltip(tooltip)
-                    .disabled(!query.trim().is_empty())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let query = this.navigator_search.read(cx).content().to_string();
-                        if toggle_project_group(&mut this.library.preferences, &key, &query) {
-                            this.schedule_library_save(cx);
-                            cx.notify();
-                        }
-                    })),
-            );
+        let hover_group: SharedString = format!("agent-group-hover-{key}").into();
+        let mut header = navigation_header_surface(
+            SharedString::from(format!("agent-group-header-{key}")),
+            hover_group.clone(),
+        )
+        .w_full()
+        .child(
+            Button::new(SharedString::from(selector.clone()), label)
+                .debug_selector(move || selector.clone())
+                .variant(ButtonVariant::Ghost)
+                .hover_background(gpui::transparent_black())
+                .icon_visible_on_hover(hover_group)
+                .icon_when_not_hovered(if key == "pinned-sessions" {
+                    "pin"
+                } else if key.starts_with("ssh-server:") {
+                    "server"
+                } else if key.starts_with("worktree-") {
+                    "git-branch"
+                } else if key.starts_with("chat-folder:") && !key.starts_with("chat-folder:local:")
+                {
+                    "globe"
+                } else {
+                    "folder"
+                })
+                .size(ButtonSize::Sm)
+                .h(px(30.0))
+                .px(px(4.0))
+                .justify_start()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .icon(IconSource::from(if collapsed {
+                    "chevron-right"
+                } else {
+                    "chevron-down"
+                }))
+                .tooltip(tooltip)
+                .disabled(!query.trim().is_empty())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let query = this.navigator_search.read(cx).content().to_string();
+                    if toggle_project_group(&mut this.library.preferences, &key, &query) {
+                        this.schedule_library_save(cx);
+                        cx.notify();
+                    }
+                })),
+        );
         if collapsed && hidden.0 > 0 {
             header = header.child(collapsed_session_summary(&summary_key, hidden.0, hidden.1));
         }
@@ -215,7 +306,7 @@ impl AgentConsoleView {
             sessions
                 .iter()
                 .copied()
-                .filter(|session| Some(session.id) != selected),
+                .filter(|session| !collapsed_session_is_visible(session, selected)),
         );
         let ids = sessions
             .iter()
@@ -235,7 +326,8 @@ impl AgentConsoleView {
                 key,
                 self.render_session_rows_matching(
                     |session| {
-                        ids.contains(&session.id) && (!collapsed || Some(session.id) == selected)
+                        ids.contains(&session.id)
+                            && (!collapsed || collapsed_session_is_visible(session, selected))
                     },
                     cx,
                 ),

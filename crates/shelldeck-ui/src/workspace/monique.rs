@@ -40,11 +40,11 @@ impl Workspace {
             self._monique_auth_poll_task = None;
             return;
         }
-        if !self.monique_view.read(cx).chat_busy() {
-            self.refresh_monique_snapshot(cx, self.monique_status.is_none());
-        }
         if self._monique_poll_task.is_some() {
             return;
+        }
+        if !self.monique_view.read(cx).chat_busy() {
+            self.refresh_monique_snapshot(cx, self.monique_status.is_none());
         }
         self._monique_poll_task = Some(cx.spawn(async move |this, cx: &mut AsyncApp| loop {
             cx.background_executor()

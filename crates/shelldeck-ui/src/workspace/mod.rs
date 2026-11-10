@@ -114,6 +114,7 @@ pub type AiDockOpenHandler = Box<dyn Fn(&mut App)>;
 mod account;
 mod activity;
 mod agent_codex;
+mod agent_companion;
 mod agent_remote_sessions;
 mod agent_stream;
 mod agent_tools;
@@ -204,7 +205,6 @@ struct PostLoginSplash {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModeTransitionPhase {
     FadeOut,
-    Loading,
     FadeIn,
 }
 
@@ -212,31 +212,18 @@ enum ModeTransitionPhase {
 struct ModeTransition {
     target: AppMode,
     phase: ModeTransitionPhase,
-    /// Durée du palier retenue pour *cette* transition — voir
-    /// [`MODE_TRANSITION_LOADING_MS`].
-    loading_ms: u64,
 }
 
 impl ModeTransition {
     fn total_ms(self) -> u64 {
-        MODE_TRANSITION_OUT_MS + self.loading_ms + MODE_TRANSITION_IN_MS
+        MODE_TRANSITION_OUT_MS + MODE_TRANSITION_IN_MS
     }
 }
 
-const MODE_TRANSITION_OUT_MS: u64 = 180;
-/// Palier de la première entrée dans un mode : le temps de voir la mascotte
-/// prendre sa personnalité (`docs/design/mode-transitions.md`) et, côté
-/// Support, de laisser la première requête aboutir.
-const MODE_TRANSITION_LOADING_MS: u64 = 2_540;
-/// Palier des entrées suivantes. Rien ne charge lors d'un retour : les
-/// entités Dev sont masquées et non détruites, précisément pour que les
-/// terminaux survivent. Payer trois secondes à chaque aller-retour
-/// Support ↔ Dev revenait à facturer une animation déjà vue.
-const MODE_TRANSITION_LOADING_REPEAT_MS: u64 = 420;
-const MODE_TRANSITION_IN_MS: u64 = 280;
-#[cfg(test)]
-const MODE_TRANSITION_TOTAL_MS: u64 =
-    MODE_TRANSITION_OUT_MS + MODE_TRANSITION_LOADING_MS + MODE_TRANSITION_IN_MS;
+// Navigation should reveal retained surfaces promptly; network loading belongs
+// inside each destination rather than an artificial full-window hold.
+const MODE_TRANSITION_OUT_MS: u64 = 60;
+const MODE_TRANSITION_IN_MS: u64 = 100;
 
 impl AccountStatus {
     fn dot_color(self) -> Hsla {
@@ -490,9 +477,6 @@ pub struct Workspace {
     login_form: Option<Entity<LoginForm>>,
     post_login_splash: Option<PostLoginSplash>,
     mode_transition: Option<ModeTransition>,
-    /// Modes déjà ouverts depuis le lancement. La transition longue n'est due
-    /// qu'à la première entrée dans chacun.
-    modes_seen: Vec<AppMode>,
     onboarding: Option<Entity<OnboardingView>>,
     port_forward_form: Option<Entity<PortForwardForm>>,
     script_form: Option<Entity<ScriptForm>>,
@@ -511,6 +495,9 @@ pub struct Workspace {
     /// screen); its contents are rebuilt from `menu_bar_spec` whenever the
     /// state it reads changes. See `crate::menu_bar`.
     menu_bar: Entity<AdabrakaMenuBar>,
+    menu_bar_snapshot: Option<menu::MenuBarSnapshot>,
+    #[cfg(test)]
+    menu_bar_rebuilds: usize,
     /// Last published global-shortcut registration statuses. Kept here so a
     /// transition into a failed state can be announced once, rather than the
     /// failure living only in the Settings pane.
@@ -1020,8 +1007,10 @@ impl Workspace {
                 .expect("Workspace tests require HOME to remain unchanged");
             let roots = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]
                 .map(|key| std::env::var_os(key).map(std::path::PathBuf::from));
-            assert!(ui_test_profile_is_isolated(&home, &roots),
-                "Workspace tests require isolated absolute XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_CACHE_HOME; see .agents/testing.md");
+            assert!(
+                ui_test_profile_is_isolated(&home, &roots),
+                "Workspace tests require isolated absolute XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_CACHE_HOME; see .agents/testing.md"
+            );
         }
         let mut config = config;
         let normalized_ui_font =
@@ -1569,7 +1558,6 @@ impl Workspace {
             login_form: None,
             post_login_splash: None,
             mode_transition: None,
-            modes_seen: Vec::new(),
             onboarding: None,
             port_forward_form: None,
             script_form: None,
@@ -1582,6 +1570,9 @@ impl Workspace {
             settings_open: false,
             settings_dialog: None,
             menu_bar,
+            menu_bar_snapshot: None,
+            #[cfg(test)]
+            menu_bar_rebuilds: 0,
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),
             sidebar_visible: true,
             sidebar_width: initial_sidebar_width,

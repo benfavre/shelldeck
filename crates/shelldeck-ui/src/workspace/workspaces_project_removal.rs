@@ -43,15 +43,84 @@ impl WorkspaceHubView {
         project: CatalogProjectId,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        self.remove_project(project, cx);
-        if self.catalog.projects().any(|record| record.id() == project) {
-            Err(self
-                .error
-                .clone()
-                .unwrap_or_else(|| t!("workspaces.projects.remove_blocked").to_string()))
-        } else {
-            Ok(())
+        self.remove_project_from_navigator_with_persist(
+            project,
+            |catalog| catalog.save().map_err(|error| error.to_string()),
+            cx,
+        )
+    }
+
+    pub(super) fn remove_project_from_navigator_with_persist(
+        &mut self,
+        project: CatalogProjectId,
+        persist: impl FnOnce(&mut ProjectCatalog) -> Result<(), String>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if self.load_error.is_some() || self.recovery_pending {
+            return Err(t!("agents.project.unavailable").to_string());
         }
+        // Retained workspaces do not prevent sidebar removal. Only an unsettled
+        // creation still needs its visible project until the executor finishes.
+        if self
+            .pending_requests
+            .values()
+            .filter(|request| request.project == project)
+            .any(|request| {
+                !settled_attempt_matches(self.creation.state(request.workspace), request.operation)
+                    && !matches!(self.creation.state(request.workspace),
+                        Some(BackgroundWorkspaceCreateState::Completed { operation, .. })
+                        if *operation == request.operation
+                            && self.catalog.workspace(request.workspace).is_ok())
+            })
+        {
+            return Err(t!("agents.project.creating").to_string());
+        }
+        mutate_and_persist(
+            &mut self.catalog,
+            |catalog| {
+                catalog
+                    .set_project_navigator_hidden(project, true)
+                    .map_err(|error| error.to_string())
+            },
+            persist,
+        )?;
+        self.error = None;
+        cx.emit(WorkspaceHubEvent::CatalogChanged);
+        cx.notify();
+        Ok(())
+    }
+
+    pub(in crate::workspace) fn restore_navigator_project(
+        &mut self,
+        checkout: CatalogCheckoutId,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let project = self
+            .catalog
+            .projects()
+            .find(|project| {
+                project.hidden_from_navigator()
+                    && project.checkouts().any(|record| record.id() == checkout)
+            })
+            .map(ProjectRecord::id);
+        if let Some(project) = project {
+            if self.load_error.is_some() || self.recovery_pending {
+                return Err(t!("agents.project.unavailable").to_string());
+            }
+            if let Err(error) = mutate_and_save(&mut self.catalog, |catalog| {
+                catalog
+                    .set_project_navigator_hidden(project, false)
+                    .map_err(|error| error.to_string())
+            }) {
+                self.error = Some(error.clone());
+                cx.notify();
+                return Err(error);
+            }
+            self.error = None;
+            cx.emit(WorkspaceHubEvent::CatalogChanged);
+            cx.notify();
+        }
+        Ok(())
     }
 
     pub(super) fn can_remove_project(&self, project: CatalogProjectId) -> bool {

@@ -368,15 +368,23 @@ impl WaylandWindowStatePtr {
         Rc::ptr_eq(&self.state, &other.state)
     }
 
+    // ShellDeck patch: SDPATCH-131 — stop queued frame callbacks while unmapped and force the first remapped presentation.
     pub fn frame(&self) {
+        self.frame_with_options(Default::default());
+    }
+
+    fn frame_with_options(&self, options: RequestFrameOptions) {
         let mut state = self.state.borrow_mut();
+        if !state.visible || !state.acknowledged_first_configure {
+            return;
+        }
         state.surface.frame(&state.globals.qh, state.surface.id());
         state.resize_throttle = false;
         drop(state);
 
         let mut cb = self.callbacks.borrow_mut();
         if let Some(fun) = cb.request_frame.as_mut() {
-            fun(Default::default());
+            fun(options);
         }
     }
 
@@ -445,11 +453,15 @@ impl WaylandWindowStatePtr {
                 window_geometry.size.height,
             );
 
-            let request_frame_callback = !state.acknowledged_first_configure;
+            // ShellDeck patch: SDPATCH-131 — a hidden configure must not consume the next mapping's first frame.
+            let request_frame_callback = state.visible && !state.acknowledged_first_configure;
             if request_frame_callback {
                 state.acknowledged_first_configure = true;
                 drop(state);
-                self.frame();
+                self.frame_with_options(RequestFrameOptions {
+                    require_presentation: true,
+                    ..Default::default()
+                });
             }
         }
     }
@@ -1039,12 +1051,18 @@ impl PlatformWindow for WaylandWindow {
 
     fn draw(&self, scene: &Scene) {
         let mut state = self.borrow_mut();
-        state.renderer.draw(scene);
+        // ShellDeck patch: SDPATCH-131 — never attach a GPU buffer to a hidden or unconfigured surface.
+        if state.visible && state.acknowledged_first_configure {
+            state.renderer.draw(scene);
+        }
     }
 
     fn completed_frame(&self) {
         let state = self.borrow();
-        state.surface.commit();
+        // ShellDeck patch: SDPATCH-131 — background UI updates cannot remap a hidden surface.
+        if state.visible && state.acknowledged_first_configure {
+            state.surface.commit();
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -1120,14 +1138,25 @@ impl PlatformWindow for WaylandWindow {
 
     fn show(&self) {
         let mut state = self.borrow_mut();
+        // ShellDeck patch: SDPATCH-131 — remap via an empty commit and await configure, not a frame on an unmapped surface.
+        if state.visible {
+            return;
+        }
         state.visible = true;
-        state.surface.frame(&state.globals.qh, state.surface.id());
+        state.acknowledged_first_configure = false;
         state.surface.commit();
     }
 
     fn hide(&self) {
         let mut state = self.borrow_mut();
+        // ShellDeck patch: SDPATCH-131 — unmapping resets the xdg configure handshake and discards stale resize state.
+        if !state.visible {
+            return;
+        }
         state.visible = false;
+        state.acknowledged_first_configure = false;
+        state.in_progress_configure = None;
+        state.resize_throttle = false;
         state.surface.attach(None, 0, 0);
         state.surface.commit();
     }

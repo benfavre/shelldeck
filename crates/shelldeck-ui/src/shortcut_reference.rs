@@ -258,41 +258,65 @@ fn shortcut_keys_for(shortcut: ShortcutDefinition, macos: bool) -> String {
 
 /// Shared, non-interactive shortcut reference. Keeping the row here avoids
 /// making the same binding look like four different controls across the app.
-fn render_shortcut_row(shortcut: ShortcutDefinition) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .justify_between()
-        .w_full()
-        .gap(px(12.0))
-        .py(px(5.0))
-        .child(
-            div()
-                .min_w(px(0.0))
-                .text_size(px(12.0))
-                .text_color(ShellDeckColors::text_muted())
-                .child(t!(shortcut.label_key).to_string()),
-        )
-        .child(
-            div()
-                .flex_shrink_0()
-                .px(px(8.0))
-                .py(px(3.0))
-                .rounded(px(6.0))
-                .bg(ShellDeckColors::bg_sidebar())
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .text_size(px(11.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(ShellDeckColors::text_primary())
-                .child(shortcut_keys_for(shortcut, cfg!(target_os = "macos"))),
-        )
+fn render_shortcut_row(shortcut: ShortcutDefinition, width: Option<f32>) -> Stateful<Div> {
+    let stacked = width.is_some_and(|width| width < 280.0);
+    let label_id = format!("shortcut-label-{:?}", shortcut.id);
+    let mut label = div()
+        .id(SharedString::from(label_id.clone()))
+        .debug_selector(move || label_id.clone())
+        .min_w(px(0.0))
+        .text_size(px(12.0))
+        .text_color(ShellDeckColors::text_muted())
+        .child(t!(shortcut.label_key).to_string());
+    if let Some(width) = width {
+        label = label
+            .w(px(if stacked { width } else { width - 144.0 }))
+            .line_height(px(16.0))
+            .line_clamp(2)
+            .max_h(px(32.0))
+            .flex_shrink_0();
+    }
+    let row_id: SharedString = format!("shortcut-row-{:?}", shortcut.id).into();
+    let mut row = div().flex().w_full().gap(px(12.0)).py(px(5.0));
+    if stacked {
+        row = row.flex_col().items_start().gap(px(6.0));
+    } else {
+        row = row.items_center().justify_between();
+    }
+    if let Some(width) = width {
+        row = row.w(px(width));
+    }
+    let row = row.child(label).child(
+        div()
+            .flex_shrink_0()
+            .px(px(8.0))
+            .py(px(3.0))
+            .rounded(px(6.0))
+            .bg(ShellDeckColors::bg_sidebar())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .text_size(px(11.0))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(ShellDeckColors::text_primary())
+            .child(shortcut_keys_for(shortcut, cfg!(target_os = "macos"))),
+    );
+    crate::terminal_view::trace_layout_for_preview(row_id.clone(), row).id(row_id)
 }
 
 pub(crate) fn render_shortcut_rows(shortcuts: impl IntoIterator<Item = ShortcutDefinition>) -> Div {
     shortcuts.into_iter().fold(
         div().flex().flex_col().w_full().gap(px(2.0)),
-        |rows, item| rows.child(render_shortcut_row(item)),
+        |rows, item| rows.child(render_shortcut_row(item, None)),
+    )
+}
+
+pub(crate) fn render_shortcut_rows_with_width(
+    shortcuts: impl IntoIterator<Item = ShortcutDefinition>,
+    width: f32,
+) -> Div {
+    shortcuts.into_iter().fold(
+        div().flex().flex_col().w(px(width)).gap(px(2.0)),
+        |rows, item| rows.child(render_shortcut_row(item, Some(width))),
     )
 }
 

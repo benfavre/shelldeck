@@ -14,7 +14,7 @@ pub use shelldeck_ui::ai_dock::TrayLabels;
 #[derive(Debug, Clone, Copy)]
 pub enum TrayCommand {
     ShowWindow,
-    ToggleAiDock,
+    ShowAiDock,
     OpenClippy,
     OpenAiTasks,
     OpenPalette,
@@ -67,6 +67,9 @@ impl TrayService {
         }
         cx.set_tray_tooltip(shelldeck_core::APP_NAME);
         cx.set_tray_menu(build_menu(&TrayState::default()));
+        // The icon opens the native dropdown; only a selected menu action
+        // may open a companion window. Keep macOS out of panel mode too.
+        cx.set_tray_panel_mode(false);
         cx.on_tray_menu_action(move |id, _cx| {
             let Some(command) = command_for_menu_id(id.as_ref()) else {
                 return;
@@ -222,7 +225,7 @@ fn build_menu(state: &TrayState) -> Vec<TrayMenuItem> {
 fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
     match id {
         SHOW_ID => Some(TrayCommand::ShowWindow),
-        ASSISTANT_ID => Some(TrayCommand::ToggleAiDock),
+        ASSISTANT_ID => Some(TrayCommand::ShowAiDock),
         CLIPPY_ID => Some(TrayCommand::OpenClippy),
         AI_TASKS_ID => Some(TrayCommand::OpenAiTasks),
         PALETTE_ID => Some(TrayCommand::OpenPalette),
@@ -290,11 +293,58 @@ mod tests {
 
     // SDTEST-1380
     #[test]
-    fn assistant_menu_id_routes_to_dock_toggle() {
+    fn assistant_menu_id_routes_to_dock_show() {
         assert!(matches!(
             command_for_menu_id(ASSISTANT_ID),
-            Some(TrayCommand::ToggleAiDock)
+            Some(TrayCommand::ShowAiDock)
         ));
+    }
+
+    // SDTEST-2942 — the tray click must expose the complete dropdown.
+    #[test]
+    fn tray_dropdown_retains_all_actions_and_pinned_hosts() {
+        let pinned = Uuid::new_v4();
+        let menu = build_menu(&TrayState {
+            signed_in: true,
+            pinned_connections: vec![PinnedConnection {
+                id: pinned,
+                name: "Fixture host".into(),
+            }],
+            ..Default::default()
+        });
+        let actions: Vec<&str> = menu
+            .iter()
+            .filter_map(|item| match item {
+                TrayMenuItem::Action { id, .. } => Some(id.as_ref()),
+                _ => None,
+            })
+            .collect();
+        for expected in [
+            ASSISTANT_ID,
+            CLIPPY_ID,
+            CAPTURE_SHARE_ID,
+            SHARE_FILES_ID,
+            SHOW_ID,
+            PALETTE_ID,
+            CHOOSE_CHARACTER_ID,
+            PAUSE_CHARACTER_ID,
+            RETURN_CHARACTER_ID,
+            AI_TASKS_ID,
+            QUIT_ID,
+        ] {
+            assert!(
+                actions.contains(&expected),
+                "missing dropdown action {expected}"
+            );
+            assert!(command_for_menu_id(expected).is_some());
+        }
+        assert!(menu.iter().any(|item| match item {
+            TrayMenuItem::Submenu { items, .. } => items.iter().any(|item| match item {
+                TrayMenuItem::Action { id, .. } => matches!(command_for_menu_id(id.as_ref()), Some(TrayCommand::ConnectPinned(id)) if id == pinned),
+                _ => false,
+            }),
+            _ => false,
+        }));
     }
 
     // SDTEST-1484

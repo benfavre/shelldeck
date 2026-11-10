@@ -1,30 +1,17 @@
 # Mode transitions
 
-Switching between User, Support, and Dev uses a full-window loading transition:
+Switching between Client (User), Support, and Dev uses a brief neutral crossfade:
 
-1. A full-window loader fades over the current mode for 180ms.
-2. ShellDeck changes and persists the mode while the loader displays
-   “Switching to … mode”.
-3. The loader fades away over 280ms to reveal the destination mode.
+1. A veil fades over the current surface for 60 ms.
+2. The authorized destination is committed and its background loading starts.
+3. The veil clears over 100 ms. There is no first-visit or repeat loading hold.
 
-The hold in step 2 depends on whether this is the **first** entry into that
-mode since launch: 2.54 seconds the first time — long enough to read the line
-and let Support's first fetch land — and 420ms on every return. Nothing loads
-on a return: Dev entities are hidden rather than destroyed, precisely so
-terminals survive, so a constant hold billed three seconds for an animation
-already seen on every Support ↔ Dev round trip. The fade curve is computed
-from the duration of the transition actually running, not from a constant.
+Reduced motion commits immediately. The transition no longer decodes or animates
+a full-window mascot. Network loading belongs inside each destination; retained
+views and active terminal/agent sessions survive the switch. Repeated requests
+during the 160 ms transition are ignored. Logout cancels it, and permissions are
+checked again at the commit boundary.
 
-Each destination gets a distinct production Monolith personality derived from
-`docs/design/monolith-animations.html`:
-
-- User combines “Breathe” and a soft orbit as a friendly floating companion.
-- Support combines “Working / busy”, “Progress ring”, and “Scan line”.
-- Dev uses the neutral expression with the “Terminal typing” fill and caret.
-
-GPUI does not execute CSS keyframes embedded in SVG images, so each motion is
-reproduced with `with_animation` over the static expression assets.
-
-Dev entities are hidden rather than destroyed, so terminal sessions continue
-running throughout the transition. Rapid repeated switches are ignored during
-the 3-second sequence, and logout cancels any transition still in progress.
+The previous 3,000 ms first-entry and 880 ms repeat sequences were artificial
+navigation waits. These values describe scheduled UI timing, not a guarantee
+that remote Support or Client data has arrived within 160 ms.

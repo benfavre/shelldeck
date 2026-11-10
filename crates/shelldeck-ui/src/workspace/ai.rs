@@ -151,6 +151,10 @@ impl Workspace {
     }
 
     pub(super) fn open_ai_assistant(&mut self, cx: &mut Context<Self>) {
+        if self.can_access_mode(AppMode::Dev) {
+            self.open_external_ai_dock(cx);
+            return;
+        }
         let context = self.current_ai_context(cx);
         if !self.ai_backend_available() || !self.app_config.ai.allows(context.surface) {
             return;

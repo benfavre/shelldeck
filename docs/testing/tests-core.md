@@ -803,3 +803,5 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2927 | `agent_session::tests::sdtest_2927_concurrency_changes_preserve_runs_and_reject_invalid_limits` | SDUC-499, SDUC-550 | Green | Lowering capacity preserves admitted runs, rejects new runs until capacity returns, and refuses invalid limits without changing the previous bound. Raising it admits waiting work. |
 
 | SDTEST-2928 | SDUC-564 | Project rename persists Unicode names, rejects blank/missing projects and retains checkout identities/paths | `config/workspace_catalog::tests::project_rename_persists_without_changing_checkouts` | Green |
+
+| SDTEST-2930 | SDUC-564 | Sidebar removal persists across reload with active/archived local and SSH workspace ownership; restore retains identities and old profiles default visible | `config/workspace_catalog::tests::navigator_removal_survives_reload_and_preserves_workspaces` | Green — isolated local regression passed |

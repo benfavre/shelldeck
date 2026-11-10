@@ -177,42 +177,33 @@ impl AgentConsoleView {
         let shown = sessions.len().min(limit);
         list = list.child(
             div()
+                .id("agent-remote-section")
+                .group("agent-remote-section-hover")
                 .border_t_1()
                 .border_color(ShellDeckColors::border())
                 .mt(px(8.0))
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .px(px(6.0))
-                .pt(px(6.0))
-                .pb(px(3.0))
+                .rounded(px(8.0))
+                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
                 .child(
-                    Button::new("agent-remote-toggle", t!("agents.remote.title").to_string())
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
+                    div()
                         .flex_1()
-                        .min_w(px(0.0))
-                        .justify_start()
-                        .disabled(!query.is_empty())
-                        .icon(IconSource::from(if expanded {
-                            "chevron-down"
-                        } else {
-                            "chevron-right"
-                        }))
-                        .tooltip(
-                            t!(if expanded {
-                                "agents.remote.collapse"
-                            } else {
-                                "agents.remote.expand"
-                            })
-                            .to_string(),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.library.preferences.remote_sessions_expanded =
-                                !this.library.preferences.remote_sessions_expanded;
-                            this.schedule_library_save(cx);
-                            cx.notify();
-                        })),
+                        .min_w_0()
+                        .child(self.render_navigation_section_toggle(
+                            "agent-remote-toggle",
+                            t!("agents.remote.title").to_string(),
+                            !expanded,
+                            "cloud",
+                            cx,
+                            |this, cx| {
+                                this.library.preferences.remote_sessions_expanded =
+                                    !this.library.preferences.remote_sessions_expanded;
+                                this.schedule_library_save(cx);
+                                cx.notify();
+                            },
+                        )),
                 )
                 .child(
                     Badge::new(if available_only {
@@ -225,6 +216,7 @@ impl AgentConsoleView {
                 .child(
                     Button::new("agent-remote-refresh", "")
                         .variant(ButtonVariant::Ghost)
+                        .hover_background(gpui::transparent_black())
                         .size(ButtonSize::Icon)
                         .icon(IconSource::from("refresh-cw"))
                         .w(px(26.0))

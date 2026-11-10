@@ -22,6 +22,9 @@ struct GpuiTray {
 }
 
 impl ksni::Tray for GpuiTray {
+    // ShellDeck patch: SDPATCH-132 — advertise a native dropdown, not an application-activation button.
+    const MENU_ON_ACTIVATE: bool = true;
+
     // ShellDeck patch: SDPATCH-117 — ksni 0.3 requires a stable service id.
     fn id(&self) -> String {
         "gpui-tray".to_string()

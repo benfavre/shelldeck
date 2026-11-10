@@ -44,6 +44,7 @@ impl Workspace {
         menu_bar: Entity<AdabrakaMenuBar>,
         sidebar_visible: Option<bool>,
         ai_configured: bool,
+        ai_dock_available: bool,
         ai_dock_open: bool,
         ai_task_count: usize,
         inklura_bell: Option<AnyElement>,
@@ -480,7 +481,7 @@ impl Workspace {
         // not by Workspace. Dispatch its action to the window-level handler so
         // the titlebar follows the same creation/reuse path as the tray and
         // global shortcut, while always using the idempotent "show" request.
-        let ai_dock_button = ai_configured.then(|| {
+        let ai_dock_button = ai_dock_available.then(|| {
             let tooltip: SharedString = if ai_dock_open {
                 t!("ai.dock.external_opened")
             } else {

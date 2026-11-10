@@ -838,6 +838,13 @@ impl Workspace {
         if !self.can_access_mode(AppMode::Dev) || self.effective_mode() != AppMode::Dev {
             return;
         }
+        if self
+            .workspace_hub
+            .update(cx, |hub, cx| hub.restore_navigator_project(checkout, cx))
+            .is_err()
+        {
+            return;
+        }
         // Resolve the current saved checkout rather than trusting an old UI row.
         let groups = agent_project_groups(self.workspace_hub.read(cx).catalog(), &self.connections);
         let Some(worktree) = groups
@@ -923,6 +930,7 @@ pub(super) fn agent_project_groups(
 ) -> Vec<AgentProjectGroup> {
     catalog
         .projects()
+        .filter(|project| !project.hidden_from_navigator())
         .map(|project| AgentProjectGroup {
             id: project.id().to_string(),
             label: project.name().to_string(),

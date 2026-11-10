@@ -64,8 +64,8 @@ impl Workspace {
 
     pub(super) fn sync_bext_poll(&mut self, cx: &mut Context<Self>) {
         if self.bext_visible() {
-            self.refresh_bext_cloud(cx);
             if self._bext_poll.is_none() {
+                self.refresh_bext_cloud(cx);
                 let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
                     cx.background_executor()
                         .timer(std::time::Duration::from_secs(15))

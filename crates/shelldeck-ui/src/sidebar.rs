@@ -438,6 +438,11 @@ impl SidebarView {
         }
     }
 
+    /// Whether the current activity actually renders its contextual rows.
+    pub fn has_visible_panel(&self) -> bool {
+        !self.collapsed && self.active_section.has_panel()
+    }
+
     /// Replace the contextual panel rows for one activity.
     pub fn set_panel_items(&mut self, section: SidebarSection, items: Vec<PanelItem>) {
         self.panel_items.insert(section, items);
@@ -1136,7 +1141,7 @@ impl Render for SidebarView {
         // destinations reachable only from the menu) hides the panel entirely
         // so its main view gets the full width, rather than parking an empty
         // column next to it.
-        let panel_visible = !self.collapsed && self.active_section.has_panel();
+        let panel_visible = self.has_visible_panel();
         let on_connections = self.active_section == SidebarSection::Connections;
 
         if !panel_visible {

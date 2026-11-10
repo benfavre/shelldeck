@@ -2,6 +2,148 @@ use super::*;
 
 #[cfg(test)]
 mod tests {
+    // SDTEST-2931 / SDUC-564 — remove/reload/re-add a project with retained workspaces.
+    #[test]
+    fn sidebar_removal_keeps_retained_workspaces_and_recovers_failed_save() {
+        let mut app = TestAppContext::single();
+        let (catalog, workspace, _, checkout, ..) = fixture_catalog();
+        let project = catalog.workspace(workspace).unwrap().project_id();
+        let before = catalog.clone();
+        let store = tempfile::tempdir().unwrap();
+        let path = store.path().join("project-catalog.json");
+        let sentinel = store.path().join("keep.txt");
+        std::fs::write(&sentinel, "Keep project files").unwrap();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let hub = app.update(|cx| {
+            cx.new(|cx| WorkspaceHubView::new(Ok(catalog), &[], terminal.clone(), cx))
+        });
+        app.run_until_parked();
+        hub.update(&mut app, |hub, cx| {
+            assert!(!hub.recovery_pending);
+            assert!(
+                !hub.can_remove_project(project),
+                "the old empty-project action cannot handle this project"
+            );
+            let operation = CreationOperationId::new();
+            let revision = hub.catalog.revision();
+            hub.pending_requests.insert(
+                workspace,
+                WorkspaceExecutionRequest {
+                    workspace,
+                    project,
+                    source_checkout: checkout,
+                    checkout,
+                    created_checkout: None,
+                    operation,
+                    catalog_revision: revision,
+                    name: "Retained workspace".into(),
+                    intake: WorkspaceLaunchIntake::Manual,
+                    host: AuthorizedLaunchHost::LocalExisting {
+                        authority: crate::terminal_view::AuthorizedLocalRoot::capture(store.path())
+                            .unwrap(),
+                    },
+                    mode: WorkspaceLaunchMode::ExistingFolder,
+                },
+            );
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Start {
+                        workspace,
+                        operation,
+                    },
+                )
+                .unwrap();
+            assert!(hub
+                .remove_project_from_navigator_with_persist(
+                    project,
+                    |_| panic!("a live creation must block before persistence"),
+                    cx,
+                )
+                .is_err());
+            assert_eq!(hub.catalog, before);
+            advance_creation_to_binding(hub, revision, workspace, operation);
+            hub.creation
+                .reduce(
+                    revision,
+                    WorkspaceCreateEvent::Completed {
+                        workspace,
+                        operation,
+                    },
+                )
+                .unwrap();
+            let failed = hub.remove_project_from_navigator_with_persist(
+                project,
+                |_| Err("fixture write refusal".into()),
+                cx,
+            );
+            assert!(failed.is_err());
+            assert_eq!(hub.catalog, before);
+            hub.remove_project_from_navigator_with_persist(
+                project,
+                |catalog| catalog.save_to(&path).map_err(|error| error.to_string()),
+                cx,
+            )
+            .unwrap();
+            assert!(crate::workspace::agents::agent_project_groups(&hub.catalog, &[]).is_empty());
+            assert_eq!(
+                hub.catalog.workspaces().collect::<Vec<_>>(),
+                before.workspaces().collect::<Vec<_>>()
+            );
+            assert_eq!(terminal.read(cx).tab_count(), 0);
+            let restored = ProjectCatalog::load_from(&path).unwrap();
+            assert!(crate::workspace::agents::agent_project_groups(&restored, &[]).is_empty());
+
+            // Explicit re-add restores the same project/checkout and original name.
+            let root = store.path().canonicalize().unwrap();
+            // The fixture has an unavailable local path, so re-open its existing SSH checkout.
+            let ssh = hub
+                .catalog
+                .projects()
+                .next()
+                .unwrap()
+                .checkouts()
+                .find_map(|item| match item.host() {
+                    CheckoutHost::Ssh {
+                        connection_id,
+                        root,
+                    } => Some((*connection_id, root.as_str().to_owned())),
+                    _ => None,
+                })
+                .unwrap();
+            hub.connections.insert(ssh.0, "Fixture SSH".into());
+            hub.show_onboarding(cx);
+            hub.onboarding_ssh = true;
+            hub.onboarding_connection = Some(ssh.0);
+            hub.onboarding_root
+                .update(cx, |input, cx| input.replace_content(ssh.1, cx));
+            hub.submit_onboarding_with_persist(|_| Err("fixture restore refusal".into()), cx);
+            assert!(hub.error.is_some());
+            assert!(crate::workspace::agents::agent_project_groups(&hub.catalog, &[]).is_empty());
+            hub.submit_onboarding_with_persist(
+                |catalog| catalog.save_to(&path).map_err(|error| error.to_string()),
+                cx,
+            );
+            assert!(hub.error.is_none(), "{:?}", hub.error);
+            assert_eq!(
+                hub.catalog.projects().collect::<Vec<_>>(),
+                before.projects().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                hub.catalog.workspaces().collect::<Vec<_>>(),
+                before.workspaces().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                hub.catalog.checkout_in_project(project, checkout).unwrap(),
+                before.checkout_in_project(project, checkout).unwrap()
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("keep.txt")).unwrap(),
+                "Keep project files"
+            );
+        });
+    }
+
     // SDTEST-2822 — SDUC-564: adding an existing location opens its saved
     // project without duplicate catalog entries, metadata changes or a process.
     #[::core::prelude::v1::test]

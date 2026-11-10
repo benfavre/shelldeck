@@ -10,6 +10,9 @@ impl Workspace {
     /// change signal between them, and every row is a small owned summary
     /// rather than a clone of the underlying model.
     pub(super) fn refresh_sidebar_panels(&mut self, cx: &mut Context<Self>) {
+        if !self.sidebar.read(cx).has_visible_panel() {
+            return;
+        }
         use crate::sidebar::PanelItem;
         use shelldeck_terminal::session::SessionState;
 

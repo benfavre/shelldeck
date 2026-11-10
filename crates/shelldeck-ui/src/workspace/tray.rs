@@ -63,8 +63,10 @@ impl Workspace {
     }
 
     pub fn set_ai_dock_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        if self.ai_dock_open != open {
-            self.ai_dock_open = open;
+        let changed = self.ai_dock_open != open;
+        self.ai_dock_open = open;
+        self.sync_agent_companion_host(cx);
+        if changed {
             cx.notify();
         }
     }

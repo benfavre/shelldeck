@@ -19,7 +19,9 @@ use shelldeck_core::ai::{
 use std::rc::Rc;
 use uuid::Uuid;
 
+mod agent_companion;
 mod composer;
+mod overlays;
 
 use composer::{attachment_summary, MentionPicker};
 
@@ -171,10 +173,12 @@ enum AiActivity {
     Clippy,
     Tasks,
     History,
+    LegacyChat,
 }
 
 struct AiRailEntry {
     activity: AiActivity,
+    legacy_archive: bool,
     icon: &'static str,
     label: String,
     badge: Option<usize>,
@@ -277,6 +281,10 @@ fn validated_clippy_result(text: String) -> Result<String, String> {
 }
 
 pub struct AiAssistantView {
+    pub(crate) shared_agents: Option<Entity<crate::agent_console_view::AgentConsoleView>>,
+    shared_agent_subscription: Option<Subscription>,
+    #[cfg(test)]
+    pub(crate) rendered_frames: std::cell::Cell<usize>,
     prompt_state: Entity<InputState>,
     context: AiContext,
     available: bool,
@@ -368,6 +376,10 @@ impl AiAssistantView {
             }
         });
         Self {
+            shared_agents: None,
+            shared_agent_subscription: None,
+            #[cfg(test)]
+            rendered_frames: std::cell::Cell::new(0),
             prompt_state,
             context,
             available: true,
@@ -485,11 +497,14 @@ impl AiAssistantView {
                 self.compact_history_open = open;
             }
             AiHost::Dock => {
-                self.active_tab = if open {
-                    AiActivity::History
-                } else {
-                    AiActivity::Chat
-                };
+                self.set_companion_activity(
+                    if open {
+                        AiActivity::History
+                    } else {
+                        AiActivity::Chat
+                    },
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -515,8 +530,7 @@ impl AiAssistantView {
     }
 
     pub fn show_tasks(&mut self, cx: &mut Context<Self>) {
-        self.active_tab = AiActivity::Tasks;
-        cx.notify();
+        self.set_companion_activity(AiActivity::Tasks, cx);
     }
 
     /// Title of the thread on screen, used by the host-specific header.
@@ -607,7 +621,7 @@ impl AiAssistantView {
     }
 
     pub fn show_clippy(&mut self, cx: &mut Context<Self>) {
-        self.active_tab = AiActivity::Clippy;
+        self.set_companion_activity(AiActivity::Clippy, cx);
         if should_auto_import_clippy(
             self.clippy_auto_import_clipboard,
             self.clippy_source_state.read(cx).content(),
@@ -624,7 +638,15 @@ impl AiAssistantView {
         }
     }
 
-    pub fn focus_composer(&self, window: &mut Window, cx: &App) {
+    pub fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(agents) = self
+            .shared_agents
+            .as_ref()
+            .filter(|_| self.active_tab == AiActivity::Chat)
+        {
+            agents.update(cx, |view, cx| view.request_surface_focus(cx));
+            return;
+        }
         if self.available {
             self.prompt_state.read(cx).focus_handle(cx).focus(window);
         }
@@ -988,6 +1010,16 @@ impl AiAssistantView {
     }
 
     fn new_conversation(&mut self, cx: &mut Context<Self>) {
+        if let Some(agents) = self.shared_agents.clone() {
+            self.active_tab = AiActivity::Chat;
+            agents.update(cx, |view, cx| {
+                view.set_surface_visible(true, cx);
+                view.new_session(cx);
+            });
+            cx.notify();
+            return;
+        }
+        self.active_tab = AiActivity::Chat;
         pin_to_latest(&self.message_scroll);
         self.request_gate.invalidate();
         self.active_conversation = None;
@@ -1010,6 +1042,9 @@ impl AiAssistantView {
             let restored = conversation.archived;
             conversation.archived = false;
             self.active_conversation = Some(id);
+            if self.shared_agents.is_some() && self.host == AiHost::Dock {
+                self.active_tab = AiActivity::LegacyChat;
+            }
             if restored {
                 self.persist_conversations();
             }
@@ -1407,15 +1442,22 @@ impl AiAssistantView {
     /// selecting it changes what the panel shows. "Nouveau" sits above the
     /// separator because it is an action, not a place; it never stays selected.
     fn render_rail(&self, active_tasks: usize, cx: &mut Context<Self>) -> AnyElement {
-        let entries = [
+        let active_tasks = active_tasks
+            + self
+                .shared_agents
+                .as_ref()
+                .map_or(0, |agents| agents.read(cx).active_run_count());
+        let mut entries = vec![
             AiRailEntry {
                 activity: AiActivity::Chat,
+                legacy_archive: false,
                 icon: "messages-square",
                 label: t!("ai.rail.chat").to_string(),
                 badge: None,
             },
             AiRailEntry {
                 activity: AiActivity::Clippy,
+                legacy_archive: false,
                 // `paperclip` is not in the bundled Lucide subset
                 // (.agents/icons.md) and silently painted nothing;
                 // `clipboard-paste` ships and matches the clipboard job.
@@ -1425,18 +1467,37 @@ impl AiAssistantView {
             },
             AiRailEntry {
                 activity: AiActivity::Tasks,
+                legacy_archive: false,
                 icon: "list-checks",
                 label: t!("ai.rail.tasks").to_string(),
                 badge: (active_tasks > 0).then_some(active_tasks),
             },
             AiRailEntry {
                 activity: AiActivity::History,
+                legacy_archive: false,
                 icon: "clock",
                 label: t!("ai.rail.history").to_string(),
                 badge: None,
             },
         ];
 
+        if self.shared_agents.is_some() && !self.conversations.is_empty() {
+            entries.push(AiRailEntry {
+                activity: AiActivity::History,
+                legacy_archive: true,
+                icon: "archive",
+                label: t!("ai.rail.legacy_archive").to_string(),
+                badge: None,
+            });
+        }
+
+        if self.shared_agents.is_some() {
+            entries.retain(|entry| {
+                entry.activity != AiActivity::Clippy
+                    || self.clippy_available
+                    || self.active_tab == AiActivity::Clippy
+            });
+        }
         // The rail and its glyphs are absolute pixels on purpose, exactly like
         // the Dev sidebar rail: a rem-sized 17px glyph would outgrow a fixed
         // 56px rail at 2x and collide with its edges (.agents/spacing.md).
@@ -1463,6 +1524,7 @@ impl AiAssistantView {
             .child(
                 div()
                     .id("ai-rail-new")
+                    .debug_selector(|| "ai-rail-new".into())
                     .flex()
                     .flex_col()
                     .items_center()
@@ -1506,7 +1568,16 @@ impl AiAssistantView {
             );
 
         for entry in entries {
-            let active = self.active_tab == entry.activity;
+            let legacy_archive = entry.legacy_archive;
+            let active = if entry.activity == AiActivity::History && self.shared_agents.is_some() {
+                legacy_archive
+                    && matches!(
+                        self.active_tab,
+                        AiActivity::History | AiActivity::LegacyChat
+                    )
+            } else {
+                self.active_tab == entry.activity
+            };
             let activity = entry.activity;
             let mut glyph = div()
                 .relative()
@@ -1555,7 +1626,18 @@ impl AiAssistantView {
             }
             rail = rail.child(
                 div()
-                    .id(SharedString::from(format!("ai-rail-{:?}", entry.activity)))
+                    .id(SharedString::from(if legacy_archive {
+                        "ai-rail-legacy-archive".to_string()
+                    } else {
+                        format!("ai-rail-{:?}", entry.activity)
+                    }))
+                    .debug_selector(move || {
+                        if legacy_archive {
+                            "ai-rail-legacy-archive".into()
+                        } else {
+                            format!("ai-rail-{activity:?}")
+                        }
+                    })
                     .flex()
                     .flex_col()
                     .items_center()
@@ -1576,7 +1658,14 @@ impl AiAssistantView {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         // `history_open` is Sheet-only state; the rail (Dock)
                         // navigates purely on `active_tab`.
-                        this.active_tab = activity;
+                        if activity == AiActivity::History
+                            && this.shared_agents.is_some()
+                            && !legacy_archive
+                        {
+                            this.show_agent_conversations(cx);
+                        } else {
+                            this.set_companion_activity(activity, cx);
+                        }
                         cx.notify();
                     })),
             );
@@ -2541,6 +2630,14 @@ impl AiAssistantView {
 
 impl Render for AiAssistantView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        self.rendered_frames.set(self.rendered_frames.get() + 1);
+        if self.host == AiHost::Dock
+            && self.shared_agents.is_some()
+            && self.active_tab != AiActivity::LegacyChat
+        {
+            return self.render_agent_companion(window, cx);
+        }
         let sheet_supports_history_column = self.sheet_supports_history_column(window);
         let history_column_visible = sheet_supports_history_column && self.history_open;
         let compact_history_visible = self.host == AiHost::Sheet
@@ -3191,7 +3288,9 @@ impl Render for AiAssistantView {
                     .track_scroll(&self.message_scroll)
                     .child(conversation_body),
             )
-            .child(composer);
+            .when(self.active_tab != AiActivity::LegacyChat, |chat| {
+                chat.child(composer)
+            });
 
         // The two hosts are two different displays, so the assembly diverges
         // here — this is the only place it does.
@@ -3202,7 +3301,7 @@ impl Render for AiAssistantView {
             // at 424px a second column would leave under 200px of thread.
             AiHost::Dock => {
                 let panel = match self.active_tab {
-                    AiActivity::Chat => chat.into_any_element(),
+                    AiActivity::Chat | AiActivity::LegacyChat => chat.into_any_element(),
                     AiActivity::Clippy => self.render_clippy(window, cx),
                     AiActivity::Tasks => self.render_tasks(window, cx),
                     AiActivity::History => self.render_history(false, window, cx),
@@ -3266,7 +3365,7 @@ impl Render for AiAssistantView {
             }
         };
 
-        let mut root = div()
+        let root = div()
             .flex()
             .flex_col()
             .w_full()
@@ -3278,283 +3377,8 @@ impl Render for AiAssistantView {
             .children(sheet_header)
             .child(body);
 
-        if self.account_menu_open {
-            if let Some(label) = self.account_label.clone() {
-                let detail = self.account_detail.clone();
-                let panel = div()
-                    .id("ai-account-panel")
-                    // Anchored to the rail's bottom-right corner, above the
-                    // avatar that opened it.
-                    .absolute()
-                    .bottom(px(52.0))
-                    .right(px(62.0))
-                    .w(px(226.0))
-                    .p(px(4.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.0))
-                    .bg(ShellDeckColors::bg_surface())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .rounded(px(10.0))
-                    .shadow(
-                        vec![BoxShadow {
-                            color: hsla(0.0, 0.0, 0.0, 0.45),
-                            offset: point(gpui::px(0.0), gpui::px(4.0)),
-                            blur_radius: gpui::px(20.0),
-                            spread_radius: gpui::px(0.0),
-                            inset: false,
-                        }]
-                        .into(),
-                    )
-                    .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
-                        cx.stop_propagation();
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .px(px(9.0))
-                            .py(px(8.0))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(12.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(label),
-                            )
-                            .children(detail.map(|detail| {
-                                div()
-                                    .truncate()
-                                    .text_size(px(11.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(detail)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .h(px(1.0))
-                            .mx(px(6.0))
-                            .my(px(3.0))
-                            .bg(ShellDeckColors::border()),
-                    )
-                    .child(
-                        div()
-                            .id("ai-account-settings")
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .px(px(9.0))
-                            .py(px(7.0))
-                            .rounded(px(7.0))
-                            .cursor_pointer()
-                            .text_size(px(12.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                            .child(lucide_icon("settings", 13.0, ShellDeckColors::text_muted()))
-                            .child(t!("settings.title").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.account_menu_open = false;
-                                cx.emit(AiAssistantEvent::OpenSettings);
-                            })),
-                    );
-                root = root.child(
-                    div()
-                        .id("ai-account-backdrop")
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .occlude()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _e, _window, cx| {
-                                this.account_menu_open = false;
-                                cx.notify();
-                            }),
-                        )
-                        .child(panel),
-                );
-            }
-        }
-
-        if self.backend_menu_open {
-            let current = self.backend;
-            let mut menu = div()
-                .id("ai-backend-menu")
-                .absolute()
-                .bottom(px(78.0))
-                .right(px(16.0))
-                .w(px(208.0))
-                .p(px(4.0))
-                .flex()
-                .flex_col()
-                .gap(px(1.0))
-                .bg(ShellDeckColors::bg_surface())
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .rounded(px(10.0))
-                .shadow(
-                    vec![BoxShadow {
-                        color: hsla(0.0, 0.0, 0.0, 0.45),
-                        // BoxShadow fields are typed `Pixels` — never rems.
-                        offset: point(gpui::px(0.0), gpui::px(4.0)),
-                        blur_radius: gpui::px(20.0),
-                        spread_radius: gpui::px(0.0),
-                        inset: false,
-                    }]
-                    .into(),
-                )
-                .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
-                    cx.stop_propagation();
-                });
-            for (index, (backend, label)) in Self::backend_choices().into_iter().enumerate() {
-                let selected = backend == current;
-                menu = menu.child(
-                    div()
-                        .id(("ai-backend-choice", index))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .px(px(9.0))
-                        .py(px(7.0))
-                        .rounded(px(7.0))
-                        .cursor_pointer()
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_primary())
-                        .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
-                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                        .child(ai_provider_icon(
-                            backend,
-                            14.0,
-                            ShellDeckColors::text_primary(),
-                        ))
-                        .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
-                        .when(selected, |el| {
-                            el.child(lucide_icon("check", 13.0, ShellDeckColors::primary()))
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.backend_menu_open = false;
-                            cx.emit(AiAssistantEvent::SelectBackend(backend));
-                            cx.notify();
-                        })),
-                );
-            }
-            root = root.child(
-                // Dismiss layer: a click anywhere else closes the menu.
-                div()
-                    .id("ai-backend-menu-backdrop")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .occlude()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _e, _window, cx| {
-                            this.backend_menu_open = false;
-                            cx.notify();
-                        }),
-                    )
-                    .child(menu),
-            );
-        }
-
-        if let Some(menu) = self.render_attach_menu(history_column_visible, cx) {
-            root = root.child(menu);
-        }
-        if let Some(picker) = self.render_mention_picker(history_column_visible, cx) {
-            root = root.child(picker);
-        }
-
-        // Last children: the annotator and the image viewer each own the whole
-        // surface while open.
-        if let Some(annotator) = self.render_capture_annotator() {
-            root = root.child(annotator);
-        }
-        if let Some(lightbox) = self.render_attachment_lightbox() {
-            root = root.child(lightbox);
-        }
-
-        if let Some(delete_id) = self.pending_delete {
-            root = root.child(
-                UiDialog::new()
-                    .width(gpui::px(420.0))
-                    .header(
-                        div()
-                            .px(px(16.0))
-                            .py(px(14.0))
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(t!("ai.history.delete_title").to_string()),
-                    )
-                    .content(
-                        div()
-                            .px(px(16.0))
-                            .pb(px(16.0))
-                            .text_size(px(12.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("ai.history.delete_description").to_string()),
-                    )
-                    .footer(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .gap(px(8.0))
-                            .p(px(12.0))
-                            .border_t_1()
-                            .border_color(ShellDeckColors::border())
-                            .child(
-                                Button::new("ai-delete-cancel", t!("scripts.cancel").to_string())
-                                    .variant(ButtonVariant::Ghost)
-                                    .size(ButtonSize::Sm)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.pending_delete = None;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new(
-                                    "ai-delete-confirm",
-                                    t!("ai.history.delete").to_string(),
-                                )
-                                .variant(ButtonVariant::Destructive)
-                                .size(ButtonSize::Sm)
-                                .icon(IconSource::from("trash-2"))
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.delete_conversation(delete_id, cx);
-                                    },
-                                )),
-                            ),
-                    )
-                    .on_backdrop_click({
-                        let entity = cx.entity();
-                        move |_, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.pending_delete = None;
-                                cx.notify();
-                            });
-                        }
-                    }),
-            );
-        }
-
-        if let Some(action) = self.markdown_link_action.clone() {
-            let parent = cx.entity();
-            root = root.child(markdown_link_popover(action, move |cx| {
-                parent.update(cx, |this, cx| {
-                    this.markdown_link_action = None;
-                    cx.notify();
-                });
-            }));
-        }
-
-        root
+        self.render_overlay_panels(root, history_column_visible, cx)
+            .into_any_element()
     }
 }
 

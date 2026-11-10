@@ -186,7 +186,7 @@ impl Workspace {
             ]);
         }
 
-        if signed_in && ai_configured {
+        if signed_in && (ai_configured || allowed_modes.contains(&AppMode::Dev)) {
             actions.push(PaletteAction::new(
                 t!("palette.open_ai").to_string(),
                 Some("Ctrl+Shift+K"),
@@ -583,6 +583,14 @@ mod tests {
         let unconfigured = Workspace::base_palette_actions(allowed, AppMode::User, false, false);
         assert!(!contains_action::<OpenAiAssistant>(&unconfigured));
         assert!(!contains_action::<OpenClippy>(&unconfigured));
+        let agents_enabled = Workspace::base_palette_actions(
+            &[AppMode::User, AppMode::Support, AppMode::Dev],
+            AppMode::Dev,
+            false,
+            false,
+        );
+        assert!(contains_action::<OpenAiAssistant>(&agents_enabled));
+        assert!(!contains_action::<OpenClippy>(&agents_enabled));
     }
 
     // SDTEST-1602 — the standalone palette is available before login, but it

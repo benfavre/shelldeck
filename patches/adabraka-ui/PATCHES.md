@@ -1207,3 +1207,36 @@ inventory. SDPATCH-008 is an adapter and carries no marker of its own.)
 - **Why**: Personal Settings owns its own header, navigation and scrolling body. A reusable render callback keeps that entity visible across dialog repaints without nesting another padded scroll surface; existing static dialog callers are unchanged. Its full-window backdrop paints the floating window radius directly on the background layer, leaving maximized windows square and pane-local dialogs unchanged.
 - **Validation**: Rendered Settings dialog interaction and narrow viewport checks.
 - **Upstream status**: not filed yet — backward-compatible content slot.
+
+### SDPATCH-129 — Hover disclosure icons without hiding button labels
+
+- **Files / symbols**: `src/components/button.rs` — `render_icon`, `Button::icon_hover_group`, `Button::new`, `Button::icon_visible_on_hover`, both icon-position render branches.
+- **Markers**:
+  - `// ShellDeck patch: SDPATCH-129 — reveal disclosure icons on group hover or keyboard focus without shifting labels.`
+  - `// ShellDeck patch: SDPATCH-129 — optional disclosure-icon hover group.`
+  - `// ShellDeck patch: SDPATCH-129 — ordinary button icons stay visible.`
+  - `// ShellDeck patch: SDPATCH-129 — keep the label clickable while revealing only its icon.`
+  - `// ShellDeck patch: SDPATCH-129 — hover visibility applies to either icon position.` (both branches)
+- **Why**: Sidebar disclosures should reveal their chevron on hover or keyboard focus while keeping names visible, clickable and stationary. Defaults preserve existing buttons and loading indicators.
+- **Validation**: Agents rendered sidebar disclosure, search, keyboard/menu and layout regressions (SDTEST-2935).
+- **Upstream status**: not filed yet — backward-compatible icon visibility API.
+
+SDPATCH-129 semantic-icon follow-up (2026-11-10): `Button::icon_when_not_hovered`
+exchanges a resting folder/server/cloud icon with the disclosure in the same
+slot; normal buttons retain their defaults. Additional markers in `button.rs`:
+- `// ShellDeck patch: SDPATCH-129 — retain a semantic icon until disclosure is hovered.`
+- `// ShellDeck patch: SDPATCH-129 — no replacement icon unless explicitly requested.`
+- `// ShellDeck patch: SDPATCH-129 — exchange the resting icon and chevron in one fixed slot.`
+Both icon-position call sites pass the optional resting icon to `render_icon`.
+
+### SDPATCH-130 — Nested buttons let their navigation row own the hover surface
+
+- **Files / symbols**: `src/components/button.rs` — optional hover background, constructor, builder and variant resolution.
+- **Markers**:
+  - `// ShellDeck patch: SDPATCH-130 — row containers can own the hover surface.`
+  - `// ShellDeck patch: SDPATCH-130 — preserve ordinary button hover defaults.`
+  - `// ShellDeck patch: SDPATCH-130 — customize nested action chrome without losing button behavior.`
+  - `// ShellDeck patch: SDPATCH-130 — use the caller's surface after resolving the variant.`
+- **Why**: A project header has distinct disclosure, label and action targets but one rounded hover surface. Transparent child hover backgrounds avoid fragmented accent tiles while retaining focus rings, tooltips and event handling. Unconfigured buttons keep existing styling.
+- **Validation**: Rendered navigation/disclosure/action-menu and header-alignment regressions (SDTEST-2934–2936).
+- **Upstream status**: not filed yet — backward-compatible style option.

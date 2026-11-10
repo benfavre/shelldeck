@@ -36,13 +36,47 @@ impl ButtonFocusState {
 }
 
 /// Render an icon from IconSource
-fn render_icon(icon_src: IconSource, size: Pixels, color: Hsla) -> impl IntoElement {
+// ShellDeck patch: SDPATCH-129 — reveal disclosure icons on group hover or keyboard focus without shifting labels.
+fn render_icon(
+    icon_src: IconSource,
+    size: Pixels,
+    color: Hsla,
+    hover_group: Option<SharedString>,
+    focused: bool,
+    resting_icon: Option<IconSource>,
+) -> impl IntoElement {
     let svg_path = match icon_src {
         IconSource::FilePath(path) => path,
         IconSource::Named(name) => SharedString::from(resolve_icon_path(&name)),
     };
 
-    svg().path(svg_path).size(size).text_color(color)
+    div()
+        .relative()
+        .size(size)
+        .flex_shrink_0()
+        .child(
+            div()
+                .size(size)
+                .when_some(hover_group.clone(), |icon, group| {
+                    icon.opacity(if focused { 1.0 } else { 0.0 })
+                        .group_hover(group, |style| style.opacity(1.0))
+                })
+                .child(svg().path(svg_path).size(size).text_color(color)),
+        )
+        .when_some(resting_icon.zip(hover_group), |slot, (resting, group)| {
+            let resting_path = match resting {
+                IconSource::FilePath(path) => path,
+                IconSource::Named(name) => SharedString::from(resolve_icon_path(&name)),
+            };
+            slot.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .opacity(if focused { 0.0 } else { 1.0 })
+                    .group_hover(group, |style| style.opacity(0.0))
+                    .child(svg().path(resting_path).size(size).text_color(color)),
+            )
+        })
 }
 
 /// Render a loading spinner
@@ -79,11 +113,17 @@ pub struct Button {
     base: Stateful<Div>,
     label: SharedString,
     variant: ButtonVariant,
+    // ShellDeck patch: SDPATCH-130 — row containers can own the hover surface.
+    hover_background: Option<Hsla>,
     size: ButtonSize,
     disabled: bool,
     selected: bool,
     loading: bool,
     icon: Option<IconSource>,
+    // ShellDeck patch: SDPATCH-129 — optional disclosure-icon hover group.
+    icon_hover_group: Option<SharedString>,
+    // ShellDeck patch: SDPATCH-129 — retain a semantic icon until disclosure is hovered.
+    icon_resting: Option<IconSource>,
     icon_position: IconPosition,
     tooltip: Option<SharedString>,
     on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
@@ -113,11 +153,17 @@ impl Button {
             base: div().flex_shrink_0().id(id),
             label,
             variant: ButtonVariant::Default,
+            // ShellDeck patch: SDPATCH-130 — preserve ordinary button hover defaults.
+            hover_background: None,
             size: ButtonSize::Md,
             disabled: false,
             selected: false,
             loading: false,
             icon: None,
+            // ShellDeck patch: SDPATCH-129 — ordinary button icons stay visible.
+            icon_hover_group: None,
+            // ShellDeck patch: SDPATCH-129 — no replacement icon unless explicitly requested.
+            icon_resting: None,
             icon_position: IconPosition::Start,
             tooltip: None,
             on_click: None,
@@ -143,6 +189,12 @@ impl Button {
         self
     }
 
+    // ShellDeck patch: SDPATCH-130 — customize nested action chrome without losing button behavior.
+    pub fn hover_background(mut self, color: Hsla) -> Self {
+        self.hover_background = Some(color);
+        self
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -160,6 +212,18 @@ impl Button {
 
     pub fn icon(mut self, icon: impl Into<IconSource>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    // ShellDeck patch: SDPATCH-129 — keep the label clickable while revealing only its icon.
+    pub fn icon_visible_on_hover(mut self, group: impl Into<SharedString>) -> Self {
+        self.icon_hover_group = Some(group.into());
+        self
+    }
+
+    // ShellDeck patch: SDPATCH-129 — exchange the resting icon and chevron in one fixed slot.
+    pub fn icon_when_not_hovered(mut self, icon: impl Into<IconSource>) -> Self {
+        self.icon_resting = Some(icon.into());
         self
     }
 
@@ -277,6 +341,8 @@ impl RenderOnce for Button {
             ),
         };
 
+        // ShellDeck patch: SDPATCH-130 — use the caller's surface after resolving the variant.
+        let hover_bg = self.hover_background.unwrap_or(hover_bg);
         let clickable = self.clickable();
         let has_label = !self.label.is_empty();
         let handler = self.on_click.clone();
@@ -385,7 +451,15 @@ impl RenderOnce for Button {
                     .gap_2()
                     .when(icon_pos == IconPosition::Start && !is_loading, |this| {
                         this.when_some(icon.clone(), |this, icon_src| {
-                            this.child(render_icon(icon_src, icon_size, fg))
+                            // ShellDeck patch: SDPATCH-129 — hover visibility applies to either icon position.
+                            this.child(render_icon(
+                                icon_src,
+                                icon_size,
+                                fg,
+                                self.icon_hover_group.clone(),
+                                is_focused,
+                                self.icon_resting.clone(),
+                            ))
                         })
                     })
                     .when(is_loading && icon_pos == IconPosition::Start, |this| {
@@ -400,7 +474,15 @@ impl RenderOnce for Button {
                     })
                     .when(icon_pos == IconPosition::End && !is_loading, |this| {
                         this.when_some(icon.clone(), |this, icon_src| {
-                            this.child(render_icon(icon_src, icon_size, fg))
+                            // ShellDeck patch: SDPATCH-129 — hover visibility applies to either icon position.
+                            this.child(render_icon(
+                                icon_src,
+                                icon_size,
+                                fg,
+                                self.icon_hover_group.clone(),
+                                is_focused,
+                                self.icon_resting.clone(),
+                            ))
                         })
                     })
                     .when(is_loading && icon_pos == IconPosition::End, |this| {

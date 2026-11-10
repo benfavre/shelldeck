@@ -241,22 +241,35 @@ impl AgentConsoleView {
         cx.notify();
     }
 
-    pub(super) fn project_actions_button(&self, id: &str, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn project_actions_button(
+        &self,
+        id: &str,
+        hover_group: SharedString,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let parent = cx.entity();
         let id = id.to_owned();
         let selector = format!("agent-project-menu-{id}");
         Popover::new(SharedString::from(selector.clone()))
             .anchor(Corner::TopRight)
             .trigger(
-                Button::new(SharedString::from(selector.clone()), "")
-                    .debug_selector(move || selector.clone())
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Icon)
-                    .icon(IconSource::from("ellipsis"))
-                    .w(px(24.0))
-                    .h(px(24.0))
+                // Hide only the trigger; the open menu must survive leaving the header.
+                div()
                     .flex_shrink_0()
-                    .tooltip(t!("agents.project.actions").to_string()),
+                    .opacity(0.0)
+                    .group_hover(hover_group, |style| style.opacity(1.0))
+                    .child(
+                        Button::new(SharedString::from(selector.clone()), "")
+                            .debug_selector(move || selector.clone())
+                            .variant(ButtonVariant::Ghost)
+                            .hover_background(gpui::transparent_black())
+                            .size(ButtonSize::Icon)
+                            .icon(IconSource::from("ellipsis"))
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .flex_shrink_0()
+                            .tooltip(t!("agents.project.actions").to_string()),
+                    ),
             )
             .content(move |window, cx| {
                 let parent = parent.clone();
@@ -306,6 +319,31 @@ impl AgentConsoleView {
                                 },
                             )),
                         );
+                        if let [tree] = project.worktrees.as_slice() {
+                            menu = menu.child(
+                                div()
+                                    .px(px(8.0))
+                                    .py(px(4.0))
+                                    .min_w_0()
+                                    .text_size(px(11.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(tree.path.clone()),
+                            );
+                            if let Some(branch) = &tree.branch {
+                                menu = menu.child(
+                                    div()
+                                        .px(px(8.0))
+                                        .min_w_0()
+                                        .text_size(px(11.0))
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(branch.clone()),
+                                );
+                            }
+                        }
                         if let Some(tree) = project.worktrees.first() {
                             let tree_new = tree.clone();
                             let path = tree.path.clone();

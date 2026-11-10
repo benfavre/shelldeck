@@ -1,22 +1,15 @@
 use super::*;
-use crate::monolith::{animated_monolith, MonolithMotion};
 use crate::window_chrome::resize_edge;
 
-/// Courbe du voile de transition, rapportée à la durée *de cette*
-/// transition : le palier n'est plus constant depuis que le retour dans un
-/// mode déjà ouvert est court.
-fn mode_transition_overlay_opacity(delta: f32, loading_ms: u64) -> f32 {
-    let total_ms = (MODE_TRANSITION_OUT_MS + loading_ms + MODE_TRANSITION_IN_MS) as f32;
+/// A short crossfade with no artificial loading hold.
+fn mode_transition_overlay_opacity(delta: f32) -> f32 {
+    let midpoint =
+        MODE_TRANSITION_OUT_MS as f32 / (MODE_TRANSITION_OUT_MS + MODE_TRANSITION_IN_MS) as f32;
     let delta = delta.clamp(0.0, 1.0);
-    let fade_out_end = MODE_TRANSITION_OUT_MS as f32 / total_ms;
-    let fade_in_start = (MODE_TRANSITION_OUT_MS + loading_ms) as f32 / total_ms;
-
-    if delta < fade_out_end {
-        ease_in_out(delta / fade_out_end)
-    } else if delta < fade_in_start {
-        1.0
+    if delta < midpoint {
+        ease_in_out(delta / midpoint)
     } else {
-        1.0 - ease_in_out((delta - fade_in_start) / (1.0 - fade_in_start))
+        1.0 - ease_in_out((delta - midpoint) / (1.0 - midpoint))
     }
 }
 
@@ -28,27 +21,8 @@ impl Workspace {
     fn render_mode_transition_loader(
         &self,
         transition: ModeTransition,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let mode_label = match transition.target {
-            AppMode::User => t!("mode.transition.user").to_string(),
-            AppMode::Support => t!("mode.transition.support").to_string(),
-            AppMode::Dev => t!("mode.transition.dev").to_string(),
-        };
-        let (mascot_motion, subtitle) = match transition.target {
-            AppMode::User => (
-                MonolithMotion::UserCompanion,
-                t!("mode.transition.subtitle.user").to_string(),
-            ),
-            AppMode::Support => (
-                MonolithMotion::SupportScan,
-                t!("mode.transition.subtitle.support").to_string(),
-            ),
-            AppMode::Dev => (
-                MonolithMotion::DevTyping,
-                t!("mode.transition.subtitle.dev").to_string(),
-            ),
-        };
         div()
             .id("mode-transition-loader")
             .occlude()
@@ -63,43 +37,10 @@ impl Workspace {
             .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                 cx.stop_propagation();
             })
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(14.0))
-                    .child(animated_monolith(
-                        "mode-transition-mascot",
-                        166.0,
-                        mascot_motion,
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .text_size(px(18.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(
-                                t!("mode.transition.title", mode = mode_label.as_str()).to_string(),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(subtitle),
-                    ),
-            )
             .with_animation(
                 SharedString::from(format!("mode-loader-{:?}", transition.target)),
                 Animation::new(std::time::Duration::from_millis(transition.total_ms())),
-                move |element, delta| {
-                    element.opacity(mode_transition_overlay_opacity(
-                        delta,
-                        transition.loading_ms,
-                    ))
-                },
+                move |element, delta| element.opacity(mode_transition_overlay_opacity(delta)),
             )
     }
 }
@@ -138,14 +79,11 @@ impl Render for Workspace {
             _window.set_rem_size(gpui::px(rem_size_for_scale(scale)));
         }
 
-        // The menu row reads a dozen pieces of state (mode, sign-in, sidebar,
-        // Monique/Fleet availability, AI); rebuilding it here keeps it honest
-        // without a subscription per input.
+        // Sample the live menu context, reusing items when its inputs match.
         let logical_width = _window.viewport_size().width.to_f64() as f32 * crate::scale::REM_BASE
             / _window.rem_size().to_f64() as f32;
         self.rebuild_menu_bar(logical_width, _cx);
-        // Same reasoning: the contextual panel reads several live entities
-        // with no shared change signal.
+        // Only visible contextual panels need owned row summaries.
         if self.effective_mode() == AppMode::Dev && !agents_presentation {
             self.refresh_sidebar_panels(_cx);
         }
@@ -211,7 +149,13 @@ impl Render for Workspace {
                             content = content.child(self.workspace_hub.clone())
                         }
                         ActiveView::Terminal => content = content.child(self.terminal.clone()),
-                        ActiveView::Agents => content = content.child(self.agent_console.clone()),
+                        ActiveView::Agents => {
+                            if self.companion_owns_agents(_cx) {
+                                content = content.child(self.render_agents_in_companion(_cx));
+                            } else {
+                                content = content.child(self.agent_console.clone());
+                            }
+                        }
                         ActiveView::Scripts => content = content.child(self.scripts.clone()),
                         ActiveView::PortForwards => {
                             content = content.child(self.port_forwards.clone())
@@ -587,6 +531,7 @@ impl Render for Workspace {
                 None
             },
             self.ai_available_for_current_surface(_cx),
+            self.can_access_mode(AppMode::Dev) || self.ai_available_for_current_surface(_cx),
             self.ai_dock_open,
             self.ai_tasks
                 .iter()
@@ -809,39 +754,19 @@ impl Render for Workspace {
 mod tests {
     use super::{
         mode_transition_overlay_opacity, workspace_status_bar_visible, AppMode,
-        MODE_TRANSITION_IN_MS, MODE_TRANSITION_LOADING_MS, MODE_TRANSITION_LOADING_REPEAT_MS,
-        MODE_TRANSITION_OUT_MS, MODE_TRANSITION_TOTAL_MS,
+        MODE_TRANSITION_IN_MS, MODE_TRANSITION_OUT_MS,
     };
 
-    /// SDTEST-1703 — la courbe suit la durée réelle de la transition.
-    ///
-    /// Le palier était constant à 2,54 s, soit trois secondes pleines à chaque
-    /// aller-retour Support ↔ Dev alors que rien ne charge : les entités Dev
-    /// sont masquées, pas détruites. Il est désormais long à la première
-    /// entrée dans un mode et court ensuite — la courbe doit donc rester
-    /// correcte pour les deux, sinon le voile disparaît avant la fin ou reste
-    /// après.
+    // SDTEST-1703 — the brief veil covers the commit midpoint and clears fully.
     #[test]
-    fn mode_transition_loader_fades_in_holds_then_fades_out() {
-        for loading_ms in [
-            MODE_TRANSITION_LOADING_MS,
-            MODE_TRANSITION_LOADING_REPEAT_MS,
-        ] {
-            let total = (MODE_TRANSITION_OUT_MS + loading_ms + MODE_TRANSITION_IN_MS) as f32;
-            let hold_delta = (MODE_TRANSITION_OUT_MS + loading_ms / 2) as f32 / total;
-
-            assert_eq!(mode_transition_overlay_opacity(0.0, loading_ms), 0.0);
-            assert_eq!(mode_transition_overlay_opacity(hold_delta, loading_ms), 1.0);
-            assert_eq!(mode_transition_overlay_opacity(1.0, loading_ms), 0.0);
-        }
-        assert_eq!(MODE_TRANSITION_TOTAL_MS, 3_000);
-        const {
-            assert!(
-                MODE_TRANSITION_LOADING_REPEAT_MS < MODE_TRANSITION_LOADING_MS,
-                "un retour dans un mode déjà ouvert ne doit pas coûter plus cher \
-                 que la première entrée"
-            )
-        };
+    fn mode_transition_loader_fades_without_a_loading_hold() {
+        let midpoint =
+            MODE_TRANSITION_OUT_MS as f32 / (MODE_TRANSITION_OUT_MS + MODE_TRANSITION_IN_MS) as f32;
+        assert_eq!(mode_transition_overlay_opacity(0.0), 0.0);
+        assert_eq!(mode_transition_overlay_opacity(midpoint), 1.0);
+        assert_eq!(mode_transition_overlay_opacity(1.0), 0.0);
+        assert!(mode_transition_overlay_opacity(midpoint / 2.0) > 0.0);
+        assert!(mode_transition_overlay_opacity((1.0 + midpoint) / 2.0) < 1.0);
     }
 
     // SDTEST-1616

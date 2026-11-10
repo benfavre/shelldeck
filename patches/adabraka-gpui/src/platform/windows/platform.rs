@@ -1265,7 +1265,8 @@ impl WindowsPlatformInner {
             _ => None,
         };
         if let Some(event) = event {
-            if event == TrayIconEvent::RightClick {
+            // ShellDeck patch: SDPATCH-132 — primary clicks open the same native dropdown as secondary clicks.
+            if matches!(event, TrayIconEvent::LeftClick | TrayIconEvent::RightClick) {
                 let mut tray = self.state.borrow_mut().tray.take();
                 if let Some(ref mut t) = tray {
                     t.show_context_menu(handle);
