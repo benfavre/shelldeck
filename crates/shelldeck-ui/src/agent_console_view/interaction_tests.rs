@@ -4086,3 +4086,121 @@ fn rendered_local_cli_discovery_keeps_identity_drafts_and_last_good_results() {
         )));
     }
 }
+
+// SDTEST-2953 — actual pane-edge input, release outside the pane, UI scaling,
+// durable width and responsive overlays must preserve the selected draft.
+#[::core::prelude::v1::test]
+fn rendered_projects_sidebar_resizes_resets_and_restores_without_losing_drafts() {
+    for (theme, width, rem) in [
+        (ThemePreference::Dark, 1280.0, 16.0),
+        (ThemePreference::SolarizedLight, 1280.0, 20.0),
+        (ThemePreference::Dark, 620.0, 16.0),
+        (ThemePreference::SolarizedLight, 620.0, 20.0),
+    ] {
+        let mut ui = Cockpit::new(theme, width, 800.0, false);
+        ui.type_draft("Keep my sidebar resize draft · é🌍");
+        ui.window
+            .update(|window, _| window.set_rem_size(gpui::px(rem)));
+        ui.open_navigator();
+        let scale = rem / 16.0;
+        let initial = ui.bounds("agent-navigator").unwrap();
+        let start = ui.bounds("agent-navigator-resize-handle").unwrap().center();
+        ui.window
+            .simulate_mouse_move(start, None, Modifiers::none());
+        ui.window.simulate_event(MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 1,
+            ..Default::default()
+        });
+        ui.redraw();
+        let target = start + point(gpui::px(100.0 * scale), gpui::px(0.0));
+        ui.window
+            .simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::none());
+        ui.redraw();
+        let grown = ui.bounds("agent-navigator").unwrap();
+        assert!(
+            (grown.size.width - initial.size.width - gpui::px(100.0 * scale)).abs() < gpui::px(2.0)
+        );
+        let outside = point(gpui::px(width + 30.0), gpui::px(-10.0));
+        ui.window.simulate_event(MouseUpEvent {
+            position: outside,
+            button: MouseButton::Left,
+            ..Default::default()
+        });
+        ui.redraw();
+        ui.view.read_with(&ui.app, |view, _| {
+            assert!(view.tools.navigator_resize.is_none());
+            assert_eq!(view.sessions.selected_id(), Some(ui.session));
+        });
+        let saved = ui.view.update(&mut ui.app, |view, cx| {
+            view.flush_library(cx).unwrap();
+            view.draft_store().load(now_ms()).unwrap()
+        });
+        assert_eq!(saved.preferences.navigator_width, 380);
+        assert_eq!(
+            saved.drafts[&ui.session],
+            "Keep my sidebar resize draft · é🌍"
+        );
+        assert_eq!(ui.draft(), "Keep my sidebar resize draft · é🌍");
+
+        // A normal pointer move after releasing outside cannot keep resizing.
+        ui.window
+            .simulate_mouse_move(start, None, Modifiers::none());
+        ui.redraw();
+        assert_eq!(
+            ui.bounds("agent-navigator").unwrap().size.width,
+            grown.size.width
+        );
+
+        let start = ui.bounds("agent-navigator-resize-handle").unwrap().center();
+        ui.window.simulate_event(MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 1,
+            ..Default::default()
+        });
+        ui.redraw();
+        ui.window.simulate_mouse_move(
+            point(gpui::px(-1000.0), start.y),
+            Some(MouseButton::Left),
+            Modifiers::none(),
+        );
+        ui.redraw();
+        ui.window.simulate_event(MouseUpEvent {
+            position: outside,
+            button: MouseButton::Left,
+            ..Default::default()
+        });
+        ui.redraw();
+        assert!(
+            (ui.bounds("agent-navigator").unwrap().size.width - gpui::px(180.0 * scale)).abs()
+                < gpui::px(2.0)
+        );
+
+        let edge = ui.bounds("agent-navigator-resize-handle").unwrap().center();
+        ui.window.simulate_event(MouseDownEvent {
+            position: edge,
+            button: MouseButton::Left,
+            click_count: 2,
+            ..Default::default()
+        });
+        ui.window.simulate_event(MouseUpEvent {
+            position: edge,
+            button: MouseButton::Left,
+            click_count: 2,
+            ..Default::default()
+        });
+        ui.redraw();
+        assert!(
+            (ui.bounds("agent-navigator").unwrap().size.width - gpui::px(280.0 * scale)).abs()
+                < gpui::px(2.0)
+        );
+        assert_eq!(ui.draft(), "Keep my sidebar resize draft · é🌍");
+        assert!(!ui
+            .events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+    }
+}

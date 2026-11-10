@@ -425,7 +425,11 @@ impl AgentConsoleView {
             .into_any_element()
     }
 
-    pub(super) fn render_remote_session(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_remote_session(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         self.surface_focus_requested = false;
         let mut root = div()
             .id("agent-remote-cockpit")
@@ -442,13 +446,13 @@ impl AgentConsoleView {
             .bg(ShellDeckColors::bg_primary())
             .text_color(ShellDeckColors::text_primary());
         if self.tools.navigator_wide && self.tools.navigator_visible {
-            root = root.child(self.render_navigator(cx));
+            root = root.child(self.render_navigator(window, cx));
         }
         if let Some(source) = self.remote_sessions.source.clone() {
             root = root.child(source.update(cx, |view, cx| view.render_agent_session(cx)));
         }
         if !self.tools.navigator_wide && self.tools.navigator_overlay {
-            root = root.child(self.render_navigator_overlay(cx));
+            root = root.child(self.render_navigator_overlay(window, cx));
         }
         if let Some(dialog) = self.render_project_removal(cx) {
             root = root.child(dialog);

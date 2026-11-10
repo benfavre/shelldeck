@@ -814,7 +814,11 @@ impl AgentConsoleView {
         });
         cx.notify();
     }
-    pub(super) fn render_ssh_session_preview(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_ssh_session_preview(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some((connection_id, session)) = self.ssh_sessions.preview.clone() else {
             return div().into_any_element();
         };
@@ -957,11 +961,11 @@ impl AgentConsoleView {
             .bg(ShellDeckColors::bg_primary())
             .text_color(ShellDeckColors::text_primary());
         if self.tools.navigator_wide && self.tools.navigator_visible {
-            root = root.child(self.render_navigator(cx));
+            root = root.child(self.render_navigator(window, cx));
         }
         root = root.child(details);
         if !self.tools.navigator_wide && self.tools.navigator_overlay {
-            root = root.child(self.render_navigator_overlay(cx));
+            root = root.child(self.render_navigator_overlay(window, cx));
         }
         if let Some(dialog) = self.render_project_removal(cx) {
             root = root.child(dialog);

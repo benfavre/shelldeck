@@ -576,3 +576,21 @@ not been verified in this session.
 - **Native startup smoke:** the provider-free native fixture ran at 900×700 in French/Solarized Light with `SHELLDECK_PREVIEW_LOCAL=1` and disposable XDG roots, exiting normally. This confirms native startup, not pixel appearance or a manual click walkthrough. Native pixel review, Windows/macOS runtime checks and a live provider resume/send remain separate gates.
 
 The user's native screenshot confirmed local discovery and provider marks rendering, then identified extra title indentation. The follow-up moves sidebar marks into the existing tree gutter: retained labels keep their exact previous left edge, native Button labels retain their original padding, and the mark remains clickable. The rendered sidebar-spacing and local-discovery journeys now assert these positions and icon-click routing.
+
+## Evidence recorded 2026-11-10 — Projects sidebar resizing
+
+- **Automated regression:** all 385 UI library tests passed with disposable XDG
+  roots. SDTEST-2953 dispatches actual handle input at 16/20px rem sizes in
+  desktop/narrow layouts and Dark/Solarized Light, checks outside release,
+  serialized width/draft retention, minimum width and double-click reset.
+- **Native fixture clicked:** production `agent-console-preview`, native X11
+  on the GNOME compositor, disposable profiles, no provider execution. Both
+  themes passed 280 → 440px dragging, release below the window, saved width,
+  double-click reset to 280px and the 480px upper bound. Draft text stayed
+  unchanged and the composer remained contained. Screenshots and JSON receipts:
+  `/tmp/shelldeck-sidebar-resize-native-73z7uq9o` (Dark) and
+  `/tmp/shelldeck-sidebar-resize-native-t37e0b_l` (Solarized Light).
+- **Build:** locked production release build passed for `shelldeck` and
+  `agent-console-preview`. The installed build retains the release update
+  verification key. No live provider, SSH, Google account or browser-password
+  integration is claimed by these checks.
