@@ -2809,6 +2809,13 @@ agents.editor.remote_requirements = "Les fichiers distants nécessitent Python 3
 agents.editor.agent_access = "Agent : %{access}"
 agents.explorer.copy_path = "Copier le chemin du dossier : %{path}"
 
+native_browser.chrome_empty = "Chrome démarre dans ce panneau. Connectez votre compte Google dans Chrome pour synchroniser vos mots de passe."
+native_browser.use_chrome = "Google Chrome"
+native_browser.use_chromium = "Chromium intégré"
+native_browser.chrome_preview = "Google Chrome · Aperçu"
+native_browser.chrome_status = "Google Chrome · Navigation manuelle"
+native_browser.chrome_info = "Ouvrir Chrome dans ce panneau. Connectez votre compte Google une fois pour synchroniser vos mots de passe. Le profil reste dans l’application. Aperçu Linux : Chrome, Xvfb et Python 3 requis."
+native_browser.chrome_requirements = "L’aperçu Google Chrome nécessite Linux, Google Chrome, Xvfb et Python 3. Le navigateur Chromium intégré reste disponible."
 native_browser.manual_only = "Navigation manuelle · outils navigateur indisponibles pour cet agent"
 native_browser.start_failed = "Le navigateur n’a pas pu démarrer. Réessayez ; si le problème persiste, consultez les journaux."
 native_browser.title = "Navigateur intégré"

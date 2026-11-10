@@ -1565,14 +1565,15 @@ fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
             let guide = ui.bounds("agent-tree-children-catalog").unwrap();
             let parent = ui.bounds("agent-project-collapse-catalog").unwrap();
             let child = ui.bounds(&format!("agent-nav-session-{first}")).unwrap();
+            let title = ui.bounds(&format!("agent-nav-title-{first}")).unwrap();
             assert_eq!(
                 guide.left(),
                 parent.center().x,
                 "the guide aligns beneath its parent chevron"
             );
             assert!(
-                child.left() >= guide.left() + gpui::px(6.0) && child.right() <= guide.right(),
-                "conversation controls stay inset and contained beside the guide"
+                title.left() >= guide.left() + gpui::px(6.0) && child.right() <= guide.right(),
+                "conversation titles and actions stay inset beside the guide; provider marks occupy its gutter"
             );
             if matches!(&theme, ThemePreference::SolarizedLight) {
                 assert!(
@@ -3535,11 +3536,15 @@ fn rendered_plain_sidebar_project_names_toggle_and_hover_menus_stay_interactive(
         let mark = ui
             .bounds(&format!("agent-nav-provider-{current}-codex"))
             .unwrap();
-        assert_eq!(
-            row.left(),
-            title.left(),
-            "provider marks must not shift conversation labels"
+        let highlight = ui
+            .bounds(&format!("agent-nav-highlight-{current}"))
+            .unwrap();
+        assert!(
+            highlight.contains(&mark.center()),
+            "The full provider mark belongs to the highlight"
         );
+        assert!(mark.left() >= highlight.left() + gpui::px(4.0));
+        assert!(row.contains(&mark.center()) && row.contains(&title.center()));
         assert_eq!(
             title.left() - mark.right(),
             gpui::px(7.0),
@@ -3986,10 +3991,11 @@ fn rendered_local_cli_discovery_keeps_identity_drafts_and_last_good_results() {
         let row = "agent-ssh-conversation-local-Codex-existing-local-thread";
         let native_row = ui.bounds(row).unwrap();
         let native_mark = ui.bounds(&format!("{row}-provider")).unwrap();
-        assert_eq!(
-            native_row.left() + gpui::px(12.0) - native_mark.right(),
-            gpui::px(7.0),
-            "native icons use the gutter without adding label indentation"
+        assert!(native_mark.left() >= native_row.left() + gpui::px(4.0));
+        assert!(native_mark.right() <= native_row.right() - gpui::px(4.0));
+        assert!(
+            native_row.contains(&native_mark.center()),
+            "Provider belongs inside the row highlight"
         );
         ui.click_navigation(&format!("{row}-provider"));
         ui.click("agent-ssh-reconnect");
@@ -4051,6 +4057,11 @@ fn rendered_local_cli_discovery_keeps_identity_drafts_and_last_good_results() {
             .bounds(&format!("agent-nav-provider-{imported}-codex"))
             .unwrap();
         assert!(mark.size.width >= gpui::px(12.0) && mark.size.height >= gpui::px(12.0));
+        let highlight = ui
+            .bounds(&format!("agent-nav-highlight-{imported}"))
+            .unwrap();
+        assert!(mark.left() >= highlight.left() + gpui::px(4.0));
+        assert!(mark.right() <= highlight.right() - gpui::px(4.0));
         // Refresh failure retains the selectable last successful inventory.
         ui.click_navigation("native-refresh-local");
         let refresh = ui

@@ -484,6 +484,7 @@ mod tests {
                 "logout",
             ),
             (AgentProvider::Claude, AgentTarget::Local, "local"),
+            (AgentProvider::Codex, AgentTarget::Local, "chrome"),
             (
                 AgentProvider::Jcode,
                 AgentTarget::Ssh {
@@ -540,7 +541,7 @@ mod tests {
                 let id = client.create_tab("about:blank", 800, 600, 1.0).unwrap();
                 let browser = cx.new(|cx| {
                     let mut browser = NativeBrowserView::new("fixture".into(), cx);
-                    browser.bind_fixture_client(client, id);
+                    browser.bind_fixture_client(client, id, disposition == "chrome");
                     browser
                 });
                 let subscription = cx.subscribe(&browser, |_, _, _, _| {});
@@ -561,7 +562,7 @@ mod tests {
                 let bridge = view
                     .attach_browser_tools(&request, &mut options, cx)
                     .unwrap();
-                if disposition == "unsupported" {
+                if matches!(disposition, "unsupported" | "chrome") {
                     assert!(bridge.is_none());
                     assert!(options.mcp_servers.is_empty());
                     assert!(view.live_browsers.grants.is_empty());

@@ -3375,6 +3375,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 - **2026-10-31** — SDUC-557: Claude Code and Codex runs over SSH can share the desktop browser through a scoped reverse forward and private temporary MCP adapter. SDTEST-2862–2867 cover transport, launch configuration, lifecycle and native CEF.
 
+- **2026-11-10** — SDUC-573: opt-in full Google Chrome preview retains native password prompts, profile state and user-owned sync; personal Chrome UI never receives page-scoped agent grants (SDTEST-2954, SDTEST-2866).
+- **2026-11-10** — SDUC-564/572: provider marks share the complete conversation-row highlight, retaining the original title alignment (SDTEST-2934/2952).
 - **2026-11-10** — SDUC-564: Projects supports scale-aware edge dragging, saved width, responsive bounds and double-click reset (SDTEST-2953).
 - **2026-11-09** — SDUC-564: sidebar project removal supports retained workspaces, persists across restart and restores the same identity on explicit re-add (SDTEST-2930/2931).
 - **2026-11-09** — SDUC-564: project menus support durable project renaming with validation and failed-write recovery.
@@ -5042,3 +5044,26 @@ Conversation rows and tabs show the agent mark separately from attention/status.
 Opting in persists local discovery while Agents is visible; source collapse persists and Hide disables discovery without deleting native files or imported chats. Late responses and account reset cannot restore a hidden source or bind another conversation.
 
 2026-11-10 — Added desktop-native CLI discovery and shared provider marks; SDTEST-2950–2952. Native pixel walkthrough and Windows/macOS runtime verification remain separate from the offline rendered interaction and filesystem tests.
+
+### SDUC-573 — Full Google Chrome runs inside the sidebrowser
+
+On Linux, the user can explicitly choose Google Chrome in the browser pane.
+The app starts installed Google Chrome on an authenticated private display and
+renders its complete live UI, including tabs, account sign-in and native password
+prompts. The dedicated app-owned profile persists cookies and Google-managed
+passwords across pane closure and app restart; the user signs in to Chrome once
+for Google Password Manager sync. The regular desktop Chrome profile is never
+copied or opened. A second wrapper cannot concurrently own the same profile.
+
+The preview supports user keyboard/pointer input, Unicode text, copy/paste,
+Chrome shortcuts, native popups and viewport resize. Closing the owner stops
+Chrome and the private display. Missing runtime dependencies produce a local,
+actionable error. Other platforms retain the existing Chromium browser.
+
+This is a manual-browsing preview: its personal account/password UI is never
+exposed through existing page-scoped agent grants or conversation screenshots.
+The scoped CEF backend remains available through Built-in Chromium.
+
+Verification separates disposable dummy-password fixtures and native GPUI input
+from actual Google account sync, which needs user sign-in. See
+[`browser-chrome-preview.md`](../browser-chrome-preview.md).

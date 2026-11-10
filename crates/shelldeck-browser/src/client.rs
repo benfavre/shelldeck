@@ -121,6 +121,13 @@ impl BrowserClient {
             use std::os::windows::process::CommandExt;
             process.creation_flags(0x08000000); // CREATE_NO_WINDOW, helper owns no console.
         }
+        Self::spawn_process(launch, process)
+    }
+
+    pub(crate) fn spawn_process(
+        launch: BrowserLaunch,
+        mut process: ProcessCommand,
+    ) -> io::Result<Self> {
         let mut child = process.spawn()?;
         let mut stdin = child
             .stdin

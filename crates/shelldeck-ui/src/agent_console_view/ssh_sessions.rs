@@ -605,40 +605,56 @@ impl AgentConsoleView {
                     session.provider, session.session_id
                 );
                 let icon_selector = format!("{selector}-provider");
-                let icon_remote = remote.clone();
                 let provider_mark = div()
                     .id(SharedString::from(icon_selector.clone()))
-                    .absolute()
-                    .left(px(-9.0))
-                    .top(px(9.0))
                     .size(px(14.0))
+                    .flex_shrink_0()
                     .debug_selector(move || icon_selector.clone())
                     .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.preview_native_session(id, icon_remote.clone(), cx)
-                    }))
                     .child(crate::icons::agent_provider_icon(
                         provider,
                         14.0,
                         ShellDeckColors::text_muted(),
                     ));
-                // Provider identity occupies the existing tree gutter; the Button label
-                // keeps its original position, focus, tooltip and keyboard behavior.
+                // The row owns one highlight across the provider, label and padding;
+                // the canonical Button retains keyboard focus and activation.
                 rows = rows.child(
                     div()
-                        .relative()
+                        .id(SharedString::from(format!("{selector}-row")))
+                        .debug_selector(|| selector.clone())
+                        // Include the existing icon gutter while retaining label alignment.
+                        .ml(px(-17.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(7.0))
+                        .px(px(8.0))
+                        .h(px(32.0))
+                        .rounded(px(5.0))
                         .min_w_0()
+                        .cursor_pointer()
+                        .when(selected, |row| {
+                            row.bg(ShellDeckColors::selected_bg().opacity(0.65))
+                        })
+                        .when(!selected, |row| {
+                            row.hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                        })
+                        .on_click(cx.listener({
+                            let remote = remote.clone();
+                            move |this, _, _, cx| {
+                                this.preview_native_session(id, remote.clone(), cx)
+                            }
+                        }))
+                        .child(provider_mark)
                         .child(
                             Button::new(
                                 SharedString::from(selector.clone()),
                                 session.title.clone(),
                             )
-                            .debug_selector(move || selector.clone())
-                            .variant(if selected {
-                                ButtonVariant::Secondary
-                            } else {
-                                ButtonVariant::Ghost
-                            })
+                            .debug_selector(move || format!("{selector}-label"))
+                            .variant(ButtonVariant::Ghost)
+                            .hover_background(gpui::transparent_black())
+                            .px(px(0.0))
+                            .flex_1()
                             .size(ButtonSize::Sm)
                             .justify_start()
                             .w_full()
@@ -656,11 +672,11 @@ impl AgentConsoleView {
                             ))
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
+                                    cx.stop_propagation();
                                     this.preview_native_session(id, remote.clone(), cx);
                                 },
                             )),
-                        )
-                        .child(provider_mark),
+                        ),
                 );
             }
             let shown = sessions.len().min(limit)

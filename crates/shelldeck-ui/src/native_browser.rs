@@ -1,7 +1,9 @@
 //! Retained, live Chromium view shared by the user and the scoped agent bridge.
 //!
-//! Browser pixels are CEF BGRA off-screen frames. The renderer never substitutes
-//! screenshots or an external browser when the native helper is unavailable.
+//! Default browser pixels are CEF off-screen frames. The opt-in full Chrome
+//! preview streams an app-owned private display and never grants agent access
+//! to its account/password UI. Engine failures never select another backend.
+mod chrome;
 mod geometry;
 mod shortcuts;
 mod surface;
@@ -92,6 +94,8 @@ struct PageContextMenu {
 
 pub struct NativeBrowserView {
     scope: String,
+    chrome_wrapper: bool,
+    copy_requested: bool,
     client: Option<BrowserClient>,
     launching: bool,
     pending_urls: Vec<String>,
@@ -156,6 +160,8 @@ impl NativeBrowserView {
         });
         Self {
             scope,
+            chrome_wrapper: false,
+            copy_requested: false,
             client: None,
             launching: false,
             pending_urls: Vec::new(),
@@ -204,11 +210,21 @@ impl NativeBrowserView {
     }
 
     pub fn control(&self) -> Option<BrowserClient> {
+        // A whole personal Chrome UI must never become a page-scoped agent grant.
+        if self.chrome_wrapper {
+            return None;
+        }
         self.client.clone()
     }
 
     #[cfg(test)]
-    pub(crate) fn bind_fixture_client(&mut self, client: BrowserClient, id: BrowserId) {
+    pub(crate) fn bind_fixture_client(
+        &mut self,
+        client: BrowserClient,
+        id: BrowserId,
+        chrome: bool,
+    ) {
+        self.chrome_wrapper = chrome;
         self.client = Some(client);
         self.tabs.push(BrowserTab::new(id, "about:blank".into()));
         self.active = Some(id);
@@ -337,10 +353,18 @@ impl NativeBrowserView {
         self.launching = true;
         self.error = None;
         let scope = self.scope.clone();
+        let chrome = self.chrome_wrapper;
         let task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    if chrome {
+                        return shelldeck_browser::chrome::spawn(
+                            shelldeck_core::config::AppConfig::config_dir()
+                                .join("browser-profiles")
+                                .join("full-chrome"),
+                        );
+                    }
                     let profile = shelldeck_core::config::AppConfig::config_dir()
                         .join("browser-profiles")
                         .join(profile_component(&scope));
@@ -385,7 +409,9 @@ impl NativeBrowserView {
                         view.set_error(
                             format!(
                                 "{}\n{}",
-                                t!(if error.kind() == std::io::ErrorKind::NotFound {
+                                t!(if view.chrome_wrapper {
+                                    "native_browser.chrome_requirements"
+                                } else if error.kind() == std::io::ErrorKind::NotFound {
                                     "native_browser.unavailable"
                                 } else {
                                     "native_browser.start_failed"
@@ -692,6 +718,10 @@ impl NativeBrowserView {
                     selected_text,
                     range,
                 } if Some(browser_id) == self.active => {
+                    if self.chrome_wrapper && self.copy_requested {
+                        cx.write_to_clipboard(ClipboardItem::new_string(selected_text.clone()));
+                        self.copy_requested = false;
+                    }
                     self.selected_text = selected_text;
                     self.selected_range = range.start as usize..range.end as usize;
                 }
@@ -1333,6 +1363,18 @@ impl Render for NativeBrowserView {
                     view.focus_address(window, cx);
                 })),
         );
+        strip = strip.child(
+            Button::new(
+                "native-browser-use-chrome",
+                t!("native_browser.use_chrome").to_string(),
+            )
+            .debug_selector(|| "native-browser-use-chrome".into())
+            .size(ButtonSize::Sm)
+            .variant(ButtonVariant::Ghost)
+            .disabled(!cfg!(target_os = "linux") || self.launching)
+            .tooltip(t!("native_browser.chrome_info").to_string())
+            .on_click(cx.listener(|view, _, _, cx| view.use_chrome_preview(cx))),
+        );
         strip = strip.child(div().flex_1()).child(
             Button::new("native-browser-close-pane", "")
                 .icon("x")
@@ -1341,6 +1383,9 @@ impl Render for NativeBrowserView {
                 .variant(ButtonVariant::Ghost)
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(NativeBrowserEvent::CloseRequested))),
         );
+        if self.chrome_wrapper {
+            strip = self.chrome_toolbar(cx);
+        }
         let tab = self.selected_tab();
         let can_back = tab.is_some_and(|tab| tab.state.can_go_back);
         let can_forward = tab.is_some_and(|tab| tab.state.can_go_forward);
@@ -1492,7 +1537,14 @@ impl Render for NativeBrowserView {
                         div()
                             .text_size(px(15.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(t!("native_browser.title").to_string()),
+                            .child(
+                                t!(if self.chrome_wrapper {
+                                    "native_browser.chrome_preview"
+                                } else {
+                                    "native_browser.title"
+                                })
+                                .to_string(),
+                            ),
                     )
                     .child(
                         div()
@@ -1500,7 +1552,9 @@ impl Render for NativeBrowserView {
                             .text_center()
                             .text_color(ShellDeckColors::text_muted())
                             .child(
-                                t!(if self.launching {
+                                t!(if self.chrome_wrapper {
+                                    "native_browser.chrome_empty"
+                                } else if self.launching {
                                     "native_browser.starting"
                                 } else {
                                     "native_browser.empty"
@@ -1528,7 +1582,7 @@ impl Render for NativeBrowserView {
                 .text_color(ShellDeckColors::text_primary())
                 .text_size(px(12.0))
                 .child(strip)
-                .child(navigation),
+                .when(!self.chrome_wrapper, |shell| shell.child(navigation)),
             cx,
         );
         if self.find_visible {
@@ -1649,7 +1703,9 @@ impl Render for NativeBrowserView {
                         .min_w_0()
                         .truncate()
                         .text_color(ShellDeckColors::text_muted())
-                        .child(if let Some(status) = &self.status {
+                        .child(if self.chrome_wrapper {
+                            t!("native_browser.chrome_status").to_string()
+                        } else if let Some(status) = &self.status {
                             status.clone()
                         } else {
                             t!(if loading {
@@ -1662,51 +1718,54 @@ impl Render for NativeBrowserView {
                             .to_string()
                         }),
                 )
-                .when(self.agent_observation_available, |footer| {
-                    footer.child(
-                        Button::new(
-                            "native-browser-control",
-                            t!(if self.agent_control_allowed {
-                                "native_browser.revoke_control"
+                .when(
+                    self.agent_observation_available && !self.chrome_wrapper,
+                    |footer| {
+                        footer.child(
+                            Button::new(
+                                "native-browser-control",
+                                t!(if self.agent_control_allowed {
+                                    "native_browser.revoke_control"
+                                } else {
+                                    "native_browser.allow_control"
+                                })
+                                .to_string(),
+                            )
+                            .size(ButtonSize::Sm)
+                            .variant(if self.agent_control_allowed {
+                                ButtonVariant::Secondary
                             } else {
-                                "native_browser.allow_control"
+                                ButtonVariant::Ghost
                             })
-                            .to_string(),
+                            .disabled(self.client.is_none() || !self.agent_control_available)
+                            .tooltip(
+                                t!(if self.agent_control_available {
+                                    "native_browser.control_info"
+                                } else {
+                                    "native_browser.control_unavailable"
+                                })
+                                .to_string(),
+                            )
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                if !view.agent_control_available {
+                                    return;
+                                }
+                                view.agent_control_allowed = !view.agent_control_allowed;
+                                cx.emit(NativeBrowserEvent::ControlChanged {
+                                    allowed: view.agent_control_allowed,
+                                });
+                                cx.notify();
+                            })),
                         )
-                        .size(ButtonSize::Sm)
-                        .variant(if self.agent_control_allowed {
-                            ButtonVariant::Secondary
-                        } else {
-                            ButtonVariant::Ghost
-                        })
-                        .disabled(self.client.is_none() || !self.agent_control_available)
-                        .tooltip(
-                            t!(if self.agent_control_available {
-                                "native_browser.control_info"
-                            } else {
-                                "native_browser.control_unavailable"
-                            })
-                            .to_string(),
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            if !view.agent_control_available {
-                                return;
-                            }
-                            view.agent_control_allowed = !view.agent_control_allowed;
-                            cx.emit(NativeBrowserEvent::ControlChanged {
-                                allowed: view.agent_control_allowed,
-                            });
-                            cx.notify();
-                        })),
-                    )
-                })
+                    },
+                )
                 .child(
                     Button::new("native-browser-share", "")
                         .icon("paperclip")
                         .tooltip(t!("native_browser.share_screenshot").to_string())
                         .size(ButtonSize::Sm)
                         .variant(ButtonVariant::Ghost)
-                        .disabled(!has_frame || self.sharing)
+                        .disabled(!has_frame || self.sharing || self.chrome_wrapper)
                         .on_click(cx.listener(|view, _, _, cx| view.share_screenshot(cx))),
                 ),
         );

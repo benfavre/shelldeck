@@ -594,3 +594,35 @@ The user's native screenshot confirmed local discovery and provider marks render
   `agent-console-preview`. The installed build retains the release update
   verification key. No live provider, SSH, Google account or browser-password
   integration is claimed by these checks.
+
+## Evidence recorded 2026-11-10 — full Chrome preview and provider highlights
+
+- **Native Chrome fixture:** `scripts/test-chrome-wrapper.py --native --save-at
+  844 375` passed against installed Google Chrome 152 using disposable profiles,
+  dummy credentials and a loopback HTTP server. Verified Unicode input, one
+  submission, native Save, saved-password autofill after restart, retained
+  cookies, tab/copy shortcuts, profile exclusion, resize and idle frame retention.
+  Artifacts: `/tmp/shelldeck-chrome-acceptance-8lbioxtr`. A separate native-input
+  pass checked exact uppercase ASCII and shifted punctuation.
+- **Native GPUI fixture clicked:** production `agent-console-preview` with
+  `SHELLDECK_PREVIEW_CHROME=1`, disposable XDG roots, real pointer and keyboard
+  events on GNOME/X11. The complete Chrome UI appeared inside the GPUI viewport;
+  the fixture received the exact username/password once, and Chrome's own Save
+  password prompt appeared inside the same pane. Artifacts:
+  `/tmp/shelldeck-chrome-ui-native-26trr_rq`.
+- **Scope:** no Google account was signed in. Actual Google password sync needs
+  the user's sign-in to the app-owned profile. The preview is Linux/manual
+  browsing; agent grants and screenshot attachment remain disabled for it.
+- Provider highlights now include the entire icon and retain title alignment.
+  SDTEST-2934/2952 cover containment plus the existing menu/reconnect/draft flows.
+- **Native highlight review:** selected retained rows and hovered discovered
+  rows include the full provider glyph in Dark and Solarized Light. Artifacts:
+  `/tmp/shelldeck-sidebar-resize-native-xsf4cnt5` and
+  `/tmp/shelldeck-sidebar-resize-native-l8on08km` (`02-provider-hover.png`).
+- **Regression/build:** the full UI sweep passed 384 tests and exposed one
+  obsolete tree-guide assertion that excluded the provider gutter. The corrected
+  assertion checks title/action placement; its targeted rerun passed, as did
+  SDTEST-2934, 2952, 2953 and 2866 on the final test binary. Both locked release
+  binaries built successfully. The application contains the update verification
+  key. No Windows/macOS native Chrome wrapper is claimed; those platforms retain
+  CEF, with compilation left to the existing CI matrix.

@@ -1177,9 +1177,6 @@ impl AgentConsoleView {
                 .child(
                     div()
                         .id(("agent-nav-provider-icon", uuid_key(id)))
-                        .absolute()
-                        .left(px(-21.0))
-                        .top(px(9.0))
                         .size(px(14.0))
                         .flex_shrink_0()
                         .cursor_pointer()
@@ -1274,6 +1271,9 @@ impl AgentConsoleView {
             list = list.child(
                 div()
                     .id(("agent-nav-row", uuid_key(id)))
+                    .debug_selector(|| format!("agent-nav-highlight-{id}"))
+                    // Include the provider gutter without shifting conversation titles.
+                    .ml(px(-21.0))
                     .group(row_group.clone())
                     .flex()
                     .items_center()
