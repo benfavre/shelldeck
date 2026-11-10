@@ -1063,4 +1063,28 @@ transport and annotation reuse the existing request attachment implementation.
 SDTEST-1883 now checks the runtime admission boundary for every configurable
 limit from one to eight.
 
+| SDTEST-2930 | `terminal_view::welcome::tests::rendered_welcome_centers_when_fitting_and_scrolls_when_short` | SDUC-410, SDUC-485 | Green | Production GPUI geometry in EN/Dark and FR/Solarized Light at desktop, short and enlarged-text sizes; fitting content centers and overflowing content keeps its first action and final shortcuts reachable. Native pixels: `terminal_welcome_preview` fixture. |
+| SDTEST-2931 | `terminal_view::welcome::tests::rendered_welcome_routes_navigation_and_hides_uninstalled_providers` | SDUC-410 | Green | Clicks traverse the real focus/dispatch path to SSH setup, palette, settings and Automations; all installed-provider combinations preserve the local shell and gate AI cards. No provider or subprocess starts. |
+
 | SDTEST-2929 | SDUC-564 | Rendered project rename validates blank names, cancels, submits via Enter, recovers failed saves and preserves draft/selection in EN/Dark and FR/Light narrow layouts | `agent_console_view/interaction_tests::rendered_project_rename_validates_cancels_and_recovers_failed_save` | Green — rendered offline input regression |
+| SDTEST-2932 | `manage_automations::tests::automation_http_contract_preserves_scope_and_schedule_fields` (core) | SDUC-572 | Green | A real loopback request pins route, bearer, selected site, pagination, cron/time zone/run count and nullable next-run handling. |
+| SDTEST-2933 | `automations_view::tests::rendered_task_templates_preserve_invalid_drafts_and_clear_on_scope_change` | SDUC-572 | Green | Runtime translation lookup, complete-gallery containment/centering, real template/form clicks and text input in EN/Dark and FR/Light; invalid saves retain edits and a scope reset removes all prior private state. |
+
+| SDTEST-2934 | `manage_automations::tests::automation_errors_preserve_reconnect_and_refuse_foreign_handoffs` (core) | SDUC-572 | Green | Real HTTP reconnect errors keep their status and a foreign signed-looking destination is refused before any browser handoff. |
+
+Native validation on 2026-11-09 used disposable XDG profiles: centered terminal welcome in Dark at 1280 × 1000, French/Solarized Light at 620 × 700 with 1.5× UI scale, and the Automations gallery/form in Dark and French/Light. The gallery’s complete final row remains visible. No provider or production task was started. The new Manage endpoint and existing auth/sites routes returned the expected unauthenticated 401 responses after scoped deployment, with no scoped render/bundle failures. Authenticated task creation requires the device account to reconnect for its new server-side workflow grant.
+
+| SDTEST-2935 | `agent_workflows::calendar::tests::calendar_tasks_keep_wall_time_and_revalidate_dispatch` (core) | SDUC-555, SDUC-572 | Green | Spring/autumn DST preserve 09:00 wall time, missed ticks coalesce, context changes refuse dispatch, one-shot recovery prevents replay, legacy intervals deserialize, invalid cron/time zones fail, and calendar files use a format version that older interval-only readers refuse. |
+| SDTEST-2936 | `agent_console_view::workflows::scheduled_tasks::tests::native_local_tasks_reuse_session_admission_and_permission_gates` | SDUC-555, SDUC-572 | Green | Normal run-now and scheduled turns use canonical session/run identities; previews preserve activation/next-run state; permission drift and role loss block dispatch; persistence retains calendar intent. No runtime subscriber or provider process. |
+| SDTEST-2937 | `automations_view::tests::rendered_task_target_choice_saves_to_the_local_scheduler` | SDUC-572 | Green | Actual target-selector and save clicks route a template to the local scheduler, preserving the chosen session/time zone; save stays inactive, activation/pause/deletion use the shared controller. The long local form scrolls to a clickable Save action at 800px height. |
+
+Final local-target validation: the full UI library suite passed 373 tests, the
+calendar/workflow core suite passed 8 tests, and the final focused form/controller
+checks passed after the short-window layout correction. A native French/Light
+620 × 800 walkthrough saved an inactive local task, activated it with the correct
+16/11/2026 09:00 next occurrence, paused it, confirmed deletion and verified an
+empty persisted schedule list. Captures: `/tmp/shelldeck-both-local-fr-final-top.png`,
+`/tmp/shelldeck-both-local-fr-final-footer.png`,
+`/tmp/shelldeck-both-local-fr-active.png`, and
+`/tmp/shelldeck-both-local-fr-delete.png`. Both the native profile and loopback
+Manage fixture were disposable. No provider or production task ran.

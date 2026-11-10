@@ -19,16 +19,13 @@ use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::tmux::TmuxAction;
 
 use crate::glyph_cache::GlyphCache;
-use crate::monolith::{animated_monolith, MonolithMotion};
-use crate::shortcut_reference::{
-    render_shortcut_rows, shortcuts_for, ShortcutGroup, ShortcutSurface,
-};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
 mod block_drawing;
 mod layout;
 mod palette;
+mod welcome;
 
 use block_drawing::paint_block_char;
 use layout::{PaneId, PaneNode, PaneRect, TabLayout};
@@ -4911,290 +4908,6 @@ impl TerminalView {
                 gpui::white(),
             ))
     }
-
-    fn terminal_logo(size: f32) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(px(size))
-            .h(px(size))
-            .rounded(px(size * 0.26))
-            .bg(ShellDeckColors::primary())
-            .child(crate::icons::lucide_icon(
-                "terminal",
-                size * 0.58,
-                gpui::white(),
-            ))
-    }
-
-    /// Two-line launch actions are custom because adabraka's Button supports a
-    /// single label but not the command preview used by this terminal surface.
-    fn launcher_card(
-        id: &'static str,
-        title: String,
-        caption: String,
-        command: SharedString,
-        accent: Hsla,
-        logo: AnyElement,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .gap(px(10.0))
-            .w(px(220.0))
-            .h(px(64.0))
-            .px(px(10.0))
-            .rounded(px(8.0))
-            .bg(accent)
-            .shadow_sm()
-            .cursor_pointer()
-            .hover(move |el| el.bg(accent.opacity(0.88)))
-            .child(logo)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .min_w(px(0.0))
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(gpui::white())
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .text_size(px(10.0))
-                            .text_color(gpui::white().opacity(0.85))
-                            .child(caption),
-                    ),
-            )
-            // La commande exacte reste consultable, mais au survol : dans la
-            // carte elle se coupait en plein mot — « --dangerously-skip-permiss »
-            // — ce qui déforme précisément l'information qui compte.
-            .tooltip(move |_, cx| {
-                cx.new(|_| TerminalToolbarTooltip {
-                    label: command.clone(),
-                })
-                .into()
-            })
-    }
-
-    fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(message) = self.required_cwd_unavailable_message() {
-            return div()
-                .id("terminal-workspace-folder-unavailable")
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .size_full()
-                .p(px(24.0))
-                .gap(px(8.0))
-                .bg(ShellDeckColors::bg_primary())
-                .child(
-                    div()
-                        .text_size(px(16.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(t!("terminal.empty.workspace_unavailable_title").to_string()),
-                )
-                .child(
-                    div()
-                        .max_w(px(620.0))
-                        .text_center()
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(message),
-                );
-        }
-        let cmd = if cfg!(target_os = "macos") {
-            "\u{2318}"
-        } else {
-            "Ctrl+"
-        };
-
-        let mut launchers = div()
-            .flex()
-            .flex_wrap()
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .gap(px(10.0))
-            .max_w(px(700.0))
-            .child(
-                Self::launcher_card(
-                    "empty-launch-terminal",
-                    t!("terminal.empty.open_terminal").to_string(),
-                    t!("terminal.empty.open_terminal_cmd").to_string(),
-                    SharedString::from(t!("terminal.empty.open_terminal_cmd").to_string()),
-                    ShellDeckColors::primary(),
-                    Self::terminal_logo(26.0).into_any_element(),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.spawn_local_terminal(cx);
-                    this.focus_handle.focus(window);
-                    cx.emit(TerminalEvent::NewTabRequested);
-                    cx.notify();
-                })),
-            );
-
-        if self.claude_available {
-            launchers = launchers.child(
-                Self::launcher_card(
-                    "empty-launch-claude",
-                    t!("terminal.empty.launch_claude").to_string(),
-                    t!("terminal.empty.launch_claude_caption").to_string(),
-                    SharedString::from(CLAUDE_CLI_COMMAND),
-                    Self::claude_orange(),
-                    Self::claude_logo(26.0).into_any_element(),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.launch_claude(cx);
-                    this.focus_handle.focus(window);
-                })),
-            );
-        }
-
-        if self.codex_available {
-            launchers = launchers.child(
-                Self::launcher_card(
-                    "empty-launch-codex",
-                    t!("terminal.empty.launch_codex").to_string(),
-                    t!("terminal.empty.launch_codex_caption").to_string(),
-                    SharedString::from(CODEX_CLI_COMMAND),
-                    Self::codex_green(),
-                    Self::codex_logo(26.0).into_any_element(),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.launch_codex(cx);
-                    this.focus_handle.focus(window);
-                })),
-            );
-        }
-
-        let shortcuts = shortcuts_for(ShortcutSurface::TerminalEmpty, true);
-        let navigation_shortcuts = shortcuts
-            .iter()
-            .copied()
-            .filter(|shortcut| shortcut.group == ShortcutGroup::Navigation);
-        let terminal_shortcuts = shortcuts
-            .iter()
-            .copied()
-            .filter(|shortcut| shortcut.group == ShortcutGroup::Terminal);
-
-        div()
-            .id("terminal-empty-scroll")
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_start()
-            .size_full()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .py(px(24.0))
-            // Chrome applicatif, pas sortie de terminal : cet écran suit le
-            // thème de l'application (`.agents/theming.md`). Il peignait le
-            // fond de la palette *terminal*, si bien qu'un thème clair
-            // affichait un panneau noir plein cadre avec une carte claire
-            // posée dessus.
-            .bg(ShellDeckColors::bg_primary())
-            .gap(px(24.0))
-            // Icon + heading
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(animated_monolith(
-                        "terminal-empty-typing",
-                        96.0,
-                        MonolithMotion::TerminalTyping,
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .text_size(px(16.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("terminal.empty.title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("terminal.empty.hint", cmd = cmd).to_string()),
-                    ),
-            )
-            .child(launchers)
-            // Keyboard shortcuts reference
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_shrink_0()
-                    .p(px(20.0))
-                    .rounded(px(8.0))
-                    .bg(ShellDeckColors::bg_surface())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .w_full()
-                    .max_w(px(700.0))
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .mb(px(8.0))
-                            .child(t!("shortcuts.title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(16.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(px(260.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(ShellDeckColors::text_muted())
-                                            .mb(px(4.0))
-                                            .child(t!("shortcuts.group.navigation").to_string()),
-                                    )
-                                    .child(render_shortcut_rows(navigation_shortcuts)),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(px(260.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(ShellDeckColors::text_muted())
-                                            .mb(px(4.0))
-                                            .child(t!("shortcuts.group.terminal").to_string()),
-                                    )
-                                    .child(render_shortcut_rows(terminal_shortcuts)),
-                            ),
-                    ),
-            )
-    }
 }
 
 fn snapshot_pane_key(id: PaneId) -> TerminalPaneKey {
@@ -5256,7 +4969,12 @@ fn apply_pane_node_snapshot(node: &mut PaneNode, snapshot: &TerminalPaneNodeSnap
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut container = div().relative().flex().flex_col().size_full();
+        let mut container = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_h(px(0.0));
 
         if self.pane.sessions.is_empty() {
             container = container.child(self.render_empty_state(cx));

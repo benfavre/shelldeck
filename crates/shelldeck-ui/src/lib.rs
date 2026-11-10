@@ -74,3 +74,4 @@ pub use workspace::{
     PlatformAttentionNotification, TrayCounters, TrayNotification, Workspace, WorkspaceAiBindings,
     WorkspacePresentation,
 };
+pub mod automations_view;

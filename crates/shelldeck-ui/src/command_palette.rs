@@ -15,9 +15,10 @@ use crate::t;
 use crate::theme::ShellDeckColors;
 use crate::workspace::{
     CaptureAndShare, CloseTab, NewRequest, NewScript, NewTerminal, NextTab, OpenAgents,
-    OpenAiAssistant, OpenBextCloud, OpenBoatConsole, OpenFileEditorView, OpenFleet, OpenLogin,
-    OpenMoniqueConsole, OpenQuickConnect, OpenRecent, OpenSettings, OpenSupportRequests,
-    OpenTemplateBrowser, PrevTab, ShareFiles, SwitchSite, ToggleMenuBar, ToggleSidebar,
+    OpenAiAssistant, OpenAutomations, OpenBextCloud, OpenBoatConsole, OpenFileEditorView,
+    OpenFleet, OpenLogin, OpenMoniqueConsole, OpenQuickConnect, OpenRecent, OpenSettings,
+    OpenSupportRequests, OpenTemplateBrowser, PrevTab, ShareFiles, SwitchSite, ToggleMenuBar,
+    ToggleSidebar,
 };
 
 actions!(shelldeck, [ToggleCommandPalette]);
@@ -124,7 +125,8 @@ impl PaletteAction {
 }
 
 pub fn action_opens_main_window(action: &dyn Action) -> bool {
-    action.as_any().is::<NewTerminal>()
+    action.as_any().is::<OpenAutomations>()
+        || action.as_any().is::<NewTerminal>()
         || action.as_any().is::<ToggleSidebar>()
         || action.as_any().is::<ToggleMenuBar>()
         || action.as_any().is::<OpenLogin>()

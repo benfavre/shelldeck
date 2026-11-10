@@ -13,6 +13,9 @@ use std::sync::{
     Arc,
 };
 use std::time::Duration;
+#[path = "workflows/scheduled_tasks.rs"]
+mod scheduled_tasks;
+pub use scheduled_tasks::{LocalTaskCommand, LocalTaskSession};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WorkflowOrigin {
@@ -522,6 +525,9 @@ impl AgentConsoleView {
                     .find(|task| task.id == id)
                 {
                     task.active_run = None;
+                    if task.is_once() {
+                        task.enabled = false;
+                    }
                     if status != AgentSessionStatus::Completed && task.pause_reason.is_none() {
                         task.pause(WorkflowPauseReason::Error);
                     }
@@ -976,6 +982,7 @@ impl AgentConsoleView {
             .filter(|task| task.session_id == session_id)
         {
             let id = task.id;
+            let calendar_task = task.calendar.is_some();
             let edit = parent.clone();
             let toggle = parent.clone();
             let remove = parent.clone();
@@ -1010,14 +1017,16 @@ impl AgentConsoleView {
                     )
                     .child(task.prompt.clone())
                     .child(workflow_context_label(&task.context))
-                    .child(
+                    .child(if let Some(calendar) = &task.calendar {
+                        format!("{} · {} · {}", calendar.cron, calendar.timezone, due)
+                    } else {
                         t!(
                             "agents.workflows.schedule_due",
                             minutes = task.interval_ms / 60_000,
                             due = due
                         )
-                        .to_string(),
-                    )
+                        .to_string()
+                    })
                     .child(reason)
                     .child(
                         div()
@@ -1027,15 +1036,34 @@ impl AgentConsoleView {
                             .child(
                                 Button::new(
                                     SharedString::from(format!("task-edit-{id}")),
-                                    t!("agents.workflows.edit").to_string(),
+                                    t!(if calendar_task {
+                                        "automations.title"
+                                    } else {
+                                        "agents.workflows.edit"
+                                    })
+                                    .to_string(),
                                 )
                                 .variant(ButtonVariant::Ghost)
                                 .size(ButtonSize::Sm)
                                 .disabled(task.active_run.is_some())
-                                .on_click(move |_, _, cx| {
-                                    edit.update(cx, |this, cx| {
-                                        this.open_workflow_form(FormKind::Schedule(Some(id)), cx)
-                                    })
+                                .on_click(move |_, window, cx| {
+                                    if calendar_task {
+                                        edit.update(cx, |this, cx| {
+                                            this.workflows.dialog = None;
+                                            cx.notify();
+                                        });
+                                        window.dispatch_action(
+                                            Box::new(crate::workspace::OpenAutomations),
+                                            cx,
+                                        );
+                                    } else {
+                                        edit.update(cx, |this, cx| {
+                                            this.open_workflow_form(
+                                                FormKind::Schedule(Some(id)),
+                                                cx,
+                                            )
+                                        });
+                                    }
                                 }),
                             )
                             .child(
@@ -1045,6 +1073,9 @@ impl AgentConsoleView {
                                 )
                                 .variant(ButtonVariant::Outline)
                                 .size(ButtonSize::Sm)
+                                .disabled(
+                                    !task.enabled && task.is_once() && task.last_run_ms.is_some(),
+                                )
                                 .on_click(move |_, _, cx| {
                                     toggle.update(cx, |this, cx| {
                                         this.toggle_workflow(WorkflowOrigin::Schedule(id), cx)
@@ -1349,6 +1380,9 @@ impl AgentConsoleView {
                         };
                         if existing.active_run.is_some() {
                             return Err(t!("agents.workflows.running").to_string());
+                        }
+                        if existing.calendar.is_some() {
+                            return Err(t!("automations.calendar_editor").to_string());
                         }
                         task.id = id;
                         task.last_run_ms = existing.last_run_ms;

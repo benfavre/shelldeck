@@ -46,6 +46,7 @@ requests, and automation into one role-aware control plane.
 - **URL Detection** -- Ctrl-click terminal links (Cmd-click on macOS), including wrapped login URLs inside tmux
 - **Themes** -- 13 built-in app themes (Dracula, Nord, Tokyo Night, Gruvbox, Catppuccin, …) plus terminal color themes, with live preview via the titlebar switcher and command palette
 - **Cloud Sync** -- Pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal into your connection store
+- **Scheduled Tasks & Workflows** -- Choose Manage or a local agent session per task, with recurring schedules, editable starters and execution history ([guide](docs/automations.md))
 - **Role-Aware Workspaces** -- Dedicated User, Support, and Dev surfaces gated by the signed-in Manage account
 - **Support & Requests** -- Triage support tickets and manage tenant/site requests with comments, attachments, GitHub sync, and AI Operations dispatch
 - **Agent Workspace** -- Retained conversations, native local/SSH file editor, Git review, and an embedded Chromium browser with scoped computer-use tools ([browser architecture](docs/native-browser.md))

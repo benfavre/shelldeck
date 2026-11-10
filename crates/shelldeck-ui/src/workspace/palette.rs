@@ -142,6 +142,12 @@ impl Workspace {
                     Box::new(OpenAgents),
                 ),
                 PaletteAction::new(
+                    t!("automations.title").to_string(),
+                    None,
+                    "calendar",
+                    Box::new(OpenAutomations),
+                ),
+                PaletteAction::new(
                     t!("palette.open_recent").to_string(),
                     None,
                     "activity",
@@ -359,6 +365,8 @@ impl Workspace {
             self.show_script_form(cx);
         } else if action.as_any().is::<OpenAgents>() {
             self.activate_dev_section(SidebarSection::Agents, cx);
+        } else if action.as_any().is::<OpenAutomations>() {
+            self.activate_dev_section(SidebarSection::Automations, cx);
         } else if action.as_any().is::<OpenRecent>() {
             self.activate_dev_section(SidebarSection::Recent, cx);
         } else if action.as_any().is::<OpenFileEditorView>() {

@@ -51,3 +51,4 @@ pub use workspace_catalog::{
     WorkspaceLaunchIntake, WorkspaceLaunchRequest, WorkspaceRelativePath,
 };
 pub use workspace_state::WorkspaceState;
+pub mod manage_automations;

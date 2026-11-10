@@ -170,6 +170,27 @@ impl Render for Workspace {
                     || self.server_sync.read(_cx).is_log_resizing()
                     || self.server_sync.read(_cx).is_discovery_resizing()));
 
+        let automation_active = self.active_view == ActiveView::Automations
+            && self.effective_mode() == AppMode::Dev
+            && !self.settings_open
+            && !self.show_welcome();
+        let automation_site = self.active_site_info();
+        let automation_context = if self.signed_in() {
+            automation_site.as_ref().map(|site| AutomationContext {
+                base: self.account_base_url(),
+                token: self.app_config.cloud_sync.token.clone(),
+                site: site.site_id.clone(),
+            })
+        } else {
+            None
+        };
+        let automation_label = automation_site
+            .map(|site| site.display_label())
+            .unwrap_or_default();
+        self.automations.update(_cx, |view, cx| {
+            view.set_context(automation_context, automation_label, automation_active, cx)
+        });
+
         // Build main content area — flex_grow fills between titlebar and status bar
         let mut main_area = div().flex().flex_grow().min_h(px(0.0)).overflow_hidden();
 
@@ -225,6 +246,9 @@ impl Render for Workspace {
                         }
                         ActiveView::Fleet => content = content.child(self.fleet_view.clone()),
                         ActiveView::BextCloud => content = content.child(self.bext_view.clone()),
+                        ActiveView::Automations => {
+                            content = content.child(self.automations.clone())
+                        }
                         ActiveView::Settings => content = content.child(self.settings.clone()),
                     }
 
@@ -273,6 +297,16 @@ impl Render for Workspace {
                         ws.toggle_sidebar(cx);
                         cx.notify();
                     });
+                }
+            })
+            .on_action({
+                let workspace = _cx.entity().downgrade();
+                move |_: &OpenAutomations, _, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.activate_dev_section(SidebarSection::Automations, cx)
+                        });
+                    }
                 }
             })
             .on_action(move |_: &OpenSettings, _window, cx| {

@@ -101,6 +101,7 @@ use tools::AgentToolsUi;
 #[path = "agent_console_view/workflows.rs"]
 mod workflows;
 use workflows::AgentWorkflowsUi;
+pub use workflows::{LocalTaskCommand, LocalTaskSession};
 #[path = "agent_console_view/delivery.rs"]
 mod delivery;
 use delivery::AgentDeliveryUi;

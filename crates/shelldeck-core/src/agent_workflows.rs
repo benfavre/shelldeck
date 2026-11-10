@@ -16,6 +16,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+mod calendar;
+pub use calendar::CalendarSchedule;
+
 pub const MAX_WORKFLOWS: usize = 128;
 pub const MAX_WORKFLOW_TEXT_BYTES: usize = 16 * 1024;
 pub const MAX_WORKFLOW_STORE_BYTES: u64 = 8 * 1024 * 1024;
@@ -332,6 +335,8 @@ pub struct AgentSchedule {
     pub title: String,
     pub prompt: String,
     pub interval_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<CalendarSchedule>,
     pub enabled: bool,
     pub next_due_ms: i64,
     pub last_run_ms: Option<i64>,
@@ -356,6 +361,7 @@ impl AgentSchedule {
             title,
             prompt,
             interval_ms,
+            calendar: None,
             enabled: false,
             next_due_ms: now_ms.saturating_add(interval_ms),
             last_run_ms: None,
@@ -363,6 +369,27 @@ impl AgentSchedule {
             active_run: None,
         };
         task.validate()?;
+        Ok(task)
+    }
+    pub fn new_calendar(
+        session_id: Uuid,
+        context: AgentExecutionContext,
+        title: String,
+        prompt: String,
+        calendar: CalendarSchedule,
+        now_ms: i64,
+    ) -> Result<Self> {
+        let next_due_ms = calendar.next_after(now_ms)?;
+        let mut task = Self::new(
+            session_id,
+            context,
+            title,
+            prompt,
+            MIN_SCHEDULE_INTERVAL_MS,
+            now_ms,
+        )?;
+        task.calendar = Some(calendar);
+        task.next_due_ms = next_due_ms;
         Ok(task)
     }
     pub fn validate(&self) -> Result<()> {
@@ -374,6 +401,9 @@ impl AgentSchedule {
             return Err(invalid("invalid recurring task identity or interval"));
         }
         validate_context(&self.context)?;
+        if let Some(calendar) = &self.calendar {
+            calendar.validate()?;
+        }
         validate_text(&self.title)?;
         validate_text(&self.prompt)
     }
@@ -381,7 +411,19 @@ impl AgentSchedule {
         self.enabled = true;
         self.pause_reason = None;
         if self.next_due_ms <= now_ms {
-            self.next_due_ms = now_ms.saturating_add(self.interval_ms);
+            match self.next_after(now_ms) {
+                Ok(next) => self.next_due_ms = next,
+                Err(_) => self.pause(WorkflowPauseReason::ContextChanged),
+            }
+        }
+    }
+    pub fn is_once(&self) -> bool {
+        self.calendar.as_ref().is_some_and(|calendar| calendar.once)
+    }
+    fn next_after(&self, now_ms: i64) -> Result<i64> {
+        match &self.calendar {
+            Some(calendar) => calendar.next_after(now_ms),
+            None => Ok(now_ms.saturating_add(self.interval_ms)),
         }
     }
     pub fn pause(&mut self, reason: WorkflowPauseReason) {
@@ -402,7 +444,18 @@ impl AgentSchedule {
             self.pause(WorkflowPauseReason::ContextChanged);
             return None;
         }
-        self.next_due_ms = now_ms.saturating_add(self.interval_ms);
+        let next = if self.is_once() {
+            Ok(i64::MAX)
+        } else {
+            self.next_after(now_ms)
+        };
+        match next {
+            Ok(next) => self.next_due_ms = next,
+            Err(_) => {
+                self.pause(WorkflowPauseReason::ContextChanged);
+                return None;
+            }
+        }
         self.last_run_ms = Some(now_ms);
         Some(WorkflowDispatch {
             workflow_id: self.id,
@@ -461,6 +514,9 @@ impl AgentWorkflows {
         }
         for schedule in &mut self.schedules {
             schedule.active_run = None;
+            if schedule.is_once() && schedule.last_run_ms.is_some() {
+                schedule.enabled = false;
+            }
         }
     }
 }
@@ -508,7 +564,14 @@ impl AgentWorkflowStore {
         }
         let envelope: WorkflowEnvelope = serde_json::from_slice(&bytes)
             .map_err(|_| invalid("invalid workflow storage; original file preserved"))?;
-        if envelope.schema_version != 1 {
+        if !matches!(envelope.schema_version, 1 | 2)
+            || (envelope.schema_version == 1
+                && envelope
+                    .workflows
+                    .schedules
+                    .iter()
+                    .any(|task| task.calendar.is_some()))
+        {
             return Err(invalid("unsupported workflow storage version"));
         }
         let mut workflows = envelope.workflows;
@@ -519,7 +582,17 @@ impl AgentWorkflowStore {
     pub fn save(&self, workflows: &AgentWorkflows) -> Result<()> {
         workflows.validate()?;
         let bytes = serde_json::to_vec(&WorkflowEnvelope {
-            schema_version: 1,
+            // Older desktop builds must refuse calendar intent instead of
+            // treating its fallback interval as execution authority.
+            schema_version: if workflows
+                .schedules
+                .iter()
+                .any(|task| task.calendar.is_some())
+            {
+                2
+            } else {
+                1
+            },
             workflows: workflows.clone(),
         })
         .map_err(|_| invalid("workflow serialization failed"))?;

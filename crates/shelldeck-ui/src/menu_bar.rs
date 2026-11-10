@@ -57,6 +57,7 @@ pub enum MenuCommand {
     GoTerminal,
     GoScripts,
     GoRecent,
+    GoAutomations,
     GoFileEditor,
     GoMonique,
     GoFleet,
@@ -467,6 +468,15 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 )
                 .icon("scroll-text")
                 .checked(ctx.active_go == Some(MenuCommand::GoScripts)),
+            );
+            go.push(
+                MenuEntry::command(
+                    "go-automations",
+                    t!("automations.title").to_string(),
+                    MenuCommand::GoAutomations,
+                )
+                .icon("calendar")
+                .checked(ctx.active_go == Some(MenuCommand::GoAutomations)),
             );
             go.push(
                 MenuEntry::command(

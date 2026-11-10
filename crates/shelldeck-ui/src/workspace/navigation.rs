@@ -462,6 +462,7 @@ impl Workspace {
             SidebarSection::MoniqueConsole => ActiveView::MoniqueConsole,
             SidebarSection::Fleet => ActiveView::Fleet,
             SidebarSection::BextCloud => ActiveView::BextCloud,
+            SidebarSection::Automations => ActiveView::Automations,
             SidebarSection::Settings => ActiveView::Settings,
         };
     }

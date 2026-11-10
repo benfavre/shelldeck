@@ -517,3 +517,28 @@ Validation: all 368 UI library tests passed in an isolated XDG profile; the
 focused core rename persistence test, strict UI library Clippy, production
 preview build, formatting and whitespace checks passed. This is local source
 validation, not a published release or an installed-app update.
+
+### Scheduled tasks in Automations (2026-11-09)
+
+The new native task surface offers Manage or this computer per new task. Local
+tasks reuse the existing AgentSessionCollection and AgentWorkflowsUi controller.
+SDTEST-2936 checks the successful run-now/scheduled path with run UUID routing,
+then blocks dispatch after context/permission drift and role loss. SDTEST-2937
+clicks the actual execution target and Save controls, scrolls a short local form
+to its footer, and exercises inactive-save/activate/pause/delete. Deleting a task
+retains agent history. No live runtime subscriber or provider was used. Core
+SDTEST-2935 covers DST, coalescing, one-shot restart recovery and legacy interval
+compatibility. Native screenshots use private XDG profiles; this does not claim
+a real provider turn or an authenticated Manage task run.
+
+The final native French/Light walkthrough also clicked Save → Activate → Pause
+→ Delete/confirm in a disposable profile and verified deletion on disk. The
+chosen local Codex session stayed idle; the task's due time was in the future
+and the fixture had no runtime subscriber. Captures are listed in
+`tests-ui-and-app.md`.
+
+Calendar persistence uses envelope version 2 only when calendar tasks exist.
+Interval-only files retain version 1 compatibility. SDTEST-2935 verifies the
+version boundary, refuses calendar intent disguised as a legacy file, and
+round-trips legacy interval data. Older binaries therefore reject the newer
+file rather than executing calendar tasks at the fallback minute interval.

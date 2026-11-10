@@ -199,6 +199,7 @@ pub enum SidebarSection {
     MoniqueConsole,
     Fleet,
     BextCloud,
+    Automations,
     Settings,
 }
 
@@ -215,6 +216,7 @@ impl SidebarSection {
             SidebarSection::Agents,
             SidebarSection::Terminals,
             SidebarSection::Scripts,
+            SidebarSection::Automations,
             SidebarSection::Recent,
             SidebarSection::FileEditor,
         ]
@@ -312,6 +314,7 @@ impl SidebarSection {
             SidebarSection::MoniqueConsole => "cpu",
             SidebarSection::Fleet => "box",
             SidebarSection::BextCloud => "cloud",
+            SidebarSection::Automations => "calendar",
             SidebarSection::Settings => "settings",
         }
     }
@@ -331,6 +334,7 @@ impl SidebarSection {
             SidebarSection::MoniqueConsole => t!("sidebar.nav.monique"),
             SidebarSection::Fleet => t!("sidebar.nav.fleet"),
             SidebarSection::BextCloud => t!("sidebar.nav.bext"),
+            SidebarSection::Automations => t!("automations.title"),
             SidebarSection::Settings => t!("sidebar.nav.settings"),
         }
         .to_string()
@@ -1549,6 +1553,7 @@ mod tests {
         use super::SidebarSection;
 
         assert_eq!(SidebarSection::Recent.lucide_icon(), "clock");
+        assert_eq!(SidebarSection::Automations.lucide_icon(), "calendar");
 
         let group_starts: Vec<_> = SidebarSection::rail_activities()
             .iter()
@@ -1562,7 +1567,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             SidebarSection::rail_activities()[tools_index - 1],
-            SidebarSection::Scripts
+            SidebarSection::Automations
         );
     }
 
@@ -1574,8 +1579,12 @@ mod tests {
         use super::SidebarSection;
 
         assert_eq!(rail_scroll_child_index(SidebarSection::Agents), Some(0));
-        assert_eq!(rail_scroll_child_index(SidebarSection::Recent), Some(4));
-        assert_eq!(rail_scroll_child_index(SidebarSection::FileEditor), Some(5));
+        assert_eq!(
+            rail_scroll_child_index(SidebarSection::Automations),
+            Some(3)
+        );
+        assert_eq!(rail_scroll_child_index(SidebarSection::Recent), Some(5));
+        assert_eq!(rail_scroll_child_index(SidebarSection::FileEditor), Some(6));
         for removed in [
             SidebarSection::Connections,
             SidebarSection::Workspaces,

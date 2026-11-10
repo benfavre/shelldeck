@@ -182,6 +182,13 @@ The empty terminal surface always offers the default shell. It checks
 when `claude` and `codex` are installed; the live terminal toolbar follows
 the same availability rules.
 
+The welcome content is vertically centered when it fits and remains reachable
+by scrolling in short windows or at larger UI scales. The themed launch cards
+retain the AI execution-policy captions and exact-command tooltips. Secondary
+actions open the existing SSH connection form, command palette and settings;
+they never start a connection or provider directly. Both shipped languages
+share the platform-aware shortcut catalogue (SDUC-485).
+
 ### SDUC-024 — Terminal session resize propagates
 
 `TerminalSession::resize` reshapes the grid *and* the PTY window size
@@ -4963,3 +4970,32 @@ through the existing permission-gated navigation.
 Personal Settings separates Companion preferences from Appearance, keeping app
 themes and interface sizing immediately available. Existing companion entry
 points open the Companion category directly.
+### SDUC-572 — Scheduled tasks on Manage or this computer
+
+The Dev Automations activity and palette/Go destinations show the active Manage
+site's scheduled task drafts, workflows and execution history. Starter cards
+seed editable instructions; saving uses Manage's revisioned draft contract.
+Publication is explicit, synchronizes the real schedule trigger and honors its
+cron, time zone and one-shot setting. Existing advanced workflow graphs remain
+editable in Manage. Native simple-task edits preserve graph metadata, retry
+policies and unrelated tags. Task deletion requires confirmation. Test runs use
+Manage's test mode. Result and template links request a fresh signed handoff.
+
+Manage owns execution while the desktop is closed. Server-side workflow grants
+bind a real authenticated CM session to the device and expire with that session
+(at most seven days). Both login paths create the grant; device revocation
+removes it. Workflow queries/mutations always forward that real session and an
+explicit permitted site, preserving CM's current workflow permissions. Older
+device tokens prompt reconnection. Account or site changes clear drafts and
+invalidate outstanding requests; list polling stops while the surface is hidden.
+
+Each new task chooses its execution target. Local tasks bind to an existing
+read-only local Agent session and reuse its provider, directory, model, runtime
+admission, run UUID routing and timeline. Saving is inactive; activation is
+explicit. Calendar recurrence uses five-field cron with an IANA time zone and
+keeps wall-clock time over DST. Missed occurrences coalesce into one run while
+the desktop is open. Context or permission drift blocks dispatch; failures
+pause the task. One-shot runs do not replay after restart. Run now starts an
+ordinary agent turn without activating or advancing the schedule. Local
+deletion retains agent history. Legacy interval tasks remain compatible and
+calendar tasks return to Automations for editing.

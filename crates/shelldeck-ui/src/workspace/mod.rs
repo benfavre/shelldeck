@@ -60,6 +60,7 @@ use crate::ai_workflow::{
     AiNamingKind, AiWorkflowEvent, AiWorkflowInit, AiWorkflowTarget, AiWorkflowView,
 };
 use crate::attachment_annotator::AttachmentAnnotator;
+use crate::automations_view::{AutomationContext, AutomationEvent, AutomationsView};
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::command_palette::{
     ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
@@ -364,6 +365,7 @@ pub enum ActiveView {
     MoniqueConsole,
     Fleet,
     BextCloud,
+    Automations,
     Settings,
 }
 
@@ -382,6 +384,7 @@ actions!(
     shelldeck,
     [
         OpenQuickConnect,
+        OpenAutomations,
         NewTerminal,
         CloseTab,
         ToggleSidebar,
@@ -637,6 +640,8 @@ pub struct Workspace {
     /// Background poll while Support mode is visible.
     _support_poll_task: Option<gpui::Task<()>>,
     /// Canonical Monique / Automonique console.
+    automations: Entity<AutomationsView>,
+    _automations_sub: Subscription,
     monique_view: Entity<MoniqueView>,
     _monique_sub: Subscription,
     monique_status: Option<MoniqueStatus>,
@@ -1218,6 +1223,22 @@ impl Workspace {
             }
         });
         let monique_view = cx.new(MoniqueView::new);
+        let automations = cx.new(AutomationsView::new);
+        automations.update(cx, |view, cx| {
+            view.set_local_agents(agent_console.clone(), cx)
+        });
+        let automations_sub = cx.subscribe(&automations, |workspace, _, event, cx| match event {
+            AutomationEvent::AuthRejected => workspace.invalidate_cloud_session(cx),
+            AutomationEvent::Reconnect => workspace.show_login_form(cx),
+            AutomationEvent::OpenAgent(session) => {
+                if let Some(session) = session {
+                    workspace.agent_console.update(cx, |view, cx| {
+                        view.select_session(*session, cx);
+                    });
+                }
+                workspace.set_active_view(ActiveView::Agents, cx);
+            }
+        });
         let fleet_view = cx.new(FleetView::new);
         agent_console.update(cx, |view, cx| {
             view.set_remote_session_source(fleet_view.clone(), cx)
@@ -1649,6 +1670,8 @@ impl Workspace {
             support,
             _support_sub: support_sub,
             _support_poll_task: None,
+            automations,
+            _automations_sub: automations_sub,
             monique_view,
             _monique_sub: monique_sub,
             monique_status: None,
