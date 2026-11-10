@@ -42,6 +42,11 @@ def check(log, expected_scale=None):
             assert keys[2] > 10 and keys[3] / scale < 32, (name, "keycap stretched", keys)
             labels += 1
     assert cards >= 1 and labels >= 5, (cards, labels)
+    hero, launchers, shortcuts = records["terminal-empty-content"]["children"]
+    scale = records["terminal-empty-content"]["scale"]
+    assert launchers[3] / scale < 300, ("launcher rows stretched", launchers)
+    if launchers[2] / scale >= 650 and cards == 3:
+        assert launchers[3] / scale < 90, ("wide launchers should fit one compact row", launchers)
     top, content, bottom = records["terminal-empty-scroll"]["children"]
     assert abs(top[3] - bottom[3]) <= 2, ("unequal centering insets", top, bottom)
     return cards, labels
