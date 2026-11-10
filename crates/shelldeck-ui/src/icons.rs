@@ -69,6 +69,29 @@ pub fn ai_provider_icon(backend: AiBackend, size_px: f32, color: Hsla) -> AnyEle
     }
 }
 
+/// Agent identity mark; status and unread attention remain separate indicators.
+pub fn agent_provider_path(provider: shelldeck_core::agent_runtime::AgentProvider) -> SharedString {
+    use shelldeck_core::agent_runtime::AgentProvider;
+    match provider {
+        AgentProvider::Claude => simple_path("claudecode"),
+        AgentProvider::Codex => simple_path("openai"),
+        AgentProvider::Jcode => lucide_path("sparkles"),
+        AgentProvider::Automonique | AgentProvider::DeepSeek => lucide_path("bot"),
+    }
+}
+pub fn agent_provider_icon(
+    provider: shelldeck_core::agent_runtime::AgentProvider,
+    size: f32,
+    color: Hsla,
+) -> AnyElement {
+    svg()
+        .path(agent_provider_path(provider))
+        .size(px(size))
+        .flex_shrink_0()
+        .text_color(color)
+        .into_any_element()
+}
+
 /// Compact, non-interactive provider signature shared by every AI surface.
 pub fn ai_provider_badge(backend: AiBackend, model: &str) -> impl IntoElement {
     let icon_color = if backend == AiBackend::Disabled {

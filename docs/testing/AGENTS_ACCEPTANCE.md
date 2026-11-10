@@ -566,3 +566,13 @@ transitions notify the container, and the expensive child stays cached.
 SDTEST-2937–2940 exercise production controls and fake-run stream routing offline;
 no live provider was invoked. Native GPU painting and live provider handoff have
 not been verified in this session.
+
+
+### Local CLI discovery and provider marks — 2026-11-10
+
+- **Source reviewed:** saved-server Python discovery remains remote-only; desktop discovery/history uses bounded Rust filesystem readers and the existing native preview/history/reconnect controls. Local source identity is explicit and old saved SSH UUID references retain their wire format. Rows/tabs show Claude Code/OpenAI marks (other agents use existing semantic icons), independently of status and unread indicators.
+- **Automated regression:** SDTEST-2950–2953 cover >200-session inventory pages, configured-root cursor isolation, malformed/subagent omission, saved Codex thread titles, canonical/event duplicate suppression, immutable-prefix paging, native local ID/read-only preparation and loss of resume authority after serialization. The large-record fixture includes a >3 MiB saved image, UTF-8 chunk joining and duplicate-source rejection. The Dark/light rendered journey clicks local discovery, preview and reconnect, checks provider-mark geometry and retained drafts, then exercises failed refresh and Hide/late-response recovery. The prior no-icon sidebar assertion now pins the requested mark/title spacing while retaining its hover/collapse checks.
+- **Live verified, read-only:** `local_agent_sessions_probe --history` found 120 desktop conversations (48 Claude Code, 72 Codex), no warnings, in 325 ms. It read passive latest pages from Claude (1,676 retained entries, 64-entry page, 2,744 ms) and Codex (322 entries, 64-entry page, 244 ms). The probe prints only counts/timing; no provider was launched and no native history was modified.
+- **Native startup smoke:** the provider-free native fixture ran at 900×700 in French/Solarized Light with `SHELLDECK_PREVIEW_LOCAL=1` and disposable XDG roots, exiting normally. This confirms native startup, not pixel appearance or a manual click walkthrough. Native pixel review, Windows/macOS runtime checks and a live provider resume/send remain separate gates.
+
+The user's native screenshot confirmed local discovery and provider marks rendering, then identified extra title indentation. The follow-up moves sidebar marks into the existing tree gutter: retained labels keep their exact previous left edge, native Button labels retain their original padding, and the mark remains clickable. The rendered sidebar-spacing and local-discovery journeys now assert these positions and icon-click routing.

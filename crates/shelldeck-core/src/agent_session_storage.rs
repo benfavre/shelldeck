@@ -62,6 +62,7 @@ pub struct AgentConsolePreferences {
     pub remote_sessions_expanded: bool,
     pub remote_sessions_available_only: bool,
     pub ssh_selected_server: Option<Uuid>,
+    pub local_sessions_enabled: bool,
     pub ssh_sessions_collapsed: bool,
 }
 
@@ -79,6 +80,7 @@ impl Default for AgentConsolePreferences {
             remote_sessions_expanded: false,
             remote_sessions_available_only: false,
             ssh_selected_server: None,
+            local_sessions_enabled: false,
             ssh_sessions_collapsed: false,
         }
     }
@@ -499,7 +501,11 @@ fn normalize_snapshot(snapshot: &mut AgentSessionSnapshot) {
         session.current_turn_id = None;
         session.provider_session_id = None;
         session.provider_session_context = None;
-        if session.remote_history.as_ref().is_some_and(|reference| !reference.is_valid()) {
+        if session.remote_history.as_ref().is_some_and(|reference| !reference.is_valid() || match (&session.context.target, reference.connection_id) {
+            (AgentTarget::Local, None) => false,
+            (AgentTarget::Ssh { connection_id, .. }, Some(source)) => *connection_id != source,
+            _ => true,
+        }) {
             session.remote_history = None;
             snapshot.warnings.push(format!(
                 "An invalid remote history reference was removed; the local conversation was preserved ({})",
@@ -1255,6 +1261,7 @@ mod tests {
             .drafts
             .insert(id, "Continue after checking the screenshot".into());
         snapshot.preferences.show_archived = true;
+        snapshot.preferences.local_sessions_enabled = true;
         snapshot.preferences.inspector_tab = "changes".into();
         temporary.store.save(&snapshot).unwrap();
         let file = std::fs::read_to_string(temporary.store.path()).unwrap();
@@ -1279,6 +1286,7 @@ mod tests {
         );
         assert_eq!(loaded.drafts[&id], "Continue after checking the screenshot");
         assert!(loaded.preferences.show_archived);
+        assert!(loaded.preferences.local_sessions_enabled);
         assert_eq!(loaded.preferences.inspector_tab, "changes");
         #[cfg(unix)]
         {

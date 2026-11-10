@@ -280,12 +280,13 @@ pub struct AgentHistoryBoundary {
     pub context: AgentExecutionContext,
 }
 
-/// A non-authoritative pointer to a native transcript on a saved SSH server.
-/// Reading or resuming still requires fresh remote validation and destination
+/// A non-authoritative pointer to a local or saved-SSH native transcript.
+/// Reading or resuming still requires fresh source validation and destination
 /// checks. It deliberately carries no credentials, approvals or live routing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteHistoryReference {
-    pub connection_id: Uuid,
+    /// None identifies this computer; Some preserves the saved SSH destination.
+    pub connection_id: Option<Uuid>,
     pub provider: AgentProvider,
     pub session_id: String,
     pub workdir: String,
@@ -306,7 +307,7 @@ impl RemoteHistoryReference {
     }
 
     pub fn is_valid(&self) -> bool {
-        !self.connection_id.is_nil()
+        self.connection_id.is_none_or(|id| !id.is_nil())
             && self.provider != AgentProvider::Automonique
             && !self.session_id.is_empty()
             && self.session_id.len() <= 256
@@ -315,7 +316,10 @@ impl RemoteHistoryReference {
                 .session_id
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-            && self.workdir.starts_with('/')
+            && match self.connection_id {
+                Some(_) => self.workdir.starts_with('/'),
+                None => crate::agent_local_sessions::valid_workdir(&self.workdir),
+            }
             && self.workdir.len() <= 4096
             && self.workdir.trim() == self.workdir
             && !self.workdir.split('/').any(|part| part == "..")
@@ -348,9 +352,14 @@ where
     }
     // Keep an invalid marker until storage validation can emit a recovery
     // warning. A damaged optional reference must not discard local messages.
+    let value = if value.get("connection_id").is_some() {
+        value
+    } else {
+        serde_json::Value::Null
+    };
     Ok(Some(serde_json::from_value(value).unwrap_or(
         RemoteHistoryReference {
-            connection_id: Uuid::nil(),
+            connection_id: Some(Uuid::nil()),
             provider: AgentProvider::Codex,
             session_id: String::new(),
             workdir: String::new(),
@@ -511,7 +520,7 @@ impl AgentSession {
         self.provider_session_id.as_deref()
     }
 
-    /// Prepare an explicitly selected native conversation on an SSH server.
+    /// Prepare an explicitly selected native conversation on this computer or an SSH server.
     /// This binds resume authority only in memory and does not start a process.
     /// Imported conversations always begin with read-only access; changing any
     /// execution context afterwards invalidates their native resume binding.
@@ -522,9 +531,12 @@ impl AgentSession {
         now_ms: i64,
     ) -> Result<Self> {
         let provider_session_id = provider_session_id.into();
-        if !matches!(context.target, AgentTarget::Ssh { .. })
-            || context.provider == AgentProvider::Automonique
-            || !context.workdir.starts_with('/')
+        let absolute = match context.target {
+            AgentTarget::Local => crate::agent_local_sessions::valid_workdir(&context.workdir),
+            AgentTarget::Ssh { .. } => context.workdir.starts_with('/'),
+        };
+        if context.provider == AgentProvider::Automonique
+            || !absolute
             || context.workdir.split('/').any(|part| part == "..")
             || context.workdir.chars().any(char::is_control)
             || provider_session_id.is_empty()
@@ -548,8 +560,9 @@ impl AgentSession {
             truncate_utf8(name.trim(), MAX_AGENT_SESSION_NAME_BYTES)
         };
         let mut session = Self::new(name, context, now_ms)?;
-        let AgentTarget::Ssh { connection_id, .. } = session.context.target else {
-            unreachable!("validated SSH context")
+        let connection_id = match session.context.target {
+            AgentTarget::Local => None,
+            AgentTarget::Ssh { connection_id, .. } => Some(connection_id),
         };
         session.remote_history = Some(RemoteHistoryReference {
             connection_id,
@@ -1375,16 +1388,29 @@ impl AgentSessionCollection {
         now_ms: i64,
     ) -> Result<Uuid> {
         let candidate = AgentSession::from_remote(name, context, provider_session_id, now_ms)?;
-        let AgentTarget::Ssh { connection_id, .. } = &candidate.context.target else {
-            unreachable!("remote constructor validated SSH target");
-        };
+
         if let Some(existing) = self.sessions.iter_mut().find(|session| {
             session.context.provider == candidate.context.provider
                 && session.context.workdir == candidate.context.workdir
                 && session.context.access == candidate.context.access
                 && session.context.model == candidate.context.model
-                && matches!(&session.context.target, AgentTarget::Ssh { connection_id: existing, .. } if existing == connection_id)
-                && (session.remote_history.as_ref().zip(candidate.remote_history.as_ref()).is_some_and(|(saved, fresh)| saved.same_source(fresh))
+                && match (&session.context.target, &candidate.context.target) {
+                    (AgentTarget::Local, AgentTarget::Local) => true,
+                    (
+                        AgentTarget::Ssh {
+                            connection_id: a, ..
+                        },
+                        AgentTarget::Ssh {
+                            connection_id: b, ..
+                        },
+                    ) => a == b,
+                    _ => false,
+                }
+                && (session
+                    .remote_history
+                    .as_ref()
+                    .zip(candidate.remote_history.as_ref())
+                    .is_some_and(|(saved, fresh)| saved.same_source(fresh))
                     || (session.provider_session_id == candidate.provider_session_id
                         && session.provider_session_context.as_ref() == Some(&session.context)))
         }) {
@@ -1398,7 +1424,9 @@ impl AgentSessionCollection {
                 if existing.provider_session_id != candidate.provider_session_id
                     || existing.provider_session_context.as_ref() != Some(&existing.context)
                 {
-                    return Err(ShellDeckError::Config("stop the active conversation before reconnecting it".into()));
+                    return Err(ShellDeckError::Config(
+                        "stop the active conversation before reconnecting it".into(),
+                    ));
                 }
             } else {
                 // This API is called only after explicit, fresh remote-source
@@ -1892,10 +1920,17 @@ mod tests {
             )
             .is_err());
         }
-        assert!(
+        // Local native imports are now supported, with the same read-only binding.
+        let local =
             AgentSession::from_remote("Saved", context(AgentProvider::Claude), native_id, 1)
-                .is_err()
-        );
+                .unwrap();
+        assert!(local
+            .remote_history
+            .as_ref()
+            .unwrap()
+            .connection_id
+            .is_none());
+        assert_eq!(local.context.access, AgentAccessMode::ReadOnly);
         assert!(AgentSession::from_remote(
             "Saved",
             AgentExecutionContext {

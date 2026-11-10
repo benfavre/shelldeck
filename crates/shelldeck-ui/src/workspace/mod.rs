@@ -115,6 +115,7 @@ mod account;
 mod activity;
 mod agent_codex;
 mod agent_companion;
+mod agent_local_sessions;
 mod agent_remote_sessions;
 mod agent_stream;
 mod agent_tools;

@@ -440,6 +440,16 @@ pub fn main() -> anyhow::Result<()> {
                             view.update(cx, |view, cx| view.set_remote_session_active(true, cx));
                         }
                     }
+                    if let AgentConsoleEvent::DiscoverLocalSessions {request_id,cursor} = event {
+                        let mut inventory = ssh_sessions_page_fixture(cursor.as_deref());
+                        inventory.sessions.retain(|session| matches!(session.provider,AgentProvider::Claude|AgentProvider::Codex));
+                        for session in &mut inventory.sessions { session.workdir = fixture_root.display().to_string(); }
+                        view.update(cx,|view,cx|view.set_native_sessions(None,*request_id,Ok(inventory),cx));
+                    }
+                    if let AgentConsoleEvent::ReconnectLocalSession {request_id,session} = event {
+                        let page = native_history_fixture(session, &RemoteHistoryQuery::default());
+                        view.update(cx,|view,cx|view.complete_ssh_reconnect(*request_id,page,cx));
+                    }
                     if let AgentConsoleEvent::DiscoverSshSessions {connection_id,request_id,cursor} = event {
                         view.update(cx,|view,cx|view.set_ssh_sessions(*connection_id,*request_id,Ok(ssh_sessions_page_fixture(cursor.as_deref())),cx));
                     }
@@ -468,6 +478,9 @@ pub fn main() -> anyhow::Result<()> {
                     }
                 })
                 .detach();
+                if std::env::var_os("SHELLDECK_PREVIEW_LOCAL").is_some() {
+                    view.update(cx, |view,cx| view.scan_local_sessions(cx));
+                }
                 if std::env::var_os("SHELLDECK_PREVIEW_SSH").is_some() || std::env::var_os("SHELLDECK_PREVIEW_BLOBS").is_some() || std::env::var_os("SHELLDECK_PREVIEW_MISSING_SSH").is_some() {
                     let id=uuid::Uuid::from_u128(421);
                     view.update(cx,|view,cx|{

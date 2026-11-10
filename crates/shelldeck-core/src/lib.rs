@@ -3,6 +3,7 @@ pub mod agent_browser;
 pub mod agent_browser_tools;
 pub mod agent_codex;
 pub mod agent_delivery;
+pub mod agent_local_sessions;
 pub mod agent_remote_history;
 pub mod agent_remote_sessions;
 pub mod agent_review;

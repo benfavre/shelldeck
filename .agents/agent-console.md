@@ -102,3 +102,11 @@ including navigation, saved state and recovery. Verify the native interaction
 in addition to reducer/parser tests. Report fixture/live coverage separately;
 never substitute a passing test count for an unverified workflow or require the
 user to discover adjacent defects that the acceptance journey already covers.
+
+- Desktop native CLI discovery shares the native history/preview/reconnect workflow
+  with SSH, using `agent_local_sessions` Rust readers rather than Python or provider
+  subprocesses. Local source references serialize `connection_id: null`; old SSH
+  UUID references remain unchanged. Missing/malformed source IDs must not become
+  local sources. Local discovery is opt-in and persisted; Hide disables refresh
+  without removing imported chats. Respect configured CLI roots, bounded paging,
+  last-good results, native IDs and read-only revalidation after restart.
