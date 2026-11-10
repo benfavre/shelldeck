@@ -4802,6 +4802,15 @@ copy/reveal actions against that exact current page rather than retained widgets
 
 ### SDUC-564 — Complete Agents workflows remain coherent across navigation and recovery
 
+Projects, the active conversation and the tool panel align along a shared
+toolbar height at each UI scale. The Conversations panel keeps search and
+New session above its independently scrolling list. Inset rows enclose the
+provider mark, title and conversation menu, including at narrow panel widths.
+Conversations search is separate from Projects search and shows an empty
+result when nothing matches. Creating a conversation clears the panel search
+so the new row is visible. Row menus operate on their own conversation, and
+widening the docked panel leaves room for the active conversation.
+
 The Projects sidebar resizes from its right edge in the full shell, focused
 Agents window and narrow overlay. The drag respects UI scale and retains the
 selected conversation and draft; release outside the pane ends resizing.

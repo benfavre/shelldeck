@@ -16,16 +16,8 @@ impl AgentConsoleView {
     pub(super) fn render_inspector_tabs(&self, cx: &mut Context<Self>) -> Div {
         let files_selected = self.inspector_tab == AgentInspectorTab::Files;
         let changes_selected = self.inspector_tab == AgentInspectorTab::Changes;
-        div()
-            .min_h(px(42.0))
-            .flex_shrink_0()
+        super::tools::agent_toolbar()
             .flex_wrap()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .px(px(8.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
             .child(
                 Button::new(
                     "agent-inspector-files",
@@ -66,6 +58,8 @@ impl AgentConsoleView {
                 Button::new("agent-files-close", "")
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Icon)
+                    .w(px(28.0))
+                    .h(px(28.0))
                     .icon(IconSource::from("x"))
                     .tooltip(t!("agents.parity.close_panel").to_string())
                     .on_click(cx.listener(|this, _, _, cx| {

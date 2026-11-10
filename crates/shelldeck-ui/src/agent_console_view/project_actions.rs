@@ -38,8 +38,8 @@ impl AgentConsoleView {
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Icon)
                     .icon("ellipsis")
-                    .w(px(24.0))
-                    .h(px(24.0))
+                    .w(px(28.0))
+                    .h(px(28.0))
                     .tooltip(t!("agents.navigator.actions").to_string()),
             )
             .content(move |window, cx| {

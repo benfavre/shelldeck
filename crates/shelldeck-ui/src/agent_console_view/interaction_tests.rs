@@ -4215,3 +4215,118 @@ fn rendered_projects_sidebar_resizes_resets_and_restores_without_losing_drafts()
             .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
     }
 }
+
+// SDTEST-2955 — aligned chrome and padded conversation rows through the real
+// tools menu, including search recovery and actions on an unselected row.
+#[::core::prelude::v1::test]
+fn rendered_conversations_panel_aligns_headers_and_keeps_rows_and_actions_inset() {
+    for (theme, width, rem, docked) in [
+        (ThemePreference::Dark, 1400.0, 16.0, true),
+        (ThemePreference::SolarizedLight, 1560.0, 20.0, true),
+        (ThemePreference::SolarizedLight, 620.0, 20.0, false),
+    ] {
+        let mut ui = Cockpit::new(theme, width, 720.0, false);
+        let first = ui.session;
+        let second = ui.view.update(&mut ui.app, |view, cx| {
+            let context = view.displayed_context(cx);
+            let second = view
+                .create_session("Review · é🌍 ".repeat(9), context, cx)
+                .unwrap();
+            view.select_session(first, cx);
+            second
+        });
+        ui.type_draft("Keep this conversation draft");
+        ui.window
+            .update(|window, _| window.set_rem_size(gpui::px(rem)));
+        if docked {
+            ui.open_navigator();
+        } else {
+            ui.redraw();
+        }
+        ui.click("agent-more-tools");
+        ui.click("agent-tool-library");
+
+        let right = ui.bounds("agent-tools-header").unwrap();
+        let center = ui
+            .bounds(if docked {
+                "agent-conversation-header"
+            } else {
+                "agent-tabs-header"
+            })
+            .unwrap();
+        assert_eq!(
+            (center.top(), center.bottom()),
+            (right.top(), right.bottom())
+        );
+        if docked {
+            let left = ui.bounds("agent-projects-header").unwrap();
+            assert_eq!((left.top(), left.bottom()), (right.top(), right.bottom()));
+            ui.view.update(&mut ui.app, |view, cx| {
+                view.tools.panel_width = 900.0;
+                cx.notify();
+            });
+            ui.redraw();
+            assert!(
+                ui.bounds("agent-conversation-header").unwrap().size.width
+                    >= gpui::px(360.0 * rem / 16.0)
+            );
+            let capped = ui.bounds("agent-tools-header").unwrap().size.width;
+            ui.click("agent-panel-less");
+            let narrower = ui.bounds("agent-tools-header").unwrap().size.width;
+            assert!((capped - narrower - gpui::px(60.0 * rem / 16.0)).abs() <= gpui::px(1.0));
+        } else {
+            ui.click("agent-panel-less");
+            ui.click("agent-panel-less");
+        }
+        assert_eq!(
+            ui.bounds("agent-workspace-toolbar").unwrap().size.height,
+            right.size.height
+        );
+        let search = ui.bounds("agent-library-search").unwrap();
+        let new = ui.bounds("agent-library-new").unwrap();
+        let list = ui.bounds("agent-library-list").unwrap();
+        let row = ui
+            .bounds(&format!("agent-library-highlight-{second}"))
+            .unwrap();
+        let provider = ui
+            .bounds(&format!("agent-library-provider-{second}-codex"))
+            .unwrap();
+        let title = ui.bounds(&format!("agent-library-title-{second}")).unwrap();
+        let menu = ui.bounds(&format!("agent-library-menu-{second}")).unwrap();
+        assert!(search.right() < new.left() && new.right() < list.right());
+        assert!((search.center().y - new.center().y).abs() <= gpui::px(1.0));
+        assert!(row.left() >= list.left() + gpui::px(9.0 * rem / 16.0));
+        assert!(row.right() <= list.right() - gpui::px(9.0 * rem / 16.0));
+        assert!(provider.left() > row.left() && provider.right() < title.left());
+        assert!(title.right() <= menu.left() && menu.right() < row.right());
+
+        ui.click(&format!("agent-library-menu-{second}"));
+        ui.click(&format!("agent-nav-action-{second}-TogglePin"));
+        ui.view.read_with(&ui.app, |view, _| {
+            assert!(view.sessions.get(second).unwrap().pinned);
+            assert_eq!(view.sessions.selected_id(), Some(first));
+        });
+        ui.click("agent-library-search");
+        ui.window.simulate_input("No matching fixture conversation");
+        ui.redraw();
+        assert!(ui.bounds("agent-library-empty").is_some());
+        assert!(ui
+            .bounds(&format!("agent-library-highlight-{first}"))
+            .is_none());
+        ui.view.read_with(&ui.app, |view, cx| {
+            assert!(view.navigator_search.read(cx).content().is_empty());
+        });
+
+        ui.click("agent-library-new");
+        let new_session = ui
+            .view
+            .read_with(&ui.app, |view, _| view.sessions.selected_id().unwrap());
+        assert_ne!(new_session, first);
+        assert!(ui
+            .bounds(&format!("agent-library-highlight-{new_session}"))
+            .is_some());
+        ui.click("agent-panel-close");
+        assert!(ui.bounds("agent-tools-header").is_none());
+        assert_eq!(ui.draft(), "Keep this conversation draft");
+    }
+}

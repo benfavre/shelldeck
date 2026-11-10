@@ -1,5 +1,20 @@
 use super::*;
 
+pub(super) const AGENT_TOOLBAR_HEIGHT: f32 = 44.0;
+
+pub(super) fn agent_toolbar() -> Div {
+    div()
+        .min_h(px(AGENT_TOOLBAR_HEIGHT))
+        .min_w_0()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .gap(px(6.0))
+        .px(px(10.0))
+        .border_b_1()
+        .border_color(ShellDeckColors::border())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum AgentToolSurface {
     Sources,
@@ -19,6 +34,7 @@ pub(super) struct AgentToolsUi {
     pub navigator_resize: Option<super::navigator_resize::NavigatorResize>,
     pub toolbar_expanded: bool,
     pub panel_width: f32,
+    library_search: Entity<InputState>,
     pub measured_width: f32,
     pub inspector_wide: bool,
     pub instructions: Vec<(String, String)>,
@@ -29,7 +45,7 @@ pub(super) struct AgentToolsUi {
     pub terminal: Option<Entity<crate::terminal_view::TerminalView>>,
 }
 impl AgentToolsUi {
-    pub fn new(_cx: &mut Context<AgentConsoleView>) -> Self {
+    pub fn new(cx: &mut Context<AgentConsoleView>) -> Self {
         Self {
             active: None,
             panel_visible: false,
@@ -39,6 +55,7 @@ impl AgentToolsUi {
             navigator_resize: None,
             toolbar_expanded: false,
             panel_width: 360.0,
+            library_search: input_state(cx, String::new()),
             measured_width: 0.0,
             inspector_wide: false,
             instructions: Vec::new(),
@@ -202,6 +219,7 @@ impl AgentConsoleView {
         }
         row.child(
             Button::new("agent-more-tools", "")
+                .debug_selector(|| "agent-more-tools".into())
                 .variant(if self.tools.toolbar_expanded {
                     ButtonVariant::Secondary
                 } else {
@@ -221,50 +239,37 @@ impl AgentConsoleView {
     }
 
     pub(super) fn render_workspace_tools(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut row = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(6.0))
-            .px(px(10.0))
-            .py(px(5.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border());
+        let mut row = agent_toolbar()
+            .debug_selector(|| "agent-workspace-toolbar".into())
+            .flex_wrap();
         for (id, icon, key) in [
-            ("sources", "link", "agents.parity.sources"),
+            ("sources", "paperclip", "agents.parity.sources"),
             ("instructions", "list-checks", "agents.parity.instructions"),
             ("library", "messages-square", "agents.parity.sessions"),
             ("workflows", "calendar", "agents.workflows.title"),
             ("delivery", "upload", "agents.delivery.title"),
         ] {
-            let primary = matches!(id, "files" | "review");
             row = row.child(
-                Button::new(
-                    SharedString::from(format!("agent-tool-{id}")),
-                    if primary {
-                        t!(key).to_string()
-                    } else {
-                        String::new()
-                    },
-                )
-                .variant(ButtonVariant::Ghost)
-                .size(if primary {
-                    ButtonSize::Sm
-                } else {
-                    ButtonSize::Icon
-                })
-                .icon(IconSource::from(icon))
-                .tooltip(t!(key).to_string())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.activate_workspace_tool(id, cx);
-                    cx.notify();
-                })),
+                Button::new(SharedString::from(format!("agent-tool-{id}")), "")
+                    .debug_selector(|| format!("agent-tool-{id}"))
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Icon)
+                    .w(px(28.0))
+                    .h(px(28.0))
+                    .icon(IconSource::from(icon))
+                    .tooltip(t!(key).to_string())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.activate_workspace_tool(id, cx);
+                        cx.notify();
+                    })),
             );
         }
         row = row.child(div().flex_1()).child(
             Button::new("agent-tool-project", "")
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Icon)
+                .w(px(28.0))
+                .h(px(28.0))
                 .icon(IconSource::from("plus"))
                 .tooltip(t!("agents.parity.workspace").to_string())
                 .on_click(
@@ -277,8 +282,11 @@ impl AgentConsoleView {
     pub(super) fn render_tools_panel(
         &mut self,
         session: &AgentSession,
+        panel_width: f32,
+        panel_width_limit: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let min_width = 260.0_f32.min(panel_width_limit);
         let title = match self.tools.active {
             Some(AgentToolSurface::Library) => t!("agents.parity.sessions").to_string(),
             Some(AgentToolSurface::Workflows) => t!("agents.workflows.title").to_string(),
@@ -287,22 +295,29 @@ impl AgentConsoleView {
             Some(AgentToolSurface::Terminal) => t!("agents.parity.terminal").to_string(),
             _ => t!("agents.parity.instructions").to_string(),
         };
-        let header = div()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .p(px(8.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .child(div().flex_1().min_w_0().truncate().child(title))
+        let header = agent_toolbar()
+            .debug_selector(|| "agent-tools-header".into())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
             .child(
                 Button::new("agent-panel-less", "")
+                    .debug_selector(|| "agent-panel-less".into())
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Icon)
+                    .w(px(28.0))
+                    .h(px(28.0))
                     .icon(IconSource::from("minus"))
+                    .disabled(panel_width <= min_width)
                     .tooltip(t!("agents.parity.narrow_panel").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tools.panel_width = (this.tools.panel_width - 60.0).max(260.0);
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.tools.panel_width = (panel_width - 60.0).max(min_width);
                         cx.notify();
                     })),
             )
@@ -310,17 +325,23 @@ impl AgentConsoleView {
                 Button::new("agent-panel-more", "")
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Icon)
+                    .w(px(28.0))
+                    .h(px(28.0))
                     .icon(IconSource::from("plus"))
+                    .disabled(panel_width >= panel_width_limit)
                     .tooltip(t!("agents.parity.widen_panel").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tools.panel_width = (this.tools.panel_width + 60.0).min(900.0);
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.tools.panel_width = (panel_width + 60.0).min(panel_width_limit);
                         cx.notify();
                     })),
             )
             .child(
                 Button::new("agent-panel-close", "")
+                    .debug_selector(|| "agent-panel-close".into())
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Icon)
+                    .w(px(28.0))
+                    .h(px(28.0))
                     .icon(IconSource::from("x"))
                     .tooltip(t!("agents.parity.close_panel").to_string())
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -328,6 +349,9 @@ impl AgentConsoleView {
                         cx.notify();
                     })),
             );
+        if self.tools.active == Some(AgentToolSurface::Library) {
+            return self.render_library_panel(header, cx);
+        }
         let mut body = div()
             .id("agent-tool-content")
             .flex()
@@ -405,32 +429,13 @@ impl AgentConsoleView {
                             .into_any_element();
                     }
                 }
-                Some(AgentToolSurface::Library) => {
-                    let parent = cx.entity();
-                    body = body
-                        .child(self.render_library_controls(cx))
-                        .child(
-                            Input::new(&self.navigator_search)
-                                .size(InputSize::Sm)
-                                .placeholder(t!("fleet.sessions.search").to_string())
-                                .on_change(move |_, cx| parent.update(cx, |_, cx| cx.notify())),
-                        )
-                        .child(
-                            Button::new("agent-library-new", t!("agents.session.new").to_string())
-                                .variant(ButtonVariant::Ghost)
-                                .size(ButtonSize::Sm)
-                                .icon(IconSource::from("plus"))
-                                .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
-                        )
-                        .child(self.render_session_rows(None, cx));
-                }
                 Some(AgentToolSurface::Workflows) => {
                     body = body.child(self.render_workflow_controls(cx));
                 }
                 Some(AgentToolSurface::Delivery) => {
                     body = body.child(self.render_delivery_controls(session, cx));
                 }
-                None => {}
+                Some(AgentToolSurface::Library) | None => {}
             }
         }
         div()
@@ -440,6 +445,76 @@ impl AgentConsoleView {
             .text_size(px(11.0))
             .child(header)
             .child(body)
+            .into_any_element()
+    }
+
+    fn render_library_panel(&self, header: Div, cx: &mut Context<Self>) -> AnyElement {
+        let parent = cx.entity();
+        let search = &self.tools.library_search;
+        let query = search.read(cx).content().to_string();
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .child(header)
+            .child(
+                agent_toolbar()
+                    .debug_selector(|| "agent-library-toolbar".into())
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(search)
+                                .debug_selector("agent-library-search")
+                                .size(InputSize::Sm)
+                                .w_full()
+                                .clearable(true)
+                                .prefix(lucide_icon("search", 13.0, ShellDeckColors::text_muted()))
+                                .placeholder(t!("agents.library.filter").to_string())
+                                .on_change(move |_, cx| parent.update(cx, |_, cx| cx.notify())),
+                        ),
+                    )
+                    .child(
+                        Button::new("agent-library-new", t!("agents.session.new").to_string())
+                            .debug_selector(|| "agent-library-new".into())
+                            .variant(ButtonVariant::Secondary)
+                            .size(ButtonSize::Sm)
+                            // Match the small Input's pixel height at each UI scale.
+                            .h(gpui::px(32.0))
+                            .flex_shrink_0()
+                            .icon(IconSource::from("plus"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let selected = this.sessions.selected_id();
+                                this.new_session(cx);
+                                if this.sessions.selected_id() != selected {
+                                    this.tools.library_search.update(cx, |state, cx| {
+                                        state.replace_content(String::new(), cx);
+                                    });
+                                }
+                            })),
+                    ),
+            )
+            .child(self.render_library_feedback(cx))
+            .when(self.library.show_archived(), |panel| {
+                panel.child(
+                    div()
+                        .px(px(12.0))
+                        .pt(px(8.0))
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("agents.navigator.archived_view").to_string()),
+                )
+            })
+            .child(
+                div()
+                    .id("agent-library-list")
+                    .debug_selector(|| "agent-library-list".into())
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p(px(10.0))
+                    .child(self.render_library_rows(&query, cx)),
+            )
             .into_any_element()
     }
 }

@@ -983,17 +983,13 @@ impl AgentConsoleView {
             .border_r_1()
             .border_color(ShellDeckColors::border())
             .child(
-                div()
-                    .h(px(42.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px(px(10.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
+                super::tools::agent_toolbar()
+                    .debug_selector(|| "agent-projects-header".into())
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
+                            .truncate()
                             .text_size(px(12.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(t!("agents.navigator.projects").to_string()),
@@ -1004,8 +1000,8 @@ impl AgentConsoleView {
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Icon)
                             .icon("search")
-                            .w(px(24.0))
-                            .h(px(24.0))
+                            .w(px(28.0))
+                            .h(px(28.0))
                             .tooltip(t!("agents.navigator.search").to_string())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.library.search_open = !this.library.search_open;
@@ -1025,8 +1021,8 @@ impl AgentConsoleView {
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Icon)
                             .icon(IconSource::from("plus"))
-                            .w(px(26.0))
-                            .h(px(26.0))
+                            .w(px(28.0))
+                            .h(px(28.0))
                             .tooltip(t!("agents.session.new").to_string())
                             .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
                     ),
@@ -1110,20 +1106,8 @@ impl AgentConsoleView {
             .into_any_element()
     }
 
-    pub(super) fn render_session_rows(
-        &self,
-        worktree: Option<&AgentWorktreeOption>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        self.render_session_rows_matching(
-            |session| {
-                worktree.is_none_or(|worktree| {
-                    navigator_worktree(session, &self.project_groups)
-                        .is_some_and(|owner| owner.id == worktree.id)
-                })
-            },
-            cx,
-        )
+    pub(super) fn render_library_rows(&self, query: &str, cx: &mut Context<Self>) -> AnyElement {
+        self.render_conversation_rows(query, false, |_| true, cx)
     }
 
     pub(super) fn render_session_rows_matching(
@@ -1131,14 +1115,24 @@ impl AgentConsoleView {
         include: impl Fn(&AgentSession) -> bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let query = self
-            .navigator_search
-            .read(cx)
-            .content()
-            .trim()
-            .to_lowercase();
-        let mut list = div().flex().flex_col().gap(px(2.0));
-        for session in self
+        let query = self.navigator_search.read(cx).content().to_string();
+        self.render_conversation_rows(&query, true, include, cx)
+    }
+
+    fn render_conversation_rows(
+        &self,
+        query: &str,
+        project_tree: bool,
+        include: impl Fn(&AgentSession) -> bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let query = query.trim().to_lowercase();
+        let prefix = if project_tree {
+            "agent-nav"
+        } else {
+            "agent-library"
+        };
+        let mut sessions = self
             .sessions
             .library_sessions(self.library.show_archived())
             .into_iter()
@@ -1146,11 +1140,37 @@ impl AgentConsoleView {
                 include(session)
                     && navigator_session_matches_query(session, &self.project_groups, &query)
             })
-        {
+            .peekable();
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap(px(if project_tree { 2.0 } else { 4.0 }));
+        if !project_tree && sessions.peek().is_none() {
+            return list
+                .child(
+                    div()
+                        .debug_selector(|| "agent-library-empty".into())
+                        .px(px(8.0))
+                        .py(px(12.0))
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .whitespace_normal()
+                        .child(
+                            t!(if query.is_empty() {
+                                "agents.library.empty"
+                            } else {
+                                "agents.library.no_matches"
+                            })
+                            .to_string(),
+                        ),
+                )
+                .into_any_element();
+        }
+        for session in sessions {
             let id = session.id;
             let selected = self.navigator_selected_session() == Some(id);
             let state = NavigatorState::for_session(session);
-            let row_group: SharedString = format!("agent-conversation-hover-{id}").into();
+            let row_group: SharedString = format!("{prefix}-conversation-hover-{id}").into();
             let hint = format!(
                 "{}\n{} · {}\n{}\n{}",
                 session.name,
@@ -1161,7 +1181,7 @@ impl AgentConsoleView {
             );
             let row = div()
                 .id(("agent-nav-session", uuid_key(id)))
-                .debug_selector(|| format!("agent-nav-session-{id}"))
+                .debug_selector(|| format!("{prefix}-session-{id}"))
                 .relative()
                 .flex()
                 .items_center()
@@ -1185,7 +1205,7 @@ impl AgentConsoleView {
                         }))
                         .debug_selector(|| {
                             format!(
-                                "agent-nav-provider-{id}-{}",
+                                "{prefix}-provider-{id}-{}",
                                 session.context.provider.binary()
                             )
                         })
@@ -1209,7 +1229,7 @@ impl AgentConsoleView {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .debug_selector(|| format!("agent-nav-title-{id}"))
+                        .debug_selector(|| format!("{prefix}-title-{id}"))
                         .text_size(px(13.0))
                         .font_weight(FontWeight::NORMAL)
                         .child(session.name.clone()),
@@ -1251,11 +1271,11 @@ impl AgentConsoleView {
                 id,
                 div()
                     .flex_shrink_0()
-                    .opacity(if selected { 1.0 } else { 0.0 })
+                    .opacity(if selected || !project_tree { 1.0 } else { 0.0 })
                     .group_hover(row_group.clone(), |style| style.opacity(1.0))
                     .child(
                         Button::new(("agent-conversation-actions", uuid_key(id)), "")
-                            .debug_selector(|| format!("agent-nav-menu-{id}"))
+                            .debug_selector(|| format!("{prefix}-menu-{id}"))
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Icon)
                             .w(px(22.0))
@@ -1271,9 +1291,9 @@ impl AgentConsoleView {
             list = list.child(
                 div()
                     .id(("agent-nav-row", uuid_key(id)))
-                    .debug_selector(|| format!("agent-nav-highlight-{id}"))
+                    .debug_selector(|| format!("{prefix}-highlight-{id}"))
                     // Include the provider gutter without shifting conversation titles.
-                    .ml(px(-21.0))
+                    .when(project_tree, |row| row.ml(px(-21.0)))
                     .group(row_group.clone())
                     .flex()
                     .items_center()
