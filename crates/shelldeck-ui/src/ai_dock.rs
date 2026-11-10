@@ -1,6 +1,6 @@
 use adabraka_ui::prelude::use_theme;
 use gpui::prelude::*;
-use gpui::{div, App, Context, Entity, Render, Subscription, Window};
+use gpui::{div, AnyView, App, Context, Entity, Render, StyleRefinement, Subscription, Window};
 use std::rc::Rc;
 
 use crate::ai_assistant::AiAssistantView;
@@ -197,6 +197,11 @@ impl AiDockView {
     pub fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.assistant
             .update(cx, |assistant, cx| assistant.focus_composer(window, cx));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn assistant_for_test(&self) -> Entity<AiAssistantView> {
+        self.assistant.clone()
     }
 
     pub fn is_closing(&self) -> bool {
@@ -545,14 +550,15 @@ impl Render for AiDockView {
             .border_color(ShellDeckColors::border())
             .bg(ShellDeckColors::bg_primary())
             .child(self.titlebar(window, cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h(px(0.0))
-                    .child(self.assistant.clone()),
-            );
+            .child(div().flex().flex_1().min_w_0().min_h(px(0.0)).when(
+                !self.visibility.closing,
+                |body| {
+                    body.child(
+                        AnyView::from(self.assistant.clone())
+                            .cached(StyleRefinement::default().size_full()),
+                    )
+                },
+            ));
         let radius = use_theme().tokens.radius_xl;
         if round_left {
             surface = surface.rounded_tl(radius).rounded_bl(radius);
@@ -588,6 +594,7 @@ impl Render for AiDockView {
             })
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key.eq_ignore_ascii_case("escape")
+                    && !this.assistant.read(cx).has_shared_agents()
                     && !this.assistant.read(cx).has_open_dialog()
                 {
                     this.close(window, cx);
@@ -613,7 +620,7 @@ impl Render for AiDockView {
         if !window.is_maximized() {
             root = root
                 .child(crate::window_chrome::resize_cursor_layer())
-                .on_mouse_move(|_, window, _| window.refresh());
+                .on_mouse_move(crate::window_chrome::resize_cursor_updates(window, cx));
         }
         if let Some(position) = self.menu_position {
             let mut items = Vec::new();

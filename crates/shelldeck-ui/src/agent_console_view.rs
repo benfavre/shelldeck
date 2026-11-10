@@ -620,6 +620,13 @@ impl AgentConsoleView {
         cx.notify();
     }
 
+    /// The retained console moves between windows; never persist host layout as a preference.
+    pub(crate) fn prepare_window_host(&mut self, cx: &mut Context<Self>) {
+        self.tools.measured_width = 0.0;
+        self.tools.navigator_overlay = false;
+        self.request_surface_focus(cx);
+    }
+
     fn build_provider_select(
         selected: AgentProvider,
         disabled: bool,
@@ -1576,7 +1583,7 @@ impl AgentConsoleView {
         cx.notify();
     }
 
-    fn new_session(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn new_session(&mut self, cx: &mut Context<Self>) {
         let Ok(context) = self.context_from_controls(cx) else {
             return;
         };

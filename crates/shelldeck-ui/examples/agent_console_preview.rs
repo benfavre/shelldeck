@@ -257,6 +257,7 @@ pub fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(1280.0);
+    let height = std::env::var("SHELLDECK_PREVIEW_HEIGHT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(900.0);
     Application::new().with_assets(Assets).run(move |cx| {
         adabraka_ui::init(cx);
         adabraka_ui::components::input::init(cx);
@@ -270,7 +271,7 @@ pub fn main() -> anyhow::Result<()> {
         } else {
             shelldeck_core::config::app_config::UiLanguage::En
         });
-        cx.open_window(
+        let preview_window = cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some("Inklura Desktop Agents — isolated preview".into()),
@@ -278,11 +279,15 @@ pub fn main() -> anyhow::Result<()> {
                 }),
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: point(px(0.0), px(0.0)),
-                    size: size(px(width), px(900.0)),
+                    size: size(px(width), px(height)),
                 })),
                 ..Default::default()
             },
             |_, cx| {
+                if std::env::var_os("SHELLDECK_PREVIEW_TERMINAL").is_some() {
+                    let terminal = cx.new(shelldeck_ui::terminal_view::TerminalView::new);
+                    return cx.new(|cx| PreviewRoot(terminal.into(), None, shelldeck_ui::settings::normalize_ui_font_family("Inter", cx).into()));
+                }
                 if std::env::var_os("SHELLDECK_PREVIEW_SETTINGS").is_some() {
                     let settings = cx.new(|cx| {
                         let mut settings = shelldeck_ui::settings::SettingsView::new(shelldeck_core::config::app_config::AppConfig::default(), cx);
@@ -513,6 +518,26 @@ pub fn main() -> anyhow::Result<()> {
             },
         )
         .unwrap();
+        // SDTEST-2943: opt-in native remap smoke; inspect WAYLAND_DEBUG=1 for
+        // a fresh configure/ack and non-null buffer after each SHOW marker.
+        // No input automation, account, credentials or provider processes.
+        if std::env::var_os("SHELLDECK_PREVIEW_REMAP").is_some() {
+            cx.spawn(async move |cx| {
+                for cycle in 1..=2 {
+                    cx.background_executor().timer(Duration::from_secs(2)).await;
+                    let _ = preview_window.update(cx, |_, window, _| {
+                        eprintln!("REMAP {cycle} HIDE");
+                        window.hide_window();
+                    });
+                    cx.background_executor().timer(Duration::from_millis(500)).await;
+                    let _ = preview_window.update(cx, |_, window, _| {
+                        eprintln!("REMAP {cycle} SHOW");
+                        window.show_window();
+                        window.show_window(); // Repeated tray activations stay idempotent.
+                    });
+                }
+            }).detach();
+        }
         cx.spawn(async move |cx| {
             cx.background_executor()
                 .timer(Duration::from_secs(preview_seconds))

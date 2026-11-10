@@ -1396,6 +1396,179 @@ mod tests {
         });
     }
 
+    // SDTEST-2944 / SDUC-152: no artificial hold on first entry or return.
+    #[test]
+    fn mode_switches_reveal_retained_surfaces_within_two_hundred_ms() {
+        let mut cx = gpui::TestAppContext::single();
+        let (workspace, _, _, _temp) = workspace_activation_fixture(&mut cx, AppMode::User);
+        let retained = workspace.read_with(&cx, |workspace, _| workspace.agent_console.entity_id());
+        for target in [AppMode::Dev, AppMode::User, AppMode::Support, AppMode::Dev] {
+            workspace.update(&mut cx, |workspace, cx| workspace.set_mode(target, cx));
+            while cx.executor().tick() {}
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(80));
+            while cx.executor().tick() {}
+            workspace.read_with(&cx, |workspace, _| {
+                assert_eq!(
+                    workspace.effective_mode(),
+                    target,
+                    "destination must commit promptly"
+                );
+                assert_eq!(workspace.agent_console.entity_id(), retained);
+            });
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(120));
+            while cx.executor().tick() {}
+            workspace.read_with(&cx, |workspace, _| {
+                assert!(
+                    workspace.mode_transition.is_none(),
+                    "transition must not impose a loading hold"
+                );
+            });
+        }
+    }
+
+    // SDTEST-2945 / SDUC-152, SDUC-442: no menu allocations for unchanged frames,
+    // while responsive layout, language, surface and authorization stay live.
+    #[test]
+    fn menu_context_cache_skips_identical_frames_and_tracks_live_inputs() {
+        let mut cx = gpui::TestAppContext::single();
+        let (workspace, _, _, _temp) = workspace_activation_fixture(&mut cx, AppMode::Dev);
+        workspace.update(&mut cx, |workspace, cx| {
+            workspace.active_view = ActiveView::Terminal;
+            workspace.app_config.general.ui_language =
+                shelldeck_core::config::app_config::UiLanguage::Fr;
+            workspace.rebuild_menu_bar(1200.0, cx);
+            let baseline = workspace.menu_bar_rebuilds;
+            workspace
+                .menu_bar
+                .update(cx, |menu, _| menu.set_open_index(Some(0)));
+            for _ in 0..20 {
+                workspace.rebuild_menu_bar(1100.0, cx);
+            }
+            assert_eq!(workspace.menu_bar_rebuilds, baseline);
+            assert_eq!(workspace.menu_bar.read(cx).open_index(), Some(0));
+            workspace.rebuild_menu_bar(620.0, cx);
+            assert_eq!(workspace.menu_bar_rebuilds, baseline + 1);
+            workspace.app_config.general.ui_language =
+                shelldeck_core::config::app_config::UiLanguage::En;
+            workspace.rebuild_menu_bar(620.0, cx);
+            assert_eq!(workspace.menu_bar_rebuilds, baseline + 2);
+            workspace.sidebar_visible = !workspace.sidebar_visible;
+            workspace.rebuild_menu_bar(620.0, cx);
+            assert_eq!(workspace.menu_bar_rebuilds, baseline + 3);
+            workspace.app_config.cloud_sync.mode = AppMode::Support;
+            workspace.rebuild_menu_bar(620.0, cx);
+            assert_eq!(workspace.menu_bar_rebuilds, baseline + 4);
+            workspace.app_config.account = None;
+            workspace.rebuild_menu_bar(620.0, cx);
+            assert_eq!(workspace.menu_bar_rebuilds, baseline + 5);
+        });
+    }
+
+    // SDTEST-2946 / SDUC-227, SDUC-249: count actual requests made by Workspace
+    // poll synchronization; all HTTP is loopback, all credentials are fixtures.
+    #[test]
+    fn poll_reconciliation_does_not_repeat_initial_network_reads() {
+        use std::io::{Read, Write};
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let paths = Arc::new(Mutex::new(Vec::<String>::new()));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let requests = paths.clone();
+        let stop = stopped.clone();
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let mut stream = stream.unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut headers = Vec::new();
+                let mut byte = [0];
+                while !headers.ends_with(b"\r\n\r\n") {
+                    if stream.read(&mut byte).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    headers.push(byte[0]);
+                }
+                let path = String::from_utf8_lossy(&headers)
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
+                requests.lock().unwrap().push(path);
+                // Fail the read deterministically. Monique stops after status;
+                // bext still fans out its three independent dashboard reads.
+                let _ = stream.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+            }
+        });
+        let mut cx = gpui::TestAppContext::single();
+        let (workspace, _, _, _temp) = workspace_activation_fixture(&mut cx, AppMode::Dev);
+        workspace.update(&mut cx, |workspace, cx| {
+            workspace.app_config.monique = Some(shelldeck_core::config::MoniqueConfig {
+                url: format!("http://{address}"),
+                user: "fixture".into(),
+                pass: "fixture".into(),
+            });
+            workspace.active_view = ActiveView::MoniqueConsole;
+            for _ in 0..5 {
+                workspace.sync_monique_poll(cx);
+            }
+        });
+        cx.run_until_parked();
+        let initial = paths.lock().unwrap().clone();
+        workspace.update(&mut cx, |workspace, cx| workspace.sync_monique_poll(cx));
+        cx.run_until_parked();
+        let reconciled = paths.lock().unwrap().clone();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(10));
+        cx.run_until_parked();
+        let polled = paths.lock().unwrap().clone();
+        workspace.update(&mut cx, |workspace, cx| workspace.refresh_monique(cx));
+        cx.run_until_parked();
+        let refreshed = paths.lock().unwrap().clone();
+        workspace.update(&mut cx, |workspace, cx| {
+            workspace.active_view = ActiveView::BextCloud;
+            workspace.sync_monique_poll(cx);
+            workspace.app_config.bext_cloud.base_url = format!("http://{address}");
+            workspace.app_config.bext_cloud.token = "bext_fixture".into();
+            for _ in 0..5 {
+                workspace.sync_bext_poll(cx);
+            }
+        });
+        cx.run_until_parked();
+        let bext_initial = paths.lock().unwrap().clone();
+        workspace.update(&mut cx, |workspace, cx| workspace.sync_bext_poll(cx));
+        cx.run_until_parked();
+        let bext_reconciled = paths.lock().unwrap().clone();
+        stopped.store(true, Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(address);
+        server.join().unwrap();
+        assert_eq!(initial, ["/api/status"]);
+        assert_eq!(
+            reconciled, initial,
+            "reconciling an active Monique poll must not refetch"
+        );
+        assert_eq!(polled.len(), 2, "scheduled polling still runs");
+        assert_eq!(refreshed.len(), 3, "explicit Refresh still runs");
+        let mut bext_paths = bext_initial[refreshed.len()..].to_vec();
+        bext_paths.sort();
+        assert_eq!(
+            bext_paths,
+            ["/api/auth/whoami", "/api/dashboard", "/api/sites"]
+        );
+        assert_eq!(
+            bext_reconciled, bext_initial,
+            "reconciling an active bext poll must not refetch"
+        );
+    }
     // SDTEST-1838
     #[test]
     fn workspace_context_removal_and_restart_flush_durable_retirement_custody() {

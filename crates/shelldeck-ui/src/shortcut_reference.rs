@@ -261,6 +261,7 @@ fn shortcut_keys_for(shortcut: ShortcutDefinition, macos: bool) -> String {
 fn render_shortcut_row(shortcut: ShortcutDefinition) -> Div {
     div()
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_between()
         .w_full()

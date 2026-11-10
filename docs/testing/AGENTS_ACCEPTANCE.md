@@ -517,3 +517,52 @@ Validation: all 368 UI library tests passed in an isolated XDG profile; the
 focused core rename persistence test, strict UI library Clippy, production
 preview build, formatting and whitespace checks passed. This is local source
 validation, not a published release or an installed-app update.
+
+### Sidebar project removal with retained workspaces — 2026-11-09
+
+The existing project menu and confirmation now remove a sidebar entry even when
+it owns saved workspaces. Removal persists a catalog display flag rather than
+deleting checkout/workspace records or touching local/SSH files and retained
+runtime surfaces. The existing Agents completion path archives conversations
+under their exact checkout and machine. Explicit re-add restores the same saved
+project; removal and restoration both roll back on a failed catalog write.
+Running conversations still block at dispatch, and unsettled workspace creation
+returns a specific wait/cancel explanation. Completed creation no longer blocks.
+
+SDTEST-2930 covers the persisted flag, old profiles without that field, reload,
+restoration and active/archived workspace ownership. SDTEST-2931 exercises the
+actual Hub removal, sidebar projection, live/completed creation, failed removal
+and restoration writes, reload and re-add of the same SSH checkout. SDTEST-2923
+continues to exercise rendered menu/confirmation/cancel/retry controls, exact
+nested/remote session ownership, files and drafts in English/Dark and French/Light.
+
+Validation: 537 core library tests passed (7 pre-existing opt-in tests ignored); all 369 UI library tests passed in a fresh isolated XDG profile. The Hub regression completes startup recovery and advances the real creation reducer before exercising the completed-workspace path. Formatting, whitespace and French/English locale-key parity passed. The optimized Linux native preview was checked at 1100×900 on a private Xvfb/Mutter display with a disposable XDG profile, masked home and disabled network. Actual menu clicks verified confirmation, Cancel preserving the project/draft, confirmed removal, and opening the archived conversation with its original unsent draft. Evidence: `/tmp/shelldeck-project-removal-native.563wa5_x/04-confirmation.png`, `05-cancelled.png`, `07-removed.png`, `09-archived.png`, and `10-archived-draft.png`. The preview acknowledges catalog removal through its fixture adapter; durable Hub mutation and failure recovery are verified by SDTEST-2931. No live provider or saved SSH host was used.
+
+### Idle collapse and hover disclosures — 2026-11-10
+
+The current sidebar supersedes the earlier retained-idle-row and tree-guide
+walkthrough above. Collapsed groups hide idle selected conversations and native
+history previews; only a selected conversation with an active run remains
+visible. Completion hides that row again. Hidden totals include idle selections.
+Disclosures reveal chevrons on header hover or keyboard focus without moving
+labels. SDTEST-2935 checks project and uncatalogued-folder idle/live/completed
+transitions, search overrides, selection and draft preservation offline. Current
+native pixel painting has not been verified in this session.
+
+2026-11-10 icon/alignment follow-up: headers retain folder/globe/server/cloud icons at rest and exchange them for chevrons on hover or keyboard focus in one fixed slot. Top-level SSH and Automonique labels align with project labels; SDTEST-2936 checks exact rendered alignment and stationary hover geometry in dark/light themes, desktop/narrow windows and normal/large fonts. Native painting remains unverified in this session.
+
+### Shared floating Assistant — 2026-11-10
+
+The floating Chat now hosts the same retained Agents entity and Workspace
+runtime, with the original providers, models, access, conversations and drafts.
+Main Agents and retained workspace panes relinquish their presentation host
+while the companion owns it; Continue here hands it back. Regular users retain
+the existing contextual helper and never gain Dev access. Legacy assistant
+messages remain readable through Archive; Clippy/workflow tools keep their
+existing opt-ins. Primary Assistant and palette entry points are available to
+authorized Agents users independently of the legacy helper backend setting.
+Pointer motion no longer calls window.refresh on every move: only resize-edge
+transitions notify the container, and the expensive child stays cached.
+SDTEST-2937–2940 exercise production controls and fake-run stream routing offline;
+no live provider was invoked. Native GPU painting and live provider handoff have
+not been verified in this session.

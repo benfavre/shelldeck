@@ -9,12 +9,8 @@ use crate::motion::repeating_phase;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MonolithMotion {
     FloatAndBreathe,
-    UserCompanion,
-    SupportScan,
-    DevTyping,
     Thinking,
     SiteScan,
-    TerminalTyping,
 }
 
 /// Render the Inklura identity under the shared motion policy.
@@ -68,12 +64,8 @@ pub(crate) fn animated_monolith<V: 'static>(
 
     let asset = match motion {
         MonolithMotion::FloatAndBreathe => unreachable!(),
-        MonolithMotion::UserCompanion => "images/brand/webp/modes/monolith-user.webp",
-        MonolithMotion::SupportScan => "images/brand/webp/modes/monolith-support.webp",
-        MonolithMotion::DevTyping => "images/brand/webp/modes/monolith-dev.webp",
         MonolithMotion::Thinking => "images/brand/webp/studies/monolith-thinking.webp",
         MonolithMotion::SiteScan => "images/brand/webp/studies/monolith-scan.webp",
-        MonolithMotion::TerminalTyping => "images/brand/webp/studies/monolith-terminal-typing.webp",
     };
 
     root.child(

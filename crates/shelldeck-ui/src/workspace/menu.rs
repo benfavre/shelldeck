@@ -1,16 +1,21 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MenuBarSnapshot {
+    context: crate::menu_bar::MenuBarContext,
+    compact: bool,
+    locale: &'static str,
+}
+
 impl Workspace {
     // --- Application menu bar ---
 
     /// Rebuild the menu row from current state and hand it to the adabraka
-    /// `MenuBar`. Called every render: the spec is a cheap pure function and
-    /// the alternative — invalidating on each of the a dozen inputs it reads
-    /// (mode, sign-in, sidebar, Monique/Fleet availability, AI config) — is a
-    /// standing source of stale-menu bugs.
+    /// `MenuBar`. Sample every input each render, but rebuild translated items
+    /// and callbacks only when their context, responsive layout or locale changes.
     pub(super) fn rebuild_menu_bar(&mut self, logical_width: f32, cx: &mut Context<Self>) {
         use crate::menu_bar::{
-            compact_menu_bar, menu_bar_presentation, MenuBarContext, MenuCommand, MenuEntry,
+            MenuBarContext, MenuCommand, MenuEntry, compact_menu_bar, menu_bar_presentation,
         };
 
         let mode = self.effective_mode();
@@ -46,7 +51,21 @@ impl Workspace {
             active_go,
         };
 
-        let items = menu_bar_presentation(ctx, compact_menu_bar(logical_width))
+        let snapshot = MenuBarSnapshot {
+            context: ctx,
+            compact: compact_menu_bar(logical_width),
+            locale: crate::i18n::resolve_locale(&self.app_config.general.ui_language),
+        };
+        if self.menu_bar_snapshot == Some(snapshot) {
+            return;
+        }
+        self.menu_bar_snapshot = Some(snapshot);
+        #[cfg(test)]
+        {
+            self.menu_bar_rebuilds += 1;
+        }
+
+        let items = menu_bar_presentation(ctx, snapshot.compact)
             .into_iter()
             .map(|menu| {
                 let entries = menu
@@ -96,8 +115,7 @@ impl Workspace {
         self.menu_bar.update(cx, |bar, _| {
             bar.set_reveal_active(!compact_menu_bar(logical_width));
             // Preserve the open menu across the rebuild: `set_items` closes
-            // it, and this runs on every render — including the render the
-            // click that *opened* a menu triggered.
+            // it, including a context change while a menu is open.
             let open = bar.open_index();
             bar.set_items(items);
             bar.set_open_index(open);

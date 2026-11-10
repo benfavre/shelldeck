@@ -1,5 +1,6 @@
 //! Live activity and admission controls share the session collection's capacity.
 use super::*;
+use std::rc::Rc;
 
 impl AgentConsoleView {
     pub fn max_concurrent_runs(&self) -> usize {
@@ -56,7 +57,7 @@ impl AgentConsoleView {
                             cx.new(move |cx| {
                                 cx.observe(&parent, |_, _, cx| cx.notify()).detach();
                                 PopoverContent::new(window, cx, move |_, cx| {
-                                    parent.read(cx).render_activity_controls(&parent, cx)
+                                    parent.read(cx).render_activity_controls(&parent, cx, None)
                                 })
                             })
                         }),
@@ -79,7 +80,26 @@ impl AgentConsoleView {
             .into_any_element()
     }
 
-    fn render_activity_controls(&self, parent: &Entity<Self>, _cx: &App) -> AnyElement {
+    pub(crate) fn active_run_count(&self) -> usize {
+        self.sessions.active_count()
+    }
+
+    pub(crate) fn render_companion_activity(
+        &self,
+        parent: &Entity<Self>,
+        cx: &App,
+        on_open: Rc<dyn Fn(&mut App)>,
+    ) -> AnyElement {
+        self.render_activity_controls(parent, cx, Some(on_open))
+    }
+
+    fn render_activity_controls(
+        &self,
+        parent: &Entity<Self>,
+        _cx: &App,
+        on_open: Option<Rc<dyn Fn(&mut App)>>,
+    ) -> AnyElement {
+        let embedded = on_open.is_some();
         let limit = self.max_concurrent_runs();
         let decrease = parent.clone();
         let increase = parent.clone();
@@ -100,6 +120,7 @@ impl AgentConsoleView {
             count += 1;
             let id = session.id;
             let open = parent.clone();
+            let selected = on_open.clone();
             let mut row = div().flex().items_center().gap(px(4.0)).child(
                 div().flex_1().min_w(px(0.0)).child(
                     Button::new(
@@ -120,6 +141,9 @@ impl AgentConsoleView {
                         open.update(cx, |view, cx| {
                             view.select_session(id, cx);
                         });
+                        if let Some(selected) = &selected {
+                            selected(cx);
+                        }
                     }),
                 ),
             );
@@ -162,6 +186,7 @@ impl AgentConsoleView {
         }
         div()
             .w(px(290.0))
+            .when(embedded, |panel| panel.w_full())
             .max_w_full()
             .flex()
             .flex_col()

@@ -182,6 +182,13 @@ The empty terminal surface always offers the default shell. It checks
 when `claude` and `codex` are installed; the live terminal toolbar follows
 the same availability rules.
 
+The welcome content centers horizontally and vertically when it fits. On short
+or narrow windows it wraps actions and shortcut columns, keeps the first action
+below the top inset, and scrolls through the entire reference. UI text scaling
+and French/English labels retain contained, non-overlapping launch cards. The
+default shell is the primary action; installed CLI launchers use quieter
+provider cards and keep their existing commands and permission captions.
+
 ### SDUC-024 — Terminal session resize propagates
 
 `TerminalSession::resize` reshapes the grid *and* the PTY window size
@@ -753,6 +760,16 @@ Dev when the field is absent. This persistence default never bypasses
 authentication: a logged-out workspace renders the welcome screen.
 
 ### SDUC-152 — Mode enforcement per role
+
+Mode navigation uses a 60 ms outgoing / 100 ms incoming veil with no first-visit
+or repeat loading hold; reduced motion commits immediately. Destinations load
+asynchronously and retained terminal/Agent entities remain alive. The menu
+samples mode, authorization, responsive width and locale each render but only
+rebuilds items when those inputs change. Hidden contextual sidebar rows are not
+copied each frame. Monique and bext poll reconciliation starts one initial read
+per activation, rather than another read whenever navigation reconciles an
+already running poll.
+
 
 Logged-out users are intercepted by the welcome screen. That installed-product
 surface presents one ShellDeck promise and the sign-in/create-account paths;
@@ -2091,10 +2108,13 @@ field, mouse-wheel scrolling moves through the whole value and keyboard
 editing scrolls the internal viewport to keep the caret visible instead of
 growing the surrounding screen or typing off-screen.
 
-### SDUC-434 — The tray toggles one standalone AI Dock
+### SDUC-434 — The tray opens one standalone AI Dock
 
-For an authenticated account, the system-tray menu can create, hide, show and
-focus one Assistant Dock without making the main ShellDeck window visible. A
+The tray icon opens the complete native dropdown, including Assistant, Clippy,
+sharing, main window, palette, character controls, pinned hosts, counters and Quit.
+Clicking the icon never substitutes a direct Assistant action. For an
+authenticated account, selecting Assistant creates, shows and focuses one Dock
+without making the main ShellDeck window visible. A
 logged-out invocation reveals the mandatory login surface instead. On desktops
 that allow window positioning, the first invocation slides a 480 px panel in
 from the right edge of the primary monitor's usable work area (excluding
@@ -2113,21 +2133,29 @@ in-flight request alive. Reopening it re-prepares the same Global context
 *without* invalidating the pending request gate — the reply still lands with
 its loading state intact — while a genuine surface/title switch still
 invalidates the gate and drops the stale reply. It inherits ShellDeck's UI font and scale, uses a
-bounded global context, shares durable conversations and tasks with the main
-assistant, exposes an explicit action to reopen ShellDeck, and disables
-submission with an explanation when no usable global AI backend is configured.
-The Dock's global chat is owned by an independent `AiCompanionController`.
-When startup was deferred, the first invocation initializes `Workspace` only
-to validate the authoritative session; chat completion itself remains owned by
-the companion controller. Selecting a task action may use `Workspace` again
-when its terminal, ticket, or script target is required. `CompanionRuntime` retains the Dock and palette
+bounded context and exposes an explicit action to reopen ShellDeck.
+Accounts authorized for Agents use the same retained AgentConsoleView, session
+library, provider/model/access choices, drafts and Workspace runtime in Chat.
+Only one window or workspace pane hosts that console at a time; the main view
+provides Continue here while the companion owns it. New and History operate
+on the Agents library without starting a provider. Closing/reopening or moving
+the host does not cancel runs or replace request routing. Role loss removes
+that binding immediately. Legacy helper conversations remain in a separate,
+read-only Archive. Clippy and contextual workflow tasks retain their existing
+opt-in AiConfig and AiClient execution paths. Accounts without Agents access
+keep that contextual helper and its configuration requirements.
+The independent `AiCompanionController` owns these legacy helper completions
+and forwards contextual workflow actions to Workspace; shared Agent chat uses
+Workspace's canonical runtime. When startup was deferred, the first invocation
+initializes Workspace to validate the authoritative session before hosting chat. `CompanionRuntime` retains the Dock and palette
 window handles and owns global-shortcut routing, so repeated invocations do
 not depend on scanning or constructing the main application surface.
 The enabled-by-default global shortcut toggles that same single Dock from any
 application: Ctrl+Shift+Space on Windows/Linux and Cmd+Shift+Space on macOS.
 After hiding, subsequent invocations retain its current position and docking
-state instead of moving it to the pointer's monitor. Escape and the close
-control animate it out, preserving in-flight requests; reopening during that
+state instead of moving it to the pointer's monitor. The close control animates
+it out; Escape remains available to shared Agents dialogs and navigation, while
+legacy helper Escape also hides its window, preserving in-flight requests; reopening during that
 animation cancels the pending hide. Attached panels also hide on focus loss;
 floating windows stay open when focus moves to another app.
 Wayland owns top-level placement and does not report a primary monitor. There,
@@ -3347,6 +3375,7 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 - **2026-10-31** — SDUC-557: Claude Code and Codex runs over SSH can share the desktop browser through a scoped reverse forward and private temporary MCP adapter. SDTEST-2862–2867 cover transport, launch configuration, lifecycle and native CEF.
 
+- **2026-11-09** — SDUC-564: sidebar project removal supports retained workspaces, persists across restart and restores the same identity on explicit re-add (SDTEST-2930/2931).
 - **2026-11-09** — SDUC-564: project menus support durable project renaming with validation and failed-write recovery.
 
 - **2026-10-31** — SDUC-564: themed tree guides and indented children make folder/worktree ownership visible in the Agents navigator. SDTEST-2860 also checks guide alignment, containment and nested checkout indentation.
@@ -4770,7 +4799,7 @@ copy/reveal actions against that exact current page rather than retained widgets
 
 ### SDUC-564 — Complete Agents workflows remain coherent across navigation and recovery
 
-Project menus expose conversation creation, copying the checkout path, renaming the saved project display name, and confirmed project removal. Renaming trims surrounding whitespace, rejects blank names, preserves checkout/session identity and drafts, and keeps the original name and editable input after a failed catalog save. Removal preserves files and archives conversations under their exact checkout and machine; running conversations and retained workspaces block removal. Search opens from a toolbar icon and can be cleared or dismissed with Escape, groups can be collapsed or expanded together, and remote lists can be expanded or reduced in bounded pages.
+Project menus expose conversation creation, copying the checkout path, renaming the saved project display name, and confirmed project removal. Renaming trims surrounding whitespace, rejects blank names, preserves checkout/session identity and drafts, and keeps the original name and editable input after a failed catalog save. Removal preserves files and archives conversations under their exact checkout and machine. Saved workspaces do not block sidebar removal: their catalog ownership and runtime remain intact, and the hidden sidebar entry stays removed after restart. Explicitly re-adding the same location restores the original project and checkout without duplicates. Running conversations and in-progress workspace creation block removal; failed saves leave the project visible and conversations unarchived. Search opens from a toolbar icon and can be cleared or dismissed with Escape, groups can be collapsed or expanded together, and remote lists can be expanded or reduced in bounded pages.
 
 The acceptance journeys in `AGENTS_ACCEPTANCE.md` connect project entry, session
 management, native discovery, context selection and queued execution. Project
@@ -4800,13 +4829,13 @@ Pinned conversations stay in one section above project folders. Catalog ownershi
 remains authoritative; other chats group by exact local/SSH target and folder,
 including when no projects are registered. Identical folder names on different
 servers remain separate, and duplicate names within a server show their paths.
-Closed groups keep the current chat or native preview visible and summarize only
-the remaining hidden conversations. Search reveals matching rows without changing
+Closed groups hide idle selected chats and native previews. Only the selected
+conversation with live work remains visible; counts summarize every hidden chat. Search reveals matching rows without changing
 saved collapse choices. Older closed catch-all preferences migrate to folder
 choices on library restore (SDTEST-2859–2861).
 
-Child conversations have a theme-colored tree guide aligned below the parent
-chevron, with space before the row chrome. Nested worktrees add another guide
+Child conversations use plain, indented rows without decorative tree lines.
+Disclosure chevrons appear on header hover or keyboard focus. Nested worktrees add another disclosure
 level; closed groups draw a guide only for any retained visible conversation.
 
 Further T3 parity: completed technical work expands inline without losing output;
@@ -4963,3 +4992,29 @@ through the existing permission-gated navigation.
 Personal Settings separates Companion preferences from Appearance, keeping app
 themes and interface sizing immediately available. Existing companion entry
 points open the Companion category directly.
+
+2026-11-10: SDUC-564 sidebar hierarchy uses a single project guide, compact conversation rows and conversation-only selection. Checkout labels remain readable, duplicate creation controls are removed, and collapsed projects retain creation access (SDTEST-2932).
+
+2026-11-10: SDUC-564 folds every single checkout into its project header regardless of label/branch. Multi-checkout rows disclose conversations, keep the selected chat visible and retain per-checkout session creation. Directory/branch details remain available from the project header and menu (SDTEST-2932–2933).
+
+2026-11-10: SDUC-564 sidebar presentation uses plain conversation titles, hover actions, subtle selection, and activity/attention indicators. Project labels toggle disclosure; provider/status details remain in tooltips and session controls. SSH history titles use matching typography (SDTEST-2934).
+
+2026-11-10: SDUC-564 disclosure chevrons appear on header hover or keyboard focus without moving labels. Collapsed groups hide idle selected conversations and native history previews; only selected live work remains visible. Summary counts include hidden idle selections. Search still reveals matches without changing saved collapse (SDTEST-2935; SDPATCH-129).
+
+2026-11-10: SDUC-564 headers retain semantic folder/globe/server/cloud icons at rest and swap to disclosure chevrons on hover or keyboard focus. SSH conversations and Automonique use the same top-level icon slot and label alignment as projects (SDTEST-2936).
+
+2026-11-10: SDUC-564 group headers use one rounded, neutral hover surface spanning their icon, label and actions. Nested header buttons keep independent behavior and keyboard focus while leaving surface painting to the row (SDPATCH-130).
+
+2026-11-10: SDUC-434/564 floating Assistant shares the retained Agents chat for authorized accounts, preserves legacy archives/tools, and uses cached, event-driven repaint. SDTEST-2937–2940 cover real controls, pointer work, access/host custody and live stream continuity.
+
+SDUC-434 Tasks also displays the shared Agents activity/capacity controls and exact-run stop actions alongside any contextual workflow tasks. Clippy retains its existing explicit opt-in (SDTEST-2941).
+
+2026-11-10: SDUC-434/435 tray activation is menu-first on Linux, Windows and macOS. The full native dropdown remains available; only selecting Assistant opens or raises the Dock. Linux advertises ItemIsMenu instead of app activation, and Windows primary/secondary clicks share the same native context menu (SDTEST-2942, SDTEST-2947, SDPATCH-132). This supersedes the earlier direct-Assistant icon mapping; global keyboard toggle remains unchanged.
+
+2026-11-10: SDUC-434/435 on Wayland require null-buffer hide to remain unmapped even with pending frame callbacks or UI updates. Show performs an empty commit, waits for a fresh configure/ack, then presents a buffer even when the retained scene is clean (SDPATCH-131, native SDTEST-2943).
+
+2026-11-10: SDUC-152 mode navigation removes artificial 3,000/880 ms waits; menu cache and hidden-panel guards reduce frame allocations; poll reconciliation avoids redundant initial reads (SDTEST-1703, SDTEST-2944–2946).
+
+Native Linux menu contract (2026-11-10, disposable XDG): SDTEST-2947 verifies ItemIsMenu=true and all dropdown options; menu layout read was 4.16 ms. Final UI suite: 382 passed; app suite: 106 passed. This is protocol/behavior verification, not a claim of a visual shell-dropdown walkthrough.
+
+2026-11-10: SDUC-410 terminal welcome centers responsively with overflow-safe spacers, wrapping cards/shortcuts and static compact branding (SDTEST-2948).

@@ -131,6 +131,8 @@ impl Workspace {
     /// Stop runtime resources that must never survive an account boundary.
     /// Unlike `shutdown`, this keeps the Workspace itself alive for login.
     pub(super) fn stop_authenticated_runtime(&mut self, cx: &mut Context<Self>) {
+        self.ai_dock_assistant
+            .update(cx, |view, cx| view.set_shared_agent_console(None, cx));
         self.personal_share.update(cx, |view, cx| view.clear(cx));
         self.workspace_hub
             .update(cx, |hub, cx| hub.cancel_remote_folder_picker(cx));
@@ -505,13 +507,18 @@ impl Workspace {
         let workspace_agent = (self.active_view == ActiveView::Workspaces)
             .then(|| self.workspace_hub.read(cx).active_agent_session_id())
             .flatten();
+        self.sync_agent_companion_host(cx);
         let workflows_authorized = self.can_access_mode(AppMode::Dev);
-        let agent_visible = super::presentation::agent_surface_visible(
-            workflows_authorized,
-            self.effective_mode(),
-            self.settings_open,
-            self.active_view == ActiveView::Agents || workspace_agent.is_some(),
-        );
+        let companion_owns_agents = self.companion_owns_agents(cx);
+        let agent_visible = (companion_owns_agents
+            && self.ai_dock_assistant.read(cx).shared_agent_chat_visible())
+            || (!companion_owns_agents
+                && super::presentation::agent_surface_visible(
+                    workflows_authorized,
+                    self.effective_mode(),
+                    self.settings_open,
+                    self.active_view == ActiveView::Agents || workspace_agent.is_some(),
+                ));
         self.agent_console.update(cx, |view, cx| {
             view.set_workflows_authorized(workflows_authorized, cx);
             if let Some(session_id) = workspace_agent {

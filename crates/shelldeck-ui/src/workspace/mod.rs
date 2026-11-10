@@ -9,8 +9,8 @@ use adabraka_ui::navigation::menu::{
 };
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
 use adabraka_ui::prelude::{
-    install_theme, scrollable_vertical, use_theme, AnimatedCollapsible, Badge, BadgeVariant,
-    Button, ButtonSize, ButtonVariant, Select, SelectOption,
+    AnimatedCollapsible, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Select,
+    SelectOption, install_theme, scrollable_vertical, use_theme,
 };
 pub(crate) use agents::resolve_local_agent_program;
 use gpui::prelude::*;
@@ -21,12 +21,12 @@ use gpui::*;
 // shadows, sidebar width, mouse-position math) must say `gpui::px` explicitly.
 use crate::scale::px;
 use shelldeck_core::ai::{
-    complete_assistant_turn, configured_cli_available, create_client, host_context,
-    parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
-    parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionKind,
-    AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiAssistantAction,
+    AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiAssistantAction,
     AiAssistantCompletion, AiConfig, AiContext, AiGeneratedIssueDraft, AiIssueTriageProposal,
-    AiSurface, AiTask, AiTaskStatus, AiTaskStore, ClippyConfig,
+    AiSurface, AiTask, AiTaskStatus, AiTaskStore, ClippyConfig, complete_assistant_turn,
+    configured_cli_available, create_client, host_context, parse_diagnostic_plan,
+    parse_generated_issue_draft, parse_generated_name, parse_issue_triage_proposal,
+    test_connection, validate_diagnostic_command,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -55,7 +55,7 @@ use uuid::Uuid;
 use crate::agent_console_view::{AgentConsoleEvent, AgentConsoleView};
 use crate::ai_action_dialog::render_ai_action_dialog;
 use crate::ai_assistant::{AiAssistantEvent, AiAssistantView};
-use crate::ai_companion::{assistant_action_acknowledgement, AiCompanionEvent};
+use crate::ai_companion::{AiCompanionEvent, assistant_action_acknowledgement};
 use crate::ai_workflow::{
     AiNamingKind, AiWorkflowEvent, AiWorkflowInit, AiWorkflowTarget, AiWorkflowView,
 };
@@ -70,12 +70,12 @@ use crate::dashboard::DashboardView;
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::issue_attachments::{
-    capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
-    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox, LightboxItem,
+    AttachmentDraft, AttachmentLightbox, LightboxItem, capture_region, draft_from_clipboard_image,
+    render_attachment_draft_gallery, render_stored_attachment_gallery,
 };
 use crate::login_form::{LoginForm, LoginFormEvent};
 use crate::monique_view::{MoniqueView, MoniqueViewEvent};
-use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
+use crate::monolith::{MonolithMotion, animated_loading_text, animated_monolith};
 use crate::onboarding_view::{OnboardingEvent, OnboardingView};
 use crate::port_forward_form::PortForwardForm;
 use crate::port_forward_view::{PortForwardEvent, PortForwardView};
@@ -91,11 +91,11 @@ use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
 use crate::support_view::thread::{
-    human_message, note as thread_note, HumanMessageMeta, ThreadMessageExtras, ThreadNoteKind,
+    HumanMessageMeta, ThreadMessageExtras, ThreadNoteKind, human_message, note as thread_note,
 };
 use crate::support_view::{
-    issue_status_badge, priority_badge, render_attachment_delete_dialog,
-    render_issue_delete_dialog, SupportView, SupportViewEvent,
+    SupportView, SupportViewEvent, issue_status_badge, priority_badge,
+    render_attachment_delete_dialog, render_issue_delete_dialog,
 };
 use crate::t;
 use crate::template_browser::TemplateBrowser;
@@ -114,6 +114,7 @@ pub type AiDockOpenHandler = Box<dyn Fn(&mut App)>;
 mod account;
 mod activity;
 mod agent_codex;
+mod agent_companion;
 mod agent_remote_sessions;
 mod agent_stream;
 mod agent_tools;
@@ -204,7 +205,6 @@ struct PostLoginSplash {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModeTransitionPhase {
     FadeOut,
-    Loading,
     FadeIn,
 }
 
@@ -212,31 +212,18 @@ enum ModeTransitionPhase {
 struct ModeTransition {
     target: AppMode,
     phase: ModeTransitionPhase,
-    /// Durée du palier retenue pour *cette* transition — voir
-    /// [`MODE_TRANSITION_LOADING_MS`].
-    loading_ms: u64,
 }
 
 impl ModeTransition {
     fn total_ms(self) -> u64 {
-        MODE_TRANSITION_OUT_MS + self.loading_ms + MODE_TRANSITION_IN_MS
+        MODE_TRANSITION_OUT_MS + MODE_TRANSITION_IN_MS
     }
 }
 
-const MODE_TRANSITION_OUT_MS: u64 = 180;
-/// Palier de la première entrée dans un mode : le temps de voir la mascotte
-/// prendre sa personnalité (`docs/design/mode-transitions.md`) et, côté
-/// Support, de laisser la première requête aboutir.
-const MODE_TRANSITION_LOADING_MS: u64 = 2_540;
-/// Palier des entrées suivantes. Rien ne charge lors d'un retour : les
-/// entités Dev sont masquées et non détruites, précisément pour que les
-/// terminaux survivent. Payer trois secondes à chaque aller-retour
-/// Support ↔ Dev revenait à facturer une animation déjà vue.
-const MODE_TRANSITION_LOADING_REPEAT_MS: u64 = 420;
-const MODE_TRANSITION_IN_MS: u64 = 280;
-#[cfg(test)]
-const MODE_TRANSITION_TOTAL_MS: u64 =
-    MODE_TRANSITION_OUT_MS + MODE_TRANSITION_LOADING_MS + MODE_TRANSITION_IN_MS;
+// Navigation should reveal retained surfaces promptly; network loading belongs
+// inside each destination rather than an artificial full-window hold.
+const MODE_TRANSITION_OUT_MS: u64 = 60;
+const MODE_TRANSITION_IN_MS: u64 = 100;
 
 impl AccountStatus {
     fn dot_color(self) -> Hsla {
@@ -490,9 +477,6 @@ pub struct Workspace {
     login_form: Option<Entity<LoginForm>>,
     post_login_splash: Option<PostLoginSplash>,
     mode_transition: Option<ModeTransition>,
-    /// Modes déjà ouverts depuis le lancement. La transition longue n'est due
-    /// qu'à la première entrée dans chacun.
-    modes_seen: Vec<AppMode>,
     onboarding: Option<Entity<OnboardingView>>,
     port_forward_form: Option<Entity<PortForwardForm>>,
     script_form: Option<Entity<ScriptForm>>,
@@ -511,6 +495,9 @@ pub struct Workspace {
     /// screen); its contents are rebuilt from `menu_bar_spec` whenever the
     /// state it reads changes. See `crate::menu_bar`.
     menu_bar: Entity<AdabrakaMenuBar>,
+    menu_bar_snapshot: Option<menu::MenuBarSnapshot>,
+    #[cfg(test)]
+    menu_bar_rebuilds: usize,
     /// Last published global-shortcut registration statuses. Kept here so a
     /// transition into a failed state can be announced once, rather than the
     /// failure living only in the Settings pane.
@@ -1020,8 +1007,10 @@ impl Workspace {
                 .expect("Workspace tests require HOME to remain unchanged");
             let roots = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]
                 .map(|key| std::env::var_os(key).map(std::path::PathBuf::from));
-            assert!(ui_test_profile_is_isolated(&home, &roots),
-                "Workspace tests require isolated absolute XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_CACHE_HOME; see .agents/testing.md");
+            assert!(
+                ui_test_profile_is_isolated(&home, &roots),
+                "Workspace tests require isolated absolute XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_CACHE_HOME; see .agents/testing.md"
+            );
         }
         let mut config = config;
         let normalized_ui_font =
@@ -1569,7 +1558,6 @@ impl Workspace {
             login_form: None,
             post_login_splash: None,
             mode_transition: None,
-            modes_seen: Vec::new(),
             onboarding: None,
             port_forward_form: None,
             script_form: None,
@@ -1582,6 +1570,9 @@ impl Workspace {
             settings_open: false,
             settings_dialog: None,
             menu_bar,
+            menu_bar_snapshot: None,
+            #[cfg(test)]
+            menu_bar_rebuilds: 0,
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),
             sidebar_visible: true,
             sidebar_width: initial_sidebar_width,

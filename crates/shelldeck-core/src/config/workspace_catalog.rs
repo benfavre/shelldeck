@@ -309,6 +309,9 @@ pub trait SshBeneathExecutor {
 pub struct ProjectRecord {
     id: CatalogProjectId,
     name: String,
+    /// Sidebar removal preserves checkout/workspace ownership for retained work.
+    #[serde(default)]
+    hidden_from_navigator: bool,
     #[serde(default)]
     checkouts: Vec<ProjectCheckout>,
 }
@@ -317,6 +320,7 @@ impl ProjectRecord {
         Self {
             id,
             name: name.into(),
+            hidden_from_navigator: false,
             checkouts: Vec::new(),
         }
     }
@@ -330,6 +334,10 @@ impl ProjectRecord {
     #[must_use]
     pub const fn name(&self) -> &str {
         self.name.as_str()
+    }
+    #[must_use]
+    pub const fn hidden_from_navigator(&self) -> bool {
+        self.hidden_from_navigator
     }
     pub fn checkouts(&self) -> impl ExactSizeIterator<Item = &ProjectCheckout> {
         self.checkouts.iter()
@@ -740,6 +748,26 @@ impl ProjectCatalog {
         }
         let revision = self.next_revision()?;
         self.projects[index].name = name.to_owned();
+        self.revision = revision;
+        Ok(())
+    }
+
+    /// Hide or restore a sidebar project without losing retained workspace ownership.
+    pub fn set_project_navigator_hidden(
+        &mut self,
+        project_id: CatalogProjectId,
+        hidden: bool,
+    ) -> std::result::Result<(), WorkspaceCatalogError> {
+        let index = self
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+            .ok_or(WorkspaceCatalogError::UnknownProject(project_id))?;
+        if self.projects[index].hidden_from_navigator == hidden {
+            return Ok(());
+        }
+        let revision = self.next_revision()?;
+        self.projects[index].hidden_from_navigator = hidden;
         self.revision = revision;
         Ok(())
     }
@@ -1474,6 +1502,71 @@ mod tests {
             loaded.workspaces().collect::<Vec<_>>(),
             before.workspaces().collect::<Vec<_>>()
         );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    // SDTEST-2930 / SDUC-564 — sidebar removal persists without losing retained ownership.
+    #[test]
+    fn navigator_removal_survives_reload_and_preserves_workspaces() {
+        let path = temp_path();
+        let mut catalog = catalog_with_local_and_ssh();
+        let project = catalog.projects().next().unwrap().id();
+        let checkouts: Vec<_> = catalog
+            .projects()
+            .next()
+            .unwrap()
+            .checkouts()
+            .map(ProjectCheckout::id)
+            .collect();
+        for (index, checkout_id) in checkouts.into_iter().enumerate() {
+            let workspace = CatalogWorkspaceId::new();
+            catalog
+                .create_workspace(WorkspaceLaunchRequest {
+                    id: workspace,
+                    project_id: project,
+                    checkout_id,
+                    name: format!("Retained {index}"),
+                    intake: WorkspaceLaunchIntake::Manual,
+                })
+                .unwrap();
+            if index == 1 {
+                catalog.archive_workspace(workspace).unwrap();
+            }
+        }
+        let before = catalog.clone();
+        catalog.set_project_navigator_hidden(project, true).unwrap();
+        catalog.save_to(&path).unwrap();
+        let mut loaded = ProjectCatalog::load_from(&path).unwrap();
+        assert!(loaded.projects().next().unwrap().hidden_from_navigator());
+        assert_eq!(loaded.workspaces, before.workspaces);
+        assert_eq!(loaded.projects[0].checkouts, before.projects[0].checkouts);
+        let revision = loaded.revision();
+        loaded.set_project_navigator_hidden(project, true).unwrap();
+        assert_eq!(
+            loaded.revision(),
+            revision,
+            "repeated removal is idempotent"
+        );
+        loaded.set_project_navigator_hidden(project, false).unwrap();
+        loaded.save_to(&path).unwrap();
+        let restored = ProjectCatalog::load_from(&path).unwrap();
+        assert_eq!(restored.projects, before.projects);
+        assert_eq!(restored.workspaces, before.workspaces);
+
+        // Existing profiles have no sidebar-removal field and remain visible.
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for record in legacy["projects"].as_array_mut().unwrap() {
+            record
+                .as_object_mut()
+                .unwrap()
+                .remove("hidden_from_navigator");
+        }
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(ProjectCatalog::load_from(&path)
+            .unwrap()
+            .projects()
+            .all(|record| !record.hidden_from_navigator()));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

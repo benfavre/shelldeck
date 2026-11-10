@@ -869,6 +869,7 @@ fn dispatch_tray_command(
     cx: &mut gpui::App,
 ) {
     use tray::TrayCommand;
+    tracing::info!(?cmd, "dispatching tray command");
     if tray_command_requires_auth(&cmd) {
         let Some(root_entity) = root.upgrade() else {
             return;
@@ -894,7 +895,7 @@ fn dispatch_tray_command(
                 tracing::warn!(error = %error, "tray could not show the main window");
             }
         }
-        TrayCommand::ToggleAiDock => toggle_ai_dock(root, window, cx),
+        TrayCommand::ShowAiDock => show_ai_dock(root, window, cx),
         TrayCommand::OpenAiTasks => show_ai_task_center(root, window, cx),
         TrayCommand::OpenClippy => show_clippy(root, window, cx),
         TrayCommand::OpenPalette => toggle_companion_command_palette(root, window, cx),
@@ -987,7 +988,7 @@ fn capture_and_share(
 fn tray_command_requires_auth(command: &tray::TrayCommand) -> bool {
     matches!(
         command,
-        tray::TrayCommand::ToggleAiDock
+        tray::TrayCommand::ShowAiDock
             | tray::TrayCommand::OpenClippy
             | tray::TrayCommand::OpenAiTasks
             | tray::TrayCommand::ChooseCharacter
@@ -2633,7 +2634,7 @@ mod tests {
             assert!(!tray_command_requires_auth(&public));
         }
         for private in [
-            TrayCommand::ToggleAiDock,
+            TrayCommand::ShowAiDock,
             TrayCommand::OpenClippy,
             TrayCommand::OpenAiTasks,
             TrayCommand::ChooseCharacter,

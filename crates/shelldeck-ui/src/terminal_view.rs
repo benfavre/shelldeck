@@ -19,7 +19,6 @@ use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::tmux::TmuxAction;
 
 use crate::glyph_cache::GlyphCache;
-use crate::monolith::{animated_monolith, MonolithMotion};
 use crate::shortcut_reference::{
     render_shortcut_rows, shortcuts_for, ShortcutGroup, ShortcutSurface,
 };
@@ -27,6 +26,7 @@ use crate::t;
 use crate::theme::ShellDeckColors;
 
 mod block_drawing;
+mod empty_state;
 mod layout;
 mod palette;
 
@@ -4938,19 +4938,40 @@ impl TerminalView {
         accent: Hsla,
         logo: AnyElement,
     ) -> Stateful<Div> {
+        use crate::scale::px;
         div()
             .id(id)
             .flex()
             .items_center()
             .gap(px(10.0))
-            .w(px(220.0))
-            .h(px(64.0))
-            .px(px(10.0))
+            .debug_selector(move || id.into())
+            .flex_1()
+            .flex_basis(px(210.0))
+            .min_w(px(0.0))
+            .max_w(px(240.0))
+            .min_h(px(64.0))
+            .px(px(14.0))
+            .py(px(12.0))
             .rounded(px(8.0))
-            .bg(accent)
-            .shadow_sm()
+            .bg(if id == "empty-launch-terminal" {
+                accent
+            } else {
+                ShellDeckColors::bg_surface()
+            })
+            .border_1()
+            .border_color(if id == "empty-launch-terminal" {
+                accent
+            } else {
+                ShellDeckColors::border()
+            })
             .cursor_pointer()
-            .hover(move |el| el.bg(accent.opacity(0.88)))
+            .hover(move |el| {
+                el.bg(if id == "empty-launch-terminal" {
+                    accent.opacity(0.88)
+                } else {
+                    ShellDeckColors::hover_bg()
+                })
+            })
             .child(logo)
             .child(
                 div()
@@ -4961,7 +4982,11 @@ impl TerminalView {
                         div()
                             .text_size(px(14.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(gpui::white())
+                            .text_color(if id == "empty-launch-terminal" {
+                                gpui::white()
+                            } else {
+                                ShellDeckColors::text_primary()
+                            })
                             .child(title),
                     )
                     .child(
@@ -4970,7 +4995,11 @@ impl TerminalView {
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .text_size(px(10.0))
-                            .text_color(gpui::white().opacity(0.85))
+                            .text_color(if id == "empty-launch-terminal" {
+                                gpui::white().opacity(0.85)
+                            } else {
+                                ShellDeckColors::text_muted()
+                            })
                             .child(caption),
                     ),
             )
@@ -4983,217 +5012,6 @@ impl TerminalView {
                 })
                 .into()
             })
-    }
-
-    fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(message) = self.required_cwd_unavailable_message() {
-            return div()
-                .id("terminal-workspace-folder-unavailable")
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .size_full()
-                .p(px(24.0))
-                .gap(px(8.0))
-                .bg(ShellDeckColors::bg_primary())
-                .child(
-                    div()
-                        .text_size(px(16.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(t!("terminal.empty.workspace_unavailable_title").to_string()),
-                )
-                .child(
-                    div()
-                        .max_w(px(620.0))
-                        .text_center()
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(message),
-                );
-        }
-        let cmd = if cfg!(target_os = "macos") {
-            "\u{2318}"
-        } else {
-            "Ctrl+"
-        };
-
-        let mut launchers = div()
-            .flex()
-            .flex_wrap()
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .gap(px(10.0))
-            .max_w(px(700.0))
-            .child(
-                Self::launcher_card(
-                    "empty-launch-terminal",
-                    t!("terminal.empty.open_terminal").to_string(),
-                    t!("terminal.empty.open_terminal_cmd").to_string(),
-                    SharedString::from(t!("terminal.empty.open_terminal_cmd").to_string()),
-                    ShellDeckColors::primary(),
-                    Self::terminal_logo(26.0).into_any_element(),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.spawn_local_terminal(cx);
-                    this.focus_handle.focus(window);
-                    cx.emit(TerminalEvent::NewTabRequested);
-                    cx.notify();
-                })),
-            );
-
-        if self.claude_available {
-            launchers = launchers.child(
-                Self::launcher_card(
-                    "empty-launch-claude",
-                    t!("terminal.empty.launch_claude").to_string(),
-                    t!("terminal.empty.launch_claude_caption").to_string(),
-                    SharedString::from(CLAUDE_CLI_COMMAND),
-                    Self::claude_orange(),
-                    Self::claude_logo(26.0).into_any_element(),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.launch_claude(cx);
-                    this.focus_handle.focus(window);
-                })),
-            );
-        }
-
-        if self.codex_available {
-            launchers = launchers.child(
-                Self::launcher_card(
-                    "empty-launch-codex",
-                    t!("terminal.empty.launch_codex").to_string(),
-                    t!("terminal.empty.launch_codex_caption").to_string(),
-                    SharedString::from(CODEX_CLI_COMMAND),
-                    Self::codex_green(),
-                    Self::codex_logo(26.0).into_any_element(),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.launch_codex(cx);
-                    this.focus_handle.focus(window);
-                })),
-            );
-        }
-
-        let shortcuts = shortcuts_for(ShortcutSurface::TerminalEmpty, true);
-        let navigation_shortcuts = shortcuts
-            .iter()
-            .copied()
-            .filter(|shortcut| shortcut.group == ShortcutGroup::Navigation);
-        let terminal_shortcuts = shortcuts
-            .iter()
-            .copied()
-            .filter(|shortcut| shortcut.group == ShortcutGroup::Terminal);
-
-        div()
-            .id("terminal-empty-scroll")
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_start()
-            .size_full()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .py(px(24.0))
-            // Chrome applicatif, pas sortie de terminal : cet écran suit le
-            // thème de l'application (`.agents/theming.md`). Il peignait le
-            // fond de la palette *terminal*, si bien qu'un thème clair
-            // affichait un panneau noir plein cadre avec une carte claire
-            // posée dessus.
-            .bg(ShellDeckColors::bg_primary())
-            .gap(px(24.0))
-            // Icon + heading
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(animated_monolith(
-                        "terminal-empty-typing",
-                        96.0,
-                        MonolithMotion::TerminalTyping,
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .text_size(px(16.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("terminal.empty.title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("terminal.empty.hint", cmd = cmd).to_string()),
-                    ),
-            )
-            .child(launchers)
-            // Keyboard shortcuts reference
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_shrink_0()
-                    .p(px(20.0))
-                    .rounded(px(8.0))
-                    .bg(ShellDeckColors::bg_surface())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .w_full()
-                    .max_w(px(700.0))
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .mb(px(8.0))
-                            .child(t!("shortcuts.title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(16.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(px(260.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(ShellDeckColors::text_muted())
-                                            .mb(px(4.0))
-                                            .child(t!("shortcuts.group.navigation").to_string()),
-                                    )
-                                    .child(render_shortcut_rows(navigation_shortcuts)),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(px(260.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(ShellDeckColors::text_muted())
-                                            .mb(px(4.0))
-                                            .child(t!("shortcuts.group.terminal").to_string()),
-                                    )
-                                    .child(render_shortcut_rows(terminal_shortcuts)),
-                            ),
-                    ),
-            )
     }
 }
 

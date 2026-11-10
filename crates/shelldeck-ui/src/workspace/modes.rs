@@ -131,22 +131,15 @@ impl Workspace {
         self.mode_menu_open = false;
         self.site_menu_open = false;
         self.reset_issue_selection(cx);
-        // Première entrée dans ce mode depuis le lancement : palier complet,
-        // le temps de la mascotte et de la première requête. Retour : palier
-        // court, rien ne charge.
-        let first_visit = !self.modes_seen.contains(&mode);
-        if first_visit {
-            self.modes_seen.push(mode);
+        if cx.prefers_reduced_motion() {
+            self.commit_mode_change(mode, cx);
+            self.drive_platform_attention_activations(cx);
+            cx.notify();
+            return;
         }
-        let loading_ms = if first_visit {
-            MODE_TRANSITION_LOADING_MS
-        } else {
-            MODE_TRANSITION_LOADING_REPEAT_MS
-        };
         self.mode_transition = Some(ModeTransition {
             target: mode,
             phase: ModeTransitionPhase::FadeOut,
-            loading_ms,
         });
         cx.notify();
 
@@ -159,7 +152,6 @@ impl Workspace {
                 let expected = ModeTransition {
                     target: mode,
                     phase: ModeTransitionPhase::FadeOut,
-                    loading_ms,
                 };
                 if workspace.mode_transition != Some(expected) || !workspace.can_access_mode(mode) {
                     workspace.mode_transition = None;
@@ -171,34 +163,7 @@ impl Workspace {
                 workspace.commit_mode_change(mode, cx);
                 workspace.mode_transition = Some(ModeTransition {
                     target: mode,
-                    phase: ModeTransitionPhase::Loading,
-                    loading_ms,
-                });
-                cx.notify();
-                true
-            }) else {
-                return;
-            };
-            if !continue_transition {
-                return;
-            }
-
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(loading_ms))
-                .await;
-            let Ok(continue_transition) = this.update(cx, |workspace, cx| {
-                let expected = ModeTransition {
-                    target: mode,
-                    phase: ModeTransitionPhase::Loading,
-                    loading_ms,
-                };
-                if workspace.mode_transition != Some(expected) {
-                    return false;
-                }
-                workspace.mode_transition = Some(ModeTransition {
-                    target: mode,
                     phase: ModeTransitionPhase::FadeIn,
-                    loading_ms,
                 });
                 cx.notify();
                 true
@@ -216,7 +181,6 @@ impl Workspace {
                 let expected = ModeTransition {
                     target: mode,
                     phase: ModeTransitionPhase::FadeIn,
-                    loading_ms,
                 };
                 if workspace.mode_transition == Some(expected) {
                     workspace.mode_transition = None;
@@ -325,9 +289,7 @@ impl Workspace {
             self.refresh_support(cx);
         }
         self.update_monique_availability(cx);
-        self.sync_monique_poll(cx);
         self.update_fleet_availability(cx);
-        self.sync_fleet_view_poll(cx);
         self.sync_issues_poll(cx);
         self.sync_inklura_notifications_poll(cx);
         self.prefetch_personal_share(cx);

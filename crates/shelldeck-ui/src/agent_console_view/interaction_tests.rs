@@ -1575,10 +1575,9 @@ fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
                 "conversation controls stay inset and contained beside the guide"
             );
             if matches!(&theme, ThemePreference::SolarizedLight) {
-                let nested = ui.bounds("agent-tree-children-worktree-primary").unwrap();
                 assert!(
-                    nested.left() > guide.left() && child.left() >= nested.left() + gpui::px(6.0),
-                    "worktree conversations keep a second hierarchy level"
+                    ui.bounds("agent-worktree-primary").is_none(),
+                    "a single checkout with a branch stays folded into the project header"
                 );
             }
             assert!(
@@ -1590,8 +1589,8 @@ fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
             assert!(ui.bounds(&format!("agent-folder-{folder_key}")).is_some());
             ui.click_navigation("agent-project-collapse-catalog");
             assert!(
-                ui.bounds(&format!("agent-nav-session-{first}")).is_some(),
-                "the current chat remains in its closed project"
+                ui.bounds(&format!("agent-nav-session-{first}")).is_none(),
+                "an idle selected chat is hidden in its closed project"
             );
             assert!(ui
                 .bounds(&format!("agent-nav-session-{background}"))
@@ -1608,13 +1607,15 @@ fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
             ui.click(&format!("agent-nav-action-{pinned}-TogglePin"));
             assert!(ui.bounds("agent-folder-pinned-sessions").is_none());
             assert!(
-                ui.bounds(&format!("agent-nav-session-{pinned}")).is_some(),
-                "unpinning keeps the open chat visible in its closed project"
+                ui.bounds(&format!("agent-nav-session-{pinned}")).is_none(),
+                "unpinning an idle chat respects its closed project"
             );
             assert_eq!(ui.draft(), "A separate pinned draft");
+            ui.click_navigation("agent-project-collapse-catalog");
             ui.click_navigation(&format!("agent-nav-menu-{pinned}"));
             ui.click(&format!("agent-nav-action-{pinned}-TogglePin"));
             assert!(ui.bounds("agent-folder-pinned-sessions").is_some());
+            ui.click_navigation("agent-project-collapse-catalog");
             assert!(ui.bounds(&format!("agent-nav-session-{first}")).is_none());
             let saved = ui
                 .view
@@ -1635,7 +1636,7 @@ fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
             assert_eq!(ui.draft(), "Keep the selected project's draft · é🌍");
             ui.open_navigator();
             ui.search_navigator("");
-            assert!(ui.bounds(&format!("agent-nav-session-{first}")).is_some());
+            assert!(ui.bounds(&format!("agent-nav-session-{first}")).is_none());
             assert!(ui
                 .bounds(&format!("agent-nav-session-{background}"))
                 .is_none());
@@ -1691,7 +1692,7 @@ fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
             assert_eq!(restored.draft(), "Keep the selected project's draft · é🌍");
             assert!(restored
                 .bounds(&format!("agent-nav-session-{first}"))
-                .is_some());
+                .is_none());
             assert!(restored
                 .bounds(&format!("agent-nav-session-{other}"))
                 .is_none());
@@ -1840,14 +1841,14 @@ fn rendered_ssh_folders_preserve_source_search_collapse_and_independent_pages() 
         }
         ui.click_navigation(&format!("agent-folder-toggle-{alpha_key}"));
         assert!(
-            ui.bounds(&row(a, &alpha[11])).is_some(),
-            "closed folder retains the open preview"
+            ui.bounds(&row(a, &alpha[11])).is_none(),
+            "closed folder hides the idle history preview"
         );
         assert!(ui.bounds(&row(a, &alpha[0])).is_none());
         ui.click_navigation(&format!("agent-folder-toggle-ssh-server:{a}"));
         assert!(
-            ui.bounds(&row(a, &alpha[11])).is_some(),
-            "closed server retains the open preview"
+            ui.bounds(&row(a, &alpha[11])).is_none(),
+            "closed server hides its idle history preview"
         );
         assert!(ui.bounds(&format!("agent-folder-{beta_key}")).is_none());
         let saved = ui
@@ -1864,7 +1865,7 @@ fn rendered_ssh_folders_preserve_source_search_collapse_and_independent_pages() 
         ui.search_navigator("no matching project");
         assert!(ui.bounds(&row(a, &alpha[11])).is_none());
         ui.search_navigator("");
-        assert!(ui.bounds(&row(a, &alpha[11])).is_some());
+        assert!(ui.bounds(&row(a, &alpha[11])).is_none());
         assert!(ui.bounds(&row(a, &alpha[0])).is_none());
         ui.click_navigation(&format!("agent-folder-toggle-ssh-server:{a}"));
         assert!(
@@ -2713,7 +2714,7 @@ fn rendered_sidebar_organization_and_clear_search_preserve_navigation() {
         ui.click("agent-collapse-all");
         assert!(ui
             .bounds(&format!("agent-nav-session-{original}"))
-            .is_some());
+            .is_none());
         assert!(ui
             .bounds(&format!("agent-nav-session-{background}"))
             .is_none());
@@ -3356,4 +3357,588 @@ fn rendered_project_rename_validates_cancels_and_recovers_failed_save() {
             .iter()
             .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
     }
+}
+
+// SDTEST-2932 / SDUC-564: nested checkout navigation leaves room for names and actions.
+#[::core::prelude::v1::test]
+fn rendered_checkout_sidebar_keeps_rows_contained_and_creation_reachable() {
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        for (width, font_size) in [(1000.0, 10.0), (1000.0, 14.0), (620.0, 20.0)] {
+            let scale = crate::scale::scale_for_font_size(font_size);
+            let mut ui = Cockpit::new(theme.clone(), width, 720.0, false);
+            ui.window
+                .update(|window, _| window.set_rem_size(gpui::px(16.0 * scale)));
+            let session = ui.session;
+            ui.type_draft("Keep this unsent draft");
+            ui.view.update(&mut ui.app, |view, cx| {
+                view.set_project_groups(
+                    vec![AgentProjectGroup {
+                        id: "sidebar-layout".into(),
+                        label: "Home".into(),
+                        worktrees: vec![AgentWorktreeOption {
+                            id: "sidebar-checkout".into(),
+                            label: "test · a checkout with a very long Unicode name é🌍".into(),
+                            path: view.sessions.get(session).unwrap().context.workdir.clone(),
+                            target: AgentTarget::Local,
+                            branch: Some(
+                                "fix/a-very-long-branch-name-that-must-stay-contained".into(),
+                            ),
+                            is_primary: true,
+                        }],
+                    }],
+                    cx,
+                );
+                view.library.preferences.navigator_width = 240;
+            });
+            ui.open_navigator();
+            let tree = ui.bounds("agent-tree-children-sidebar-layout").unwrap();
+            assert!(ui.bounds("agent-worktree-sidebar-checkout").is_none());
+            let header = ui.bounds("agent-project-collapse-sidebar-layout").unwrap();
+            let row = ui.bounds(&format!("agent-nav-session-{session}")).unwrap();
+            let action = ui.bounds("agent-worktree-new-sidebar-checkout").unwrap();
+            assert!(row.origin.x > tree.left());
+            assert!(row.origin.x - tree.left() <= gpui::px(24.0 * scale));
+            assert!(action.right() <= tree.right());
+            assert!(
+                action.top() >= header.top()
+                    && action.bottom() <= header.bottom() + gpui::px(6.0 * scale)
+            );
+            let menu = ui.bounds(&format!("agent-nav-menu-{session}")).unwrap();
+            assert!(row.right() + gpui::px(6.0 * scale) <= menu.left());
+            assert!(menu.right() <= tree.right());
+            ui.click(&format!("agent-nav-menu-{session}"));
+            ui.window.simulate_keystrokes("escape");
+            ui.redraw();
+            assert_eq!(ui.draft(), "Keep this unsent draft");
+            assert!(row.right() <= tree.right());
+            assert!(
+                row.size.height <= gpui::px((32.0 * scale).ceil()),
+                "font={font_size} row={row:?}"
+            );
+            ui.click("agent-project-collapse-sidebar-layout");
+            assert!(ui.bounds("agent-worktree-sidebar-checkout").is_none());
+            ui.click("agent-worktree-new-sidebar-checkout");
+            ui.view.read_with(&ui.app, |view, _| {
+                let created = view.sessions.selected().unwrap();
+                assert_ne!(created.id, session);
+                assert_eq!(
+                    created.context.workdir,
+                    view.sessions.get(session).unwrap().context.workdir
+                );
+            });
+            ui.view
+                .update(&mut ui.app, |view, cx| view.select_session(session, cx));
+            ui.redraw();
+            assert_eq!(ui.draft(), "Keep this unsent draft");
+        }
+    }
+}
+
+// SDTEST-2933 / SDUC-564: multiple checkouts disclose conversations without navigating or losing drafts.
+#[::core::prelude::v1::test]
+fn rendered_checkout_disclosure_preserves_current_chat_and_other_checkout() {
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        let mut ui = Cockpit::new(theme, 1000.0, 720.0, false);
+        let current = ui.session;
+        ui.type_draft("Keep my checkout draft");
+        let background = ui.view.update(&mut ui.app, |view, cx| {
+            let context = view.sessions.get(current).unwrap().context.clone();
+            let background = view
+                .create_session("Background conversation", context.clone(), cx)
+                .unwrap();
+            let mut elsewhere = context.clone();
+            elsewhere.workdir = format!("{}/other", context.workdir);
+            view.set_project_groups(
+                vec![AgentProjectGroup {
+                    id: "multi-checkout".into(),
+                    label: "Project".into(),
+                    worktrees: vec![
+                        AgentWorktreeOption {
+                            id: "first".into(),
+                            label: "test".into(),
+                            path: context.workdir,
+                            target: context.target,
+                            branch: Some("main".into()),
+                            is_primary: true,
+                        },
+                        AgentWorktreeOption {
+                            id: "second".into(),
+                            label: "Feature".into(),
+                            path: elsewhere.workdir,
+                            target: elsewhere.target,
+                            branch: Some("fix/sidebar".into()),
+                            is_primary: false,
+                        },
+                    ],
+                }],
+                cx,
+            );
+            view.select_session(current, cx);
+            background
+        });
+        ui.open_navigator();
+        assert!(ui
+            .bounds(&format!("agent-nav-session-{background}"))
+            .is_some());
+        ui.click("agent-folder-toggle-worktree-first");
+        assert!(ui
+            .bounds(&format!("agent-nav-session-{background}"))
+            .is_none());
+        assert!(ui.bounds(&format!("agent-nav-session-{current}")).is_none());
+        assert!(ui.bounds("agent-group-summary-worktree-first").is_some());
+        assert!(ui.bounds("agent-folder-toggle-worktree-second").is_some());
+        assert_eq!(ui.draft(), "Keep my checkout draft");
+        ui.view.read_with(&ui.app, |view, _| {
+            assert_eq!(view.sessions.selected_id(), Some(current))
+        });
+        ui.click("agent-folder-toggle-worktree-first");
+        assert!(ui
+            .bounds(&format!("agent-nav-session-{background}"))
+            .is_some());
+        ui.click("agent-worktree-new-second");
+        ui.view.read_with(&ui.app, |view, _| {
+            let created = view.sessions.selected().unwrap();
+            assert!(created.context.workdir.ends_with("/other"));
+        });
+        ui.view
+            .update(&mut ui.app, |view, cx| view.select_session(current, cx));
+        ui.redraw();
+        assert_eq!(ui.draft(), "Keep my checkout draft");
+    }
+}
+
+// SDTEST-2934 / SDUC-564: project-name disclosure and hover menus preserve selection and drafts.
+#[::core::prelude::v1::test]
+fn rendered_plain_sidebar_project_names_toggle_and_hover_menus_stay_interactive() {
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        let mut ui = Cockpit::new(theme, 1000.0, 720.0, false);
+        let current = ui.session;
+        ui.type_draft("Keep this draft while organizing conversations");
+        let background = ui.view.update(&mut ui.app, |view, cx| {
+            let context = view.sessions.get(current).unwrap().context.clone();
+            let other = view
+                .create_session("Another conversation with a long name", context.clone(), cx)
+                .unwrap();
+            view.set_project_groups(
+                vec![AgentProjectGroup {
+                    id: "plain-sidebar".into(),
+                    label: "Home".into(),
+                    worktrees: vec![AgentWorktreeOption {
+                        id: "plain-checkout".into(),
+                        label: "Checkout".into(),
+                        path: context.workdir,
+                        target: context.target,
+                        branch: None,
+                        is_primary: true,
+                    }],
+                }],
+                cx,
+            );
+            view.select_session(current, cx);
+            other
+        });
+        ui.open_navigator();
+        let row = ui.bounds(&format!("agent-nav-session-{current}")).unwrap();
+        let title = ui.bounds(&format!("agent-nav-title-{current}")).unwrap();
+        assert_eq!(
+            row.left(),
+            title.left(),
+            "idle conversations begin directly with their title"
+        );
+        ui.click("agent-project-label-plain-sidebar");
+        assert!(ui
+            .bounds(&format!("agent-nav-session-{background}"))
+            .is_none());
+        assert!(ui.bounds(&format!("agent-nav-session-{current}")).is_none());
+        ui.click("agent-project-label-plain-sidebar");
+        assert!(ui
+            .bounds(&format!("agent-nav-session-{background}"))
+            .is_some());
+        ui.click(&format!("agent-nav-menu-{background}"));
+        // Move away from the source row into the open popover before activating it.
+        ui.click(&format!("agent-nav-action-{background}-TogglePin"));
+        ui.view.read_with(&ui.app, |view, _| {
+            assert_eq!(view.sessions.selected_id(), Some(current));
+            assert!(view.sessions.get(background).unwrap().pinned);
+        });
+        ui.click("agent-project-menu-plain-sidebar");
+        ui.click("agent-project-copy-path");
+        let path = ui.view.read_with(&ui.app, |view, _| {
+            view.sessions.get(current).unwrap().context.workdir.clone()
+        });
+        assert_eq!(ui.app.read_from_clipboard().unwrap().text().unwrap(), path);
+        assert_eq!(ui.draft(), "Keep this draft while organizing conversations");
+    }
+}
+
+// SDTEST-2935 / SDUC-564: collapsed groups distinguish idle selection from live work.
+#[::core::prelude::v1::test]
+fn rendered_collapsed_sidebar_hides_idle_selection_and_tracks_live_completion() {
+    use super::navigation_groups::directory_group_key;
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        for catalogued in [false, true] {
+            let mut ui = Cockpit::new(theme.clone(), 1000.0, 720.0, false);
+            let current = ui.session;
+            ui.type_draft("Keep this draft even when its row is hidden");
+            let toggle = ui.view.update(&mut ui.app, |view, cx| {
+                let context = view.sessions.get(current).unwrap().context.clone();
+                if catalogued {
+                    view.set_project_groups(
+                        vec![AgentProjectGroup {
+                            id: "idle-collapse".into(),
+                            label: "Home".into(),
+                            worktrees: vec![AgentWorktreeOption {
+                                id: "idle-checkout".into(),
+                                label: "Checkout".into(),
+                                path: context.workdir,
+                                target: context.target,
+                                branch: None,
+                                is_primary: true,
+                            }],
+                        }],
+                        cx,
+                    );
+                    "agent-project-label-idle-collapse".to_string()
+                } else {
+                    format!(
+                        "agent-folder-toggle-{}",
+                        directory_group_key("chat-folder", &context.target, &context.workdir)
+                    )
+                }
+            });
+            ui.open_navigator();
+            ui.click(&toggle);
+            assert!(ui.bounds(&format!("agent-nav-session-{current}")).is_none());
+            ui.view.read_with(&ui.app, |view, _| {
+                assert_eq!(view.sessions.selected_id(), Some(current))
+            });
+            let preferences = ui
+                .view
+                .read_with(&ui.app, |view, _| view.library.preferences.clone());
+            ui.search_navigator("Transcript");
+            assert!(ui.bounds(&format!("agent-nav-session-{current}")).is_some());
+            ui.search_navigator("");
+            assert!(ui.bounds(&format!("agent-nav-session-{current}")).is_none());
+            ui.view.read_with(&ui.app, |view, _| {
+                assert_eq!(view.library.preferences, preferences)
+            });
+            ui.view.update(&mut ui.app, |view, cx| {
+                view.sessions
+                    .begin_run(current, "Fixture work", 100)
+                    .unwrap();
+                cx.notify();
+            });
+            ui.redraw();
+            assert!(ui.bounds(&format!("agent-nav-session-{current}")).is_some());
+            ui.view.update(&mut ui.app, |view, cx| {
+                view.sessions
+                    .finish(current, AgentSessionStatus::Completed, 101)
+                    .unwrap();
+                cx.notify();
+            });
+            ui.redraw();
+            assert!(ui.bounds(&format!("agent-nav-session-{current}")).is_none());
+            ui.click(&toggle);
+            assert!(ui.bounds(&format!("agent-nav-session-{current}")).is_some());
+            assert_eq!(ui.draft(), "Keep this draft even when its row is hidden");
+            assert!(!ui
+                .events
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+        }
+    }
+}
+
+// SDTEST-2936 / SDUC-564: semantic disclosure icons share a slot and top-level headers align.
+#[::core::prelude::v1::test]
+fn rendered_sidebar_section_headers_align_and_hover_keeps_labels_stationary() {
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        for (width, font_size) in [(1000.0, 14.0), (620.0, 20.0)] {
+            let mut ui = Cockpit::new(theme.clone(), width, 720.0, false);
+            let scale = crate::scale::scale_for_font_size(font_size);
+            ui.window
+                .update(|window, _| window.set_rem_size(gpui::px(16.0 * scale)));
+            let source = ui
+                .app
+                .update(|cx| cx.new(crate::fleet_view::FleetView::new));
+            let current = ui.session;
+            ui.view.update(&mut ui.app, |view, cx| {
+                let context = view.sessions.get(current).unwrap().context.clone();
+                view.set_project_groups(
+                    vec![AgentProjectGroup {
+                        id: "aligned-sections".into(),
+                        label: "Project".into(),
+                        worktrees: vec![AgentWorktreeOption {
+                            id: "aligned-checkout".into(),
+                            label: "Checkout".into(),
+                            path: context.workdir,
+                            target: context.target,
+                            branch: None,
+                            is_primary: true,
+                        }],
+                    }],
+                    cx,
+                );
+                view.library
+                    .preferences
+                    .collapsed_project_ids
+                    .push("aligned-sections".into());
+                view.library.preferences.ssh_sessions_collapsed = true;
+                view.restore_ssh_preferences(cx);
+                view.set_remote_session_source(source, cx);
+                view.set_remote_sessions_available(true, cx);
+            });
+            ui.open_navigator();
+            let project = ui.bounds("agent-project-label-aligned-sections").unwrap();
+            let ssh = ui.bounds("ssh-sessions-toggle").unwrap();
+            let remote = ui.bounds("agent-remote-toggle").unwrap();
+            assert_eq!(project.left(), ssh.left(), "SSH is a top-level group");
+            assert_eq!(
+                project.left(),
+                remote.left(),
+                "Automonique is a top-level group"
+            );
+            for (selector, before) in [
+                ("agent-project-label-aligned-sections", project),
+                ("ssh-sessions-toggle", ssh),
+                ("agent-remote-toggle", remote),
+            ] {
+                ui.window
+                    .simulate_mouse_move(before.center(), None, Modifiers::none());
+                ui.redraw();
+                assert_eq!(
+                    ui.bounds(selector).unwrap(),
+                    before,
+                    "hover must not shift {selector}"
+                );
+            }
+            ui.click("ssh-sessions-toggle");
+            ui.view.read_with(&ui.app, |view, _| {
+                assert!(!view.library.preferences.ssh_sessions_collapsed)
+            });
+            ui.click("agent-remote-toggle");
+            ui.view.read_with(&ui.app, |view, _| {
+                assert!(view.library.preferences.remote_sessions_expanded)
+            });
+            ui.view.read_with(&ui.app, |view, _| {
+                assert_eq!(view.sessions.selected_id(), Some(current))
+            });
+        }
+    }
+}
+
+impl Cockpit {
+    fn move_into_assistant(
+        &mut self,
+    ) -> (
+        Entity<crate::ai_assistant::AiAssistantView>,
+        WindowHandle<crate::ai_dock::AiDockView>,
+    ) {
+        self.window.update(|window, _| window.remove_window());
+        let agents = self.view.clone();
+        let handle = self.app.add_window(move |window, cx| {
+            let assistant = cx.new(|cx| {
+                let mut view = crate::ai_assistant::AiAssistantView::new(
+                    shelldeck_core::ai::AiContext::new(
+                        shelldeck_core::ai::AiSurface::Global,
+                        "Fixture",
+                        serde_json::json!({}),
+                    ),
+                    cx,
+                );
+                view.set_host(crate::ai_assistant::AiHost::Dock, cx);
+                view.set_available(false, cx); // Separate helper configuration must not disable Agents.
+                view.set_shared_agent_console(Some(agents), cx);
+                view
+            });
+            crate::ai_dock::AiDockView::new(
+                assistant,
+                None,
+                Rc::new(|_, _| {}),
+                crate::ai_dock::layout::DockMode::Floating,
+                false,
+                vec![],
+                Rc::new(|_, _| vec![]),
+                window,
+                cx,
+            )
+        });
+        let dock = handle.root(&mut self.app).unwrap();
+        let assistant = dock.read_with(&self.app, |dock, _| dock.assistant_for_test());
+        self.window = VisualTestContext::from_window(*handle, &self.app);
+        self.window
+            .simulate_resize(size(gpui::px(560.0), gpui::px(740.0)));
+        self.redraw();
+        std::thread::sleep(std::time::Duration::from_millis(280));
+        self.redraw();
+        (assistant, handle)
+    }
+}
+
+struct ReturnedAgentHost(Entity<AgentConsoleView>);
+impl Render for ReturnedAgentHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.0.clone())
+    }
+}
+
+// SDTEST-2937 / SDUC-434, SDUC-564: real floating controls operate on retained Agents state.
+#[::core::prelude::v1::test]
+fn rendered_assistant_shares_agent_conversations_provider_drafts_and_history() {
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        let mut ui = Cockpit::new(theme, 1000.0, 720.0, false);
+        let original = ui.session;
+        ui.type_draft("Keep the main Agents draft");
+        let context = ui.view.read_with(&ui.app, |view, _| {
+            view.sessions.get(original).unwrap().context.clone()
+        });
+        let (assistant, _) = ui.move_into_assistant();
+        assert!(ui.composer().size.width > gpui::px(200.0));
+        assert_eq!(ui.draft(), "Keep the main Agents draft");
+        ui.type_draft(" · edited in Assistant");
+        ui.click("ai-rail-new");
+        let next = ui.view.read_with(&ui.app, |view, _| {
+            let selected = view.sessions.selected().unwrap();
+            assert_eq!(selected.context.provider, context.provider);
+            assert_eq!(selected.context.workdir, context.workdir);
+            selected.id
+        });
+        assert_ne!(next, original);
+        ui.session = next;
+        ui.type_draft("A separate floating draft");
+        ui.click("ai-rail-History");
+        ui.click_navigation(&format!("agent-nav-session-{original}"));
+        ui.session = original;
+        assert_eq!(
+            ui.draft(),
+            "Keep the main Agents draft · edited in Assistant"
+        );
+        ui.window.update(|window, _| window.remove_window());
+        assistant.update(&mut ui.app, |view, cx| {
+            view.set_shared_agent_console(None, cx)
+        });
+        let retained = ui.view.clone();
+        let main = ui.app.add_window(move |_, cx| {
+            retained.update(cx, |view, cx| {
+                view.prepare_window_host(cx);
+                view.set_surface_visible(true, cx);
+            });
+            ReturnedAgentHost(retained)
+        });
+        ui.window = VisualTestContext::from_window(*main, &ui.app);
+        ui.window
+            .simulate_resize(size(gpui::px(1000.0), gpui::px(720.0)));
+        ui.redraw();
+        assert_eq!(
+            ui.draft(),
+            "Keep the main Agents draft · edited in Assistant"
+        );
+        assert!(!ui
+            .events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
+    }
+}
+
+// SDTEST-2938 / SDUC-434, SDUC-564: pointer motion does not rebuild the floating transcript.
+#[::core::prelude::v1::test]
+fn rendered_assistant_pointer_motion_preserves_cached_chat_and_live_typing() {
+    let mut ui = Cockpit::new(ThemePreference::Dark, 1000.0, 720.0, false);
+    let (assistant, _) = ui.move_into_assistant();
+    let before = assistant.read_with(&ui.app, |view, _| view.rendered_frames.get());
+    for (x, y) in [
+        (100.0, 100.0),
+        (200.0, 200.0),
+        (2.0, 2.0),
+        (2.0, 100.0),
+        (100.0, 200.0),
+    ] {
+        ui.window
+            .simulate_mouse_move(point(gpui::px(x), gpui::px(y)), None, Modifiers::none());
+        ui.window.run_until_parked();
+    }
+    assert_eq!(
+        assistant.read_with(&ui.app, |view, _| view.rendered_frames.get()),
+        before,
+        "mouse motion and resize cursor transitions must retain cached chat content"
+    );
+    ui.type_draft("Typing still reaches the shared composer");
+    assert_eq!(ui.draft(), "Typing still reaches the shared composer");
+}
+
+// SDTEST-2940 / SDUC-434, SDUC-564: rehosting cannot cancel or orphan an in-flight run.
+#[::core::prelude::v1::test]
+fn rendered_assistant_rehosting_preserves_live_run_and_stream_routing() {
+    let mut ui = Cockpit::new(ThemePreference::Dark, 1000.0, 720.0, false);
+    let current = ui.session;
+    let run = ui.start();
+    let (assistant, _) = ui.move_into_assistant();
+    ui.view.update(&mut ui.app, |view, cx| {
+        view.push_stream_event_for(
+            run,
+            AgentStreamEvent::Text("Arrived in floating Assistant".into()),
+            cx,
+        );
+    });
+    ui.redraw();
+    ui.window.update(|window, _| window.remove_window());
+    assistant.update(&mut ui.app, |view, cx| {
+        view.set_shared_agent_console(None, cx)
+    });
+    ui.view.update(&mut ui.app, |view, cx| {
+        assert!(view.sessions.get(current).unwrap().status.is_active());
+        view.push_stream_event_for(
+            run,
+            AgentStreamEvent::Text(" and continued after rehosting".into()),
+            cx,
+        );
+        assert!(view
+            .sessions
+            .get(current)
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
+            .text
+            .contains("continued after rehosting"));
+        view.finish_run(run, Some(0), None, cx);
+        assert_eq!(
+            view.sessions.get(current).unwrap().status,
+            AgentSessionStatus::Completed
+        );
+    });
+    assert!(!ui
+        .events
+        .borrow()
+        .iter()
+        .any(|event| matches!(event, AgentConsoleEvent::Stop(_))));
+}
+
+// SDTEST-2941 / SDUC-434, SDUC-564: floating Tasks uses the existing agent controls and stop routing.
+#[::core::prelude::v1::test]
+fn rendered_assistant_tasks_open_and_stop_the_canonical_agent_run() {
+    let mut ui = Cockpit::new(ThemePreference::Dark, 1000.0, 720.0, false);
+    let current = ui.session;
+    let run = ui.start();
+    ui.move_into_assistant();
+    ui.click("ai-rail-Tasks");
+    ui.click(&format!("agent-activity-open-{current}"));
+    assert!(ui
+        .bounds(&format!("agent-composer-{current}-frame"))
+        .is_some());
+    ui.click("ai-rail-Tasks");
+    ui.click(&format!("agent-activity-stop-{current}"));
+    assert!(ui
+        .events
+        .borrow()
+        .iter()
+        .any(|event| matches!(event, AgentConsoleEvent::Stop(id) if *id == run)));
+    ui.view.read_with(&ui.app, |view, _| {
+        assert_eq!(
+            view.sessions.get(current).unwrap().status,
+            AgentSessionStatus::Stopping
+        )
+    });
 }

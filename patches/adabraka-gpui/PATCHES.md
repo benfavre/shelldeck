@@ -8,11 +8,35 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total marker occurrences in code: **199**
+Total marker occurrences in code: **207**
 (`rg "ShellDeck patch:" src/`; SDPATCH-103, SDPATCH-119, and SDPATCH-121 are
 Cargo.toml-only and outside the src-scoped marker convention.)
 
 ## Patches
+
+### SDPATCH-132 — Tray primary activation opens the native dropdown
+
+- **Files / symbols**: `src/platform/linux/tray.rs` (`GpuiTray::MENU_ON_ACTIVATE`), `src/platform/windows/platform.rs` (`handle_tray_icon_event`).
+- **Markers** (two):
+  - `// ShellDeck patch: SDPATCH-132 — advertise a native dropdown, not an application-activation button.`
+  - `// ShellDeck patch: SDPATCH-132 — primary clicks open the same native dropdown as secondary clicks.`
+- **Why**: the application tray is a full menu, not a direct Assistant shortcut. Linux advertises ItemIsMenu and ksni's menu-only activation contract; Windows shows its existing native context menu for left-up as well as right-up. macOS already attaches the native menu by default. The app explicitly keeps panel mode off and subscribes only to selected menu commands.
+- **Verification**: SDTEST-2942 keeps every menu action and pinned-host submenu; native Linux SDTEST-2947 checks ItemIsMenu, the full menu and D-Bus response timings. Windows callback compilation is covered by the Windows CI target; native Windows visual verification remains pending.
+- **Upstream status**: not filed yet.
+
+### SDPATCH-131 — Remap hidden Wayland windows through a fresh configure
+
+- **Files / symbols**: `src/platform/linux/wayland/window.rs` — frame dispatch, configure, draw, completed_frame, show, hide.
+- **Markers** (six):
+  - `// ShellDeck patch: SDPATCH-131 — stop queued frame callbacks while unmapped and force the first remapped presentation.`
+  - `// ShellDeck patch: SDPATCH-131 — a hidden configure must not consume the next mapping's first frame.`
+  - `// ShellDeck patch: SDPATCH-131 — never attach a GPU buffer to a hidden or unconfigured surface.`
+  - `// ShellDeck patch: SDPATCH-131 — background UI updates cannot remap a hidden surface.`
+  - `// ShellDeck patch: SDPATCH-131 — remap via an empty commit and await configure, not a frame on an unmapped surface.`
+  - `// ShellDeck patch: SDPATCH-131 — unmapping resets the xdg configure handshake and discards stale resize state.`
+- **Why**: null-buffer hide unmaps xdg surfaces. Pending frame callbacks previously reattached buffers while hidden; otherwise Show waited for a frame callback that an unmapped surface cannot supply. Reset the configure handshake and gate buffer presentation until the new configure. Its first frame requires presentation even when the UI scene is clean. Repeated Show on a mapped window stays a no-op; activation remains separate.
+- **Verification**: SDTEST-2943 provider-free native fixture (`SHELLDECK_PREVIEW_REMAP=1 WAYLAND_DEBUG=1`), two hide/show cycles with configure/ack/non-null buffer ordering and no hidden buffer attachment. Repeated Show with no UI refresh also passes on GNOME Wayland (2026-11-10); the unpatched build fails the same trace checker. Other backends are unchanged.
+- **Upstream status**: not filed yet.
 
 ### SDPATCH-127 — Safe high-refresh Windows timing fallback
 
