@@ -584,7 +584,11 @@ mod tests {
         assert!(!contains_action::<OpenAiAssistant>(&unconfigured));
         assert!(!contains_action::<OpenClippy>(&unconfigured));
         let agents_enabled = Workspace::base_palette_actions(
-            &[AppMode::User, AppMode::Support, AppMode::Dev], AppMode::Dev, false, false);
+            &[AppMode::User, AppMode::Support, AppMode::Dev],
+            AppMode::Dev,
+            false,
+            false,
+        );
         assert!(contains_action::<OpenAiAssistant>(&agents_enabled));
         assert!(!contains_action::<OpenClippy>(&agents_enabled));
     }

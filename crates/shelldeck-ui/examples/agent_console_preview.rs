@@ -257,7 +257,10 @@ pub fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(1280.0);
-    let height = std::env::var("SHELLDECK_PREVIEW_HEIGHT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(900.0);
+    let height = std::env::var("SHELLDECK_PREVIEW_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(900.0);
     Application::new().with_assets(Assets).run(move |cx| {
         adabraka_ui::init(cx);
         adabraka_ui::components::input::init(cx);

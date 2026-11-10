@@ -4,7 +4,7 @@
 //! Linux that is the StatusNotifierItem (`ksni`) backend, so the application
 //! does not initialise GTK or carry the unmaintained GTK3 tray dependency.
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use gpui::{App, SharedString, TrayMenuItem};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use uuid::Uuid;

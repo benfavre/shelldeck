@@ -1472,8 +1472,8 @@ mod tests {
     fn poll_reconciliation_does_not_repeat_initial_network_reads() {
         use std::io::{Read, Write};
         use std::sync::{
-            Arc, Mutex,
             atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
         };
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();

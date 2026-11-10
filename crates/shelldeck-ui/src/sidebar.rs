@@ -1373,8 +1373,8 @@ impl Render for SidebarView {
 #[cfg(test)]
 mod tests {
     use super::{
-        RAIL_WIDTH, conn_matches_site_filter, connection_matches_search, fuzzy_match_indices,
-        rail_scroll_child_index, sidebar_total_width,
+        conn_matches_site_filter, connection_matches_search, fuzzy_match_indices,
+        rail_scroll_child_index, sidebar_total_width, RAIL_WIDTH,
     };
     use uuid::Uuid;
 

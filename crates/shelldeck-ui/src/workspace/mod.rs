@@ -9,8 +9,8 @@ use adabraka_ui::navigation::menu::{
 };
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
 use adabraka_ui::prelude::{
-    AnimatedCollapsible, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Select,
-    SelectOption, install_theme, scrollable_vertical, use_theme,
+    install_theme, scrollable_vertical, use_theme, AnimatedCollapsible, Badge, BadgeVariant,
+    Button, ButtonSize, ButtonVariant, Select, SelectOption,
 };
 pub(crate) use agents::resolve_local_agent_program;
 use gpui::prelude::*;
@@ -21,12 +21,12 @@ use gpui::*;
 // shadows, sidebar width, mouse-position math) must say `gpui::px` explicitly.
 use crate::scale::px;
 use shelldeck_core::ai::{
-    AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiAssistantAction,
+    complete_assistant_turn, configured_cli_available, create_client, host_context,
+    parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
+    parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionKind,
+    AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiAssistantAction,
     AiAssistantCompletion, AiConfig, AiContext, AiGeneratedIssueDraft, AiIssueTriageProposal,
-    AiSurface, AiTask, AiTaskStatus, AiTaskStore, ClippyConfig, complete_assistant_turn,
-    configured_cli_available, create_client, host_context, parse_diagnostic_plan,
-    parse_generated_issue_draft, parse_generated_name, parse_issue_triage_proposal,
-    test_connection, validate_diagnostic_command,
+    AiSurface, AiTask, AiTaskStatus, AiTaskStore, ClippyConfig,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -55,7 +55,7 @@ use uuid::Uuid;
 use crate::agent_console_view::{AgentConsoleEvent, AgentConsoleView};
 use crate::ai_action_dialog::render_ai_action_dialog;
 use crate::ai_assistant::{AiAssistantEvent, AiAssistantView};
-use crate::ai_companion::{AiCompanionEvent, assistant_action_acknowledgement};
+use crate::ai_companion::{assistant_action_acknowledgement, AiCompanionEvent};
 use crate::ai_workflow::{
     AiNamingKind, AiWorkflowEvent, AiWorkflowInit, AiWorkflowTarget, AiWorkflowView,
 };
@@ -70,12 +70,12 @@ use crate::dashboard::DashboardView;
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::issue_attachments::{
-    AttachmentDraft, AttachmentLightbox, LightboxItem, capture_region, draft_from_clipboard_image,
-    render_attachment_draft_gallery, render_stored_attachment_gallery,
+    capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
+    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox, LightboxItem,
 };
 use crate::login_form::{LoginForm, LoginFormEvent};
 use crate::monique_view::{MoniqueView, MoniqueViewEvent};
-use crate::monolith::{MonolithMotion, animated_loading_text, animated_monolith};
+use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::onboarding_view::{OnboardingEvent, OnboardingView};
 use crate::port_forward_form::PortForwardForm;
 use crate::port_forward_view::{PortForwardEvent, PortForwardView};
@@ -91,11 +91,11 @@ use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
 use crate::support_view::thread::{
-    HumanMessageMeta, ThreadMessageExtras, ThreadNoteKind, human_message, note as thread_note,
+    human_message, note as thread_note, HumanMessageMeta, ThreadMessageExtras, ThreadNoteKind,
 };
 use crate::support_view::{
-    SupportView, SupportViewEvent, issue_status_badge, priority_badge,
-    render_attachment_delete_dialog, render_issue_delete_dialog,
+    issue_status_badge, priority_badge, render_attachment_delete_dialog,
+    render_issue_delete_dialog, SupportView, SupportViewEvent,
 };
 use crate::t;
 use crate::template_browser::TemplateBrowser;

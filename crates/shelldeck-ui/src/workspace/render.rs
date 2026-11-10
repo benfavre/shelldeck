@@ -753,8 +753,8 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppMode, MODE_TRANSITION_IN_MS, MODE_TRANSITION_OUT_MS, mode_transition_overlay_opacity,
-        workspace_status_bar_visible,
+        mode_transition_overlay_opacity, workspace_status_bar_visible, AppMode,
+        MODE_TRANSITION_IN_MS, MODE_TRANSITION_OUT_MS,
     };
 
     // SDTEST-1703 — the brief veil covers the commit midpoint and clears fully.

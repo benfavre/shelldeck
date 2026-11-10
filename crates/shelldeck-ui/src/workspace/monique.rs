@@ -46,26 +46,24 @@ impl Workspace {
         if !self.monique_view.read(cx).chat_busy() {
             self.refresh_monique_snapshot(cx, self.monique_status.is_none());
         }
-        self._monique_poll_task = Some(cx.spawn(async move |this, cx: &mut AsyncApp| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(10))
-                    .await;
-                let keep = this
-                    .update(cx, |workspace, cx| {
-                        if workspace.monique_surface_visible() {
-                            if !workspace.monique_view.read(cx).chat_busy() {
-                                workspace.refresh_monique_snapshot(cx, false);
-                            }
-                            true
-                        } else {
-                            false
+        self._monique_poll_task = Some(cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(10))
+                .await;
+            let keep = this
+                .update(cx, |workspace, cx| {
+                    if workspace.monique_surface_visible() {
+                        if !workspace.monique_view.read(cx).chat_busy() {
+                            workspace.refresh_monique_snapshot(cx, false);
                         }
-                    })
-                    .unwrap_or(false);
-                if !keep {
-                    break;
-                }
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            if !keep {
+                break;
             }
         }));
     }
@@ -80,27 +78,25 @@ impl Workspace {
         if self._monique_auth_poll_task.is_some() {
             return;
         }
-        self._monique_auth_poll_task = Some(cx.spawn(async move |this, cx: &mut AsyncApp| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(2))
-                    .await;
-                let keep = this
-                    .update(cx, |workspace, cx| {
-                        if workspace.monique_surface_visible()
-                            && workspace.monique_view.read(cx).has_active_login()
-                        {
-                            workspace.refresh_monique_accounts(cx);
-                            true
-                        } else {
-                            workspace._monique_auth_poll_task = None;
-                            false
-                        }
-                    })
-                    .unwrap_or(false);
-                if !keep {
-                    break;
-                }
+        self._monique_auth_poll_task = Some(cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            let keep = this
+                .update(cx, |workspace, cx| {
+                    if workspace.monique_surface_visible()
+                        && workspace.monique_view.read(cx).has_active_login()
+                    {
+                        workspace.refresh_monique_accounts(cx);
+                        true
+                    } else {
+                        workspace._monique_auth_poll_task = None;
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            if !keep {
+                break;
             }
         }));
     }

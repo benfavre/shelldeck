@@ -15,7 +15,7 @@ impl Workspace {
     /// and callbacks only when their context, responsive layout or locale changes.
     pub(super) fn rebuild_menu_bar(&mut self, logical_width: f32, cx: &mut Context<Self>) {
         use crate::menu_bar::{
-            MenuBarContext, MenuCommand, MenuEntry, compact_menu_bar, menu_bar_presentation,
+            compact_menu_bar, menu_bar_presentation, MenuBarContext, MenuCommand, MenuEntry,
         };
 
         let mode = self.effective_mode();
