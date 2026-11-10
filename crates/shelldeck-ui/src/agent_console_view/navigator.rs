@@ -125,7 +125,7 @@ pub(super) fn session_group_summary<'a>(
 
 // Like the sidebar and remote directory, mount tooltips only on hover through
 // GPUI. The shared Tooltip's invisible deferred overlay occludes adjacent menus.
-struct NavigatorTooltip(String);
+pub(super) struct NavigatorTooltip(pub(super) String);
 impl Render for NavigatorTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -670,6 +670,7 @@ impl AgentConsoleView {
     }
 
     pub(crate) fn toggle_navigator(&mut self, cx: &mut Context<Self>) {
+        self.finish_navigator_resize(cx);
         if self.tools.navigator_wide {
             self.tools.navigator_visible = !self.tools.navigator_visible;
             self.schedule_library_save(cx);
@@ -681,6 +682,7 @@ impl AgentConsoleView {
     }
 
     pub(super) fn close_navigator_overlay(&mut self, cx: &mut Context<Self>) {
+        self.finish_navigator_resize(cx);
         if self.tools.navigator_overlay {
             self.tools.navigator_overlay = false;
             cx.emit(AgentConsoleEvent::NavigatorChanged);
@@ -690,13 +692,18 @@ impl AgentConsoleView {
 
     pub(super) fn update_navigator_layout(&mut self, wide: bool, cx: &mut Context<Self>) {
         if self.tools.navigator_wide != wide {
+            self.finish_navigator_resize(cx);
             self.tools.navigator_wide = wide;
             self.tools.navigator_overlay = false;
             cx.emit(AgentConsoleEvent::NavigatorChanged);
         }
     }
 
-    pub(super) fn render_navigator_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_navigator_overlay(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // The same navigator floats above narrow content instead of squeezing
         // the composer. The backdrop dismisses it without changing the session.
         div()
@@ -717,12 +724,12 @@ impl AgentConsoleView {
                     .max_w_full()
                     .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(self.render_navigator(cx)),
+                    .child(self.render_navigator(window, cx)),
             )
             .into_any_element()
     }
 
-    pub(super) fn render_navigator(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_navigator(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(test)]
         self.rendered_navigators
             .set(self.rendered_navigators.get() + 1);
@@ -964,7 +971,10 @@ impl AgentConsoleView {
         body = body.child(self.render_ssh_session_rows(cx));
         body = body.child(self.render_remote_session_rows(cx));
         div()
-            .w(px(f32::from(self.library.preferences.navigator_width)))
+            .id("agent-navigator")
+            .debug_selector(|| "agent-navigator".into())
+            .relative()
+            .w(px(self.navigator_width(window)))
             .h_full()
             .flex()
             .flex_col()
@@ -1096,6 +1106,7 @@ impl AgentConsoleView {
             )
             .child(self.render_archive_undo(cx))
             .child(self.render_activity_footer(cx))
+            .child(self.render_navigator_resize_handle(cx))
             .into_any_element()
     }
 
@@ -1166,9 +1177,6 @@ impl AgentConsoleView {
                 .child(
                     div()
                         .id(("agent-nav-provider-icon", uuid_key(id)))
-                        .absolute()
-                        .left(px(-21.0))
-                        .top(px(9.0))
                         .size(px(14.0))
                         .flex_shrink_0()
                         .cursor_pointer()
@@ -1263,6 +1271,9 @@ impl AgentConsoleView {
             list = list.child(
                 div()
                     .id(("agent-nav-row", uuid_key(id)))
+                    .debug_selector(|| format!("agent-nav-highlight-{id}"))
+                    // Include the provider gutter without shifting conversation titles.
+                    .ml(px(-21.0))
                     .group(row_group.clone())
                     .flex()
                     .items_center()

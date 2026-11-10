@@ -76,6 +76,8 @@ mod native_history;
 mod navigation_groups;
 #[path = "agent_console_view/navigator.rs"]
 mod navigator;
+#[path = "agent_console_view/navigator_resize.rs"]
+mod navigator_resize;
 mod panes;
 #[path = "agent_console_view/progress.rs"]
 mod progress;
@@ -2021,13 +2023,13 @@ impl Render for AgentConsoleView {
             let wide = window.viewport_size().width.to_f64() as f32
                 >= px(840.0).to_pixels(window.rem_size()).to_f64() as f32;
             self.update_navigator_layout(wide, cx);
-            return self.render_ssh_session_preview(cx);
+            return self.render_ssh_session_preview(window, cx);
         }
         if self.remote_sessions.active && self.remote_sessions.available {
             let wide = window.viewport_size().width.to_f64() as f32
                 >= px(840.0).to_pixels(window.rem_size()).to_f64() as f32;
             self.update_navigator_layout(wide, cx);
-            return self.render_remote_session(cx);
+            return self.render_remote_session(window, cx);
         }
         self.ensure_ssh_discovery(cx);
         self.ensure_native_history(cx);
@@ -2488,7 +2490,7 @@ impl Render for AgentConsoleView {
             root = root.child(
                 AnyView::from(self.navigator_pane.clone()).cached(
                     StyleRefinement::default()
-                        .w(px(f32::from(self.library.preferences.navigator_width)))
+                        .w(px(self.navigator_width(window)))
                         .h_full()
                         .flex_shrink_0(),
                 ),
@@ -2497,7 +2499,7 @@ impl Render for AgentConsoleView {
         if self.live_browser_visible(cx) {
             let available_width = width / window.rem_size().to_f64() as f32 * 16.0
                 - if wide && self.tools.navigator_visible {
-                    f32::from(self.library.preferences.navigator_width)
+                    self.navigator_width(window)
                 } else {
                     0.0
                 };
@@ -2548,7 +2550,7 @@ impl Render for AgentConsoleView {
             }
         }
         if !wide && self.tools.navigator_overlay {
-            root = root.child(self.render_navigator_overlay(cx));
+            root = root.child(self.render_navigator_overlay(window, cx));
         }
         if let Some(dialog) = self.render_workflow_dialog() {
             root = root.child(dialog);

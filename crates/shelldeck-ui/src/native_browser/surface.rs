@@ -1,4 +1,4 @@
-//! Native GPUI element for CEF's live off-screen view and popup surfaces.
+//! Native GPUI element for live browser frames and CEF popup surfaces.
 use super::*;
 use geometry::{event_modifiers, key_sequence, utf16_slice, viewport_point};
 
@@ -328,6 +328,28 @@ impl NativeBrowserView {
             return;
         };
         if !self.focus.is_focused(window) || self.page_dialog.is_some() {
+            return;
+        }
+        if self.chrome_wrapper {
+            if !released && stroke.modifiers.secondary() {
+                if stroke.key == "v" {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.send(Command::Text { browser_id, text }, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                if matches!(stroke.key.as_str(), "c" | "x") {
+                    self.copy_requested = true;
+                }
+            }
+            let native_text = !released && stroke.keystroke_text_candidate();
+            if !native_text {
+                for event in key_sequence(&stroke, released) {
+                    self.send(Command::Key { browser_id, event }, cx);
+                }
+                cx.stop_propagation();
+            }
             return;
         }
         if self.context_menu.is_some() && !released && stroke.key == "escape" {

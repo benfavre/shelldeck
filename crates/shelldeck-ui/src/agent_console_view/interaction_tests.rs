@@ -1565,14 +1565,15 @@ fn rendered_project_folders_keep_pins_current_chat_search_and_drafts() {
             let guide = ui.bounds("agent-tree-children-catalog").unwrap();
             let parent = ui.bounds("agent-project-collapse-catalog").unwrap();
             let child = ui.bounds(&format!("agent-nav-session-{first}")).unwrap();
+            let title = ui.bounds(&format!("agent-nav-title-{first}")).unwrap();
             assert_eq!(
                 guide.left(),
                 parent.center().x,
                 "the guide aligns beneath its parent chevron"
             );
             assert!(
-                child.left() >= guide.left() + gpui::px(6.0) && child.right() <= guide.right(),
-                "conversation controls stay inset and contained beside the guide"
+                title.left() >= guide.left() + gpui::px(6.0) && child.right() <= guide.right(),
+                "conversation titles and actions stay inset beside the guide; provider marks occupy its gutter"
             );
             if matches!(&theme, ThemePreference::SolarizedLight) {
                 assert!(
@@ -3535,11 +3536,15 @@ fn rendered_plain_sidebar_project_names_toggle_and_hover_menus_stay_interactive(
         let mark = ui
             .bounds(&format!("agent-nav-provider-{current}-codex"))
             .unwrap();
-        assert_eq!(
-            row.left(),
-            title.left(),
-            "provider marks must not shift conversation labels"
+        let highlight = ui
+            .bounds(&format!("agent-nav-highlight-{current}"))
+            .unwrap();
+        assert!(
+            highlight.contains(&mark.center()),
+            "The full provider mark belongs to the highlight"
         );
+        assert!(mark.left() >= highlight.left() + gpui::px(4.0));
+        assert!(row.contains(&mark.center()) && row.contains(&title.center()));
         assert_eq!(
             title.left() - mark.right(),
             gpui::px(7.0),
@@ -3986,10 +3991,11 @@ fn rendered_local_cli_discovery_keeps_identity_drafts_and_last_good_results() {
         let row = "agent-ssh-conversation-local-Codex-existing-local-thread";
         let native_row = ui.bounds(row).unwrap();
         let native_mark = ui.bounds(&format!("{row}-provider")).unwrap();
-        assert_eq!(
-            native_row.left() + gpui::px(12.0) - native_mark.right(),
-            gpui::px(7.0),
-            "native icons use the gutter without adding label indentation"
+        assert!(native_mark.left() >= native_row.left() + gpui::px(4.0));
+        assert!(native_mark.right() <= native_row.right() - gpui::px(4.0));
+        assert!(
+            native_row.contains(&native_mark.center()),
+            "Provider belongs inside the row highlight"
         );
         ui.click_navigation(&format!("{row}-provider"));
         ui.click("agent-ssh-reconnect");
@@ -4051,6 +4057,11 @@ fn rendered_local_cli_discovery_keeps_identity_drafts_and_last_good_results() {
             .bounds(&format!("agent-nav-provider-{imported}-codex"))
             .unwrap();
         assert!(mark.size.width >= gpui::px(12.0) && mark.size.height >= gpui::px(12.0));
+        let highlight = ui
+            .bounds(&format!("agent-nav-highlight-{imported}"))
+            .unwrap();
+        assert!(mark.left() >= highlight.left() + gpui::px(4.0));
+        assert!(mark.right() <= highlight.right() - gpui::px(4.0));
         // Refresh failure retains the selectable last successful inventory.
         ui.click_navigation("native-refresh-local");
         let refresh = ui
@@ -4084,5 +4095,123 @@ fn rendered_local_cli_discovery_keeps_identity_drafts_and_last_good_results() {
             e,
             AgentConsoleEvent::Run(_) | AgentConsoleEvent::DiscoverSshSessions { .. }
         )));
+    }
+}
+
+// SDTEST-2953 — actual pane-edge input, release outside the pane, UI scaling,
+// durable width and responsive overlays must preserve the selected draft.
+#[::core::prelude::v1::test]
+fn rendered_projects_sidebar_resizes_resets_and_restores_without_losing_drafts() {
+    for (theme, width, rem) in [
+        (ThemePreference::Dark, 1280.0, 16.0),
+        (ThemePreference::SolarizedLight, 1280.0, 20.0),
+        (ThemePreference::Dark, 620.0, 16.0),
+        (ThemePreference::SolarizedLight, 620.0, 20.0),
+    ] {
+        let mut ui = Cockpit::new(theme, width, 800.0, false);
+        ui.type_draft("Keep my sidebar resize draft · é🌍");
+        ui.window
+            .update(|window, _| window.set_rem_size(gpui::px(rem)));
+        ui.open_navigator();
+        let scale = rem / 16.0;
+        let initial = ui.bounds("agent-navigator").unwrap();
+        let start = ui.bounds("agent-navigator-resize-handle").unwrap().center();
+        ui.window
+            .simulate_mouse_move(start, None, Modifiers::none());
+        ui.window.simulate_event(MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 1,
+            ..Default::default()
+        });
+        ui.redraw();
+        let target = start + point(gpui::px(100.0 * scale), gpui::px(0.0));
+        ui.window
+            .simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::none());
+        ui.redraw();
+        let grown = ui.bounds("agent-navigator").unwrap();
+        assert!(
+            (grown.size.width - initial.size.width - gpui::px(100.0 * scale)).abs() < gpui::px(2.0)
+        );
+        let outside = point(gpui::px(width + 30.0), gpui::px(-10.0));
+        ui.window.simulate_event(MouseUpEvent {
+            position: outside,
+            button: MouseButton::Left,
+            ..Default::default()
+        });
+        ui.redraw();
+        ui.view.read_with(&ui.app, |view, _| {
+            assert!(view.tools.navigator_resize.is_none());
+            assert_eq!(view.sessions.selected_id(), Some(ui.session));
+        });
+        let saved = ui.view.update(&mut ui.app, |view, cx| {
+            view.flush_library(cx).unwrap();
+            view.draft_store().load(now_ms()).unwrap()
+        });
+        assert_eq!(saved.preferences.navigator_width, 380);
+        assert_eq!(
+            saved.drafts[&ui.session],
+            "Keep my sidebar resize draft · é🌍"
+        );
+        assert_eq!(ui.draft(), "Keep my sidebar resize draft · é🌍");
+
+        // A normal pointer move after releasing outside cannot keep resizing.
+        ui.window
+            .simulate_mouse_move(start, None, Modifiers::none());
+        ui.redraw();
+        assert_eq!(
+            ui.bounds("agent-navigator").unwrap().size.width,
+            grown.size.width
+        );
+
+        let start = ui.bounds("agent-navigator-resize-handle").unwrap().center();
+        ui.window.simulate_event(MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 1,
+            ..Default::default()
+        });
+        ui.redraw();
+        ui.window.simulate_mouse_move(
+            point(gpui::px(-1000.0), start.y),
+            Some(MouseButton::Left),
+            Modifiers::none(),
+        );
+        ui.redraw();
+        ui.window.simulate_event(MouseUpEvent {
+            position: outside,
+            button: MouseButton::Left,
+            ..Default::default()
+        });
+        ui.redraw();
+        assert!(
+            (ui.bounds("agent-navigator").unwrap().size.width - gpui::px(180.0 * scale)).abs()
+                < gpui::px(2.0)
+        );
+
+        let edge = ui.bounds("agent-navigator-resize-handle").unwrap().center();
+        ui.window.simulate_event(MouseDownEvent {
+            position: edge,
+            button: MouseButton::Left,
+            click_count: 2,
+            ..Default::default()
+        });
+        ui.window.simulate_event(MouseUpEvent {
+            position: edge,
+            button: MouseButton::Left,
+            click_count: 2,
+            ..Default::default()
+        });
+        ui.redraw();
+        assert!(
+            (ui.bounds("agent-navigator").unwrap().size.width - gpui::px(280.0 * scale)).abs()
+                < gpui::px(2.0)
+        );
+        assert_eq!(ui.draft(), "Keep my sidebar resize draft · é🌍");
+        assert!(!ui
+            .events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
     }
 }

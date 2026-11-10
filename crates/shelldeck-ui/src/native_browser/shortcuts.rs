@@ -88,15 +88,30 @@ pub(super) fn init(cx: &mut App) {
 
 pub(super) fn handlers(root: Stateful<Div>, cx: &mut Context<NativeBrowserView>) -> Stateful<Div> {
     root.on_action(cx.listener(|view, _: &BrowserFocusAddress, window, cx| {
+        if view.chrome_wrapper {
+            view.chrome_shortcut(76, 4, cx);
+            cx.stop_propagation();
+            return;
+        }
         view.focus_address(window, cx);
         cx.stop_propagation();
     }))
     .on_action(cx.listener(|view, _: &BrowserNewTab, window, cx| {
+        if view.chrome_wrapper {
+            view.chrome_shortcut(84, 4, cx);
+            cx.stop_propagation();
+            return;
+        }
         view.new_tab("about:blank".into(), cx);
         view.focus_address(window, cx);
         cx.stop_propagation();
     }))
     .on_action(cx.listener(|view, _: &BrowserCloseTab, _, cx| {
+        if view.chrome_wrapper {
+            view.chrome_shortcut(87, 4, cx);
+            cx.stop_propagation();
+            return;
+        }
         if let Some(browser_id) = view.active {
             view.close_tab(browser_id, cx);
         }
@@ -127,6 +142,11 @@ pub(super) fn handlers(root: Stateful<Div>, cx: &mut Context<NativeBrowserView>)
         cx.stop_propagation();
     }))
     .on_action(cx.listener(|view, _: &BrowserFind, window, cx| {
+        if view.chrome_wrapper {
+            view.chrome_shortcut(70, 4, cx);
+            cx.stop_propagation();
+            return;
+        }
         view.find_visible = true;
         view.find_input.read(cx).focus_handle(cx).focus(window);
         cx.notify();
@@ -153,6 +173,11 @@ pub(super) fn handlers(root: Stateful<Div>, cx: &mut Context<NativeBrowserView>)
         cx.stop_propagation();
     }))
     .on_action(cx.listener(|view, _: &BrowserEscape, window, cx| {
+        if view.chrome_wrapper {
+            view.chrome_shortcut(27, 0, cx);
+            cx.stop_propagation();
+            return;
+        }
         if view.context_menu.take().is_some() {
             cx.notify();
         } else if view.page_dialog.is_some() {
@@ -172,6 +197,19 @@ pub(super) fn handlers(root: Stateful<Div>, cx: &mut Context<NativeBrowserView>)
 
 impl NativeBrowserView {
     fn cycle_tab(&mut self, reverse: bool, cx: &mut Context<Self>) {
+        if self.chrome_wrapper {
+            self.chrome_shortcut(
+                9,
+                shelldeck_browser::modifiers::CONTROL
+                    | if reverse {
+                        shelldeck_browser::modifiers::SHIFT
+                    } else {
+                        0
+                    },
+                cx,
+            );
+            return;
+        }
         let Some(index) = self
             .tabs
             .iter()

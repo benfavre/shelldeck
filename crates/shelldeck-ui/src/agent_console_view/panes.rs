@@ -18,9 +18,9 @@ impl NavigatorPane {
     }
 }
 impl Render for NavigatorPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.parent
-            .update(cx, |parent, cx| parent.render_navigator(cx))
+            .update(cx, |parent, cx| parent.render_navigator(window, cx))
             .unwrap_or_else(|_| div().into_any_element())
     }
 }
