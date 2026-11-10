@@ -5018,3 +5018,5 @@ SDUC-434 Tasks also displays the shared Agents activity/capacity controls and ex
 Native Linux menu contract (2026-11-10, disposable XDG): SDTEST-2947 verifies ItemIsMenu=true and all dropdown options; menu layout read was 4.16 ms. Final UI suite: 382 passed; app suite: 106 passed. This is protocol/behavior verification, not a claim of a visual shell-dropdown walkthrough.
 
 2026-11-10: SDUC-410 terminal welcome centers responsively with overflow-safe spacers, wrapping cards/shortcuts and static compact branding (SDTEST-2948).
+
+Terminal release validation (2026-11-10): the full isolated workspace sweep passes, including 383 UI tests. Strict workspace Clippy (-D warnings) and cargo fmt pass. Provider-free native terminal fixtures run at 1200 × 1100 and 360 × 360 (French/light); no pixel-capture walkthrough is claimed.

@@ -2,6 +2,8 @@
 use super::*;
 use std::rc::Rc;
 
+type CompanionOpenHandler = Rc<dyn Fn(&mut App)>;
+
 impl AgentConsoleView {
     pub fn max_concurrent_runs(&self) -> usize {
         self.sessions.max_concurrent()
@@ -88,7 +90,7 @@ impl AgentConsoleView {
         &self,
         parent: &Entity<Self>,
         cx: &App,
-        on_open: Rc<dyn Fn(&mut App)>,
+        on_open: CompanionOpenHandler,
     ) -> AnyElement {
         self.render_activity_controls(parent, cx, Some(on_open))
     }
@@ -97,7 +99,7 @@ impl AgentConsoleView {
         &self,
         parent: &Entity<Self>,
         _cx: &App,
-        on_open: Option<Rc<dyn Fn(&mut App)>>,
+        on_open: Option<CompanionOpenHandler>,
     ) -> AnyElement {
         let embedded = on_open.is_some();
         let limit = self.max_concurrent_runs();

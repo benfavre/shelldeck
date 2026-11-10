@@ -181,11 +181,11 @@ impl AgentConsoleView {
         id: &'static str,
         label: String,
         collapsed: bool,
-        searching: bool,
         icon: &'static str,
         cx: &Context<Self>,
         toggle: fn(&mut Self, &mut Context<Self>),
     ) -> Stateful<Div> {
+        let searching = !self.navigator_search.read(cx).content().trim().is_empty();
         let group: SharedString = format!("{id}-hover").into();
         navigation_header_layout(SharedString::from(format!("{id}-header")), group.clone())
             .child(

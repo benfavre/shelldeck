@@ -314,7 +314,6 @@ impl AgentConsoleView {
                     "ssh-sessions-toggle",
                     t!("agents.ssh_sessions.title").to_string(),
                     !expanded,
-                    !query.is_empty(),
                     "server",
                     cx,
                     |this, cx| {

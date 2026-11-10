@@ -195,7 +195,6 @@ impl AgentConsoleView {
                             "agent-remote-toggle",
                             t!("agents.remote.title").to_string(),
                             !expanded,
-                            !query.is_empty(),
                             "cloud",
                             cx,
                             |this, cx| {
