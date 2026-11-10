@@ -286,7 +286,10 @@ pub fn main() -> anyhow::Result<()> {
                 })),
                 ..Default::default()
             },
-            |_, cx| {
+            |window, cx| {
+                if let Some(font_size) = std::env::var("SHELLDECK_PREVIEW_FONT_SIZE").ok().and_then(|value| value.parse::<f32>().ok()) {
+                    window.set_rem_size(gpui::px(shelldeck_ui::scale::rem_size_for_scale(shelldeck_ui::scale::scale_for_font_size(font_size))));
+                }
                 if std::env::var_os("SHELLDECK_PREVIEW_TERMINAL").is_some() {
                     let terminal = cx.new(shelldeck_ui::terminal_view::TerminalView::new);
                     return cx.new(|cx| PreviewRoot(terminal.into(), None, shelldeck_ui::settings::normalize_ui_font_family("Inter", cx).into()));

@@ -5020,3 +5020,5 @@ Native Linux menu contract (2026-11-10, disposable XDG): SDTEST-2947 verifies It
 2026-11-10: SDUC-410 terminal welcome centers responsively with overflow-safe spacers, wrapping cards/shortcuts and static compact branding (SDTEST-2948).
 
 Terminal release validation (2026-11-10): the full isolated workspace sweep passes, including 383 UI tests. Strict workspace Clippy (-D warnings) and cargo fmt pass. Provider-free native terminal fixtures run at 1200 × 1100 and 360 × 360 (French/light); no pixel-capture walkthrough is claimed.
+
+2026-11-10 native terminal correction: explicit measured widths replace intrinsic flex sizing for launch cards, shortcut columns and labels. Cards have bounded heights and title/caption line boxes. SDTEST-2948 now asserts card/text heights and label widths at the reported scale; SDTEST-2949 checks native prepaint metrics at 100%/125% and enlarged French/light sizes before release.

@@ -1,8 +1,27 @@
 use super::*;
 use crate::scale::px;
 
+/// Provider-free native fixtures can inspect actual prepainted child bounds.
+/// This is compiled out of release builds and never logs normal app sessions.
+pub(crate) fn trace_layout_for_preview(id: SharedString, element: Div) -> Div {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SHELLDECK_PREVIEW_TERMINAL_METRICS").is_some() {
+        return element.on_children_prepainted(move |bounds, window, _| {
+            let children: Vec<[f32; 4]> = bounds.iter().map(|b| [b.origin.x.to_f64() as f32, b.origin.y.to_f64() as f32, b.size.width.to_f64() as f32, b.size.height.to_f64() as f32]).collect();
+            eprintln!("TERMINAL_LAYOUT {}", serde_json::json!({"id": id.as_ref(), "scale": window.rem_size().to_f64() / crate::scale::REM_BASE as f64, "children": children}));
+        });
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = id;
+    element
+}
+
 impl TerminalView {
-    pub(super) fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_empty_state(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         if let Some(message) = self.required_cwd_unavailable_message() {
             return div()
                 .id("terminal-workspace-folder-unavailable")
@@ -30,10 +49,34 @@ impl TerminalView {
                         .child(message),
                 );
         }
+        let scale = window.rem_size().to_f64() as f32 / crate::scale::REM_BASE;
+        let measured = if self.empty_state_width > 0.0 {
+            self.empty_state_width
+        } else {
+            window.viewport_size().width.to_f64() as f32
+        };
+        let content_width = (measured / scale - 48.0).clamp(1.0, 700.0);
+        let launcher_count =
+            1 + usize::from(self.claude_available) + usize::from(self.codex_available);
+        let columns = if content_width >= 650.0 {
+            3
+        } else if content_width >= 450.0 {
+            2
+        } else {
+            1
+        };
+        let columns = columns.min(launcher_count);
+        let card_width =
+            ((content_width - 10.0 * (columns - 1) as f32) / columns as f32).min(240.0);
+        let reference_width = (content_width - 42.0).max(1.0);
+        let shortcut_columns = if reference_width >= 576.0 { 2 } else { 1 };
+        let shortcut_width =
+            (reference_width - 16.0 * (shortcut_columns - 1) as f32) / shortcut_columns as f32;
+
         let mut launchers = div()
             .id("terminal-empty-launchers")
             .debug_selector(|| "terminal-empty-launchers".into())
-            .w_full()
+            .w(px(content_width))
             .min_w(px(0.0))
             .flex()
             .flex_wrap()
@@ -50,6 +93,7 @@ impl TerminalView {
                     SharedString::from(t!("terminal.empty.open_terminal_cmd").to_string()),
                     ShellDeckColors::primary(),
                     Self::terminal_logo(26.0).into_any_element(),
+                    card_width,
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.spawn_local_terminal(cx);
@@ -68,6 +112,7 @@ impl TerminalView {
                     SharedString::from(CLAUDE_CLI_COMMAND),
                     Self::claude_orange(),
                     Self::claude_logo(26.0).into_any_element(),
+                    card_width,
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.launch_claude(cx);
@@ -85,6 +130,7 @@ impl TerminalView {
                     SharedString::from(CODEX_CLI_COMMAND),
                     Self::codex_green(),
                     Self::codex_logo(26.0).into_any_element(),
+                    card_width,
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.launch_codex(cx);
@@ -104,15 +150,12 @@ impl TerminalView {
             .filter(|shortcut| shortcut.group == ShortcutGroup::Terminal);
 
         let content = div()
-            .id("terminal-empty-content")
-            .debug_selector(|| "terminal-empty-content".into())
             .flex()
             .flex_col()
             .flex_shrink_0()
             .items_center()
-            .w_full()
+            .w(px(content_width))
             .min_w(px(0.0))
-            .max_w(px(700.0))
             .gap(px(24.0))
             // Icon + heading
             .child(
@@ -153,8 +196,7 @@ impl TerminalView {
                     .bg(ShellDeckColors::bg_surface())
                     .border_1()
                     .border_color(ShellDeckColors::border())
-                    .w_full()
-                    .max_w(px(700.0))
+                    .w(px(content_width))
                     .gap(px(2.0))
                     .child(
                         div()
@@ -168,14 +210,14 @@ impl TerminalView {
                         div()
                             .flex()
                             .flex_wrap()
+                            .w(px(reference_width))
                             .gap(px(16.0))
                             .child(
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .flex_1()
-                                    .flex_basis(px(250.0))
-                                    .min_w(px(0.0))
+                                    .w(px(shortcut_width))
+                                    .flex_shrink_0()
                                     .child(
                                         div()
                                             .text_size(px(11.0))
@@ -184,15 +226,19 @@ impl TerminalView {
                                             .mb(px(4.0))
                                             .child(t!("shortcuts.group.navigation").to_string()),
                                     )
-                                    .child(render_shortcut_rows(navigation_shortcuts)),
+                                    .child(
+                                        crate::shortcut_reference::render_shortcut_rows_with_width(
+                                            navigation_shortcuts,
+                                            shortcut_width,
+                                        ),
+                                    ),
                             )
                             .child(
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .flex_1()
-                                    .flex_basis(px(250.0))
-                                    .min_w(px(0.0))
+                                    .w(px(shortcut_width))
+                                    .flex_shrink_0()
                                     .child(
                                         div()
                                             .text_size(px(11.0))
@@ -201,27 +247,36 @@ impl TerminalView {
                                             .mb(px(4.0))
                                             .child(t!("shortcuts.group.terminal").to_string()),
                                     )
-                                    .child(render_shortcut_rows(terminal_shortcuts)),
+                                    .child(
+                                        crate::shortcut_reference::render_shortcut_rows_with_width(
+                                            terminal_shortcuts,
+                                            shortcut_width,
+                                        ),
+                                    ),
                             ),
                     ),
             );
-        div()
-            .id("terminal-empty-scroll")
-            .debug_selector(|| "terminal-empty-scroll".into())
+        let content = trace_layout_for_preview("terminal-empty-content".into(), content)
+            .id("terminal-empty-content")
+            .debug_selector(|| "terminal-empty-content".into());
+        let viewport = div()
             .flex()
             .flex_col()
             .items_center()
             .size_full()
             .min_h(px(0.0))
             .min_w(px(0.0))
-            .overflow_y_scroll()
             .px(px(24.0))
             .bg(ShellDeckColors::bg_primary())
             // Equal spacers center fitting content. Their minimum size keeps
             // overflowing content top-aligned and entirely reachable by scroll.
             .child(div().flex_1().min_h(px(24.0)))
             .child(content)
-            .child(div().flex_1().min_h(px(24.0)))
+            .child(div().flex_1().min_h(px(24.0)));
+        trace_layout_for_preview("terminal-empty-scroll".into(), viewport)
+            .id("terminal-empty-scroll")
+            .debug_selector(|| "terminal-empty-scroll".into())
+            .overflow_y_scroll()
     }
 }
 
@@ -238,6 +293,7 @@ mod tests {
             for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
                 for (width, height, font_size) in [
                     (1200.0, 1100.0, 14.0),
+                    (1734.0, 1250.0, 17.5),
                     (620.0, 420.0, 14.0),
                     (320.0, 300.0, 22.0),
                 ] {
@@ -298,6 +354,11 @@ mod tests {
                     ]
                     .map(|id| window.debug_bounds(id).unwrap());
                     for card in cards {
+                        let scale = crate::scale::scale_for_font_size(font_size);
+                        assert!(
+                            (card.size.height - gpui::px(84.0 * scale)).abs() < gpui::px(2.0),
+                            "launcher must stay compact: {card:?}"
+                        );
                         assert!(
                             card.left() >= content.left() && card.right() <= content.right(),
                             "launcher outside content: {card:?} in {content:?}"
@@ -308,6 +369,37 @@ mod tests {
                             pair[0].right() <= pair[1].left() || pair[0].bottom() <= pair[1].top(),
                             "launchers overlap: {pair:?}"
                         );
+                    }
+                    for id in [
+                        "empty-launch-terminal",
+                        "empty-launch-claude",
+                        "empty-launch-codex",
+                    ] {
+                        let text = window.debug_bounds(&format!("{id}-text")).unwrap();
+                        assert!(
+                            text.size.width > gpui::px(70.0),
+                            "launcher text collapsed: {text:?}"
+                        );
+                        assert!(
+                            text.size.height
+                                < gpui::px(62.0 * crate::scale::scale_for_font_size(font_size)),
+                            "launcher text became a vertical column: {text:?}"
+                        );
+                    }
+                    for shortcut in shortcuts_for(ShortcutSurface::TerminalEmpty, true) {
+                        if let Some(label) =
+                            window.debug_bounds(&format!("shortcut-label-{:?}", shortcut.id))
+                        {
+                            assert!(
+                                label.size.width > gpui::px(80.0),
+                                "shortcut label collapsed: {label:?}"
+                            );
+                            assert!(
+                                label.size.height
+                                    < gpui::px(48.0 * crate::scale::scale_for_font_size(font_size)),
+                                "shortcut label became a vertical column: {label:?}"
+                            );
+                        }
                     }
                     let shortcuts = window.debug_bounds("terminal-empty-shortcuts").unwrap();
                     assert!(shortcuts.right() <= viewport.right());

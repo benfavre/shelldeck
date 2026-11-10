@@ -19,14 +19,13 @@ use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::tmux::TmuxAction;
 
 use crate::glyph_cache::GlyphCache;
-use crate::shortcut_reference::{
-    render_shortcut_rows, shortcuts_for, ShortcutGroup, ShortcutSurface,
-};
+use crate::shortcut_reference::{shortcuts_for, ShortcutGroup, ShortcutSurface};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
 mod block_drawing;
 mod empty_state;
+pub(crate) use empty_state::trace_layout_for_preview;
 mod layout;
 mod palette;
 
@@ -222,6 +221,7 @@ pub struct TerminalView {
     default_shell: Option<String>,
     /// Portée de checkout exigée par chaque nouveau PTY local.
     default_cwd: LocalCwdScope,
+    empty_state_width: f32,
     pub focus_handle: FocusHandle,
     _refresh_task: Option<gpui::Task<()>>,
     /// Last known grid dimensions so we can detect when a resize is needed.
@@ -385,6 +385,7 @@ impl TerminalView {
             font_family: "JetBrains Mono".to_string(),
             default_shell: None,
             default_cwd: LocalCwdScope::Unscoped,
+            empty_state_width: 0.0,
             focus_handle: cx.focus_handle(),
             _refresh_task: None,
             last_grid_rows: 0,
@@ -4937,19 +4938,16 @@ impl TerminalView {
         command: SharedString,
         accent: Hsla,
         logo: AnyElement,
+        width: f32,
     ) -> Stateful<Div> {
         use crate::scale::px;
-        div()
-            .id(id)
+        let card = div()
             .flex()
             .items_center()
             .gap(px(10.0))
-            .debug_selector(move || id.into())
-            .flex_1()
-            .flex_basis(px(210.0))
-            .min_w(px(0.0))
-            .max_w(px(240.0))
-            .min_h(px(64.0))
+            .w(px(width))
+            .h(px(84.0))
+            .flex_shrink_0()
             .px(px(14.0))
             .py(px(12.0))
             .rounded(px(8.0))
@@ -4972,14 +4970,34 @@ impl TerminalView {
                     ShellDeckColors::hover_bg()
                 })
             })
-            .child(logo)
             .child(
                 div()
                     .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(26.0))
+                    .flex_shrink_0()
+                    .child(logo),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("{id}-text")))
+                    .debug_selector(move || format!("{id}-text"))
+                    .flex()
                     .flex_col()
+                    .w(px((width - 66.0).max(1.0)))
+                    .h(px(56.0))
+                    .justify_center()
+                    .gap(px(2.0))
+                    .overflow_hidden()
                     .min_w(px(0.0))
                     .child(
                         div()
+                            .w_full()
+                            .line_height(px(18.0))
+                            .line_clamp(2)
+                            .max_h(px(36.0))
+                            .flex_shrink_0()
                             .text_size(px(14.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(if id == "empty-launch-terminal" {
@@ -4991,6 +5009,10 @@ impl TerminalView {
                     )
                     .child(
                         div()
+                            .w_full()
+                            .h(px(14.0))
+                            .line_height(px(14.0))
+                            .flex_shrink_0()
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
@@ -5002,7 +5024,10 @@ impl TerminalView {
                             })
                             .child(caption),
                     ),
-            )
+            );
+        trace_layout_for_preview(id.into(), card)
+            .id(id)
+            .debug_selector(move || id.into())
             // La commande exacte reste consultable, mais au survol : dans la
             // carte elle se coupait en plein mot — « --dangerously-skip-permiss »
             // — ce qui déforme précisément l'information qui compte.
@@ -5077,7 +5102,26 @@ impl Render for TerminalView {
         let mut container = div().relative().flex().flex_col().size_full();
 
         if self.pane.sessions.is_empty() {
-            container = container.child(self.render_empty_state(cx));
+            container = container.child(self.render_empty_state(window, cx));
+            let measure = cx.entity().downgrade();
+            container = container.child(
+                canvas(
+                    move |bounds, _, cx| {
+                        let width = bounds.size.width.to_f64() as f32;
+                        cx.defer(move |cx| {
+                            let _ = measure.update(cx, |this, cx| {
+                                if (this.empty_state_width - width).abs() > 1.0 {
+                                    this.empty_state_width = width;
+                                    cx.notify();
+                                }
+                            });
+                        });
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            );
         } else {
             if self.needs_focus {
                 self.needs_focus = false;
