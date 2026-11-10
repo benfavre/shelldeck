@@ -158,7 +158,15 @@ impl Workspace {
                         Err(t!("agents.live.authorization_lost").to_string()),
                         cx,
                     ),
-                    AgentConsoleEvent::ReconnectSshSession { request_id, .. } => view
+                    AgentConsoleEvent::DiscoverLocalSessions { request_id, .. } => view
+                        .set_native_sessions(
+                            None,
+                            *request_id,
+                            Err(t!("agents.live.authorization_lost").to_string()),
+                            cx,
+                        ),
+                    AgentConsoleEvent::ReconnectSshSession { request_id, .. }
+                    | AgentConsoleEvent::ReconnectLocalSession { request_id, .. } => view
                         .complete_ssh_reconnect(
                             *request_id,
                             Err(t!("agents.live.authorization_lost").to_string()),
@@ -229,6 +237,13 @@ impl Workspace {
             } => {
                 self.reconnect_agent_project(checkout_id, expected_connection, connection_id, cx);
             }
+            AgentConsoleEvent::DiscoverLocalSessions { request_id, cursor } => {
+                self.discover_local_agent_sessions(request_id, cursor, cx)
+            }
+            AgentConsoleEvent::ReconnectLocalSession {
+                request_id,
+                session,
+            } => self.reconnect_local_agent_session(request_id, session, cx),
             AgentConsoleEvent::RefreshRemoteSessions => self.refresh_remote_sessions(cx),
             AgentConsoleEvent::DiscoverSshSessions {
                 connection_id,
@@ -240,7 +255,13 @@ impl Workspace {
                 request_id,
                 session,
             } => self.reconnect_ssh_agent_session(connection_id, request_id, session, cx),
-            AgentConsoleEvent::LoadSshHistory(request) => self.load_ssh_agent_history(request, cx),
+            AgentConsoleEvent::LoadSshHistory(request) => {
+                if request.connection_id.is_none() {
+                    self.load_local_agent_history(request, cx);
+                } else {
+                    self.load_ssh_agent_history(request, cx);
+                }
+            }
             AgentConsoleEvent::OpenPlatformSession(session) => {
                 if self.platform_connection().is_some()
                     && self

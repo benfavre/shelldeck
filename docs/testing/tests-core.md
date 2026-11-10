@@ -805,3 +805,8 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2928 | SDUC-564 | Project rename persists Unicode names, rejects blank/missing projects and retains checkout identities/paths | `config/workspace_catalog::tests::project_rename_persists_without_changing_checkouts` | Green |
 
 | SDTEST-2930 | SDUC-564 | Sidebar removal persists across reload with active/archived local and SSH workspace ownership; restore retains identities and old profiles default visible | `config/workspace_catalog::tests::navigator_removal_survives_reload_and_preserves_workspaces` | Green — isolated local regression passed |
+
+| SDTEST-2950 | `agent_local_sessions::tests::sdtest_2950_local_discovery_pages_both_providers_without_processes` | SDUC-572 | Green | Real temporary JSONL files cover Claude/Codex metadata, >200-row keyset traversal, source-bound cursors, subagent omission and malformed-source warnings. No processes/network. |
+| SDTEST-2951 | `agent_local_sessions::tests::sdtest_2951_local_history_paging_rewrite_and_native_reconnect` | SDUC-572, SDUC-563 | Green | Real JSONL covers canonical/event duplicate suppression, immutable older pages through appends, rewrite/directory mismatch refusal, exact local native resume, read-only context and loss of resume authority after serialization. |
+
+| SDTEST-2953 | `agent_local_sessions::large_history_tests::sdtest_2953_local_large_attachment_history_is_passive_and_chunked` | SDUC-572 | Green | Real >3 MiB JSONL attachment record, passive marker, UTF-8 chunk joining and ambiguous-source refusal. |

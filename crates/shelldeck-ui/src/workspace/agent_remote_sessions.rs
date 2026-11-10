@@ -254,7 +254,7 @@ impl Workspace {
         let Some(connection) = self
             .connections
             .iter()
-            .find(|connection| connection.id == request.connection_id)
+            .find(|connection| Some(connection.id) == request.connection_id)
             .cloned()
         else {
             self.agent_console.update(cx, |view, cx| {

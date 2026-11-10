@@ -960,6 +960,7 @@ impl AgentConsoleView {
             ));
         }
         body = body.child(self.render_uncatalogued_folders(cx));
+        body = body.child(self.render_local_session_rows(cx));
         body = body.child(self.render_ssh_session_rows(cx));
         body = body.child(self.render_remote_session_rows(cx));
         div()
@@ -1150,6 +1151,7 @@ impl AgentConsoleView {
             let row = div()
                 .id(("agent-nav-session", uuid_key(id)))
                 .debug_selector(|| format!("agent-nav-session-{id}"))
+                .relative()
                 .flex()
                 .items_center()
                 .gap(px(7.0))
@@ -1161,6 +1163,30 @@ impl AgentConsoleView {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_session(id, cx);
                 }))
+                .child(
+                    div()
+                        .id(("agent-nav-provider-icon", uuid_key(id)))
+                        .absolute()
+                        .left(px(-21.0))
+                        .top(px(9.0))
+                        .size(px(14.0))
+                        .flex_shrink_0()
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_session(id, cx);
+                        }))
+                        .debug_selector(|| {
+                            format!(
+                                "agent-nav-provider-{id}-{}",
+                                session.context.provider.binary()
+                            )
+                        })
+                        .child(crate::icons::agent_provider_icon(
+                            session.context.provider,
+                            14.0,
+                            ShellDeckColors::text_muted(),
+                        )),
+                )
                 .when(session.archived, |row| {
                     row.child(div().flex_shrink_0().child(lucide_icon(
                         "archive",
@@ -1308,8 +1334,8 @@ impl AgentConsoleView {
                         .rounded_full()
                         .bg(status_color(session.status)),
                 )
-                .child(lucide_icon(
-                    provider_icon(session.context.provider),
+                .child(crate::icons::agent_provider_icon(
+                    session.context.provider,
                     12.0,
                     ShellDeckColors::text_muted(),
                 ))
@@ -1757,7 +1783,7 @@ mod journey_tests {
             assert_eq!(view.library.undo_archive, None);
             view.sessions.get_mut(other).unwrap().remote_history =
                 Some(shelldeck_core::agent_session::RemoteHistoryReference {
-                    connection_id: Uuid::new_v4(),
+                    connection_id: Some(Uuid::new_v4()),
                     provider: AgentProvider::Codex,
                     session_id: Uuid::new_v4().to_string(),
                     workdir: "/srv/project".into(),

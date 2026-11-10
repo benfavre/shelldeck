@@ -10,8 +10,9 @@ pub(super) struct SshSessionsUi {
     selector: Option<Entity<Select<Uuid>>>,
     chosen: Option<Uuid>,
     servers: BTreeMap<Uuid, ServerSessions>,
+    local: Option<ServerSessions>,
     collapsed: bool,
-    pub(super) preview: Option<(Uuid, RemoteAgentSession)>,
+    pub(super) preview: Option<(Option<Uuid>, RemoteAgentSession)>,
     reconnecting: Option<Uuid>,
     reconnect_error: Option<String>,
 }
@@ -53,12 +54,9 @@ impl AgentConsoleView {
         self.ssh_sessions
             .servers
             .retain(|id, _| self.connections.iter().any(|c| c.id == *id));
-        if self
-            .ssh_sessions
-            .preview
-            .as_ref()
-            .is_some_and(|(id, _)| !self.connections.iter().any(|c| c.id == *id))
-        {
+        if self.ssh_sessions.preview.as_ref().is_some_and(|(id, _)| {
+            id.is_some_and(|id| !self.connections.iter().any(|c| c.id == id))
+        }) {
             self.clear_ssh_session_preview();
         }
         if !self
@@ -102,6 +100,13 @@ impl AgentConsoleView {
         self.rebuild_ssh_session_selector(cx);
     }
     pub(super) fn ensure_ssh_discovery(&mut self, cx: &mut Context<Self>) {
+        if self.library.preferences.local_sessions_enabled
+            && self.ssh_sessions.local.is_none()
+            && self.connection_repair_storage_ready()
+            && !project_group_collapsed(&self.library.preferences, "native-local", "")
+        {
+            self.scan_native_source(None, None, cx);
+        }
         if self.ssh_sessions.collapsed || !self.connection_repair_storage_ready() {
             return;
         }
@@ -139,17 +144,6 @@ impl AgentConsoleView {
         }
         self.request_ssh_session_page(connection_id, None, cx);
     }
-    fn load_older_ssh_sessions(&mut self, connection_id: Uuid, cx: &mut Context<Self>) {
-        let cursor = self
-            .ssh_sessions
-            .servers
-            .get(&connection_id)
-            .and_then(|s| s.inventory.as_ref())
-            .and_then(|i| i.next_cursor.clone());
-        if cursor.is_some() {
-            self.request_ssh_session_page(connection_id, cursor, cx);
-        }
-    }
     fn request_ssh_session_page(
         &mut self,
         connection_id: Uuid,
@@ -184,7 +178,20 @@ impl AgentConsoleView {
         result: Result<RemoteAgentSessionInventory, String>,
         cx: &mut Context<Self>,
     ) {
-        let Some(server) = self.ssh_sessions.servers.get_mut(&connection_id) else {
+        self.set_native_sessions(Some(connection_id), request_id, result, cx);
+    }
+    pub fn set_native_sessions(
+        &mut self,
+        connection_id: Option<Uuid>,
+        request_id: Uuid,
+        result: Result<RemoteAgentSessionInventory, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let server = match connection_id {
+            Some(id) => self.ssh_sessions.servers.get_mut(&id),
+            None => self.ssh_sessions.local.as_mut(),
+        };
+        let Some(server) = server else {
             return;
         };
         if server.request != request_id || !server.loading {
@@ -243,8 +250,16 @@ impl AgentConsoleView {
         let Some((connection_id, remote)) = self.ssh_sessions.preview.clone() else {
             return;
         };
-        let Some(connection) = self.connections.iter().find(|c| c.id == connection_id) else {
-            return;
+        let target = if let Some(connection_id) = connection_id {
+            let Some(connection) = self.connections.iter().find(|c| c.id == connection_id) else {
+                return;
+            };
+            AgentTarget::Ssh {
+                connection_id,
+                connection_label: connection.label.clone(),
+            }
+        } else {
+            AgentTarget::Local
         };
         if page.provider != remote.provider
             || page.session_id != remote.session_id
@@ -257,10 +272,7 @@ impl AgentConsoleView {
         }
         let context = AgentExecutionContext {
             provider: remote.provider,
-            target: AgentTarget::Ssh {
-                connection_id,
-                connection_label: connection.label.clone(),
-            },
+            target,
             workdir: remote.workdir.clone(),
             access: AgentAccessMode::ReadOnly,
             model: page.model.clone(),
@@ -341,208 +353,286 @@ impl AgentConsoleView {
             );
         }
         for connection in &self.connections {
-            let Some(server) = self.ssh_sessions.servers.get(&connection.id) else {
-                continue;
-            };
-            let id = connection.id;
-            if !query.is_empty()
-                && server.inventory.as_ref().is_some_and(|i| {
-                    !i.sessions
-                        .iter()
-                        .any(|session| matches_session(session, &connection.label, &query))
-                })
-                && !server.loading
-            {
-                continue;
+            if let Some(server) = self.ssh_sessions.servers.get(&connection.id) {
+                list = list.child(self.render_native_source_rows(
+                    Some(connection.id),
+                    connection.label.clone(),
+                    connection.host.clone(),
+                    server,
+                    &query,
+                    cx,
+                ));
             }
-            let server_key = format!("ssh-server:{id}");
-            let server_collapsed =
-                project_group_collapsed(&self.library.preferences, &server_key, &query);
-            let selected = self
-                .ssh_sessions
-                .preview
-                .as_ref()
-                .filter(|(connection, _)| *connection == id)
-                .map(|(_, session)| session);
-            let count = server
-                .inventory
-                .as_ref()
-                .map_or(0, |inventory| inventory.sessions.len());
+        }
+        list.into_any_element()
+    }
+    fn render_native_source_rows(
+        &self,
+        id: Option<Uuid>,
+        label: String,
+        host: String,
+        server: &ServerSessions,
+        query: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut list = div().flex().flex_col().gap(px(4.0)).min_w_0();
+        if !query.is_empty()
+            && server.inventory.as_ref().is_some_and(|i| {
+                !i.sessions
+                    .iter()
+                    .any(|session| matches_session(session, &label, query))
+            })
+            && !server.loading
+        {
+            return list.into_any_element();
+        }
+        let source_key = id.map_or_else(|| "local".to_string(), |id| id.to_string());
+        let server_key = id.map_or_else(
+            || "native-local".to_string(),
+            |id| format!("ssh-server:{id}"),
+        );
+        let server_collapsed =
+            project_group_collapsed(&self.library.preferences, &server_key, query);
+        let selected = self
+            .ssh_sessions
+            .preview
+            .as_ref()
+            .filter(|(connection, _)| *connection == id)
+            .map(|(_, session)| session);
+        let count = server
+            .inventory
+            .as_ref()
+            .map_or(0, |inventory| inventory.sessions.len());
+        list = list.child(
+            div()
+                .flex()
+                .items_center()
+                .min_w_0()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(self.render_navigation_group_header(
+                            &server_key,
+                            label.clone(),
+                            format!("{}\n{}", label, host),
+                            (count, NavigatorState::Quiet),
+                            cx,
+                        )),
+                )
+                .child(
+                    Button::new(
+                        SharedString::from(format!("native-refresh-{source_key}")),
+                        "",
+                    )
+                    .debug_selector({
+                        let selector = format!("native-refresh-{source_key}");
+                        move || selector.clone()
+                    })
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Icon)
+                    .w(px(24.0))
+                    .h(px(24.0))
+                    .flex_shrink_0()
+                    .icon(IconSource::from("refresh-cw"))
+                    .tooltip(if id.is_none() {
+                        t!("agents.local_sessions.refresh").to_string()
+                    } else {
+                        t!("agents.ssh_sessions.refresh_server").to_string()
+                    })
+                    .disabled(server.loading)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.scan_native_source(id, None, cx)),
+                    ),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("native-hide-{source_key}")), "")
+                        .debug_selector({
+                            let selector = format!("native-hide-{source_key}");
+                            move || selector.clone()
+                        })
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Icon)
+                        .w(px(24.0))
+                        .h(px(24.0))
+                        .flex_shrink_0()
+                        .icon(IconSource::from("eye-off"))
+                        .tooltip(if id.is_none() {
+                            t!("agents.local_sessions.hide").to_string()
+                        } else {
+                            t!("agents.ssh_sessions.hide_server").to_string()
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.hide_native_source(id, cx);
+                        })),
+                ),
+        );
+        if !server_collapsed {
+            let label = if server.loading {
+                if id.is_none() {
+                    t!("agents.local_sessions.loading").to_string()
+                } else {
+                    t!("agents.ssh_sessions.connecting").to_string()
+                }
+            } else if let Some(at) = server.checked_at {
+                t!("agents.ssh_sessions.updated", time = timestamp(at)).to_string()
+            } else {
+                t!("agents.ssh_sessions.not_connected").to_string()
+            };
             list = list.child(
                 div()
-                    .flex()
-                    .items_center()
-                    .min_w_0()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.render_navigation_group_header(
-                                &server_key,
-                                connection.label.clone(),
-                                format!("{}\n{}", connection.label, connection.host),
-                                (count, NavigatorState::Quiet),
-                                cx,
-                            )),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("ssh-refresh-{id}")), "")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Icon)
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .flex_shrink_0()
-                            .icon(IconSource::from("refresh-cw"))
-                            .tooltip(t!("agents.ssh_sessions.refresh_server").to_string())
-                            .disabled(server.loading)
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.scan_ssh_sessions(id, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("ssh-hide-{id}")), "")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Icon)
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .flex_shrink_0()
-                            .icon(IconSource::from("eye-off"))
-                            .tooltip(t!("agents.ssh_sessions.hide_server").to_string())
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.hide_ssh_server(id, cx)),
-                            ),
-                    ),
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(label),
             );
-            if !server_collapsed {
-                let label = if server.loading {
-                    t!("agents.ssh_sessions.connecting").to_string()
-                } else if let Some(at) = server.checked_at {
-                    t!("agents.ssh_sessions.updated", time = timestamp(at)).to_string()
-                } else {
-                    t!("agents.ssh_sessions.not_connected").to_string()
-                };
+            if let Some(error) = &server.error {
                 list = list.child(
                     div()
                         .text_size(px(10.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(label),
+                        .text_color(ShellDeckColors::warning())
+                        .whitespace_normal()
+                        .child(t!("agents.ssh_sessions.failed", error = error).to_string()),
                 );
-                if let Some(error) = &server.error {
-                    list = list.child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::warning())
-                            .whitespace_normal()
-                            .child(t!("agents.ssh_sessions.failed", error = error).to_string()),
-                    );
-                }
             }
-            let Some(inventory) = &server.inventory else {
-                continue;
-            };
-            if !server_collapsed {
-                if inventory.truncated && inventory.next_cursor.is_none() {
-                    list = list.child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::warning())
-                            .child(t!("agents.ssh_sessions.truncated").to_string()),
-                    );
-                }
-                for warning in &inventory.warnings {
-                    list = list.child(
-                        div()
-                            .text_size(px(10.0))
-                            .whitespace_normal()
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(warning.clone()),
-                    );
-                }
-                if inventory.sessions.is_empty() {
-                    list = list.child(
-                        div()
-                            .text_size(px(10.0))
-                            .child(t!("agents.ssh_sessions.empty").to_string()),
-                    );
-                }
-                if inventory.next_cursor.is_some() {
-                    list = list.child(
-                        Button::new(
-                            SharedString::from(format!("ssh-older-{id}")),
-                            t!("agents.ssh_sessions.load_older").to_string(),
-                        )
-                        .tooltip(t!("agents.ssh_sessions.load_older_hint").to_string())
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .disabled(server.loading)
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.load_older_ssh_sessions(id, cx)),
-                        ),
-                    );
-                }
+        }
+        let Some(inventory) = &server.inventory else {
+            return list.into_any_element();
+        };
+        if !server_collapsed {
+            if inventory.truncated && inventory.next_cursor.is_none() {
+                list = list.child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(ShellDeckColors::warning())
+                        .child(t!("agents.ssh_sessions.truncated").to_string()),
+                );
             }
-            let target = AgentTarget::Ssh {
-                connection_id: id,
-                connection_label: connection.label.clone(),
-            };
-            let mut folders: BTreeMap<&str, Vec<&RemoteAgentSession>> = BTreeMap::new();
-            for session in &inventory.sessions {
-                if matches_session(session, &connection.label, &query) {
-                    folders.entry(&session.workdir).or_default().push(session);
-                }
+            for warning in &inventory.warnings {
+                list = list.child(
+                    div()
+                        .text_size(px(10.0))
+                        .whitespace_normal()
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(warning.clone()),
+                );
             }
-            for (path, sessions) in &folders {
-                let is_selected = |session: &&RemoteAgentSession| {
-                    selected.is_some_and(|current| {
-                        current.provider == session.provider
-                            && current.session_id == session.session_id
-                            && current.workdir == session.workdir
+            if inventory.sessions.is_empty() {
+                list = list.child(div().text_size(px(10.0)).child(if id.is_none() {
+                    t!("agents.local_sessions.empty").to_string()
+                } else {
+                    t!("agents.ssh_sessions.empty").to_string()
+                }));
+            }
+            if inventory.next_cursor.is_some() {
+                list = list.child(
+                    Button::new(
+                        SharedString::from(format!("native-older-{source_key}")),
+                        t!("agents.ssh_sessions.load_older").to_string(),
+                    )
+                    .tooltip(if id.is_none() {
+                        t!("agents.local_sessions.older_hint").to_string()
+                    } else {
+                        t!("agents.ssh_sessions.load_older_hint").to_string()
                     })
-                };
-                if server_collapsed {
-                    continue;
-                }
-                let key = directory_group_key("ssh-folder", &target, path);
-                let collapsed = server_collapsed
-                    || project_group_collapsed(&self.library.preferences, &key, &query);
-                let name = directory_name(&target, path);
-                let duplicate = folders
-                    .keys()
-                    .any(|other| other != path && directory_name(&target, other) == name);
-                let title = if duplicate { (*path).to_owned() } else { name };
-                let hidden = sessions.len();
-                let mut folder = div()
-                    .debug_selector(|| format!("agent-folder-{key}"))
-                    .flex()
-                    .flex_col()
-                    .flex_shrink_0()
-                    .min_w_0()
-                    .pl(px(8.0))
-                    .gap(px(2.0));
-                if !server_collapsed {
-                    folder = folder.child(self.render_navigation_group_header(
-                        &key,
-                        title,
-                        format!("{}\n{}", connection.label, path),
-                        (hidden, NavigatorState::Quiet),
-                        cx,
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .disabled(server.loading)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.load_older_native_sessions(id, cx)),
+                    ),
+                );
+            }
+        }
+        let target = id.map_or(AgentTarget::Local, |connection_id| AgentTarget::Ssh {
+            connection_id,
+            connection_label: label.clone(),
+        });
+        let mut folders: BTreeMap<&str, Vec<&RemoteAgentSession>> = BTreeMap::new();
+        for session in &inventory.sessions {
+            if matches_session(session, &label, query) {
+                folders.entry(&session.workdir).or_default().push(session);
+            }
+        }
+        for (path, sessions) in &folders {
+            let is_selected = |session: &&RemoteAgentSession| {
+                selected.is_some_and(|current| {
+                    current.provider == session.provider
+                        && current.session_id == session.session_id
+                        && current.workdir == session.workdir
+                })
+            };
+            if server_collapsed {
+                continue;
+            }
+            let key = directory_group_key("ssh-folder", &target, path);
+            let collapsed =
+                server_collapsed || project_group_collapsed(&self.library.preferences, &key, query);
+            let name = directory_name(&target, path);
+            let duplicate = folders
+                .keys()
+                .any(|other| other != path && directory_name(&target, other) == name);
+            let title = if duplicate { (*path).to_owned() } else { name };
+            let hidden = sessions.len();
+            let mut folder = div()
+                .debug_selector(|| format!("agent-folder-{key}"))
+                .flex()
+                .flex_col()
+                .flex_shrink_0()
+                .min_w_0()
+                .pl(px(8.0))
+                .gap(px(2.0));
+            if !server_collapsed {
+                folder = folder.child(self.render_navigation_group_header(
+                    &key,
+                    title,
+                    format!("{}\n{}", label, path),
+                    (hidden, NavigatorState::Quiet),
+                    cx,
+                ));
+            }
+            let mut rows = div().flex().flex_col().min_w_0().gap(px(2.0));
+            let limit = server.visible_limits.get(&key).copied().unwrap_or(10);
+            for session in sessions.iter().enumerate().filter_map(|(index, session)| {
+                let selected = is_selected(session);
+                (!collapsed && (index < limit || selected)).then_some(*session)
+            }) {
+                let remote = session.clone();
+                let provider = session.provider;
+                let selected = is_selected(&session);
+                let selector = format!(
+                    "agent-ssh-conversation-{source_key}-{:?}-{}",
+                    session.provider, session.session_id
+                );
+                let icon_selector = format!("{selector}-provider");
+                let icon_remote = remote.clone();
+                let provider_mark = div()
+                    .id(SharedString::from(icon_selector.clone()))
+                    .absolute()
+                    .left(px(-9.0))
+                    .top(px(9.0))
+                    .size(px(14.0))
+                    .debug_selector(move || icon_selector.clone())
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.preview_native_session(id, icon_remote.clone(), cx)
+                    }))
+                    .child(crate::icons::agent_provider_icon(
+                        provider,
+                        14.0,
+                        ShellDeckColors::text_muted(),
                     ));
-                }
-                let mut rows = div().flex().flex_col().min_w_0().gap(px(2.0));
-                let limit = server.visible_limits.get(&key).copied().unwrap_or(10);
-                for session in sessions.iter().enumerate().filter_map(|(index, session)| {
-                    let selected = is_selected(session);
-                    (!collapsed && (index < limit || selected)).then_some(*session)
-                }) {
-                    let remote = session.clone();
-                    let selected = is_selected(&session);
-                    let selector = format!(
-                        "agent-ssh-conversation-{id}-{:?}-{}",
-                        session.provider, session.session_id
-                    );
-                    rows = rows.child(
-                        Button::new(SharedString::from(selector.clone()), session.title.clone())
+                // Provider identity occupies the existing tree gutter; the Button label
+                // keeps its original position, focus, tooltip and keyboard behavior.
+                rows = rows.child(
+                    div()
+                        .relative()
+                        .min_w_0()
+                        .child(
+                            Button::new(
+                                SharedString::from(selector.clone()),
+                                session.title.clone(),
+                            )
                             .debug_selector(move || selector.clone())
                             .variant(if selected {
                                 ButtonVariant::Secondary
@@ -564,54 +654,165 @@ impl AgentConsoleView {
                                 session.workdir,
                                 timestamp(session.updated_at_ms as i64)
                             ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.retain_draft_context(cx);
-                                this.ssh_sessions.preview = Some((id, remote.clone()));
-                                this.set_remote_session_active(false, cx);
-                                this.ssh_sessions.reconnect_error = None;
-                                this.ssh_sessions.reconnecting = None;
-                                this.sessions.set_surface_visible(false);
-                                cx.notify();
-                            })),
-                    );
-                }
-                let shown = sessions.len().min(limit)
-                    + sessions
-                        .iter()
-                        .skip(limit)
-                        .filter(|session| is_selected(session))
-                        .count();
-                if !collapsed && sessions.len() > shown {
-                    let selector = format!("agent-ssh-more-{key}");
-                    let page_key = key.clone();
-                    rows = rows.child(
-                        Button::new(
-                            SharedString::from(selector.clone()),
-                            t!(
-                                "agents.remote.show_more",
-                                shown = shown,
-                                total = sessions.len()
-                            )
-                            .to_string(),
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.preview_native_session(id, remote.clone(), cx);
+                                },
+                            )),
                         )
-                        .debug_selector(move || selector.clone())
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(server) = this.ssh_sessions.servers.get_mut(&id) {
-                                *server.visible_limits.entry(page_key.clone()).or_insert(10) += 20;
-                            }
-                            cx.notify();
-                        })),
-                    );
-                }
-                list = list.child(folder.child(super::navigation_groups::navigation_children(
-                    &key,
-                    rows.into_any_element(),
-                )));
+                        .child(provider_mark),
+                );
             }
+            let shown = sessions.len().min(limit)
+                + sessions
+                    .iter()
+                    .skip(limit)
+                    .filter(|session| is_selected(session))
+                    .count();
+            if !collapsed && sessions.len() > shown {
+                let selector = format!("agent-ssh-more-{key}");
+                let page_key = key.clone();
+                rows = rows.child(
+                    Button::new(
+                        SharedString::from(selector.clone()),
+                        t!(
+                            "agents.remote.show_more",
+                            shown = shown,
+                            total = sessions.len()
+                        )
+                        .to_string(),
+                    )
+                    .debug_selector(move || selector.clone())
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(server) = match id {
+                            Some(id) => this.ssh_sessions.servers.get_mut(&id),
+                            None => this.ssh_sessions.local.as_mut(),
+                        } {
+                            *server.visible_limits.entry(page_key.clone()).or_insert(10) += 20;
+                        }
+                        cx.notify();
+                    })),
+                );
+            }
+            list = list.child(folder.child(super::navigation_groups::navigation_children(
+                &key,
+                rows.into_any_element(),
+            )));
         }
         list.into_any_element()
+    }
+    fn preview_native_session(
+        &mut self,
+        id: Option<Uuid>,
+        remote: RemoteAgentSession,
+        cx: &mut Context<Self>,
+    ) {
+        self.retain_draft_context(cx);
+        self.ssh_sessions.preview = Some((id, remote));
+        self.set_remote_session_active(false, cx);
+        self.ssh_sessions.reconnect_error = None;
+        self.ssh_sessions.reconnecting = None;
+        self.sessions.set_surface_visible(false);
+        cx.notify();
+    }
+    fn hide_native_source(&mut self, id: Option<Uuid>, cx: &mut Context<Self>) {
+        if let Some(id) = id {
+            self.hide_ssh_server(id, cx);
+        } else {
+            self.ssh_sessions.local = None;
+            self.library.preferences.local_sessions_enabled = false;
+        }
+        if self
+            .ssh_sessions
+            .preview
+            .as_ref()
+            .is_some_and(|(source, _)| *source == id)
+        {
+            self.clear_ssh_session_preview();
+            self.sessions
+                .set_surface_visible(self.remote_sessions.surface_visible);
+        }
+        self.schedule_library_save(cx);
+        cx.notify();
+    }
+    pub(super) fn render_local_session_rows(&self, cx: &mut Context<Self>) -> AnyElement {
+        let query = self
+            .navigator_search
+            .read(cx)
+            .content()
+            .trim()
+            .to_lowercase();
+        if let Some(server) = &self.ssh_sessions.local {
+            self.render_native_source_rows(
+                None,
+                t!("agents.local_sessions.title").to_string(),
+                t!("agents.target.local").to_string(),
+                server,
+                &query,
+                cx,
+            )
+        } else {
+            div()
+                .py(px(8.0))
+                .child(
+                    Button::new(
+                        "discover-local-sessions",
+                        t!("agents.local_sessions.discover").to_string(),
+                    )
+                    .debug_selector(|| "agent-local-discover".into())
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("terminal"))
+                    .w_full()
+                    .justify_start()
+                    .tooltip(t!("agents.local_sessions.help").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| this.scan_local_sessions(cx))),
+                )
+                .into_any_element()
+        }
+    }
+    fn load_older_native_sessions(&mut self, id: Option<Uuid>, cx: &mut Context<Self>) {
+        let server = match id {
+            Some(id) => self.ssh_sessions.servers.get(&id),
+            None => self.ssh_sessions.local.as_ref(),
+        };
+        let cursor = server
+            .and_then(|s| s.inventory.as_ref())
+            .and_then(|i| i.next_cursor.clone());
+        if cursor.is_some() {
+            self.scan_native_source(id, cursor, cx);
+        }
+    }
+    pub fn scan_local_sessions(&mut self, cx: &mut Context<Self>) {
+        self.scan_native_source(None, None, cx);
+    }
+    fn scan_native_source(
+        &mut self,
+        id: Option<Uuid>,
+        cursor: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(id) = id {
+            self.request_ssh_session_page(id, cursor, cx);
+            return;
+        }
+        self.library.preferences.local_sessions_enabled = true;
+        self.schedule_library_save(cx);
+        let server = self.ssh_sessions.local.get_or_insert_with(Default::default);
+        if server.loading {
+            return;
+        }
+        server.loading = true;
+        server.error = None;
+        server.request = Uuid::new_v4();
+        server.requested_cursor = cursor.clone();
+        cx.emit(AgentConsoleEvent::DiscoverLocalSessions {
+            request_id: server.request,
+            cursor,
+        });
+        cx.notify();
     }
     pub(super) fn render_ssh_session_preview(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some((connection_id, session)) = self.ssh_sessions.preview.clone() else {
@@ -620,9 +821,15 @@ impl AgentConsoleView {
         let label = self
             .connections
             .iter()
-            .find(|c| c.id == connection_id)
+            .find(|c| Some(c.id) == connection_id)
             .map(|c| format!("{} · {}", c.label, c.host))
-            .unwrap_or_else(|| t!("agents.target.missing").to_string());
+            .unwrap_or_else(|| {
+                if connection_id.is_none() {
+                    t!("agents.target.local").to_string()
+                } else {
+                    t!("agents.target.missing").to_string()
+                }
+            });
         let model = session.model.clone();
         let busy = self.ssh_sessions.reconnecting.is_some();
         let mut details = div()
@@ -680,7 +887,11 @@ impl AgentConsoleView {
                 div()
                     .max_w(px(650.0))
                     .whitespace_normal()
-                    .child(t!("agents.ssh_sessions.resume_help").to_string()),
+                    .child(if connection_id.is_none() {
+                        t!("agents.local_sessions.resume_help").to_string()
+                    } else {
+                        t!("agents.ssh_sessions.resume_help").to_string()
+                    }),
             )
             .child(
                 div()
@@ -700,11 +911,18 @@ impl AgentConsoleView {
                                 let request_id = Uuid::new_v4();
                                 this.ssh_sessions.reconnecting = Some(request_id);
                                 this.ssh_sessions.reconnect_error = None;
-                                cx.emit(AgentConsoleEvent::ReconnectSshSession {
-                                    connection_id,
-                                    request_id,
-                                    session: session.clone(),
-                                });
+                                if let Some(connection_id) = connection_id {
+                                    cx.emit(AgentConsoleEvent::ReconnectSshSession {
+                                        connection_id,
+                                        request_id,
+                                        session: session.clone(),
+                                    });
+                                } else {
+                                    cx.emit(AgentConsoleEvent::ReconnectLocalSession {
+                                        request_id,
+                                        session: session.clone(),
+                                    });
+                                }
                                 cx.notify();
                             }
                         })),
@@ -806,7 +1024,7 @@ mod tests {
             assert!(view.ssh_sessions.servers[&id].error.is_some());
             assert!(view.ssh_sessions.servers[&id].checked_at.is_some());
             let pending=Uuid::new_v4();
-            view.ssh_sessions.preview=Some((id,remote()));view.ssh_sessions.reconnecting=Some(pending);
+            view.ssh_sessions.preview=Some((Some(id),remote()));view.ssh_sessions.reconnecting=Some(pending);
             view.complete_ssh_reconnect(Uuid::new_v4(),Ok(history_page()),cx);
             assert_eq!(view.sessions.selected_id(),Some(local));
             view.complete_ssh_reconnect(pending,Ok(history_page()),cx);
@@ -825,7 +1043,7 @@ mod tests {
             assert!(remote().model.is_none());
             assert_eq!(view.native_history_query(id, &remote()).snapshot, snapshot);
             let pending = Uuid::new_v4();
-            view.ssh_sessions.preview = Some((id, remote()));
+            view.ssh_sessions.preview = Some((Some(id), remote()));
             view.ssh_sessions.reconnecting = Some(pending);
             view.complete_ssh_reconnect(pending, Ok(history_page()), cx);
             assert_eq!(view.sessions.selected_id(), Some(imported_id));
@@ -871,7 +1089,7 @@ mod tests {
                 }),
                 cx,
             );
-            view.load_older_ssh_sessions(id, cx);
+            view.load_older_native_sessions(Some(id), cx);
             let page2 = view.ssh_sessions.servers[&id].request;
             assert_eq!(
                 view.ssh_sessions.servers[&id].requested_cursor.as_deref(),
@@ -894,7 +1112,7 @@ mod tests {
             let inventory = view.ssh_sessions.servers[&id].inventory.as_ref().unwrap();
             assert_eq!(inventory.sessions.len(), 2);
             assert_eq!(inventory.sessions[0].title, "Updated title");
-            view.load_older_ssh_sessions(id, cx);
+            view.load_older_native_sessions(Some(id), cx);
             let failed = view.ssh_sessions.servers[&id].request;
             view.set_ssh_sessions(id, failed, Err("offline".into()), cx);
             assert_eq!(

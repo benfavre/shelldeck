@@ -252,6 +252,8 @@ impl AgentConsoleView {
                 .icon_visible_on_hover(hover_group)
                 .icon_when_not_hovered(if key == "pinned-sessions" {
                     "pin"
+                } else if key == "native-local" {
+                    "terminal"
                 } else if key.starts_with("ssh-server:") {
                     "server"
                 } else if key.starts_with("worktree-") {

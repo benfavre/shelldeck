@@ -5022,3 +5022,14 @@ Native Linux menu contract (2026-11-10, disposable XDG): SDTEST-2947 verifies It
 Terminal release validation (2026-11-10): the full isolated workspace sweep passes, including 383 UI tests. Strict workspace Clippy (-D warnings) and cargo fmt pass. Provider-free native terminal fixtures run at 1200 × 1100 and 360 × 360 (French/light); no pixel-capture walkthrough is claimed.
 
 2026-11-10 native terminal correction: explicit measured widths replace intrinsic flex sizing for launch cards, shortcut columns and labels. Cards have bounded heights and title/caption line boxes. SDTEST-2948 now asserts card/text heights and label widths at the reported scale; SDTEST-2949 checks native prepaint metrics at 100%/125% and enlarged French/light sizes before release.
+
+
+### SDUC-572 — Discover and continue local Claude Code and Codex conversations
+
+Agents offers explicit local CLI discovery alongside saved-server discovery. Desktop discovery reads only configured Claude/Codex session roots with Rust filesystem/JSON readers; it needs neither Python nor a provider process. It respects `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, excludes subagent files and symlinks, and bounds candidate count, metadata bytes, page size and time. Source-bound keyset cursors expose older conversations, current Codex thread names come from its bounded session index, and failed refresh retains the last successful inventory. Local and SSH conversations use the same folder/search/collapse/preview/reconnect controls with distinct source identities.
+
+Conversation rows and tabs show the agent mark separately from attention/status. Sidebar marks occupy the existing tree gutter and do not add indentation to the conversation label; icon clicks select the same conversation. Selecting local CLI metadata opens a preview; explicit reconnect validates native ID, cwd and current model, reads passive paged history and prepares the original local CLI resume with read-only access. It never starts an agent until Send. Restarts retain only the passive source/cutoff; reconnect must revalidate before sending. Local history uses 64-entry pages, UTF-8-safe 16 KiB chunks, a 128 MiB file/record budget and a 20-second read deadline. Prefix changes reject old pages; append-only growth does not duplicate new locally retained turns. Reading history never replays tools, approvals or provider events.
+
+Opting in persists local discovery while Agents is visible; source collapse persists and Hide disables discovery without deleting native files or imported chats. Late responses and account reset cannot restore a hidden source or bind another conversation.
+
+2026-11-10 — Added desktop-native CLI discovery and shared provider marks; SDTEST-2950–2952. Native pixel walkthrough and Windows/macOS runtime verification remain separate from the offline rendered interaction and filesystem tests.

@@ -1100,7 +1100,7 @@ fn rendered_long_native_titles_reconnect_and_preserve_existing_drafts() {
                         }],
                         cx,
                     );
-                    view.ssh_sessions.preview = Some((connection, remote.clone()));
+                    view.ssh_sessions.preview = Some((Some(connection), remote.clone()));
                     view.sessions.set_surface_visible(false);
                     cx.notify();
                 });
@@ -1834,7 +1834,7 @@ fn rendered_ssh_folders_preserve_source_search_collapse_and_independent_pages() 
         assert_eq!(
             ui.view
                 .read_with(&ui.app, |view, _| view.ssh_sessions.preview.clone()),
-            Some((a, alpha[11].clone()))
+            Some((Some(a), alpha[11].clone()))
         );
         if ui.bounds("agent-navigator-scroll").is_none() {
             ui.click("agent-ssh-preview-navigator");
@@ -3150,21 +3150,13 @@ fn rendered_activity_controls_change_capacity_open_and_stop_individual_runs() {
             .iter()
             .any(|e| matches!(e, AgentConsoleEvent::Stop(id) if *id == run)));
         assert_eq!(
-            ui.view.read_with(&ui.app, |v, _| v
-                .sessions
-                .get(ui.session)
-                .unwrap()
-                .status
-                .clone()),
+            ui.view
+                .read_with(&ui.app, |v, _| v.sessions.get(ui.session).unwrap().status),
             AgentSessionStatus::Stopping
         );
         assert_eq!(
-            ui.view.read_with(&ui.app, |v, _| v
-                .sessions
-                .get(other)
-                .unwrap()
-                .status
-                .clone()),
+            ui.view
+                .read_with(&ui.app, |v, _| v.sessions.get(other).unwrap().status),
             AgentSessionStatus::Running
         );
         assert_eq!(ui.draft(), "Keep this follow-up");
@@ -3540,10 +3532,18 @@ fn rendered_plain_sidebar_project_names_toggle_and_hover_menus_stay_interactive(
         ui.open_navigator();
         let row = ui.bounds(&format!("agent-nav-session-{current}")).unwrap();
         let title = ui.bounds(&format!("agent-nav-title-{current}")).unwrap();
+        let mark = ui
+            .bounds(&format!("agent-nav-provider-{current}-codex"))
+            .unwrap();
         assert_eq!(
             row.left(),
             title.left(),
-            "idle conversations begin directly with their title"
+            "provider marks must not shift conversation labels"
+        );
+        assert_eq!(
+            title.left() - mark.right(),
+            gpui::px(7.0),
+            "provider identity occupies the existing tree gutter"
         );
         ui.click("agent-project-label-plain-sidebar");
         assert!(ui
@@ -3941,4 +3941,148 @@ fn rendered_assistant_tasks_open_and_stop_the_canonical_agent_run() {
             AgentSessionStatus::Stopping
         )
     });
+}
+
+// SDTEST-2952 / SDUC-572 — real rendered discovery/preview/reconnect, provider marks and recovery.
+#[::core::prelude::v1::test]
+fn rendered_local_cli_discovery_keeps_identity_drafts_and_last_good_results() {
+    use shelldeck_core::agent_remote_sessions::{RemoteAgentSession, RemoteAgentSessionInventory};
+    for theme in [ThemePreference::Dark, ThemePreference::SolarizedLight] {
+        let mut ui = Cockpit::new(theme, 900.0, 700.0, false);
+        ui.type_draft("Keep this draft while I inspect local CLI history");
+        ui.open_navigator();
+        ui.click_navigation("agent-local-discover");
+        let first = ui
+            .events
+            .borrow()
+            .iter()
+            .find_map(|event| match event {
+                AgentConsoleEvent::DiscoverLocalSessions { request_id, cursor }
+                    if cursor.is_none() =>
+                {
+                    Some(*request_id)
+                }
+                _ => None,
+            })
+            .expect("Click must request a local read, not SSH or a provider run");
+        let cwd = ui._directory.path().to_str().unwrap().to_string();
+        let native = RemoteAgentSession {
+            provider: AgentProvider::Codex,
+            session_id: "existing-local-thread".into(),
+            workdir: cwd.clone(),
+            title: "Existing CLI task".into(),
+            updated_at_ms: 1,
+            model: Some("actual-model".into()),
+        };
+        let inventory = RemoteAgentSessionInventory {
+            sessions: vec![native.clone()],
+            ..Default::default()
+        };
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.set_native_sessions(None, Uuid::new_v4(), Ok(inventory.clone()), cx);
+            view.set_native_sessions(None, first, Ok(inventory.clone()), cx);
+        });
+        ui.redraw();
+        let row = "agent-ssh-conversation-local-Codex-existing-local-thread";
+        let native_row = ui.bounds(row).unwrap();
+        let native_mark = ui.bounds(&format!("{row}-provider")).unwrap();
+        assert_eq!(
+            native_row.left() + gpui::px(12.0) - native_mark.right(),
+            gpui::px(7.0),
+            "native icons use the gutter without adding label indentation"
+        );
+        ui.click_navigation(&format!("{row}-provider"));
+        ui.click("agent-ssh-reconnect");
+        let reconnect = ui
+            .events
+            .borrow()
+            .iter()
+            .find_map(|event| match event {
+                AgentConsoleEvent::ReconnectLocalSession {
+                    request_id,
+                    session,
+                } => {
+                    assert_eq!(session, &native);
+                    Some(*request_id)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let page = RemoteHistoryPage {
+            provider: native.provider,
+            session_id: native.session_id.clone(),
+            workdir: cwd,
+            model: native.model.clone(),
+            snapshot: format!("v1:1:{}", "a".repeat(64)),
+            total_entries: 1,
+            start: 0,
+            end: 1,
+            entries: vec![RemoteHistoryEntry {
+                index: 0,
+                kind: RemoteHistoryKind::User,
+                title: None,
+                text: "Retained native request".into(),
+                at_ms: None,
+                part: 1,
+                parts: 1,
+            }],
+            warnings: vec![],
+        };
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.complete_ssh_reconnect(reconnect, Ok(page), cx)
+        });
+        ui.redraw();
+        let imported = ui.view.read_with(&ui.app, |view, cx| {
+            let selected = view.sessions.selected().unwrap();
+            assert_eq!(selected.context.target, AgentTarget::Local);
+            assert_eq!(selected.context.access, AgentAccessMode::ReadOnly);
+            assert_eq!(
+                selected.run_request("continue").resume_session.as_deref(),
+                Some("existing-local-thread")
+            );
+            assert_eq!(
+                view.session_ui[&ui.session].prompt.read(cx).content(),
+                "Keep this draft while I inspect local CLI history"
+            );
+            selected.id
+        });
+        ui.open_navigator();
+        let mark = ui
+            .bounds(&format!("agent-nav-provider-{imported}-codex"))
+            .unwrap();
+        assert!(mark.size.width >= gpui::px(12.0) && mark.size.height >= gpui::px(12.0));
+        // Refresh failure retains the selectable last successful inventory.
+        ui.click_navigation("native-refresh-local");
+        let refresh = ui
+            .events
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                AgentConsoleEvent::DiscoverLocalSessions { request_id, .. } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap();
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.set_native_sessions(
+                None,
+                refresh,
+                Err("Temporary file-access failure".into()),
+                cx,
+            )
+        });
+        ui.redraw();
+        assert!(ui.bounds(row).is_some());
+        ui.click_navigation("native-hide-local");
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.set_native_sessions(None, refresh, Ok(inventory), cx)
+        });
+        ui.redraw();
+        assert!(ui.bounds(row).is_none());
+        assert!(ui.bounds("agent-local-discover").is_some());
+        assert!(!ui.events.borrow().iter().any(|e| matches!(
+            e,
+            AgentConsoleEvent::Run(_) | AgentConsoleEvent::DiscoverSshSessions { .. }
+        )));
+    }
 }

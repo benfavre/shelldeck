@@ -10,7 +10,7 @@ use shelldeck_core::agent_session::RemoteHistoryReference;
 pub struct NativeHistoryRequest {
     pub session_id: Uuid,
     pub request_id: Uuid,
-    pub connection_id: Uuid,
+    pub connection_id: Option<Uuid>,
     pub remote: RemoteAgentSession,
     pub query: RemoteHistoryQuery,
 }
@@ -117,9 +117,19 @@ impl AgentConsoleView {
         }
     }
 
+    pub fn local_history_query(&self, remote: &RemoteAgentSession) -> RemoteHistoryQuery {
+        self.source_history_query(None, remote)
+    }
     pub fn native_history_query(
         &self,
         connection_id: Uuid,
+        remote: &RemoteAgentSession,
+    ) -> RemoteHistoryQuery {
+        self.source_history_query(Some(connection_id), remote)
+    }
+    fn source_history_query(
+        &self,
+        connection_id: Option<Uuid>,
         remote: &RemoteAgentSession,
     ) -> RemoteHistoryQuery {
         let snapshot = self.sessions.sessions().iter().find_map(|session| {
@@ -152,7 +162,13 @@ impl AgentConsoleView {
                 && context.workdir == reference.workdir
                 && context.model == reference.model
                 && context.access == AgentAccessMode::ReadOnly
-                && matches!(&context.target, AgentTarget::Ssh{connection_id,..} if *connection_id == reference.connection_id)
+                && match (&context.target, reference.connection_id) {
+                    (AgentTarget::Local, None) => true,
+                    (AgentTarget::Ssh { connection_id, .. }, Some(source)) => {
+                        *connection_id == source
+                    }
+                    _ => false,
+                }
         })
     }
     pub(super) fn install_native_history(&mut self, id: Uuid, page: RemoteHistoryPage) {
@@ -999,7 +1015,7 @@ mod tests {
             let request = NativeHistoryRequest {
                 session_id: id,
                 request_id: pending,
-                connection_id,
+                connection_id: Some(connection_id),
                 remote: remote(&source, "Original"),
                 query: view.native_history[&id].query.clone(),
             };

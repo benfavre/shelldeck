@@ -156,6 +156,14 @@ pub enum AgentConsoleEvent {
         expected_connection: Uuid,
         connection_id: Uuid,
     },
+    DiscoverLocalSessions {
+        request_id: Uuid,
+        cursor: Option<String>,
+    },
+    ReconnectLocalSession {
+        request_id: Uuid,
+        session: shelldeck_core::agent_remote_sessions::RemoteAgentSession,
+    },
     RefreshRemoteSessions,
     LoadSshHistory(NativeHistoryRequest),
     DiscoverSshSessions {
