@@ -196,6 +196,11 @@ codesign "${SIGN_ARGS[@]}" --options runtime "$BUNDLED_BROWSER"
 codesign "${SIGN_ARGS[@]}" --options runtime \
     --identifier com.shelldeck.app.sessiond "$APP_DIR/Contents/MacOS/shelldeck-sessiond"
 codesign --verify --strict "$APP_DIR/Contents/MacOS/shelldeck-sessiond"
+# The signed daemon really starts on this system (hardened runtime included).
+if ! "$APP_DIR/Contents/MacOS/shelldeck-sessiond" --version | grep -q "^shelldeck-sessiond $VERSION\$"; then
+    echo "ERROR: The bundled session daemon does not run or is not version $VERSION" >&2
+    exit 1
+fi
 codesign "${SIGN_ARGS[@]}" --options runtime "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
