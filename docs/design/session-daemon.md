@@ -1163,11 +1163,13 @@ Deferred (details in the subsections below):
   CI job "Core tests (macos-aarch64)" (`cargo check -p shelldeck`), and
   the daemon crate without the `app` feature type-checks and passes
   Clippy for `aarch64-apple-darwin` and `x86_64-pc-windows-msvc` from
-  Linux. Nothing of the daemon has been executed on macOS (the
-  `kern.uuid` lookup, `getpeereid`, the 104-byte socket path): a CI step
-  that runs the crate's tests there was added and has not run yet.
-  Windows is a stub; a CI step now builds it and checks that it refuses
-  to run.
+  Linux. A CI step now runs the crate's tests on macOS (`macos-15`):
+  its first run passed 40 of 41 tests, real daemons and PTYs included
+  (so the `kern.uuid` lookup, `getpeereid` and the socket path work
+  there); the one failure was a kernel difference, now stated in the
+  test (see the end of this section). The application itself was never
+  run on macOS with the setting on. Windows is a stub; a CI step builds
+  it and checks that it refuses to run (green).
 
 Layout:
 
@@ -1942,4 +1944,17 @@ per-run "already asked" marks are cleared). Nothing is removed from any
 server. There is no per-server list: Settings does not know the
 connection entries, so one answer cannot be changed alone there
 (SDTEST-3014 extended; the row and the button were checked on screen).
+
+macOS, first run of the daemon's tests (CI, `macos-15`). The crate's unit
+tests, the attach tests and the daemon tests with real PTYs passed there
+except one: SDTEST-3001 expected a client to be told `LimitExceeded` when
+the daemon has no descriptor left at `accept`. On Linux the connection
+stays queued, so the daemon closes its spare descriptor, accepts,
+refuses in words and takes the spare back. On macOS the kernel closes a
+pending connection that `accept` cannot give a descriptor to, so the
+daemon never sees it and the client sees a closed connection. Nothing
+in the daemon can change that. The test now accepts a close for that
+case on macOS and keeps its other checks (an answer at once, no slot
+lost). A client that is closed without the words treats it as a lost
+connection and retries with its usual delays.
 

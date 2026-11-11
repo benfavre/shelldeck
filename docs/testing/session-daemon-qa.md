@@ -1013,6 +1013,18 @@ file and the next connection to one of the servers asked the question
 again, in the same run. Not looked at: the row in English, and that it
 disappears from the open Settings window at once.
 
+### macOS and Windows, through CI
+
+- macOS (`macos-15` runner): `cargo test -p shelldeck-sessiond` ran for
+  the first time. 12 unit tests, 7 attach tests and 21 of 22 daemon
+  tests passed. SDTEST-3001 failed for a reason outside the daemon: when
+  `accept` has no descriptor left, the macOS kernel closes the pending
+  connection, so the client is not told `LimitExceeded`. The test now
+  says so and accepts a close for that case on macOS. Its second run is
+  recorded in the pull request, not here.
+- Windows: the stub builds and refuses to run.
+- The application was never run on macOS with the setting on.
+
 ### Not verified
 
 - A server named by the owner: a real network, latency, a jump host, a
@@ -1025,5 +1037,4 @@ disappears from the open Settings window at once.
 - The handed-over SSH tab beyond its dot colour: AI naming, an
   `@terminal` mention, snapshots.
 - Full-screen programs and resize on a remote daemon tab.
-- macOS and Windows.
 
