@@ -1385,9 +1385,10 @@ Differences from sections 8 and 10, and limits:
 - The split tree of a remote tab is not saved: after a restart its panes
   come back as tabs.
 - An SSH tab opened in a directory (`workdir`) keeps the plain path.
-- Old `shelldeck-sessiond-*` files are not pruned after an install.
+- Old `shelldeck-sessiond-*` files are not pruned after an install (done
+  since: "Real sshd run, pruning and install failures").
 - The consent is per host and permanent until the entry is removed from
-  the configuration file (there is no Settings control for it), not "for
+  the configuration file (a Settings row can only forget all answers, see "Real sshd run, pruning and install failures"), not "for
   this connection" as section 8 says.
 - A tab closed while the host is unreachable ends its pane at the next
   contact with that host in the same run, and the pane is not offered
@@ -1931,4 +1932,14 @@ an outage makes one dial per pane and per retry round; a pane ended at
 sign-out can stay listed as exited until the daemon idles out; and the
 existing row handling of `TerminalGrid::resize` moves the visible lines
 of a pane into the history when a split makes it shorter.
+
+Settings control for the recorded answers. Settings, General shows a row
+under the toggle when at least one answer is recorded: how many servers
+are allowed and refused, and a "Forget" button that removes every answer
+(`GeneralConfig::clear_remote_daemon_installs`). The servers are then
+asked about again at their next connection, in the same run too (the
+per-run "already asked" marks are cleared). Nothing is removed from any
+server. There is no per-server list: Settings does not know the
+connection entries, so one answer cannot be changed alone there
+(SDTEST-3014 extended; the row and the button were checked on screen).
 

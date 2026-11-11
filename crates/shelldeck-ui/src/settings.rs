@@ -1046,6 +1046,30 @@ impl SettingsView {
                     },
                 ),
             ));
+            // The answers to "install on this server?" are recorded per
+            // SSH connection. Shown only when there is one: forgetting
+            // them makes the question come back at the next connection.
+            let (allowed, refused) = self.config.general.remote_daemon_install_counts();
+            if allowed + refused > 0 {
+                settings = settings.child(Self::render_setting_row(
+                    t!("settings.general.session_daemon_answers.label").as_ref(),
+                    t!(
+                        "settings.general.session_daemon_answers.description",
+                        allowed = allowed,
+                        refused = refused
+                    )
+                    .as_ref(),
+                    Button::new(
+                        "general-session-daemon-answers",
+                        t!("settings.general.session_daemon_answers.button").to_string(),
+                    )
+                    .variant(ButtonVariant::Outline)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.config.general.clear_remote_daemon_installs();
+                        this.save_config(cx);
+                    })),
+                ));
+            }
         }
         settings
             .child(Self::render_setting_row(

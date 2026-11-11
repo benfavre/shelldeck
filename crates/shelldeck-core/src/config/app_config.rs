@@ -298,6 +298,24 @@ impl GeneralConfig {
             .insert(key.clone(), target.to_string());
         self.session_daemon_hosts.insert(key, answer);
     }
+
+    /// How many recorded answers allow the install, and how many refuse
+    /// it (for the Settings row that offers to forget them).
+    pub fn remote_daemon_install_counts(&self) -> (usize, usize) {
+        let allowed = self
+            .session_daemon_hosts
+            .values()
+            .filter(|answer| **answer == RemoteDaemonInstall::Allow)
+            .count();
+        (allowed, self.session_daemon_hosts.len() - allowed)
+    }
+
+    /// Forget every recorded answer: each server is asked about again at
+    /// its next connection. Nothing is removed from any server.
+    pub fn clear_remote_daemon_installs(&mut self) {
+        self.session_daemon_hosts.clear();
+        self.session_daemon_host_targets.clear();
+    }
 }
 
 /// System-tray preferences. Per-category opt-in on the OS notifications
@@ -666,6 +684,11 @@ mod tests {
             .set_remote_daemon_install(allowed, prod_b, RemoteDaemonInstall::Never);
         assert_eq!(edited.general.remote_daemon_install(allowed, prod_a), None);
         assert_eq!(
+            loaded.general.remote_daemon_install_counts(),
+            (1, 1),
+            "one allowed, one refused"
+        );
+        assert_eq!(
             edited.general.remote_daemon_install(allowed, prod_b),
             Some(RemoteDaemonInstall::Never)
         );
@@ -682,6 +705,24 @@ mod tests {
         );
         assert_eq!(by_hand.general.remote_daemon_install(allowed, prod_a), None);
         assert_eq!(by_hand.general.remote_daemon_install(refused, prod_b), None);
+
+        // Settings can forget every answer: the tables leave the file and
+        // each server reads as not asked.
+        let mut forgotten = loaded.clone();
+        forgotten.general.clear_remote_daemon_installs();
+        assert_eq!(forgotten.general.remote_daemon_install_counts(), (0, 0));
+        forgotten.save_to(&path).expect("save_to");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains("session_daemon_host"), "{text}");
+        let forgotten = AppConfig::load_from(&path).expect("load_from");
+        assert_eq!(
+            forgotten.general.remote_daemon_install(allowed, prod_a),
+            None
+        );
+        assert_eq!(
+            forgotten.general.remote_daemon_install(refused, prod_b),
+            None
+        );
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

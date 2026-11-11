@@ -427,7 +427,8 @@ the server placed as `shelldeck-sessiond-x86_64-unknown-linux-musl` (or
 Listed in the design document, section 15, "Remote app integration": the
 server builds are not built or packaged, the split tree of remote tabs is
 not saved, tabs opened in a directory keep the plain path, old remote
-binaries are not pruned, no Settings control to change a recorded answer,
+binaries are not pruned (done since), no Settings control to change a
+recorded answer (a "forget all" row exists since),
 no remote daemon from a Windows client, no latency measurement. A tab
 closed while the server is unreachable now ends its shell at the next
 contact in the same run (not across an app restart), see "Final review
@@ -1001,6 +1002,16 @@ three oldest were deleted.
   the terminals are shown. Not related to the daemon.
 - The empty strip on the right of the terminal area (already noted on
   `main`) was present in every run.
+
+### Settings row for the recorded answers, checked on screen
+
+With two answers recorded, Settings, General shows "Sessions
+persistantes sur les serveurs SSH" under the toggle, with "2
+autorisée(s), 0 refusée(s)" and the button "Oublier"; the text fits its
+two lines. After a click the two tables are gone from the configuration
+file and the next connection to one of the servers asked the question
+again, in the same run. Not looked at: the row in English, and that it
+disappears from the open Settings window at once.
 
 ### Not verified
 

@@ -466,6 +466,15 @@ impl Workspace {
                     self.ai_workflow = None;
                     self._ai_workflow_sub = None;
                 }
+                // The recorded install answers were forgotten in Settings:
+                // the servers already asked about in this run are asked
+                // again at their next connection.
+                #[cfg(unix)]
+                if !self.app_config.general.session_daemon_hosts.is_empty()
+                    && config.general.session_daemon_hosts.is_empty()
+                {
+                    super::remote_daemon::forget_questions();
+                }
                 // Merge settings-owned slices only — see `.agents/session-state.md`.
                 self.app_config.general = config.general.clone();
                 self.app_config.terminal = config.terminal.clone();

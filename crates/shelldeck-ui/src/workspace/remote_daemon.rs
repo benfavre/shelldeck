@@ -227,6 +227,13 @@ pub(super) fn first_ask(connection_id: Uuid) -> bool {
     state().lock().asked.insert(connection_id)
 }
 
+/// The recorded answers were forgotten: ask and notify again in this run.
+pub(super) fn forget_questions() {
+    let mut state = state().lock();
+    state.asked.clear();
+    state.noticed.clear();
+}
+
 /// The recorded answer for a host, as the install rules read it. An
 /// answer given while the entry dialed another server or account does not
 /// count: the user is asked again.
