@@ -1229,6 +1229,8 @@ terminal.session_daemon.connecting = "connexion au démon de sessions…"
 terminal.session_daemon.connection_lost = "connexion au démon de sessions perdue, reconnexion…"
 terminal.session_daemon.ended = "session terminée : le terminal n'existe plus dans le démon de sessions"
 terminal.session_daemon.unavailable = "démon de sessions indisponible"
+terminal.session_daemon.other_version = "ce terminal est géré par une autre version de ShellDeck : il continue de tourner et n'a pas été modifié. Ouvrez-le avec cette version, ou fermez cet onglet."
+terminal.session_daemon.other_version_tab = "géré par une autre version de ShellDeck"
 
 # User mode
 user.account.title = "Compte Inklura Manage"

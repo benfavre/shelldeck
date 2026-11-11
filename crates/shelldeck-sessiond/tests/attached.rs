@@ -9,7 +9,8 @@ use shelldeck_sessiond::client::SpawnOptions;
 use shelldeck_sessiond::paths;
 use shelldeck_sessiond::proxy::ProxyFailure;
 use shelldeck_sessiond::supervisor::{
-    Backoff, DaemonTarget, Notices, PaneTarget, Supervisor, SupervisorOptions,
+    Backoff, DaemonTarget, LinkEvent, Notices, PaneTarget, Reconnect, Step, Supervisor,
+    SupervisorOptions,
 };
 use shelldeck_terminal::attached::AttachedPhase;
 use shelldeck_terminal::session::TerminalSession;
@@ -30,6 +31,59 @@ impl Drop for TerminateOnDrop {
         // SAFETY: plain signal to a daemon this test started on its own
         // private directory.
         unsafe { libc::kill(self.0 as libc::pid_t, libc::SIGTERM) };
+    }
+}
+
+/// Send `SIGTERM` to every daemon process started on `dir`, found by its
+/// command line (`serve ... --dir <dir>`). A test that starts the real
+/// binary may leave more than one behind: a start is repeated while the
+/// socket is missing, and a repeated start that was still waiting for the
+/// instance lock becomes the daemon when the first one is stopped early.
+/// The directory is private to one test, so nothing else can match.
+fn terminate_daemons_of(dir: &Path) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+                continue;
+            };
+            let args: Vec<&[u8]> = cmdline.split(|byte| *byte == 0).collect();
+            let serves = args.get(1) == Some(&&b"serve"[..]);
+            let here = args
+                .windows(2)
+                .any(|pair| pair[0] == b"--dir" && pair[1] == dir.as_os_str().as_bytes());
+            if serves && here && pid != std::process::id() {
+                // SAFETY: plain signal to a daemon of this test's own
+                // private directory.
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = dir;
+}
+
+/// A private temporary directory whose daemons are stopped when the test
+/// ends, pass or fail.
+struct PrivateDir {
+    run: PathBuf,
+    _temp: tempfile::TempDir,
+}
+
+impl Drop for PrivateDir {
+    fn drop(&mut self) {
+        terminate_daemons_of(&self.run);
     }
 }
 
@@ -88,6 +142,10 @@ fn sdtest_2996_connect_starts_the_daemon_and_panes_survive_the_client() {
             .expect("temp dir in /tmp");
     }
     let dir: PathBuf = temp.path().join("run");
+    let _private = PrivateDir {
+        run: dir.clone(),
+        _temp: temp,
+    };
     let options = SessionsOptions::default;
 
     // Looking for panes to offer back never starts a daemon.
@@ -165,7 +223,7 @@ fn sdtest_2996_connect_starts_the_daemon_and_panes_survive_the_client() {
     wait_until("the daemon to stop", || !process_exists(daemon_pid));
 }
 
-fn private_run_dir() -> (tempfile::TempDir, PathBuf) {
+fn private_run_dir() -> (PrivateDir, PathBuf) {
     let mut temp = tempfile::Builder::new()
         .prefix("sdap-")
         .tempdir()
@@ -177,7 +235,13 @@ fn private_run_dir() -> (tempfile::TempDir, PathBuf) {
             .expect("temp dir in /tmp");
     }
     let dir = temp.path().join("run");
-    (temp, dir)
+    (
+        PrivateDir {
+            run: dir.clone(),
+            _temp: temp,
+        },
+        dir,
+    )
 }
 
 fn daemon_pid(dir: &Path) -> Option<u32> {
@@ -214,6 +278,7 @@ fn new_supervisor(dir: &Path, binary: Option<&Path>, slow_first_resolve: bool) -
                 connection_lost: Some("[lost]".into()),
                 ended: Some("[ended]".into()),
                 unavailable: Some("[unavailable]".into()),
+                other_version: Some("[other version]".into()),
             },
             backoff: Backoff {
                 start: Duration::from_millis(50),
@@ -449,4 +514,292 @@ fn sdtest_3007_supervised_session_reports_a_daemon_that_cannot_start() {
     });
     assert!(screen_text(&session).contains("no daemon binary"));
     assert!(!dir.exists(), "nothing was created");
+}
+
+/// Stands for a daemon left by a version of the app whose protocol this
+/// one does not speak: it answers every `Hello` with `UnsupportedVersion`
+/// and records everything else it is sent.
+struct ForeignDaemon {
+    stop: Arc<AtomicBool>,
+    connections: Arc<std::sync::atomic::AtomicUsize>,
+    /// Frames received after the `Hello` of a connection, and frames that
+    /// were not a `Hello` where one was expected.
+    unexpected: Arc<std::sync::atomic::AtomicUsize>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ForeignDaemon {
+    fn start(dir: &Path) -> Self {
+        use shelldeck_sessiond::protocol::{ClientFrame, DaemonFrame, ErrorCode, FrameBuffer};
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::AtomicUsize;
+
+        paths::ensure_run_dir(dir).expect("run dir");
+        let socket = paths::socket_path(dir);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).expect("mode");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let stop = Arc::new(AtomicBool::new(false));
+        let connections = Arc::new(AtomicUsize::new(0));
+        let unexpected = Arc::new(AtomicUsize::new(0));
+        let thread = {
+            let (stop, connections, unexpected) =
+                (stop.clone(), connections.clone(), unexpected.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    connections.fetch_add(1, Ordering::SeqCst);
+                    stream.set_nonblocking(false).expect("blocking");
+                    stream
+                        .set_read_timeout(Some(Duration::from_millis(300)))
+                        .expect("timeout");
+                    let mut frames = FrameBuffer::new();
+                    let mut buf = [0u8; 4096];
+                    let mut greeted = false;
+                    loop {
+                        while let Ok(Some(payload)) = frames.next_frame() {
+                            match ClientFrame::decode(payload) {
+                                Ok(ClientFrame::Hello(_)) if !greeted => {
+                                    greeted = true;
+                                    let refusal = DaemonFrame::Error {
+                                        request_id: 0,
+                                        pane: Uuid::nil(),
+                                        code: ErrorCode::UnsupportedVersion,
+                                        retryable: false,
+                                    }
+                                    .encode()
+                                    .expect("encode");
+                                    let _ = stream.write_all(&refusal);
+                                }
+                                _ => {
+                                    unexpected.fetch_add(1, Ordering::SeqCst);
+                                }
+                            }
+                        }
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => frames.push(&buf[..n]),
+                        }
+                    }
+                }
+            })
+        };
+        Self {
+            stop,
+            connections,
+            unexpected,
+            thread: Some(thread),
+        }
+    }
+
+    fn connections(&self) -> usize {
+        self.connections.load(Ordering::SeqCst)
+    }
+
+    fn unexpected(&self) -> usize {
+        self.unexpected.load(Ordering::SeqCst)
+    }
+
+    /// The other version's daemon ends (its idle exit).
+    fn leave(mut self, dir: &Path) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("join");
+        }
+        std::fs::remove_file(paths::socket_path(dir)).expect("unlink");
+    }
+}
+
+impl Drop for ForeignDaemon {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+// SDTEST-3032 (SDUC-574): a daemon left by another version of the app.
+// With the same protocol it is simply used, whatever version it
+// announces. With a protocol this app does not speak, it is left alone:
+// nothing is started next to it, nothing but the refused `Hello` is sent
+// to it, and each session says that it is managed by another version
+// while keeping its pane id for the version that can show it.
+#[test]
+fn sdtest_3032_a_daemon_of_another_version_is_used_if_compatible_and_left_alone_if_not() {
+    use shelldeck_sessiond::server::{ServerConfig, ServerHandle};
+    use std::os::unix::fs::MetadataExt;
+
+    // 1. Another release, same protocol.
+    let (_temp, dir) = private_run_dir();
+    let earlier = ServerHandle::start(
+        &dir,
+        ServerConfig {
+            daemon_version: "0.1.0-earlier".into(),
+            idle_exit: None,
+            term_grace: Duration::from_millis(300),
+            ..ServerConfig::default()
+        },
+    )
+    .expect("daemon starts")
+    .expect("the directory is free");
+    // In-process daemon: the lock names this test process.
+    assert_eq!(daemon_pid(&dir), Some(std::process::id()));
+    let pane = {
+        // The earlier app leaves a pane behind.
+        let old_app = LocalSessions::connect_existing(&dir, SessionsOptions::default())
+            .expect("connect")
+            .expect("daemon runs");
+        assert_eq!(old_app.daemon_version(), "0.1.0-earlier");
+        let spawned = old_app
+            .spawn(
+                SpawnOptions {
+                    label: "app".into(),
+                    cwd: "/".into(),
+                    argv: vec!["/bin/sh".into()],
+                    env: vec![("TERM".into(), "xterm-256color".into())],
+                    ..SpawnOptions::default()
+                },
+                view("old app"),
+            )
+            .expect("spawn");
+        spawned.session.write_input(b"echo kept_$$\r");
+        let mark = format!("kept_{}", spawned.pid);
+        wait_until("the echo", || screen_text(&spawned.session).contains(&mark));
+        (spawned.pane, mark)
+    };
+    // This app has its own daemon binary and still uses the one that runs.
+    let supervisor = new_supervisor(&dir, Some(Path::new(BIN)), false);
+    let listed = supervisor
+        .list_panes(false)
+        .expect("list")
+        .expect("daemon runs");
+    assert_eq!(listed.len(), 1);
+    assert!(!supervisor.daemon_is_other_version());
+    let session = supervisor
+        .open(PaneTarget::Existing(pane.0), view("new app"))
+        .expect("open");
+    wait_until("the pane of the earlier app", || {
+        phase(&session) == AttachedPhase::Live && screen_text(&session).contains(&pane.1)
+    });
+    session.write_input(b"echo typed_by_the_new_app\r");
+    wait_until("input through the earlier daemon", || {
+        screen_text(&session)
+            .matches("typed_by_the_new_app")
+            .count()
+            == 2
+    });
+    // A new pane too, on that same daemon: nothing was started.
+    let fresh = supervisor.open(shell(), view("fresh")).expect("open");
+    wait_until("a new pane on the earlier daemon", || {
+        phase(&fresh) == AttachedPhase::Live
+    });
+    assert_eq!(daemon_pid(&dir), Some(std::process::id()));
+    assert!(!earlier.is_finished());
+    drop(session);
+    drop(fresh);
+    drop(supervisor);
+    drop(earlier);
+
+    // 2. A protocol this app does not speak.
+    let (_temp, dir) = private_run_dir();
+    let foreign = ForeignDaemon::start(&dir);
+    let socket_inode = std::fs::metadata(paths::socket_path(&dir))
+        .expect("socket")
+        .ino();
+    let supervisor = new_supervisor(&dir, Some(Path::new(BIN)), false);
+    assert!(!supervisor.daemon_is_other_version());
+
+    // Listing, with or without permission to start a daemon: refused as
+    // "other version", never "no daemon".
+    for start in [false, true] {
+        assert!(matches!(
+            supervisor.list_panes(start),
+            Err(AttachError::OtherVersion)
+        ));
+        assert!(supervisor.daemon_is_other_version());
+    }
+    // A saved pane of that daemon: shown as managed by another version,
+    // at once (no retries), with its pane id kept.
+    let saved = Uuid::from_u128(0x5a7ed);
+    let started = Instant::now();
+    let session = supervisor
+        .open(PaneTarget::Existing(saved), view("saved tab"))
+        .expect("open");
+    wait_until("the other version to be reported", || {
+        phase(&session) == AttachedPhase::OtherVersion
+    });
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(screen_text(&session).contains("[other version]"));
+    assert!(!screen_text(&session).contains("[ended]"));
+    assert!(!screen_text(&session).contains("[unavailable]"));
+    assert_eq!(session.daemon_pane(), Some(saved));
+    // A new terminal asked of the supervisor all the same ends the same
+    // way, without a pane.
+    let fresh = supervisor.open(shell(), view("fresh")).expect("open");
+    wait_until("the other version to be reported", || {
+        phase(&fresh) == AttachedPhase::OtherVersion
+    });
+    assert_eq!(fresh.daemon_pane(), None);
+    // Typing into such a tab and closing it reach nobody.
+    session.write_input(b"exit\r");
+    session.terminate();
+    fresh.terminate();
+    wait_until("the sessions to be over", || {
+        supervisor.session_count() == 0
+    });
+    drop(session);
+    drop(fresh);
+    std::thread::sleep(Duration::from_millis(400));
+
+    // Nothing destructive: no daemon of this version was started next to
+    // it (no lock file, no log, the same socket), and all it ever
+    // received is a `Hello` per connection.
+    assert!(foreign.connections() >= 4);
+    assert_eq!(foreign.unexpected(), 0, "frames beyond Hello were sent");
+    assert_eq!(daemon_pid(&dir), None, "a daemon was started");
+    assert!(!dir.join(paths::LOCK_NAME).exists());
+    assert!(!dir.join(paths::LOG_NAME).exists());
+    assert_eq!(
+        std::fs::metadata(paths::socket_path(&dir))
+            .expect("socket")
+            .ino(),
+        socket_inode,
+        "the socket was replaced"
+    );
+
+    // The rule itself: from any state, with or without a pane.
+    for has_pane in [false, true] {
+        let mut machine = Reconnect::new(
+            Backoff {
+                start: Duration::from_millis(50),
+                max: Duration::from_millis(200),
+            },
+            12,
+            has_pane,
+        );
+        machine.on(LinkEvent::ConnectionLost { synced: true });
+        assert_eq!(
+            machine.on(LinkEvent::OtherVersion),
+            Step::Finish(AttachedPhase::OtherVersion)
+        );
+    }
+
+    // Once that daemon has ended by itself, this version starts its own.
+    foreign.leave(&dir);
+    assert!(!supervisor.recheck());
+    assert!(!supervisor.daemon_is_other_version());
+    let session = supervisor.open(shell(), view("after")).expect("open");
+    wait_until("a pane on this version's daemon", || {
+        phase(&session) == AttachedPhase::Live
+    });
+    let pid = daemon_pid(&dir).expect("this version's daemon runs");
+    assert_ne!(pid, std::process::id());
+    let _cleanup = TerminateOnDrop(pid);
+    session.terminate();
+    drop(session);
 }

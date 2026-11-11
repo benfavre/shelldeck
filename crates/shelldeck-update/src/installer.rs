@@ -154,6 +154,9 @@ async fn install_linux(archive: &Path, version: &str) -> Result<()> {
     let new_binary = find_binary_in_dir(&staging)?;
 
     let browser_payload = publish_browser_payload(&new_binary, parent, version)?;
+    // Staged before the application binary is touched, published after it:
+    // a failure here leaves the installed files as they were.
+    let sessiond_payload = SessiondPayload::stage(&new_binary, parent)?;
 
     // Stage the replacement on the same filesystem, then swap with rollback.
     let backup = current_exe.with_extension("bak");
@@ -163,6 +166,7 @@ async fn install_linux(archive: &Path, version: &str) -> Result<()> {
     std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o755))?;
     atomic_replace_file(&current_exe, &replacement, &backup)?;
     browser_payload.commit();
+    sessiond_payload.commit();
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&staging);
@@ -439,6 +443,101 @@ fn publish_browser_payload(
     })
 }
 
+/// Session daemon files a Linux archive may carry beside the application
+/// binary: the daemon for this machine and its static builds for SSH
+/// servers (`scripts/package-release.sh`). The application looks for all of
+/// them in the directory of its own executable.
+#[cfg(target_os = "linux")]
+const SESSIOND_FILES: [&str; 3] = [
+    "shelldeck-sessiond",
+    "shelldeck-sessiond-x86_64-unknown-linux-musl",
+    "shelldeck-sessiond-aarch64-unknown-linux-musl",
+];
+
+/// Larger than any real build, far below anything that would fill a disk.
+#[cfg(target_os = "linux")]
+const MAX_SESSIOND_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The session daemon files of an update, copied next to the installed
+/// ones under a temporary name. [`commit`](Self::commit) renames them into
+/// place; dropping without it removes the copies and leaves the installed
+/// files untouched.
+///
+/// A daemon that is running is not disturbed: its file is replaced by
+/// rename, so the running process keeps the file it was started from and
+/// goes on serving its terminals. The new file is used by the next daemon
+/// that starts.
+#[cfg(target_os = "linux")]
+struct SessiondPayload {
+    /// (staged copy, final path)
+    staged: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+}
+
+#[cfg(target_os = "linux")]
+impl SessiondPayload {
+    /// Copy what the archive carries. An archive without any of the files
+    /// is accepted (nothing is staged, the installed files stay); a file
+    /// that is present must be a real ELF file.
+    fn stage(new_binary: &Path, install_dir: &Path) -> Result<Self> {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+
+        let source_dir = new_binary
+            .parent()
+            .context("Update executable has no parent")?;
+        let mut payload = Self { staged: Vec::new() };
+        for name in SESSIOND_FILES {
+            let source = source_dir.join(name);
+            let Ok(metadata) = source.symlink_metadata() else {
+                continue;
+            };
+            anyhow::ensure!(
+                metadata.is_file() && metadata.len() <= MAX_SESSIOND_BYTES,
+                "Update archive carries an invalid session daemon: {name}"
+            );
+            let mut magic = [0u8; 4];
+            std::fs::File::open(&source)
+                .and_then(|mut file| file.read_exact(&mut magic))
+                .with_context(|| format!("Failed to read session daemon {name}"))?;
+            anyhow::ensure!(
+                magic == *b"\x7fELF",
+                "Update archive carries an invalid session daemon: {name}"
+            );
+            let staged = install_dir.join(format!(".{name}.update"));
+            let _ = std::fs::remove_file(&staged);
+            // Recorded first, so a failed copy is cleaned up too.
+            payload
+                .staged
+                .push((staged.clone(), install_dir.join(name)));
+            std::fs::copy(&source, &staged)
+                .with_context(|| format!("Failed to stage session daemon {name}"))?;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+        }
+        Ok(payload)
+    }
+
+    /// Publish the staged files. The application binary is already
+    /// replaced at this point, so a failure is logged, not returned: the
+    /// application works without the daemon file (in-process terminals).
+    fn commit(mut self) {
+        for (staged, destination) in self.staged.drain(..) {
+            if let Err(error) = std::fs::rename(&staged, &destination) {
+                tracing::warn!("Failed to publish {}: {error}", destination.display());
+                let _ = std::fs::remove_file(&staged);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for SessiondPayload {
+    fn drop(&mut self) {
+        for (staged, _) in self.staged.drain(..) {
+            let _ = std::fs::remove_file(staged);
+        }
+    }
+}
+
 /// Walk a directory to find the `shelldeck` binary (or `shelldeck.exe` on Windows).
 fn find_binary_in_dir(dir: &Path) -> Result<std::path::PathBuf> {
     let target_name = if cfg!(target_os = "windows") {
@@ -618,6 +717,94 @@ mod tests {
             .unwrap();
         assert!(error.to_string().contains("Browser engine is missing"));
         assert!(!install.exists());
+    }
+
+    // SDTEST-3033 (SDUC-574): the session daemon files of an update are
+    // staged without touching the installed ones, published by rename and
+    // removed again when the update does not go through.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sdtest_3033_session_daemon_files_are_staged_then_published_or_rolled_back() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("install");
+        let stage = temp.path().join("stage");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::create_dir_all(&stage).unwrap();
+        let binary = stage.join("shelldeck");
+        let daemon = "shelldeck-sessiond";
+        let remote = "shelldeck-sessiond-aarch64-unknown-linux-musl";
+        std::fs::write(install.join(daemon), b"\x7fELF installed daemon").unwrap();
+        let listing = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        // An archive from before the daemon shipped: nothing to do, and
+        // the installed daemon is kept.
+        SessiondPayload::stage(&binary, &install).unwrap().commit();
+        assert_eq!(listing(&install), [daemon]);
+        assert_eq!(
+            std::fs::read(install.join(daemon)).unwrap(),
+            b"\x7fELF installed daemon"
+        );
+
+        // Staged: the installed file is still the old one.
+        std::fs::write(stage.join(daemon), b"\x7fELF new daemon").unwrap();
+        std::fs::write(stage.join(remote), b"\x7fELF new remote build").unwrap();
+        // Not one of the shipped names: ignored.
+        std::fs::write(stage.join("shelldeck-sessiond-extra"), b"\x7fELF").unwrap();
+        let payload = SessiondPayload::stage(&binary, &install).unwrap();
+        assert_eq!(
+            std::fs::read(install.join(daemon)).unwrap(),
+            b"\x7fELF installed daemon"
+        );
+        assert!(!install.join(remote).exists());
+        // The update fails after staging (the binary swap, say): the
+        // copies are removed and nothing changed.
+        drop(payload);
+        assert_eq!(listing(&install), [daemon]);
+        assert_eq!(
+            std::fs::read(install.join(daemon)).unwrap(),
+            b"\x7fELF installed daemon"
+        );
+
+        // The update goes through: both files are in place, executable,
+        // and no temporary name is left.
+        SessiondPayload::stage(&binary, &install).unwrap().commit();
+        assert_eq!(listing(&install), [daemon, remote]);
+        assert_eq!(
+            std::fs::read(install.join(daemon)).unwrap(),
+            b"\x7fELF new daemon"
+        );
+        for name in [daemon, remote] {
+            let mode = std::fs::metadata(install.join(name))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+
+        // A file that is not an ELF executable, or a symlink, stops the
+        // update before anything is staged or replaced.
+        std::fs::write(stage.join(remote), b"#!/bin/sh\n").unwrap();
+        let error = SessiondPayload::stage(&binary, &install).err().unwrap();
+        assert!(error.to_string().contains("invalid session daemon"));
+        std::fs::remove_file(stage.join(remote)).unwrap();
+        std::fs::remove_file(stage.join(daemon)).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", stage.join(daemon)).unwrap();
+        let error = SessiondPayload::stage(&binary, &install).err().unwrap();
+        assert!(error.to_string().contains("invalid session daemon"));
+        assert_eq!(listing(&install), [daemon, remote]);
+        assert_eq!(
+            std::fs::read(install.join(daemon)).unwrap(),
+            b"\x7fELF new daemon"
+        );
     }
 
     // SDTEST-1240 — a bad digest never publishes the destination archive.

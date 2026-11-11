@@ -601,7 +601,10 @@ impl Workspace {
                 terminal.restores_daemon_panes()
             });
         if !wants_panes {
-            self.finish_restore_session(Vec::new(), cx);
+            self.finish_restore_session(
+                crate::terminal_view::RestorablePanes::Live(Vec::new()),
+                cx,
+            );
             return;
         }
         cx.spawn(async move |this, cx: &mut AsyncApp| {
@@ -627,12 +630,28 @@ impl Workspace {
     /// default-shell terminal, SSH tabs reconnect via the existing
     /// `connect_ssh` path if the connection still exists. Failures are
     /// logged, never fatal.
-    fn finish_restore_session(&mut self, live_panes: Vec<Uuid>, cx: &mut Context<Self>) {
+    ///
+    /// When the daemon was left by another version of the app
+    /// (`RestorablePanes::OtherVersion`), its panes cannot be listed or
+    /// attached. The saved daemon tabs come back all the same, each pane
+    /// showing that it is managed by another version: the daemon and the
+    /// panes are left running, and the saved layout keeps their place.
+    fn finish_restore_session(
+        &mut self,
+        panes: crate::terminal_view::RestorablePanes,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::terminal_view::RestorablePanes;
         use shelldeck_core::config::workspace_state::{RestoredTab, TabType};
         use shelldeck_core::config::WorkspaceState;
 
         let restore_saved = self.app_config.general.auto_connect_on_startup;
-        if !restore_saved && live_panes.is_empty() {
+        let other_version = panes == RestorablePanes::OtherVersion;
+        let mut live_panes = match panes {
+            RestorablePanes::Live(panes) => panes,
+            RestorablePanes::OtherVersion => Vec::new(),
+        };
+        if !restore_saved && live_panes.is_empty() && !other_version {
             return;
         }
 
@@ -644,6 +663,12 @@ impl Workspace {
                 WorkspaceState::default()
             }
         };
+        if other_version {
+            live_panes = state.saved_daemon_panes();
+            if !restore_saved && live_panes.is_empty() {
+                return;
+            }
+        }
 
         let plan = state.daemon_restore_plan(&live_panes);
         if plan.tabs.is_empty() {

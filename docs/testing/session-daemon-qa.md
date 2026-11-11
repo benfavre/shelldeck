@@ -53,7 +53,7 @@ an existing socket, tmux or a user process.
 | A client dropped for being slow can still send Ctrl-C to the flooding pane before it reattaches | SDTEST-2999 |
 | When one client closes a dead pane, another attached client still receives the final output, the exit and a "pane is gone" marker | SDTEST-3000 |
 | A hostile snapshot or history chunk (66 KiB describing more than 8 GiB) is refused before allocation | SDTEST-2997 (`shelldeck-terminal`) |
-| The real daemon under a 12 descriptor limit: extra connections are refused at once, 40 failed attempts cost no connection slot | SDTEST-3001 (real binary, foreground, private directory) |
+| The real daemon under a 13 and a 12 descriptor limit: extra connections are told `LimitExceeded` at once, 40 failed attempts cost no connection slot | SDTEST-3001 (real binary, foreground, private directory) |
 | A daemon started under an earlier host name is found; a start that lands while the old daemon is exiting is repeated | SDTEST-3002, SDTEST-3003 |
 | The real daemon binary is started on demand; looking for panes never starts one; a relative binary path is refused; a pane survives the loss of every session and of the connection, and is found again with its screen | SDTEST-2996 (`shelldeck-sessiond`, real binary, detached) |
 | A supervised session is returned before the daemon is reached (the test delays the connect), says "connecting", goes live by itself, delivers input typed before the pane existed, publishes its pane id; the same pane cannot be opened twice; after the connection is dropped (daemon alive) it reattaches to the same shell without a second daemon; a pane opened by id from a second supervisor keeps its 24x80 size although that session was created 10x40; an unknown pane id is reported as ended; after `SIGTERM` to the daemon the session shows the "lost" then "ended" notices, a daemon is running again and new terminals work; `terminate` removes the pane; `exit 3` ends the session with code 3 and no notice | SDTEST-3006 (`shelldeck-sessiond`, real binary, detached, private directory) |
@@ -107,7 +107,9 @@ Setup for a development build: build both binaries
 `shelldeck-sessiond` sits next to the app executable, or point
 `SHELLDECK_SESSIOND_BIN` at an absolute path. Use a throwaway profile, not
 the installed app. The daemon then uses the real run directory,
-`~/.shelldeck/run/<host>/` (`sessiond-v1.sock`, `sessiond-v1.lock`).
+`~/.shelldeck/run/m-<16 hex digits>/` (`sessiond-v1.sock`,
+`sessiond-v1.lock`, `sessiond.log`; named after the machine identity, see
+the section "Daemon hardening, version skew and packaging").
 `shelldeck-sessiond list` shows the panes; `kill <pid from the lock file>`
 (SIGTERM) stops the daemon and every pane.
 
@@ -260,8 +262,8 @@ Platforms and packaging:
 - [ ] Windows: the backend is a stub; confirm the app builds
       (`cargo check --target x86_64-pc-windows-msvc`) and the setting is
       inert.
-- [ ] Packaging: no bundle, installer or updater ships `shelldeck-sessiond`
-      yet.
+- [ ] Packaging: see the section "Daemon hardening, version skew and
+      packaging" at the end of this file.
 
 ## Known gaps (not bugs to report again)
 
@@ -271,11 +273,10 @@ in-process (excluded, not deferred), the layout is saved at shutdown and
 sign-out only, scroll positions, zoom and the focus of background tabs are
 not restored, no automatic fallback once a tab has been opened as a daemon
 tab, input typed while disconnected is dropped, notices keep the language
-of the first daemon session,
-no version check against a daemon left by another app version, the daemon
-binary is not packaged, the daemon does not raise its descriptor limit
-(about 80 panes under a 256 limit, about 330 under 1024, before new
-connections are refused with `LimitExceeded`), no daemon log file.
+of the first daemon session. The gaps this list used to end with (no
+version check, daemon not packaged, descriptor limit, no log file) were
+closed later: see the section "Daemon hardening, version skew and
+packaging", which has its own list of what is still open.
 
 ## Review fixes (2026-11-11)
 
@@ -415,3 +416,189 @@ not saved, tabs opened in a directory keep the plain path, old remote
 binaries are not pruned, no Settings control to change a recorded answer,
 a tab closed while the server is unreachable leaves its shell running, no
 remote daemon from a Windows client, no latency measurement.
+
+## Daemon hardening, version skew and packaging (2026-11-11)
+
+Scope: third step (design document, section 15, "Daemon hardening, version
+skew and packaging").
+
+**The real application was not launched, no release was built or
+published, and the install script was not deployed.** The daemon was run
+only by the tests, on private temporary directories. The updater was not
+run against a real install. Everything below "Manual checks still needed"
+is unverified.
+
+### What changed for a user
+
+- A terminal whose program does not read its input no longer ties up the
+  daemon: after 10 s without progress the pasted input still waiting is
+  dropped (only once more than 1 MiB is waiting).
+- Stopping the daemon (`kill`, logout) and starting a new terminal right
+  away works without waiting for the old daemon's terminals to end.
+- Programs started in a terminal see the same open-file limit as before
+  (`ulimit -n`), while the daemon itself can hold more terminals.
+- The daemon's directory no longer depends on the host name. A daemon
+  started by an earlier build, in a directory named after the host, is
+  still found.
+- `~/.shelldeck/run/<machine>/sessiond.log` says when the daemon started,
+  which terminals were created and ended, and why something was refused.
+  It holds no terminal content.
+- A terminal with a very long history may lose its oldest lines when all
+  terminals together hold more than 2 GiB of history; terminals nobody
+  looks at lose theirs first.
+- After an update that changes the daemon's protocol, terminals still held
+  by the old daemon are shown as tabs that say they are managed by another
+  version. They keep running and are not touched. New terminals are
+  ordinary ones until the old daemon has ended.
+- Linux installs made with the install script or updated by the updater
+  get `shelldeck-sessiond` beside `shelldeck`. The AppImage, macOS and
+  Windows do not have it: the setting then uses ordinary terminals.
+
+### Verified automatically
+
+| What | How |
+|---|---|
+| A program that never reads holds back only the connection pasting into it; the waiting input is discarded with `Busy`; the terminal can still be killed | SDTEST-2981 (in-process daemon, real PTY in raw mode) |
+| The size follows the client that typed last, with one second of protection for the active one | SDTEST-2982 |
+| `SIGTERM`: socket gone at once, a program ignoring the hangup killed after the grace period with its group, a new daemon serving meanwhile | SDTEST-2983 (real binary, foreground, private directory) |
+| A parser panic ends only its pane | SDTEST-2984 (fault injection) |
+| The daemon's own descriptor limit is raised, a command and a login shell keep the original one, a missing program is still refused; the log is private and holds no terminal content | SDTEST-3027, SDTEST-3028 (real binary, private `HOME`, Linux) |
+| Out of descriptors, both ways, the client is told so | SDTEST-3001 extended |
+| A start during an exit waits for the lock; a client that connects after the daemon's last accept and before its socket is out of the way is served and the daemon stays | SDTEST-3029 (the race is forced by a test hook; fails when the fix is disabled) |
+| Run directory name: stable across host names, distinct per machine, host name fallback | SDTEST-3025 (pure) |
+| Log: mode, cap, one old generation, symlink not followed | SDTEST-3026 |
+| History budget: unattached panes first, newest rows kept, screens intact, no loop on an impossible budget | SDTEST-3030 |
+| A daemon announcing another version, same protocol, is used and nothing is started; a daemon refusing the protocol is sent nothing but `Hello`, nothing is started next to it, its sessions say so and keep their pane id; this version's daemon starts once the other is gone | SDTEST-3032 (the incompatible daemon is a stand-in) |
+| Saved daemon tabs are rebuilt from the saved layout when the daemon cannot list; such a tab is saved again with its pane id; its tab state is an error with its own text | SDTEST-3031, SDTEST-3013 and SDTEST-3012 extended |
+| Updater: daemon files staged, published by rename, removed when the update fails; invalid files stop the update | SDTEST-3033 (the helper only, not a real update) |
+| Archive contents; the rendered install script run under a temporary HOME, replacing by rename; the remote build script's checks | SDTEST-3034..3036 (`scripts/test-sessiond-packaging.py`) |
+| The release profile of the daemon builds: 1.8 MB, links libc, libm and libgcc only | `cargo build --locked --release -p shelldeck-sessiond` |
+
+Suites run for this step, all green at the end: `cargo test --locked -p
+shelldeck-sessiond` (37 tests; green in the last four runs in a row),
+`-p shelldeck-terminal` (112), `-p shelldeck-core --lib` (545, 7 ignored
+as before), `-p shelldeck-update` (19), `-p shelldeck-ssh sessiond --
+--test-threads=1` (11) plus the opt-in SDTEST-3024 with the release build
+of the daemon, `-p shelldeck-ui --lib -- --test-threads=1` (391, disposable
+XDG roots), `python3 scripts/test-sessiond-packaging.py`,
+`scripts/test-browser-packaging.py` and `scripts/test-agents-packaging.py`,
+`cargo fmt --all -- --check`, `cargo clippy --locked -p shelldeck-sessiond
+-p shelldeck-terminal -p shelldeck-ssh -p shelldeck-core -p shelldeck-ui
+-p shelldeck-update --all-targets -- -D warnings`, `cargo check --locked
+-p shelldeck`.
+
+Two things seen while running them:
+
+- SDTEST-2971 failed once in a full parallel run on its last assertion
+  (the daemon's offset against the client's, read before the last bytes
+  of the echo had reached the client). The assertion now waits for the
+  client to catch up. The race was in the test, not in the daemon.
+- After a full run, up to two daemon processes of finished tests were
+  still alive for under a minute (they then left by idle exit): repeated
+  starts that had been waiting for the lock and took over when the test
+  stopped its daemon. The tests now stop every daemon of their private
+  directory when they end; none was left after the last four runs.
+
+Not covered by any automated test, compiled and read only:
+
+- The UI side of the other-version case: `Workspace::restore_session` /
+  `finish_restore_session` with `RestorablePanes::OtherVersion`, the
+  fallback and background recheck in `terminal_view/daemon.rs::spawn`, the
+  notice and tab texts on screen.
+- `install_linux` as a whole (it replaces the running executable).
+- `scripts/build-release.sh` end to end, `release.yml`, the worker
+  deployment.
+- `scripts/build-sessiond-remote.sh` beyond its checks: no musl target is
+  installed here, so no static build was ever produced or uploaded.
+- macOS: the `kern.uuid` lookup, `exec-pane` and the descriptor limit
+  code are not compiled here (no target installed). Windows: not checked.
+
+### Manual checks still needed
+
+Daemon:
+
+- [ ] `cat ~/.shelldeck/run/*/sessiond.log` after a session: start line
+      with version and pid, one line per terminal created and ended,
+      nothing that was typed or printed. Let it pass 1 MiB (a loop of
+      short-lived terminals): `sessiond.log.1` appears once and the pair
+      stays under about 2 MiB.
+- [ ] `ulimit -n` and `ulimit -Hn` in a daemon terminal equal those of an
+      in-process terminal; `cat /proc/<daemon pid>/limits` shows 4096 (or
+      the hard limit) for the daemon. `ps -o pid,args` right after opening
+      a tab: no `exec-pane` process is left behind; the shell is a login
+      shell (`echo $0` starts with a dash) and reads the same profile
+      files as before.
+- [ ] Open more than 340 terminals (script `shelldeck-sessiond spawn`):
+      beyond what a 1024 limit allowed, up to the 256 pane cap, without
+      `LimitExceeded`.
+- [ ] Paste several MiB into `sleep 1000` (after `stty raw`): other tabs
+      stay usable; after about 10 s the tab reports the paste as dropped
+      (note what the user actually sees: the `Busy` error has no visible
+      notice in the app today).
+- [ ] `kill <daemon pid>` with a tab running `trap '' HUP; sleep 1000`,
+      then open a new tab at once: it works within a second, on a new
+      daemon; the old process is gone after about 3 s.
+- [ ] Close every tab, wait for the idle exit (60 s) while opening a new
+      tab at the 60 s mark, several times: the tab always opens.
+- [ ] Upgrade from a build of the earlier steps with panes running: the
+      panes are found (daemon in `run/<host>`), no second daemon in
+      `run/m-…`; after that daemon has ended, the new directory is used.
+- [ ] Two machines on one NFS home: two directories, each machine sees
+      only its own terminals.
+- [ ] A machine without `/etc/machine-id` (some containers): the host
+      name directory is used.
+- [ ] History: three terminals with `scrollback` at 100 000 lines and a
+      wide window, `serve --history-budget 64M` (start the daemon by
+      hand): the unattended ones are trimmed first; note whether the app's
+      own copy of the history (which is not trimmed) hides the effect.
+
+Another version:
+
+- [ ] Cannot be produced with released builds (there is one protocol
+      version). With a development build that refuses protocol 1: start
+      the old app, open three tabs with a split, quit; start the new app:
+      the same tabs come back, each saying it is managed by another
+      version, error dot, no shell; `shelldeck-sessiond list` with the old
+      binary still shows the panes alive; a new tab is an ordinary
+      terminal; quit and start the old app: the panes are back in their
+      layout.
+- [ ] Decide whether such tabs should offer an action (today the text
+      only says to use the other version or close the tab; closing does
+      not end the pane, and sign-out does not end those panes either).
+- [ ] Same protocol, other version (any two builds with different version
+      numbers): panes come back normally; the app log has one line "using
+      a session daemon left by another version of the app".
+
+Packaging (needs a release build, which was not made):
+
+- [ ] `bash scripts/build-release.sh` on Linux: the archive lists
+      `shelldeck`, `shelldeck-sessiond` and `browser/<version>/…`.
+- [ ] Fresh install with the install script (after the worker is
+      deployed) into a throwaway HOME: `~/.shelldeck/bin/shelldeck-sessiond`
+      exists; with the setting on, a new tab is a daemon pane.
+- [ ] Update by the updater from this version to a later one while daemon
+      tabs are open: the tabs keep working during and after the update,
+      `~/.shelldeck/bin/shelldeck-sessiond` is the new file, the running
+      daemon is the old one (its version in the log) until it idles out,
+      and it can still open new terminals (they start through
+      `/proc/self/exe`).
+- [ ] Update from a release without the daemon to one with it, and the
+      reverse (a rollback): the app starts in both cases.
+- [ ] AppImage: the setting falls back to ordinary terminals and nothing
+      is left running after quit.
+- [ ] `SHELLDECK_SESSIOND_REMOTE=1 bash scripts/build-release.sh` on a
+      machine with the musl targets and linkers: both static builds are
+      produced and pass the script's checks, or the link fails (then see
+      the open risk in the design document); with them in place, the
+      first connect to a Linux server offers the install.
+
+### Known gaps of this step
+
+- The static remote builds do not exist yet (script wired, never run).
+- The AppImage, macOS and Windows packages do not carry the daemon.
+- A daemon of another protocol version cannot be listed, so its tabs are
+  the saved ones, alive or not, and they cannot be ended from this app.
+- The `Busy` answer to a dropped paste is not shown to the user.
+- Old `shelldeck-sessiond-<version>` files on SSH servers are still not
+  pruned.
+

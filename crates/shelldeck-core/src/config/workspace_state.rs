@@ -146,6 +146,20 @@ pub struct RestorePlan {
 }
 
 impl WorkspaceState {
+    /// Every daemon pane of the saved layout, in tab order, each once.
+    /// Used when the daemon cannot say which of them are alive (it was
+    /// left by another version of the app): the tabs are then rebuilt as
+    /// saved and each pane reports that state itself.
+    pub fn saved_daemon_panes(&self) -> Vec<Uuid> {
+        let mut seen = std::collections::HashSet::new();
+        self.tabs
+            .iter()
+            .filter_map(|tab| tab.daemon.as_ref())
+            .flat_map(|saved| saved.tree.panes())
+            .filter(|pane| seen.insert(*pane))
+            .collect()
+    }
+
     /// Match the saved layout against the daemon panes that are still
     /// alive (`live`, in the daemon's order):
     ///
@@ -540,6 +554,55 @@ mod tests {
             plan.tabs,
             vec![RestoredTab::Saved(1), RestoredTab::Saved(4)]
         );
+    }
+
+    // SDTEST-3031 (SDUC-574): when the daemon cannot say which panes are
+    // alive (it belongs to another version of the app), the saved daemon
+    // panes are all taken, each once, and the plan built from them is the
+    // saved layout itself.
+    #[test]
+    fn sdtest_3031_saved_daemon_panes_rebuild_the_saved_layout() {
+        let state = WorkspaceState {
+            tabs: vec![
+                daemon_tab(
+                    "build",
+                    split(true, 0.3, leaf(1), split(false, 0.6, leaf(2), leaf(3))),
+                    Some(3),
+                ),
+                plain_tab("prod", TabType::Ssh),
+                // Pane 2 again (damaged file).
+                daemon_tab("logs", split(false, 0.7, leaf(2), leaf(7)), Some(7)),
+                plain_tab("local", TabType::Local),
+            ],
+            active_tab: 2,
+            sidebar_visible: true,
+        };
+        assert_eq!(
+            state.saved_daemon_panes(),
+            vec![pane(1), pane(2), pane(3), pane(7)]
+        );
+        let plan = state.daemon_restore_plan(&state.saved_daemon_panes());
+        assert_eq!(plan.tabs.len(), 4);
+        assert_eq!(plan.active, Some(2));
+        let RestoredTab::Daemon { layout, .. } = &plan.tabs[0] else {
+            panic!("first tab is a daemon tab");
+        };
+        assert_eq!(Some(layout), state.tabs[0].daemon.as_ref());
+        let RestoredTab::Daemon { layout, .. } = &plan.tabs[2] else {
+            panic!("third tab is a daemon tab");
+        };
+        assert_eq!(layout.tree, leaf(7));
+        // No pane is invented: nothing beyond the saved slots.
+        assert!(matches!(plan.tabs[1], RestoredTab::Saved(1)));
+        assert!(matches!(plan.tabs[3], RestoredTab::Saved(3)));
+
+        // Nothing saved: nothing to show.
+        let empty = WorkspaceState {
+            tabs: vec![plain_tab("local", TabType::Local)],
+            active_tab: 0,
+            sidebar_visible: true,
+        };
+        assert!(empty.saved_daemon_panes().is_empty());
     }
 
     // SDTEST-3010 (SDUC-574): a damaged session file cannot show one pane

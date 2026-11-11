@@ -33,6 +33,53 @@ struct RunDir {
     path: PathBuf,
 }
 
+/// Send `SIGTERM` to every daemon process started on `dir`, found by its
+/// command line (`serve ... --dir <dir>`). A test that starts the real
+/// binary may leave more than one behind: a start is repeated while the
+/// socket is missing, and a repeated start that was still waiting for the
+/// instance lock becomes the daemon when the first one is stopped early.
+/// The directory is private to one test, so nothing else can match.
+fn terminate_daemons_of(dir: &Path) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+                continue;
+            };
+            let args: Vec<&[u8]> = cmdline.split(|byte| *byte == 0).collect();
+            let serves = args.get(1) == Some(&&b"serve"[..]);
+            let here = args
+                .windows(2)
+                .any(|pair| pair[0] == b"--dir" && pair[1] == dir.as_os_str().as_bytes());
+            if serves && here && pid != std::process::id() {
+                // SAFETY: plain signal to a daemon of this test's own
+                // private directory.
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = dir;
+}
+
+impl Drop for RunDir {
+    fn drop(&mut self) {
+        // Runs before the temporary directory itself is removed.
+        terminate_daemons_of(&self.path);
+    }
+}
+
 fn run_dir() -> RunDir {
     let mut temp = tempfile::Builder::new()
         .prefix("sdsd-")
@@ -374,7 +421,11 @@ async fn sdtest_2971_spawn_attach_and_input_echo() {
     assert_eq!(info.label, "echo pane");
     assert_eq!(info.group, Uuid::from_u128(77));
     assert_eq!((info.rows, info.cols), (24, 80));
-    assert_eq!(info.offset, view.offset());
+    // The last bytes of the echo may still be on their way to this client.
+    let offset = settled_offset(&client, spawned.pane).await;
+    view.until("the end of the echo", |v| v.in_sync_at(offset))
+        .await;
+    assert_eq!(view.offset(), offset);
 
     assert_eq!(daemon.stop(), ServeOutcome::Shutdown);
     wait_for("the pane child to die with the daemon", || {
@@ -1699,12 +1750,22 @@ fn greet(dir: &Path) -> (Greeting, std::os::unix::net::UnixStream) {
 // SDTEST-3001
 #[test]
 fn sdtest_3001_descriptor_exhaustion_refuses_at_once_and_leaks_no_connection_slot() {
+    // The real binary under a small descriptor limit: stdio, lock,
+    // listener, spare, log and a few connections, far below the 32
+    // connection slots. A connection takes two descriptors. With 13 the
+    // last one that fits uses them all and the next `accept` fails; with
+    // 12 one descriptor is left, so the next connection is accepted and
+    // then has none for its writer. Both must be told `LimitExceeded`.
+    for limit in [13, 12] {
+        descriptor_exhaustion(limit);
+    }
+}
+
+fn descriptor_exhaustion(limit: u32) {
     let dir = run_dir();
-    // The real binary under a descriptor limit of 12: stdio, lock,
-    // listener and a few connections, far below the 32 connection slots.
     let child = std::process::Command::new("/bin/sh")
         .arg("-c")
-        .arg("ulimit -n 12; exec \"$0\" serve --dir \"$1\"")
+        .arg(format!("ulimit -n {limit}; exec \"$0\" serve --dir \"$1\""))
         .arg(BIN)
         .arg(&dir.path)
         .stdin(std::process::Stdio::null())
@@ -1730,7 +1791,7 @@ fn sdtest_3001_descriptor_exhaustion_refuses_at_once_and_leaks_no_connection_slo
         assert!(held.len() < 12, "the descriptor limit did not apply");
     }
     let capacity = held.len();
-    assert!(capacity >= 1);
+    assert_eq!(capacity, 3 - usize::from(limit == 12), "limit {limit}");
 
     // Many more attempts than there are slots. Each one is answered at
     // once (never left in the backlog), and none of them may cost a slot.
@@ -1738,7 +1799,8 @@ fn sdtest_3001_descriptor_exhaustion_refuses_at_once_and_leaks_no_connection_slo
     for _ in 0..40 {
         let started = Instant::now();
         let (greeting, _stream) = greet(&dir.path);
-        assert_ne!(greeting, Greeting::Served);
+        // Refused in words, whichever way the descriptors ran out.
+        assert_eq!(greeting, Greeting::Refused, "limit {limit}");
         assert!(started.elapsed() < Duration::from_secs(2));
         refused += usize::from(greeting == Greeting::Refused);
     }
@@ -1847,4 +1909,873 @@ fn sdtest_3003_a_start_during_the_old_daemons_exit_is_repeated() {
         assert!(Instant::now() < deadline, "the daemon did not stop");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Hardening: input backpressure, size ownership, shutdown, panic isolation,
+// descriptor limit, log, idle exit, lock handoff, history budget
+// ---------------------------------------------------------------------------
+
+/// A real daemon in the foreground on `dir`, with extra `serve` options.
+fn serve_process(dir: &RunDir, shell_prefix: &str, options: &[&str]) -> DaemonProcess {
+    let script = format!("{shell_prefix}dir=$1; shift; exec \"$0\" serve --dir \"$dir\" \"$@\"");
+    let home = dir.path.parent().expect("parent");
+    let child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(script)
+        .arg(BIN)
+        .arg(&dir.path)
+        .args(options)
+        // The login shell of a pane must not run the user's own profile.
+        .env("HOME", home)
+        .env("SHELL", "/bin/sh")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("daemon starts");
+    let daemon = DaemonProcess(child);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while paths::connect_checked(&dir.path).is_err() {
+        assert!(Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    daemon
+}
+
+// SDTEST-2981 (SDUC-574): a pane whose program does not read its terminal
+// holds back only the connection that pastes into it. After the stall
+// timeout the queued input is discarded and that connection is told
+// `Busy`; every other connection and pane is served meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_2981_stalled_input_blocks_only_the_pasting_connection_and_is_discarded() {
+    let dir = run_dir();
+    let _daemon = start(
+        &dir,
+        ServerConfig {
+            input_queue_cap: 128 * 1024,
+            input_stall: Duration::from_millis(800),
+            ..test_config()
+        },
+    );
+    let pasting = connect(&dir).await;
+    let other = connect(&dir).await;
+
+    // Raw mode: in line mode the kernel drops input beyond one line
+    // instead of holding the writer back.
+    let deaf = pasting
+        .spawn(sh("stty raw -echo; echo deaf-ready; exec sleep 600"))
+        .await
+        .expect("spawn");
+    let echo = other.spawn(command(&["/bin/cat"])).await.expect("spawn");
+    let mut deaf_view = View::attach(&pasting, deaf.pane, attach_options(0));
+    deaf_view
+        .until("the deaf pane", |v| v.screen().contains("deaf-ready"))
+        .await;
+    let mut echo_view = View::attach(&other, echo.pane, attach_options(0));
+    echo_view.until("the echo pane", |v| v.restores == 1).await;
+
+    // 400 KiB into a terminal nobody reads: the kernel takes a few tens of
+    // KiB, the queue 128 KiB, the rest waits in the connection.
+    let chunk = vec![b'x'; 16 * 1024];
+    for _ in 0..25 {
+        pasting.input(deaf.pane, &chunk).expect("input queued");
+    }
+    // A request behind the paste on the same connection waits with it.
+    let behind = {
+        let pasting = pasting.clone();
+        tokio::spawn(async move { pasting.list_panes().await })
+    };
+
+    // The other connection is served at once, and so is its pane.
+    assert_eq!(other.list_panes().await.expect("list").len(), 2);
+    other.input(echo.pane, b"still-served\n").expect("input");
+    echo_view
+        .until("the echo of the other pane", |v| {
+            v.screen().matches("still-served").count() == 2
+        })
+        .await;
+    assert!(
+        !behind.is_finished(),
+        "the pasting connection was not held back by its own paste"
+    );
+
+    // The stall timeout discards the queue and says so, for that pane.
+    deaf_view
+        .until("Busy for the stalled pane", |v| {
+            v.errors.contains(&ErrorCode::Busy)
+        })
+        .await;
+    assert!(deaf_view.errors.iter().all(|code| *code == ErrorCode::Busy));
+    assert!(echo_view.errors.is_empty());
+    // Once the paste is through (queued or discarded), the connection
+    // answers again.
+    let listed = tokio::time::timeout(STEP, behind)
+        .await
+        .expect("the pasting connection answers again")
+        .expect("join")
+        .expect("list");
+    assert_eq!(listed.len(), 2);
+
+    // The pane itself was never harmed, and it can still be ended: its
+    // writer is not stuck inside a write to the full terminal.
+    let info = pane_info(&other, deaf.pane).await.expect("listed");
+    assert!(info.alive);
+    assert!(process_exists(deaf.pid));
+    pasting.kill(deaf.pane, SIGNAL_KILL).expect("kill");
+    deaf_view.until("the exit", |v| v.exited.is_some()).await;
+    assert_eq!(deaf_view.exited.map(|(_, _, signal)| signal), Some(9));
+    pasting.kill(deaf.pane, SIGNAL_TERM).expect("remove");
+    let deadline = Instant::now() + STEP;
+    while pane_info(&other, deaf.pane).await.is_some() {
+        assert!(Instant::now() < deadline, "the pane was not removed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The echo pane went through all of it untouched.
+    other.input(echo.pane, b"after-all\n").expect("input");
+    echo_view
+        .until("the echo after the stall", |v| {
+            v.screen().matches("after-all").count() == 2
+        })
+        .await;
+}
+
+// SDTEST-2982 (SDUC-574): the pane has the size of the client that typed
+// last, and a client that is typing keeps it for one second: another
+// client's key does not flip the size back and forth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_2982_size_follows_the_last_active_client_with_hysteresis() {
+    let dir = run_dir();
+    let _daemon = start(&dir, test_config());
+    let small = connect(&dir).await;
+    let large = connect(&dir).await;
+    let watcher = connect(&dir).await;
+    let pane = small
+        .spawn(command(&["/bin/cat"]))
+        .await
+        .expect("spawn")
+        .pane;
+    let size = |client: Client| async move {
+        let info = pane_info(&client, pane).await.expect("listed");
+        (info.rows, info.cols)
+    };
+    let wait_size = |wanted: (u16, u16)| {
+        let watcher = watcher.clone();
+        async move {
+            let deadline = Instant::now() + STEP;
+            loop {
+                let info = pane_info(&watcher, pane).await.expect("listed");
+                if (info.rows, info.cols) == wanted {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the pane is {}x{}, expected {wanted:?}",
+                    info.rows,
+                    info.cols
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    };
+
+    // The first attachment owns the size; a second one does not take it
+    // by attaching.
+    let mut small_view = View::attach(&small, pane, attach_options(0));
+    small_view.until("the snapshot", |v| v.restores == 1).await;
+    let large_options = AttachOptions {
+        rows: 30,
+        cols: 100,
+        scrollback_rows: 0,
+        read_only: false,
+    };
+    let mut large_view = View::attach(&large, pane, large_options);
+    large_view.until("the snapshot", |v| v.restores == 1).await;
+    assert_eq!(size(watcher.clone()).await, (24, 80));
+
+    // The owner never typed: the first key of the other client takes it.
+    large.input(pane, b"L").expect("input");
+    wait_size((30, 100)).await;
+
+    // While that client keeps typing, keys of the first one change
+    // nothing: the size stays where it is, for all of 1.5 s.
+    let typing = {
+        let large = large.clone();
+        tokio::spawn(async move {
+            for _ in 0..15 {
+                large.input(pane, b"l").expect("input");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+    };
+    for _ in 0..10 {
+        small.input(pane, b"s").expect("input");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(size(watcher.clone()).await, (30, 100));
+    }
+    typing.await.expect("typing");
+    assert_eq!(size(watcher.clone()).await, (30, 100));
+
+    // More than a second after its last key the owner is no longer
+    // active: the next key of the other client takes the size.
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert_eq!(
+        size(watcher.clone()).await,
+        (30, 100),
+        "time alone changes nothing"
+    );
+    small.input(pane, b"S").expect("input");
+    wait_size((24, 80)).await;
+    // And now that one is the active owner.
+    large.input(pane, b"l").expect("input");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(size(watcher.clone()).await, (24, 80));
+
+    // A resize request of a client that does not own the size is only
+    // remembered; one of the owner applies.
+    large.resize(pane, 40, 120).expect("resize");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(size(watcher.clone()).await, (24, 80));
+    small.resize(pane, 20, 70).expect("resize");
+    wait_size((20, 70)).await;
+
+    // Every applied size reached both clients, in stream order.
+    let offset = settled_offset(&watcher, pane).await;
+    for view in [&mut small_view, &mut large_view] {
+        view.until("the final size and offset", |v| {
+            let grid = v.mirror.grid().lock();
+            (grid.rows, grid.cols) == (20, 70) && v.in_sync_at(offset)
+        })
+        .await;
+    }
+    assert_eq!(small_view.snapshot(), large_view.snapshot());
+}
+
+// SDTEST-2983 (SDUC-574): `SIGTERM` to the real daemon. A pane whose
+// program ignores the hangup lives through the grace period and is then
+// killed with its whole process group; the socket is gone at once and the
+// instance lock is handed over before the grace period, so a new daemon
+// serves the directory while the old one is still ending its panes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_2983_sigterm_kills_a_pane_that_ignores_the_hangup_after_the_grace_period() {
+    let dir = run_dir();
+    let grace = Duration::from_millis(2_500);
+    let mut old = serve_process(&dir, "", &["--term-grace-ms", "2500"]);
+    let old_pid = old.0.id();
+    let client = connect(&dir).await;
+    let stubborn = client
+        .spawn(sh("trap '' HUP; echo armed; while :; do sleep 1; done"))
+        .await
+        .expect("spawn");
+    let polite = client.spawn(command(&["/bin/cat"])).await.expect("spawn");
+    let mut view = View::attach(&client, stubborn.pane, attach_options(0));
+    view.until("the trap", |v| v.screen().contains("armed"))
+        .await;
+    let group_exists = |pid: u32| {
+        // SAFETY: signal 0 to a process group only checks for existence.
+        unsafe { libc::kill(-(pid as libc::pid_t), 0) == 0 }
+    };
+    assert!(group_exists(stubborn.pid) && group_exists(polite.pid));
+
+    // SAFETY: the daemon this test started on its private directory.
+    unsafe { libc::kill(old_pid as libc::pid_t, libc::SIGTERM) };
+    let terminated = Instant::now();
+
+    // The socket goes first; the ordinary pane dies of the hangup.
+    wait_for("the socket to be unlinked", || {
+        !paths::socket_path(&dir.path).exists()
+    })
+    .await;
+    wait_for("the ordinary pane to die of the hangup", || {
+        !group_exists(polite.pid)
+    })
+    .await;
+    // The stubborn one is still there, and so is the daemon, waiting.
+    assert!(
+        terminated.elapsed() < grace,
+        "too slow to observe the grace"
+    );
+    assert!(group_exists(stubborn.pid), "killed before the grace period");
+    assert!(matches!(old.0.try_wait(), Ok(None)));
+
+    // A new daemon takes the directory over right now.
+    let new = serve_process(&dir, "", &[]);
+    let new_client = connect(&dir).await;
+    assert!(new_client.list_panes().await.expect("list").is_empty());
+    let holder: u32 = std::fs::read_to_string(dir.path.join(paths::LOCK_NAME))
+        .expect("lock file")
+        .trim()
+        .parse()
+        .expect("pid");
+    assert_eq!(holder, new.0.id());
+    assert!(
+        matches!(old.0.try_wait(), Ok(None)) && terminated.elapsed() < grace,
+        "the new daemon had to wait for the old one"
+    );
+
+    // After the grace period the group is killed and the old daemon ends.
+    let status = tokio::task::spawn_blocking(move || {
+        let status = old.0.wait();
+        (status, old)
+    })
+    .await
+    .expect("join");
+    assert!(status.0.expect("wait").success());
+    assert!(
+        terminated.elapsed() >= grace - Duration::from_millis(100),
+        "the daemon did not wait for the grace period"
+    );
+    wait_for("the stubborn group to be killed", || {
+        !group_exists(stubborn.pid)
+    })
+    .await;
+
+    // The old daemon's exit did not touch what the new one owns.
+    assert!(paths::socket_path(&dir.path).exists());
+    let spawned = new_client
+        .spawn(command(&["/bin/cat"]))
+        .await
+        .expect("the new daemon works");
+    assert!(process_exists(spawned.pid));
+    assert!(view.errors.is_empty());
+}
+
+// SDTEST-2984 (SDUC-574): a panic while parsing one pane's output marks
+// that pane dead (exit code -1, signal 0) and hangs up its program. The
+// other panes, the connections and the daemon go on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_2984_a_parser_panic_ends_only_its_pane() {
+    let dir = run_dir();
+    let daemon = start(
+        &dir,
+        ServerConfig {
+            fault_parser_panic: Some(b"SDSD-PARSER-FAULT".to_vec()),
+            ..test_config()
+        },
+    );
+    let client = connect(&dir).await;
+    // The marker is assembled by printf, so neither the command line nor
+    // the echo of the typed line contains it.
+    let faulty = client
+        .spawn(sh(
+            "echo waiting; read x; printf 'SDSD-PARSER-%s\\n' FAULT; exec sleep 600",
+        ))
+        .await
+        .expect("spawn");
+    let healthy = client.spawn(command(&["/bin/cat"])).await.expect("spawn");
+    let mut faulty_view = View::attach(&client, faulty.pane, attach_options(0));
+    faulty_view
+        .until("the faulty pane", |v| v.screen().contains("waiting"))
+        .await;
+    let mut healthy_view = View::attach(&client, healthy.pane, attach_options(0));
+    healthy_view
+        .until("the healthy pane", |v| v.restores == 1)
+        .await;
+    // A second connection watching the faulty pane.
+    let other = connect(&dir).await;
+    let mut other_view = View::attach(&other, faulty.pane, attach_options(0));
+    other_view.until("the snapshot", |v| v.restores == 1).await;
+
+    client.input(faulty.pane, b"go\n").expect("input");
+    for view in [&mut faulty_view, &mut other_view] {
+        view.until("the pane to be reported dead", |v| v.exited.is_some())
+            .await;
+        let (_, exit_code, signal) = view.exited.expect("exited");
+        assert_eq!((exit_code, signal), (-1, 0));
+        // The chunk that panicked was not forwarded.
+        assert!(!view.screen().contains("SDSD-PARSER-FAULT"));
+    }
+    wait_for("the faulty pane's program to be hung up", || {
+        !process_exists(faulty.pid)
+    })
+    .await;
+    let info = pane_info(&client, faulty.pane).await.expect("still listed");
+    assert!(!info.alive);
+    assert_eq!(info.exit_code, -1);
+
+    // Everything else goes on: the other pane, new panes, new clients.
+    assert!(!daemon.is_finished());
+    client.input(healthy.pane, b"unharmed\n").expect("input");
+    healthy_view
+        .until("the echo of the healthy pane", |v| {
+            v.screen().matches("unharmed").count() == 2
+        })
+        .await;
+    assert!(process_exists(healthy.pid));
+    assert!(healthy_view.errors.is_empty() && healthy_view.exited.is_none());
+    let late = connect(&dir).await;
+    let another = late.spawn(command(&["/bin/cat"])).await.expect("spawn");
+    let mut another_view = View::attach(&late, another.pane, attach_options(0));
+    another_view.until("a new pane", |v| v.restores == 1).await;
+    assert_eq!(late.list_panes().await.expect("list").len(), 3);
+
+    // The dead pane can be closed like any other.
+    client.kill(faulty.pane, SIGNAL_TERM).expect("remove");
+    let deadline = Instant::now() + STEP;
+    while pane_info(&late, faulty.pane).await.is_some() {
+        assert!(Instant::now() < deadline, "the dead pane was not removed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(daemon.stop(), ServeOutcome::Shutdown);
+}
+
+#[cfg(target_os = "linux")]
+fn soft_and_hard_nofile(pid: u32) -> (String, String) {
+    let limits = std::fs::read_to_string(format!("/proc/{pid}/limits")).expect("limits");
+    let line = limits
+        .lines()
+        .find(|line| line.starts_with("Max open files"))
+        .expect("Max open files");
+    let mut fields = line.split_whitespace().skip(3);
+    (
+        fields.next().expect("soft").to_string(),
+        fields.next().expect("hard").to_string(),
+    )
+}
+
+// SDTEST-3028 (SDUC-574): the real daemon raises its own soft descriptor
+// limit and starts every pane with the limit it was started with, both
+// for a command and for the login shell. A program that does not exist is
+// still a spawn error. The daemon writes a private log that holds no
+// terminal content.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3028_daemon_raises_its_descriptor_limit_and_panes_keep_the_original() {
+    let dir = run_dir();
+    let daemon = serve_process(&dir, "ulimit -Sn 100; ", &[]);
+    let daemon_pid = daemon.0.id();
+    let (soft, hard) = soft_and_hard_nofile(daemon_pid);
+    let expected = match hard.parse::<u64>() {
+        Ok(hard) => hard.min(4096),
+        Err(_) => 4096,
+    };
+    if expected <= 100 {
+        eprintln!("SDTEST-3028 skipped: the hard descriptor limit is {hard}");
+        return;
+    }
+    assert_eq!(soft, expected.to_string(), "the daemon's own soft limit");
+
+    let client = connect(&dir).await;
+    // A command: the shell builtin reports the limit it runs under.
+    let reported = client
+        .spawn(sh(
+            "echo soft=$(ulimit -Sn) hard=$(ulimit -Hn); exec sleep 600",
+        ))
+        .await
+        .expect("spawn");
+    let mut view = View::attach(&client, reported.pane, attach_options(0));
+    view.until("the limits", |v| v.screen().contains("soft="))
+        .await;
+    assert!(
+        view.screen().contains(&format!("soft=100 hard={hard}")),
+        "pane limits: {}",
+        view.screen()
+    );
+    // The pane process is the program itself (same pid as reported).
+    assert_eq!(soft_and_hard_nofile(reported.pid).0, "100");
+    let cmdline = std::fs::read(format!("/proc/{}/cmdline", reported.pid)).expect("cmdline");
+    assert!(cmdline.starts_with(b"sleep\0"), "{cmdline:?}");
+
+    // The login shell: argv[0] with the leading dash, same limit.
+    let login = client
+        .spawn(SpawnOptions {
+            argv: Vec::new(),
+            ..command(&[])
+        })
+        .await
+        .expect("login shell");
+    wait_for("the login shell to replace the launcher", || {
+        std::fs::read(format!("/proc/{}/cmdline", login.pid))
+            .is_ok_and(|cmdline| cmdline.starts_with(b"-sh\0"))
+    })
+    .await;
+    assert_eq!(soft_and_hard_nofile(login.pid).0, "100");
+    // It is a session and group leader with the PTY as its terminal, and
+    // it neither ignores nor blocks the hangup.
+    let status = std::fs::read_to_string(format!("/proc/{}/status", login.pid)).expect("status");
+    let mask = |name: &str| {
+        let line = status
+            .lines()
+            .find(|line| line.starts_with(name))
+            .expect("mask");
+        u64::from_str_radix(line.split_whitespace().nth(1).expect("value"), 16).expect("hex")
+    };
+    assert_eq!(mask("SigIgn:") & 1, 0, "SIGHUP ignored");
+    assert_eq!(mask("SigBlk:") & 1, 0, "SIGHUP blocked");
+
+    // No such program: refused before a pane exists, as without the
+    // launcher.
+    for argv in [&["/nonexistent/program"][..], &["echo hi; true"][..]] {
+        assert!(matches!(
+            client.spawn(command(argv)).await,
+            Err(ClientError::Daemon(ErrorCode::SpawnFailed))
+        ));
+    }
+    assert_eq!(client.list_panes().await.expect("list").len(), 2);
+
+    // Something to keep out of the log.
+    let secret = client.spawn(command(&["/bin/cat"])).await.expect("spawn");
+    let mut secret_view = View::attach(&client, secret.pane, attach_options(0));
+    secret_view.until("the snapshot", |v| v.restores == 1).await;
+    client
+        .input(secret.pane, b"hunter2-typed-secret\n")
+        .expect("input");
+    secret_view
+        .until("the echo", |v| {
+            v.screen().matches("hunter2-typed-secret").count() == 2
+        })
+        .await;
+    client.kill(secret.pane, SIGNAL_KILL).expect("kill");
+    secret_view.until("the exit", |v| v.exited.is_some()).await;
+
+    let log_path = dir.path.join(paths::LOG_NAME);
+    let mut log = String::new();
+    let deadline = Instant::now() + STEP;
+    while !log.contains("pane ended") {
+        assert!(Instant::now() < deadline, "log so far:\n{log}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        log = std::fs::read_to_string(&log_path).unwrap_or_default();
+    }
+    assert_eq!(
+        std::fs::metadata(&log_path)
+            .expect("log")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert!(log.contains("session daemon started"), "{log}");
+    assert!(log.contains(&format!("pid={daemon_pid}")), "{log}");
+    assert!(log.contains("nofile_before=Some(100)"), "{log}");
+    assert_eq!(log.matches("pane spawned").count(), 3, "{log}");
+    assert!(log.contains("spawn failed"), "{log}");
+    for leaked in [
+        "hunter2",
+        "soft=100",
+        "echo hi",
+        "sleep 600",
+        "/nonexistent/program",
+    ] {
+        assert!(!log.contains(leaked), "the log contains {leaked:?}:\n{log}");
+    }
+
+    // A second `serve` next to the running one neither serves nor writes.
+    let before = log.len();
+    let second = std::process::Command::new(BIN)
+        .arg("serve")
+        .arg("--dir")
+        .arg(&dir.path)
+        .status()
+        .expect("second serve");
+    assert!(second.success());
+    assert_eq!(
+        std::fs::read_to_string(&log_path).expect("log").len(),
+        before
+    );
+}
+
+// SDTEST-3029 (SDUC-574): the daemon side of the idle-exit race. A start
+// that finds the lock taken and no socket waits for the lock instead of
+// doing nothing, and a client that connects around the moment of an idle
+// exit is either served or finds no socket: it is never accepted into a
+// backlog that is then closed on it.
+#[test]
+fn sdtest_3029_idle_exit_and_lock_handoff_lose_no_start_and_no_connection() {
+    // 1. Lock taken, socket gone (a daemon on its way out): the new start
+    // waits and takes over.
+    let dir = run_dir();
+    let leaving = start(&dir, test_config());
+    std::fs::remove_file(paths::socket_path(&dir.path)).expect("unlink");
+    // Without waiting it is "already running", as before.
+    let impatient = ServerConfig {
+        lock_wait: Duration::ZERO,
+        ..test_config()
+    };
+    assert!(ServerHandle::start(&dir.path, impatient)
+        .expect("no error")
+        .is_none());
+    let stopper = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        leaving.stop()
+    });
+    let started = Instant::now();
+    let next = ServerHandle::start(&dir.path, test_config())
+        .expect("no error")
+        .expect("the waiting start takes the directory over");
+    assert!(started.elapsed() >= Duration::from_millis(250));
+    assert!(started.elapsed() < Duration::from_secs(4));
+    assert_eq!(stopper.join().expect("join"), ServeOutcome::Shutdown);
+    let (greeting, stream) = greet(&dir.path);
+    assert_eq!(greeting, Greeting::Served);
+    drop(stream);
+    // A socket left under the leaving name by a daemon killed in the
+    // middle of its idle exit is cleared by the next start.
+    let stale = dir.path.join(paths::SOCKET_LEAVING_NAME);
+    std::fs::write(&stale, b"").expect("stale file");
+    // Lock taken and a socket present: a daemon serves, the start gives
+    // up at once.
+    let started = Instant::now();
+    assert!(ServerHandle::start(&dir.path, test_config())
+        .expect("no error")
+        .is_none());
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        stale.exists(),
+        "a start that does not get the lock removes nothing"
+    );
+    assert_eq!(next.stop(), ServeOutcome::Shutdown);
+    let after = start(&dir, test_config());
+    assert!(!stale.exists());
+    assert_eq!(after.stop(), ServeOutcome::Shutdown);
+
+    // 2. The race itself, made certain: a client connects after the
+    // daemon's last ordinary accept and before the socket is out of the
+    // way. It must be served, and the daemon must stay for it.
+    {
+        let dir = run_dir();
+        let (late_tx, late_rx) = std::sync::mpsc::channel();
+        let once = std::sync::atomic::AtomicBool::new(false);
+        let path = dir.path.clone();
+        let hook = shelldeck_sessiond::server::TestHook(std::sync::Arc::new(move || {
+            if !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let _ = late_tx.send(paths::connect_checked(&path));
+            }
+        }));
+        let daemon = start(
+            &dir,
+            ServerConfig {
+                idle_exit: Some(Duration::from_millis(60)),
+                before_leaving: Some(hook),
+                ..test_config()
+            },
+        );
+        let mut stream = late_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the daemon reached its idle exit")
+            .expect("the socket was still there");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        stream
+            .write_all(&raw_hello("last moment"))
+            .expect("the connection was reset by the leaving daemon");
+        let mut frames = FrameBuffer::new();
+        let seen = read_until(&mut stream, &mut frames, |_| true);
+        assert!(matches!(seen[..], [DaemonFrame::HelloAck(_)]), "{seen:?}");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!daemon.is_finished(), "the daemon left a served client");
+        assert!(
+            paths::socket_path(&dir.path).exists(),
+            "the socket has its name back"
+        );
+        assert!(!dir.path.join(paths::SOCKET_LEAVING_NAME).exists());
+        // Others can still connect while it stays.
+        let (greeting, other) = greet(&dir.path);
+        assert_eq!(greeting, Greeting::Served);
+        drop(other);
+        drop(stream);
+        // Alone again, it leaves for good.
+        assert_eq!(daemon.join(), ServeOutcome::IdleExit);
+        assert!(!paths::socket_path(&dir.path).exists());
+    }
+
+    // 3. Connections aimed at the moment of the idle exit, 40 times with
+    // a growing delay that sweeps across it (a regression guard for the
+    // outcomes, not a proof: it also passes without the step above).
+    let mut served = 0;
+    let mut absent = 0;
+    for round in 0..40u64 {
+        let dir = run_dir();
+        let idle = ServerConfig {
+            idle_exit: Some(Duration::from_millis(60)),
+            ..test_config()
+        };
+        let daemon = start(&dir, idle);
+        std::thread::sleep(Duration::from_millis(40 + round * 4));
+        match paths::connect_checked(&dir.path) {
+            Ok(mut stream) => {
+                // Accepted: it must be served, whatever the daemon was
+                // about to do.
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("timeout");
+                stream
+                    .write_all(&raw_hello("late"))
+                    .unwrap_or_else(|e| panic!("round {round}: reset after connect: {e}"));
+                let mut frames = FrameBuffer::new();
+                let seen = read_until(&mut stream, &mut frames, |_| true);
+                assert!(
+                    matches!(seen[..], [DaemonFrame::HelloAck(_)]),
+                    "round {round}: {seen:?}"
+                );
+                // It holds the daemon up for as long as it stays.
+                std::thread::sleep(Duration::from_millis(150));
+                assert!(!daemon.is_finished(), "round {round}: left a served client");
+                assert!(paths::socket_path(&dir.path).exists());
+                drop(stream);
+                served += 1;
+            }
+            Err(paths::PathError::Io(e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                absent += 1;
+            }
+            Err(e) => panic!("round {round}: {e}"),
+        }
+        assert_eq!(daemon.join(), ServeOutcome::IdleExit);
+        assert!(!paths::socket_path(&dir.path).exists());
+        assert!(!dir.path.join(paths::SOCKET_LEAVING_NAME).exists());
+    }
+    // The sweep covered both sides of the exit.
+    assert!(served > 0 && absent > 0, "served {served}, absent {absent}");
+}
+
+/// History rows the daemon holds for `pane`, and its screen, through a
+/// short-lived attachment that asks for all of it.
+async fn daemon_history(dir: &RunDir, pane: Uuid) -> (usize, String) {
+    let client = connect(dir).await;
+    let mut view = View::attach(
+        &client,
+        pane,
+        AttachOptions {
+            rows: 24,
+            cols: 80,
+            scrollback_rows: 100_000,
+            read_only: true,
+        },
+    );
+    view.mirror = PaneMirror::new(24, 80, 100_000, client.hello().emulator_rev);
+    view.until("the whole history", |v| v.history_done).await;
+    let rows = view.mirror.grid().lock().scrollback_len();
+    (rows, view.screen())
+}
+
+// SDTEST-3030 (SDUC-574): the history budget. Over budget, the history of
+// a pane nobody looks at is halved first, the newest rows are kept and no
+// screen is touched; a budget that cannot be met stops at one row per
+// pane instead of looping.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3030_history_over_budget_is_trimmed_unattached_panes_first() {
+    let row_bytes = 80 * std::mem::size_of::<shelldeck_terminal::grid::Cell>() as u64;
+    let lines = "i=0; while [ $i -lt 3000 ]; do echo line-$i; i=$((i+1)); done; echo ALL-DONE; exec sleep 600";
+    let gated = format!("echo gate; read x; {lines}");
+
+    let dir = run_dir();
+    let _daemon = start(
+        &dir,
+        ServerConfig {
+            // Room for 4000 history rows of 80 columns.
+            history_budget: 4000 * row_bytes,
+            history_check: Duration::from_millis(20),
+            ..test_config()
+        },
+    );
+    let client = connect(&dir).await;
+    let unwatched = client.spawn(sh(&gated)).await.expect("spawn");
+    let watched = client.spawn(sh(&gated)).await.expect("spawn");
+
+    // One pane fills its history: 3000 rows are within the budget.
+    {
+        let mut view = View::attach(&client, unwatched.pane, attach_options(0));
+        view.until("the gate", |v| v.screen().contains("gate"))
+            .await;
+        client.input(unwatched.pane, b"\n").expect("input");
+        view.until("all lines", |v| v.screen().contains("ALL-DONE"))
+            .await;
+        client.detach(unwatched.pane).expect("detach");
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (full, screen) = daemon_history(&dir, unwatched.pane).await;
+    assert!((2950..=3010).contains(&full), "history rows: {full}");
+    assert!(screen.contains("line-2999") && screen.contains("ALL-DONE"));
+
+    // The second pane, watched the whole time, fills up as well: together
+    // they are over budget, and the unwatched one pays.
+    let mut watched_view = View::attach(&client, watched.pane, attach_options(0));
+    watched_view
+        .until("the gate", |v| v.screen().contains("gate"))
+        .await;
+    client.input(watched.pane, b"\n").expect("input");
+    watched_view
+        .until("all lines", |v| v.screen().contains("ALL-DONE"))
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let (kept_watched, watched_screen) = daemon_history(&dir, watched.pane).await;
+    let (kept_unwatched, unwatched_screen) = daemon_history(&dir, unwatched.pane).await;
+    assert_eq!(kept_watched, full, "the watched pane lost history");
+    assert!(
+        (full / 4 - 2..=full / 4 + 2).contains(&kept_unwatched),
+        "halved twice from {full}: {kept_unwatched}"
+    );
+    assert!(kept_watched + kept_unwatched <= 4000);
+    // Screens are intact, and what is left of the history is its newest
+    // part: the row just above the screen is still there.
+    for screen in [&watched_screen, &unwatched_screen] {
+        assert!(screen.contains("line-2999") && screen.contains("ALL-DONE"));
+    }
+    {
+        let client = connect(&dir).await;
+        let mut view = View::attach(
+            &client,
+            unwatched.pane,
+            AttachOptions {
+                scrollback_rows: 100_000,
+                read_only: true,
+                ..attach_options(0)
+            },
+        );
+        view.until("the history", |v| v.history_done).await;
+        let mut grid = view.mirror.grid().lock();
+        let text = |row: &[shelldeck_terminal::grid::Cell]| {
+            row.iter().map(|cell| cell.c).collect::<String>()
+        };
+        let first_on_screen = text(&grid.cells[0]);
+        let number: usize = first_on_screen
+            .trim()
+            .strip_prefix("line-")
+            .expect("a numbered line at the top of the screen")
+            .parse()
+            .expect("number");
+        // Scrolled back by n rows, the top visible row is the n-th newest
+        // history row.
+        grid.set_scroll_offset(1);
+        let newest = text(grid.visible_rows()[0]);
+        assert_eq!(newest.trim(), format!("line-{}", number - 1));
+        grid.set_scroll_offset(kept_unwatched);
+        let oldest = text(grid.visible_rows()[0]);
+        assert_eq!(
+            oldest.trim(),
+            format!("line-{}", number - kept_unwatched),
+            "the kept rows are the newest ones, without a gap"
+        );
+    }
+    // The lower limit stays: more output does not grow it back.
+    assert!(process_exists(unwatched.pid) && process_exists(watched.pid));
+
+    // A budget nothing can meet: every history ends at one row, the
+    // screens stay, and the daemon keeps serving instead of spinning.
+    let dir = run_dir();
+    let _daemon = start(
+        &dir,
+        ServerConfig {
+            history_budget: 0,
+            history_check: Duration::from_millis(20),
+            ..test_config()
+        },
+    );
+    let client = connect(&dir).await;
+    let pane = client.spawn(sh(lines)).await.expect("spawn");
+    let mut view = View::attach(&client, pane.pane, attach_options(0));
+    view.until("all lines", |v| v.screen().contains("ALL-DONE"))
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (kept, screen) = daemon_history(&dir, pane.pane).await;
+    assert_eq!(kept, 1);
+    assert!(screen.contains("line-2999") && screen.contains("ALL-DONE"));
+    client.input(pane.pane, b"x").expect("input");
+    assert_eq!(client.list_panes().await.expect("list").len(), 1);
 }

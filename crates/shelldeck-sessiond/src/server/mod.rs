@@ -2,10 +2,13 @@
 //! (docs/design/session-daemon.md, section 3).
 
 mod conn;
+pub mod launch;
+pub mod log;
 mod pane;
 
 use crate::paths::{self, PathError};
 use crate::protocol::{DaemonFrame, ErrorCode, PaneInfo, MAX_CONNECTIONS, MAX_PANES};
+pub use launch::PaneLauncher;
 use pane::Pane;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -49,6 +52,42 @@ pub struct ServerConfig {
     pub exit_drain: Duration,
     /// History chunks are queued only while the attachment queue is shorter.
     pub backfill_low_water: usize,
+    /// A start that finds the instance lock taken and no socket (the
+    /// holder is on its way out, or has not bound yet) waits this long
+    /// for the lock instead of giving up at once.
+    pub lock_wait: Duration,
+    /// Memory allowed for the history of all panes together, in bytes
+    /// (rows x columns x cell size). Above it the largest histories are
+    /// halved, panes nobody looks at first. Screens are never touched.
+    pub history_budget: u64,
+    /// How often the history budget is checked.
+    pub history_check: Duration,
+    /// Start pane children through the daemon executable, which restores
+    /// the descriptor limit first. Set when the daemon raised its own
+    /// limit; `None` starts them directly.
+    pub pane_launcher: Option<PaneLauncher>,
+    /// Version announced in `HelloAck`.
+    pub daemon_version: String,
+    /// Fault injection for tests: PTY output that contains these bytes
+    /// makes the pane's parser panic. Never set in production.
+    #[doc(hidden)]
+    pub fault_parser_panic: Option<Vec<u8>>,
+    /// For tests: called when the daemon has decided on an idle exit,
+    /// after its last ordinary `accept` and before it takes its socket
+    /// out of the way. Never set in production.
+    #[doc(hidden)]
+    pub before_leaving: Option<TestHook>,
+}
+
+/// A callback a test plants in [`ServerConfig`].
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct TestHook(pub Arc<dyn Fn() + Send + Sync>);
+
+impl std::fmt::Debug for TestHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TestHook")
+    }
 }
 
 impl Default for ServerConfig {
@@ -66,9 +105,19 @@ impl Default for ServerConfig {
             term_grace: Duration::from_secs(3),
             exit_drain: Duration::from_millis(250),
             backfill_low_water: 1024 * 1024,
+            lock_wait: Duration::from_secs(5),
+            history_budget: DEFAULT_HISTORY_BUDGET,
+            history_check: Duration::from_secs(1),
+            pane_launcher: None,
+            daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+            fault_parser_panic: None,
+            before_leaving: None,
         }
     }
 }
+
+/// Default of [`ServerConfig::history_budget`]: 2 GiB.
+pub const DEFAULT_HISTORY_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
@@ -130,6 +179,46 @@ impl Shared {
         }
     }
 
+    /// Keep the history of all panes within the budget: while it is over,
+    /// halve the largest history, panes without a viewer first. A pane
+    /// keeps the lower limit afterwards. Returns the bytes in use at the
+    /// end.
+    fn enforce_history_budget(&self) -> u64 {
+        let budget = self.config.history_budget;
+        loop {
+            let panes: Vec<Arc<Pane>> = self.panes.lock().values().cloned().collect();
+            let usage: Vec<(Arc<Pane>, pane::HistoryUsage)> = panes
+                .into_iter()
+                .map(|pane| {
+                    let usage = pane.history_usage();
+                    (pane, usage)
+                })
+                .collect();
+            let total: u64 = usage.iter().map(|(_, usage)| usage.bytes).sum();
+            if total <= budget {
+                return total;
+            }
+            // Unattached before attached, then the largest.
+            let victim = usage
+                .iter()
+                .filter(|(_, usage)| usage.rows >= 2)
+                .max_by_key(|(_, usage)| (!usage.attached, usage.bytes));
+            let Some((pane, before)) = victim else {
+                // Nothing left to trim: the screens alone are over budget.
+                return total;
+            };
+            let kept = pane.halve_history();
+            tracing::info!(
+                pane = %pane.id,
+                rows_before = before.rows,
+                rows_kept = kept,
+                total_bytes = total,
+                budget_bytes = budget,
+                "history over budget, trimmed"
+            );
+        }
+    }
+
     fn list_panes(&self) -> Vec<PaneInfo> {
         let panes: Vec<Arc<Pane>> = self.panes.lock().values().cloned().collect();
         let mut infos: Vec<PaneInfo> = panes.iter().map(|pane| pane.info()).collect();
@@ -149,6 +238,12 @@ impl Drop for ConnSlot {
     }
 }
 
+/// How often a start that waits for the instance lock tries again.
+const LOCK_POLL: Duration = Duration::from_millis(10);
+/// How long an idle daemon keeps listening after it took its socket out of
+/// the way, for connections that were already on their way.
+const LEAVING_LINGER_MS: i32 = 30;
+
 /// Wait after an `accept` failure that is not "nothing to accept".
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 
@@ -163,19 +258,53 @@ fn spare_descriptor() -> Option<std::fs::File> {
     std::fs::File::open("/dev/null").ok()
 }
 
+/// Tell a connection that cannot be served why (`LimitExceeded`), before
+/// it is closed.
+pub(crate) fn refuse(stream: &std::os::unix::net::UnixStream) {
+    if paths::check_peer(stream).is_err() {
+        return;
+    }
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    if let Ok(frame) = (DaemonFrame::Error {
+        request_id: 0,
+        pane: Uuid::nil(),
+        code: ErrorCode::LimitExceeded,
+        retryable: true,
+    })
+    .encode()
+    {
+        let mut stream = stream;
+        let _ = stream.write_all(&frame);
+    }
+}
+
 /// A daemon that holds the instance lock and listens on its socket.
 pub struct Server {
     shared: Arc<Shared>,
     listener: UnixListener,
     socket: PathBuf,
-    /// Held for the daemon's lifetime: only the holder may unlink the socket.
-    _lock: std::fs::File,
+    /// Held while the socket exists: only the holder may unlink it. Given
+    /// up as soon as the socket is unlinked (see `shutdown`).
+    lock: std::fs::File,
 }
 
 impl Server {
     /// Take the single-instance lock, replace a stale socket and listen.
     /// `Ok(None)` means another daemon is already serving this directory.
     pub fn bind(dir: &Path, config: ServerConfig) -> Result<Option<Self>, ServeError> {
+        Self::bind_with(dir, config, || {})
+    }
+
+    /// [`bind`](Self::bind), with `locked` called once this process holds
+    /// the instance lock and before the socket exists: the place to open
+    /// what only the one daemon of a directory may open (its log), before
+    /// any client can connect.
+    pub fn bind_with(
+        dir: &Path,
+        config: ServerConfig,
+        locked: impl FnOnce(),
+    ) -> Result<Option<Self>, ServeError> {
         paths::ensure_run_dir(dir)?;
         let socket = paths::socket_path(dir);
         let lock = std::fs::OpenOptions::new()
@@ -184,15 +313,34 @@ impl Server {
             .write(true)
             .mode(0o600)
             .open(dir.join(paths::LOCK_NAME))?;
-        // SAFETY: flock on a descriptor this function owns.
-        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        // A lock that is taken next to a socket means a daemon serves the
+        // directory. A lock taken without a socket is a daemon that has
+        // unlinked its socket and is about to release the lock, or one
+        // that has not bound yet: wait for whichever comes first, so a
+        // start during the old daemon's exit is not lost.
+        let waiting_since = Instant::now();
+        loop {
+            // SAFETY: flock on a descriptor this function owns.
+            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                break;
+            }
             let error = std::io::Error::last_os_error();
-            return if error.kind() == std::io::ErrorKind::WouldBlock {
-                Ok(None)
-            } else {
-                Err(error.into())
-            };
+            if error.kind() != std::io::ErrorKind::WouldBlock {
+                return Err(error.into());
+            }
+            if std::fs::symlink_metadata(&socket).is_ok()
+                || waiting_since.elapsed() >= config.lock_wait
+            {
+                return Ok(None);
+            }
+            std::thread::sleep(LOCK_POLL);
         }
+
+        // Left behind by a daemon that was killed in the middle of its
+        // idle exit: only the lock holder removes it.
+        let _ = std::fs::remove_file(socket.with_file_name(paths::SOCKET_LEAVING_NAME));
+
+        locked();
 
         // The lock file names its holder, for diagnostics and tests.
         let mut lock = lock;
@@ -229,7 +377,7 @@ impl Server {
             }),
             listener,
             socket,
-            _lock: lock,
+            lock,
         }))
     }
 
@@ -237,6 +385,7 @@ impl Server {
     pub fn run(self, stop: &AtomicBool) -> ServeOutcome {
         let shared = &self.shared;
         let mut last_busy = Instant::now();
+        let mut last_history_check = Instant::now();
         // Kept open so that, with every other descriptor in use, a pending
         // connection can still be accepted for the time it takes to refuse
         // it. Without it the connection stays in the backlog, the listener
@@ -268,7 +417,7 @@ impl Server {
                             // say why, close, take the spare back.
                             let refused = match self.listener.accept() {
                                 Ok((stream, _)) => {
-                                    Self::refuse(&stream);
+                                    refuse(&stream);
                                     true
                                 }
                                 Err(_) => false,
@@ -304,6 +453,11 @@ impl Server {
                 shared.remove_pane(&id);
             }
 
+            if last_history_check.elapsed() >= shared.config.history_check {
+                last_history_check = Instant::now();
+                shared.enforce_history_budget();
+            }
+
             let busy = shared.pane_count() > 0 || shared.connections.load(Ordering::Relaxed) > 0;
             if busy {
                 last_busy = Instant::now();
@@ -312,11 +466,66 @@ impl Server {
                 .idle_exit
                 .is_some_and(|idle| last_busy.elapsed() >= idle)
             {
-                break ServeOutcome::IdleExit;
+                if self.leave_if_unwanted() {
+                    break ServeOutcome::IdleExit;
+                }
+                // A client arrived at the last moment: keep serving.
+                last_busy = Instant::now();
             }
         };
+        tracing::info!(?outcome, "session daemon stopping");
         self.shutdown();
         outcome
+    }
+
+    /// Last step before an idle exit. The socket is renamed out of the
+    /// way, so no new connection can reach this listener, then the
+    /// listener is read once more: a client whose `connect` had already
+    /// found the socket is in the backlog by then. If there is one, the
+    /// socket goes back to its name and the daemon keeps serving (`false`).
+    /// Otherwise the socket is removed for good (`true`).
+    ///
+    /// Without this, a connection that arrives between the last `accept`
+    /// and the close of the listener is reset, and its client has to guess
+    /// that the daemon was leaving.
+    fn leave_if_unwanted(&self) -> bool {
+        if let Some(hook) = &self.shared.config.before_leaving {
+            (hook.0)();
+        }
+        let leaving = self.socket.with_file_name(paths::SOCKET_LEAVING_NAME);
+        if std::fs::rename(&self.socket, &leaving).is_err() {
+            // The socket is gone already: nothing can connect.
+            return true;
+        }
+        let mut pollfd = libc::pollfd {
+            fd: self.listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd for a descriptor owned by `self`.
+        unsafe { libc::poll(&mut pollfd, 1, LEAVING_LINGER_MS) };
+        let mut pending = Vec::new();
+        while let Ok((stream, _)) = self.listener.accept() {
+            pending.push(stream);
+        }
+        if pending.is_empty() {
+            let _ = std::fs::remove_file(&leaving);
+            return true;
+        }
+        if std::fs::rename(&leaving, &self.socket).is_err() {
+            // Cannot serve under the public name any more: let these
+            // clients see a closed connection and start a new daemon.
+            let _ = std::fs::remove_file(&leaving);
+            return true;
+        }
+        tracing::info!(
+            connections = pending.len(),
+            "a client connected during the idle exit, staying"
+        );
+        for stream in pending {
+            self.accept(stream);
+        }
+        false
     }
 
     fn accept(&self, stream: std::os::unix::net::UnixStream) {
@@ -327,7 +536,7 @@ impl Server {
         let _ = stream.set_nonblocking(false);
         let shared = &self.shared;
         if shared.connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-            Self::refuse(&stream);
+            refuse(&stream);
             return;
         }
         shared.connections.fetch_add(1, Ordering::Relaxed);
@@ -340,34 +549,27 @@ impl Server {
             .spawn(move || conn::run(shared_for_conn, stream, slot));
     }
 
-    /// Tell a connection that cannot be served why, and close it.
-    fn refuse(stream: &std::os::unix::net::UnixStream) {
-        if paths::check_peer(stream).is_err() {
-            return;
-        }
-        let _ = stream.set_nonblocking(false);
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-        if let Ok(frame) = (DaemonFrame::Error {
-            request_id: 0,
-            pane: Uuid::nil(),
-            code: ErrorCode::LimitExceeded,
-            retryable: true,
-        })
-        .encode()
-        {
-            let mut stream = stream;
-            let _ = stream.write_all(&frame);
-        }
-    }
-
-    /// Stop serving: unlink the socket, hang up every pane (closing the
-    /// master hangs up its session), wait for the grace period, then
-    /// `SIGKILL` the process group of every pane child still alive.
+    /// Stop serving: unlink the socket, give the instance lock up, hang up
+    /// every pane (closing the master hangs up its session), wait for the
+    /// grace period, then `SIGKILL` the process group of every pane child
+    /// still alive.
+    ///
+    /// The lock is released before the grace period, not at process exit:
+    /// from the moment the socket is unlinked this daemon never touches
+    /// the run directory again, so a new daemon may take over at once. A
+    /// client that starts one while this one is still ending its panes is
+    /// served without waiting for them.
     fn shutdown(self) {
         let shared = &self.shared;
         shared.shutting_down.store(true, Ordering::Relaxed);
         let _ = std::fs::remove_file(&self.socket);
         drop(self.listener);
+        // The log goes with the directory: the next daemon opens it.
+        log::detach();
+        // An explicit unlock, not a close: pane children forked a moment
+        // ago still hold a copy of the descriptor until their `exec`.
+        // SAFETY: flock on a descriptor owned by `self`.
+        unsafe { libc::flock(self.lock.as_raw_fd(), libc::LOCK_UN) };
 
         let panes: Vec<Arc<Pane>> = shared.panes.lock().drain().map(|(_, pane)| pane).collect();
         let alive: Vec<&Arc<Pane>> = panes.iter().filter(|pane| pane.is_alive()).collect();

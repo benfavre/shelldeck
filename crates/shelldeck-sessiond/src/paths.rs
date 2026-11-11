@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 pub const SOCKET_NAME: &str = "sessiond-v1.sock";
 pub const LOCK_NAME: &str = "sessiond-v1.lock";
 pub const LOG_NAME: &str = "sessiond.log";
+/// The one rotated generation of the log.
+pub const LOG_OLD_NAME: &str = "sessiond.log.1";
+/// Name the socket has for an instant while an idle daemon checks that no
+/// connection is still on its way (see `Server::run`).
+pub const SOCKET_LEAVING_NAME: &str = "sessiond-v1.sock.leaving";
 
 /// Longest socket path that fits `sockaddr_un.sun_path` with its NUL.
 #[cfg(target_os = "linux")]
@@ -82,20 +87,92 @@ fn fits_sun_path(dir: &Path) -> bool {
     socket_path(dir).as_os_str().len() <= SUN_PATH_MAX
 }
 
-/// The per-user run directory: `~/.shelldeck/run/<host>/`, or
-/// `/tmp/shelldeck-<uid>/` when the socket path would not fit `sun_path`.
-/// `XDG_RUNTIME_DIR` is deliberately not used: logind removes it when the
-/// last login session ends, which is exactly when the daemon must survive.
+/// The machine identity the operating system keeps across host name
+/// changes, if it has one: `/etc/machine-id` (systemd), the D-Bus copy of
+/// it, or the hardware UUID on macOS.
+fn machine_id() -> Option<String> {
+    for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            let id = text.trim();
+            if !id.is_empty() {
+                return Some(id.to_string());
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = [0u8; 64];
+        let mut len: libc::size_t = buf.len();
+        // SAFETY: the name is NUL terminated, the buffer is valid for
+        // `len` bytes and `len` is updated to the bytes written.
+        let rc = unsafe {
+            libc::sysctlbyname(
+                c"kern.uuid".as_ptr(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rc == 0 {
+            let end = buf[..len.min(buf.len())]
+                .iter()
+                .position(|b| *b == 0)
+                .unwrap_or(len.min(buf.len()));
+            let id = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+            if !id.is_empty() {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+/// Name of this machine's run directory under `~/.shelldeck/run/`.
 ///
-/// The host name can change while a daemon runs (a laptop renamed per
-/// network, `hostnamectl`). A daemon that is already serving a sibling
-/// directory is therefore preferred over an empty directory for the
-/// current name: otherwise its panes would keep running where no client
-/// looks. See [`live_run_dir`].
+/// `m-` and 16 hex digits derived from the machine identity when the
+/// system has one: it does not change with the host name, and two machines
+/// that share a home directory get two names. The identity itself is not
+/// stored (systemd asks applications not to expose `/etc/machine-id`), only
+/// a keyed SHA-256 of it. Without a usable identity (fewer than 8
+/// alphanumeric characters, or the `uninitialized` placeholder of an early
+/// boot) the name is the host name, as before.
+pub fn run_dir_name(machine_id: Option<&str>, host: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let id = machine_id.map(str::trim).filter(|id| {
+        *id != "uninitialized"
+            && id.len() <= 128
+            && id.chars().filter(char::is_ascii_alphanumeric).count() >= 8
+            && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    });
+    match id {
+        Some(id) => {
+            let mut hasher = Sha256::new();
+            hasher.update(b"shelldeck-sessiond run directory v1\0");
+            hasher.update(id.to_ascii_lowercase().as_bytes());
+            let digest = hasher.finalize();
+            let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+            format!("m-{hex}")
+        }
+        None => host.to_string(),
+    }
+}
+
+/// The per-user run directory: `~/.shelldeck/run/<machine>/` (see
+/// [`run_dir_name`]), or `/tmp/shelldeck-<uid>/` when the socket path would
+/// not fit `sun_path`. `XDG_RUNTIME_DIR` is deliberately not used: logind
+/// removes it when the last login session ends, which is exactly when the
+/// daemon must survive.
+///
+/// A daemon that is already serving a sibling directory is preferred over
+/// an empty directory for this machine: a daemon started by an earlier
+/// release lives in a directory named after the host name of that moment,
+/// and its panes would otherwise keep running where no client looks. See
+/// [`live_run_dir`].
 pub fn default_run_dir() -> Result<PathBuf, PathError> {
     let home = home_dir().ok_or(PathError::NoHome)?;
     let root = home.join(".shelldeck").join("run");
-    let dir = root.join(host_component());
+    let dir = root.join(run_dir_name(machine_id().as_deref(), &host_component()));
     if fits_sun_path(&dir) {
         return Ok(live_run_dir(&root, dir));
     }
@@ -236,4 +313,54 @@ pub fn connect_checked(dir: &Path) -> Result<std::os::unix::net::UnixStream, Pat
     let stream = std::os::unix::net::UnixStream::connect(&path)?;
     check_peer(&stream)?;
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // SDTEST-3025 (SDUC-574): the run directory is named after the machine
+    // identity, not the host name, and falls back to the host name only
+    // when the system has no usable identity.
+    #[test]
+    fn sdtest_3025_run_directory_name_is_stable_across_host_names() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let name = run_dir_name(Some(id), "laptop");
+        assert_eq!(name, run_dir_name(Some(id), "laptop.office.example"));
+        assert_eq!(name, run_dir_name(Some(&format!("{id}\n")), "other"));
+        assert_eq!(name, run_dir_name(Some(&id.to_uppercase()), "other"));
+        assert_eq!(name.len(), 18);
+        assert!(name.starts_with("m-"));
+        assert!(name[2..].chars().all(|c| c.is_ascii_hexdigit()));
+        // The identity is not readable from the name.
+        assert!(!name.contains(&id[..8]));
+        // Another machine on the same home directory: another directory.
+        assert_ne!(
+            name,
+            run_dir_name(Some("fedcba9876543210fedcba9876543210"), "laptop")
+        );
+        // A macOS style hardware UUID is accepted too.
+        assert!(
+            run_dir_name(Some("8D8AC610-566D-4EF0-9C22-186B2A5ED793"), "mac").starts_with("m-")
+        );
+
+        // No usable identity: the host name, as in the first releases.
+        for unusable in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("uninitialized"),
+            Some("abc"),
+            Some("../../etc/passwd"),
+        ] {
+            assert_eq!(run_dir_name(unusable, "laptop"), "laptop", "{unusable:?}");
+        }
+        let long = "a".repeat(129);
+        assert_eq!(run_dir_name(Some(&long), "laptop"), "laptop");
+
+        // What this machine resolves to is a private path under the home
+        // directory (or the /tmp fallback), whatever the identity source.
+        let component = run_dir_name(machine_id().as_deref(), &host_component());
+        assert!(!component.is_empty() && !component.contains('/'));
+    }
 }

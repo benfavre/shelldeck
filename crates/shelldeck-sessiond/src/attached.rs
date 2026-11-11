@@ -44,6 +44,11 @@ pub enum AttachError {
     Terminal(String),
     #[error("the session daemon is not available: {0}")]
     Unavailable(String),
+    /// A daemon runs, and it does not speak a protocol version of this
+    /// client: it was left by another version of the app. It is not
+    /// stopped, replaced or sent anything beyond the refused `Hello`.
+    #[error("the session daemon belongs to another version of ShellDeck")]
+    OtherVersion,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -198,6 +203,14 @@ impl LocalSessions {
     /// Give the connection up. Panes keep running.
     pub fn close(&self) {
         self.inner.client.close();
+    }
+
+    /// Version of the daemon, as announced in its `HelloAck`. It can
+    /// differ from this client's: a daemon outlives the app that started
+    /// it, updates included, and is used as long as it speaks the
+    /// protocol.
+    pub fn daemon_version(&self) -> &str {
+        &self.inner.client.hello().daemon_version
     }
 
     /// Emulator revision announced by the daemon.
@@ -450,7 +463,10 @@ fn handshake(
         let stream = tokio::net::UnixStream::from_std(stream)?;
         Client::connect(stream, client_options).await
     })?
-    .map_err(AttachError::from)
+    .map_err(|error| match error {
+        ClientError::Daemon(ErrorCode::UnsupportedVersion) => AttachError::OtherVersion,
+        error => AttachError::from(error),
+    })
 }
 
 /// Keyboard input and resize requests of one session. Ends when the

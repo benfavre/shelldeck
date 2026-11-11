@@ -40,6 +40,12 @@ pub enum AttachedPhase {
     /// The pane could not be created or reached; nothing runs behind this
     /// session.
     Unavailable,
+    /// The daemon that runs was left by another version of the app and
+    /// speaks a protocol this one does not. Nothing was started, stopped
+    /// or changed: the daemon and its panes, this one included if it
+    /// exists, keep running, and the version that started them can show
+    /// them again.
+    OtherVersion,
 }
 
 /// Shared state of one attached session: its phase and the daemon pane it

@@ -108,17 +108,58 @@ New code inside `shelldeck-terminal`:
   `<run dir>/sessiond-v1.lock` and keeps it for its lifetime. Only the lock
   holder may unlink a stale socket and bind. A second `serve` exits 0.
 - Idle exit: with zero panes (dead panes count until they expire) and zero
-  clients for 60 s the daemon unlinks the socket, closes the listener and
-  exits. A client whose connection ends before `HelloAck` (EOF, or a reset
-  when it was still in the listener backlog) treats it as "not running" and
-  starts the daemon once more. While the socket stays missing the start is
-  repeated every 250 ms, because a daemon on its way out has unlinked the
-  socket but still holds the lock, and a `serve` next to it does nothing.
-- Signals: `SIGTERM` closes every PTY master (the kernel hangs up each pane's
-  session), waits up to 3 s, sends `SIGKILL` to the process group of every
-  pane child still alive, then exits. The existing `ChildReaper` is not
-  enough here: it reaps on a detached thread that dies with the process and
-  it only kills the direct child.
+  clients for 60 s the daemon leaves. It first renames its socket to
+  `sessiond-v1.sock.leaving`, so no new connection can reach the listener,
+  waits 30 ms and reads the listener once more: a client whose `connect`
+  had already found the socket is in the backlog by then. If there is one,
+  the socket gets its name back and the daemon keeps serving. Otherwise the
+  socket is removed and the daemon exits. A connection is therefore either
+  served or finds no socket; it is not accepted into a backlog that is then
+  closed.
+- The client side keeps its own guard for daemons of earlier releases: a
+  connection that ends before `HelloAck` (EOF or reset) is treated as "not
+  running" and the daemon is started once more, and the start is repeated
+  every 250 ms while the socket stays missing.
+- Lock handoff: the instance lock is released (an explicit unlock) as soon
+  as the socket is unlinked, before the grace period below, because from
+  that moment the leaving daemon never touches the run directory again. A
+  `serve` that finds the lock taken and no socket waits for the lock (up to
+  5 s, polling every 10 ms) instead of exiting: the holder is either
+  leaving or has not bound yet (then its socket appears and the waiting
+  `serve` exits 0). A client that starts a daemon while the old one is
+  still ending its panes is served at once. Side effect: clients repeat
+  the start while the socket is missing, so several `serve` processes can
+  wait at once; all but one exit when the socket appears. If the daemon
+  that won is stopped within the 10 ms poll of a waiting one, that one
+  takes over and, with nothing to serve, leaves by idle exit a minute
+  later.
+- Signals: `SIGTERM` unlinks the socket, releases the lock, closes every
+  PTY master (the kernel hangs up each pane's session), waits up to 3 s,
+  sends `SIGKILL` to the process group of every pane child still alive,
+  then exits. The existing `ChildReaper` is not enough here: it reaps on a
+  detached thread that dies with the process and it only kills the direct
+  child.
+- Descriptor limit: the daemon raises its own soft `RLIMIT_NOFILE` to 4096
+  (or the hard limit if lower); 256 panes at four descriptors each (the
+  master, one for the reader, one for the writer and the PTY library's
+  writer) do not fit 1024. A limit is inherited, and programs behave differently under a
+  high one, so every pane child starts with the limit the daemon was
+  started with: the PTY library has no hook between `fork` and `exec`, so
+  the daemon starts each pane through its own executable,
+  `shelldeck-sessiond exec-pane --nofile N [--program PATH -- ARGV]`, which
+  sets the limit and replaces itself with the program (same pid, so the
+  process group and the exit status are the program's). On Linux the
+  executable is `/proc/self/exe`, which stays valid when an update replaces
+  the file. The program is looked up before the spawn, so a missing one is
+  still `SpawnFailed`. If the limit could not be raised, or the executable
+  is gone (other systems), panes are started directly.
+- Log: `<run dir>/sessiond.log`, mode 0600, opened by the daemon once it
+  holds the lock and before it listens. 1 MiB, then renamed to
+  `sessiond.log.1` (one old generation). It holds lifecycle events only
+  (start, stop, pane spawned and ended, limits hit, history trimmed, panic
+  locations), never pane output, input, environment or command lines. A
+  daemon that has given its directory up (lock released) writes nothing
+  more to it.
 - `SIGHUP` has a no-op handler. It is never set to `SIG_IGN` and no signal is
   blocked on the spawning thread: ignored dispositions and masks survive
   `exec`. portable-pty also resets both in `pre_exec`; a test pins it
@@ -136,15 +177,22 @@ New code inside `shelldeck-terminal`:
 
 ### Socket path and permissions
 
-- Run directory: `~/.shelldeck/run/<host>/`, created with mode 0700, where
-  `<host>` is `gethostname` reduced to `[A-Za-z0-9.-]`, at most 64 bytes.
-  The host component keeps two machines that share an NFS home from
-  unlinking each other's live socket.
-- The host name can change while a daemon runs. When no socket exists in
-  the directory for the current name, the other directories under
+- Run directory: `~/.shelldeck/run/<machine>/`, created with mode 0700.
+  `<machine>` is `m-` and 16 hex digits: the first 8 bytes of a keyed
+  SHA-256 of the machine identity (`/etc/machine-id`, else
+  `/var/lib/dbus/machine-id`, else `kern.uuid` on macOS). It does not
+  change with the host name, and two machines that share an NFS home get
+  two directories, so they do not unlink each other's live socket. The
+  identity itself is not stored. Without a usable identity the name is
+  `gethostname` reduced to `[A-Za-z0-9.-]`, at most 64 bytes, as in the
+  first prototype.
+- A daemon in another directory is still found: when no socket exists in
+  the directory for this machine, the other directories under
   `~/.shelldeck/run/` are tried (at most 32, same checks) and one where a
-  daemon answers is used instead (`paths::live_run_dir`). A socket left by
-  another machine refuses the connection and is never picked.
+  daemon answers is used instead (`paths::live_run_dir`). This covers a
+  daemon started by a release that named the directory after the host
+  name. A socket left by another machine refuses the connection and is
+  never picked.
 - Socket: `<run dir>/sessiond-v1.sock`. The 0700 directory is what protects
   it during `bind`; the daemon then sets and verifies mode 0600. No `umask`
   call (it is process-wide and would leak into panes).
@@ -185,11 +233,13 @@ New code inside `shelldeck-terminal`:
   client sends `Kill` (which then acts as "close") or one hour passes, so a
   client that reattaches can still show the result.
 - Memory: history is the only large state (about 80 bytes per cell). Default
-  `scrollback_max` is 10 000 rows as in the app, the cap is 100 000. The
-  daemon tracks `rows x cols x size_of::<Cell>()` over all panes; above
-  2 GiB (`serve --history-budget`) it halves the history of the largest
-  pane, panes without attachments first (`set_max_scrollback` keeps the
-  newest rows), until it is under budget again.
+  `scrollback_max` is 10 000 rows as in the app, the cap is 100 000. Once a
+  second the daemon adds up `history rows x cols x size_of::<Cell>()` over
+  all panes; above 2 GiB (`serve --history-budget BYTES`, with a K, M or G
+  suffix) it halves the history of the largest pane, panes without
+  attachments first (`set_max_scrollback` keeps the newest rows), until it
+  is under budget again or every history is down to one row. A trimmed
+  pane keeps the lower limit. Screens are never touched.
 - Lost on daemon exit, host reboot, or `KillUserProcesses=yes` at logout:
   everything (same limits as tmux).
 
@@ -200,7 +250,16 @@ New code inside `shelldeck-terminal`:
   and a new daemon; v1 is never widened in place. Additive v1 frames are
   allowed only behind a feature bit that both sides announced.
 - A running daemon is never replaced while it holds panes. A newer app talks
-  v1 to an older daemon and uses only the features it announced.
+  v1 to an older daemon and uses only the features it announced. The
+  version string in `HelloAck` is informative: only the protocol version
+  decides.
+- A daemon that answers `Hello` with `UnsupportedVersion` (or acknowledges
+  another protocol version) was left by a version of the app this one
+  cannot speak to. The app sends it nothing more, starts no daemon next to
+  it and does not stop it. Sessions for its panes report "managed by
+  another version" and keep their pane id in the saved layout; new
+  terminals are ordinary in-process ones until that daemon has ended by
+  itself.
 - Emulator skew: client and daemon parse the same bytes with possibly
   different builds of `shelldeck-terminal`. `HelloAck` carries the daemon's
   `EMULATOR_REV`. When it differs from the client's, the daemon's grid is
@@ -730,7 +789,7 @@ reported through `SshLifecycleEvent` like `TmuxFailed` today.
 
 ## 9. Local transport
 
-The app connects to `~/.shelldeck/run/<host>/sessiond-v1.sock` directly with
+The app connects to `~/.shelldeck/run/<machine>/sessiond-v1.sock` directly with
 the same client library, after the path and peer checks of section 3. The daemon binary ships next to the app binary; the app
 starts it on demand. Because the daemon is a separate process in its own
 session, quitting or updating the app leaves panes running. On the next start
@@ -835,16 +894,16 @@ bytes or input.
 | Daemon crash | All its panes are lost; the kernel hangs up their sessions, processes ignoring `SIGHUP` are orphaned. Clients see the socket close, mark panes disconnected, and offer a new shell. |
 | Parser panic in one pane | That pane is marked dead and hung up; the daemon and other panes continue. |
 | Stale socket file | Removed only by the process holding the lock. |
-| Idle exit racing a connect | The connection ends before `HelloAck` (EOF or reset): the client starts the daemon once more, repeating the start while the old daemon still holds the lock. |
+| Idle exit racing a connect | The daemon takes its socket out of the way and reads the listener once more before leaving: the connection is served, or finds no socket and the client starts a daemon. A start during an exit waits for the lock. For daemons of earlier releases the client still treats a connection that ends before `HelloAck` as "not running". |
 | Daemon out of file descriptors | A pending connection is accepted on a spare descriptor, answered `Error(LimitExceeded)` and closed; other accept errors back off 50 ms. No connection slot is lost. Existing connections and panes are not affected. |
-| Host name changes while the daemon runs | Clients and a new `serve` find the daemon in its old directory (section 3). |
+| Host name changes while the daemon runs | Nothing happens: the run directory is named after the machine identity. A daemon of an earlier release, in a directory named after the host, is found by the scan of section 3. |
 | Snapshot or history chunk that expands past the decode budget | Refused before allocation; the pane stays on its last screen (snapshot) or loses that history chunk. |
 | Client crash or SSH drop | Attachments dropped, panes keep running, no signal reaches pane children. Reconnect then reattach. |
 | Slow client | Queue cap, `Error(Resync)`, backoff, fresh snapshot (section 5). |
 | Client that stops reading, or a half-sent frame | Bounded by the queue caps; closed after 30 s. |
 | Application not reading its input | Connection backpressure, then that pane's queued input is discarded after 10 s with `Error(Busy)`. |
 | Offset gap or bad frame for a pane | Client restarts the attach; a malformed frame closes the connection. |
-| Version mismatch | `Error(UnsupportedVersion)`, fall back, never auto-kill a daemon that has panes. |
+| Version mismatch | `Error(UnsupportedVersion)`: the daemon and its panes are left running, its sessions say "managed by another version", new local terminals are in-process (a remote host falls back to tmux or a plain shell). Never auto-kill a daemon. |
 | Emulator revision mismatch | Works; the client refreshes from the daemon after resizes and when output goes quiet. |
 | Pane child exits | Final output, then `Exited`; pane kept as dead until closed (`Kill` on the dead pane, or expiry). |
 | Pane removed while other clients are attached | Each attachment still receives what was queued for it (final output, `Exited`), then `Error(NoSuchPane)` with its `attach_id`. |
@@ -1010,28 +1069,40 @@ Implemented now, with automated tests on Linux:
   screen or against `sshd`.
 - Review fixes (subsection "Review fixes" below, SDTEST-2997..3003 and an
   extended SDTEST-2978).
+- Daemon hardening and Linux packaging (subsection "Daemon hardening,
+  version skew and packaging" below): input backpressure with a
+  non-blocking PTY writer, size ownership hysteresis, shutdown with lock
+  handoff, parser panic isolation (SDTEST-2981..2984); the daemon's own
+  descriptor limit with the original restored in pane children, the log
+  file, the daemon side of the idle-exit race, a run directory named after
+  the machine identity, the history budget (SDTEST-3025..3030, SDTEST-3001
+  extended); a daemon left by another app version is used when it speaks
+  the protocol and left alone otherwise (SDTEST-3031, SDTEST-3032,
+  SDTEST-3012 and SDTEST-3013 extended); the daemon binary is built by the
+  release script and carried by the Linux tar.gz, the install script and
+  the updater (SDTEST-3033..3036). The release pipeline itself was not
+  run, nothing was published, and the app was still not launched.
 
 Deferred (details in the subsections below):
 
-- App: packaging of the daemon binary and of the two static remote
-  builds (nothing ships them yet, so on a release build every host
-  falls back with "no program for this kind of server" unless the
-  binary was installed by hand), version check against a daemon left by
-  another app version, saving the split tree of remote tabs.
+- Packaging: the two static remote builds are wired
+  (`scripts/build-sessiond-remote.sh`, opt-in) but were never built: the
+  musl targets are not installed on the machine this was written on, and
+  the repository has no established musl build. Until they are built and
+  shipped, a release build falls back on every SSH host with "no program
+  for this kind of server" unless the binary was installed by hand. The
+  AppImage, the macOS bundle and the Windows archive do not carry the
+  daemon. Saving the split tree of remote tabs.
   Workspace-scoped terminals are not deferred but excluded: they stay
   in-process until the protocol can carry a directory identity (see
   "Workspace-scoped terminals" below).
-- Daemon: log file, history budget, quiescent refresh on emulator revision
-  mismatch, raising `RLIMIT_NOFILE` (256 panes at 3 descriptors each do
-  not fit a 256 or 1024 soft limit; a raised limit would be inherited by
-  pane children, so it needs a reset in the child first), closing the
-  idle-exit race on the daemon side (today the client retries).
+- Daemon: quiescent refresh on emulator revision mismatch.
 - Remote: pruning old versioned binaries after an install, an upgrade
   path for a running daemon of an incompatible release (today: fallback),
   latency work (`nodelay`), SSH tabs opened in a directory (they keep
   the plain path), a remote daemon from a Windows client.
-- Platforms: macOS is coded but never built or run; Windows is a stub.
-- Tests to write: SDTEST-2981..2984 in `docs/testing/tests-sessiond.md`.
+- Platforms: macOS is coded but never built or run (this now includes the
+  `kern.uuid` lookup for the run directory name); Windows is a stub.
 
 Layout:
 
@@ -1077,20 +1148,14 @@ Refinements made while implementing:
 
 Not implemented yet (beyond the phase 1 exclusions of section 14):
 
-- The daemon log file, the history budget, `serve --history-budget`.
-- Input stall detection looks at frames taken by the pane writer, not at
-  bytes accepted by the PTY: a frame blocked inside `write` counts as no
-  progress only once the queue is full.
-- A pane writer thread blocked in `write` to a PTY whose foreground process
-  never reads stays blocked after the pane is closed, until that process
-  exits or is killed.
 - The quiescent refresh on emulator revision mismatch (the client only
   resyncs after a resize it cannot reproduce).
-- macOS: `getpeereid` and the 104-byte `sun_path` are coded but untested.
-  The non-unix stub `main` is not compiled or tested here.
-- Tests still to write are listed in `docs/testing/tests-sessiond.md`
-  (input backpressure, resize ownership hysteresis, `SIGTERM` with a child
-  that ignores `SIGHUP`, parser panic isolation, SSH transport).
+- macOS: `getpeereid`, the 104-byte `sun_path` and the `kern.uuid` lookup
+  are coded but untested. The non-unix stub `main` is not compiled or
+  tested here.
+- Input held back by a full PTY is only detected as a stall once the
+  pane's queue is full as well (1 MiB by default): a smaller paste into a
+  program that never reads simply stays queued.
 
 Known cost: `shelldeck-sessiond` links `shelldeck-core` through
 `shelldeck-terminal` (accepted for the prototype, section 2).
@@ -1225,8 +1290,10 @@ it is shown; otherwise one toast names the reason and the backend in use.
 Artifacts: `shelldeck-sessiond-x86_64-unknown-linux-musl` and
 `shelldeck-sessiond-aarch64-unknown-linux-musl`, looked up in
 `SHELLDECK_SESSIOND_ARTIFACT_DIR` (development), next to the app binary,
-then in `sessiond/` of the app data directory. No build step or package
-produces them yet.
+then in `sessiond/` of the app data directory. They are produced by the
+opt-in `scripts/build-sessiond-remote.sh` and, when present, carried by
+the Linux archive, the install script and the updater; that script has
+not been executed yet (see "Daemon hardening, version skew and packaging").
 
 Panes offered back: the app labels its remote panes `shelldeck-remote`.
 On `DaemonReady` the connecting tab takes the first live pane with that
@@ -1445,12 +1512,14 @@ Differences from sections 9 and 10, and limits of this slice:
 - Reading `workspace.json` at restore still happens on the UI thread (a
   small local file, as before); it now also happens with
   `auto_connect_on_startup` off when panes came back.
-- The daemon binary is not packaged: the bundle, installer and updater do
-  not ship `shelldeck-sessiond` yet, so outside a development build the
-  setting falls back to in-process terminals (with a warning in the log).
-- A daemon left over from an older app version keeps serving until it idles
-  out (60 s without pane or client); the version check and upgrade story
-  of section 3 are not implemented.
+- The daemon binary ships with the Linux tar.gz install only (see "Daemon
+  hardening, version skew and packaging"). From an AppImage, on macOS and
+  on Windows the setting falls back to in-process terminals (with a
+  warning in the log).
+- A daemon left over from another app version keeps serving until it idles
+  out (60 s without pane or client). It is used when it speaks the
+  protocol; otherwise its panes are shown as managed by another version
+  (same subsection).
 - Not built or run on macOS or Windows. On non Unix targets the backend is
   a stub that reports "not available", so the setting has no effect and
   the toggle is hidden.
@@ -1475,10 +1544,10 @@ on the client side only.
 | Each client sent `Kill` on `Exited`, removing the dead pane and discarding the other clients' final frames | Fixed twice: the session no longer removes a pane on exit, and a removal lets every attachment drain its queue and ends it with `Error(NoSuchPane)`. SDTEST-3000, SDTEST-2995. |
 | Snapshot and history decoders expanded run-length cells without a budget (66 KiB to more than 8 GiB) | Fixed: decode budgets, rows beyond the grid's room are not decoded, a chunk beyond the requested history closes the connection. SDTEST-2997. |
 | A connection slot leaked when the writer's descriptor could not be cloned | Fixed: the slot is an RAII guard that follows the connection; a reader panic no longer holds it either. SDTEST-3001. |
-| Accept loop spinning at 100% CPU on `EMFILE` | Fixed: spare descriptor to accept and refuse with `LimitExceeded`, 50 ms backoff on other errors. SDTEST-3001. `RLIMIT_NOFILE` is not raised (deferred, see the status summary). |
+| Accept loop spinning at 100% CPU on `EMFILE` | Fixed: spare descriptor to accept and refuse with `LimitExceeded`, 50 ms backoff on other errors. SDTEST-3001. Later: the daemon raises its own `RLIMIT_NOFILE` (SDTEST-3028), and a connection accepted with no descriptor left for its writer is told `LimitExceeded` too instead of being closed without a word. |
 | Handshake and frame deadlines only checked on a read timeout | Fixed: checked on every turn; an oversize first frame is refused on its length bytes. SDTEST-2978. The frame deadline now restarts whenever a frame completes, so a long paste is not cut. |
-| Run directory keyed on a host name that can change | Fixed: a live daemon in a sibling directory is preferred (`paths::live_run_dir`). SDTEST-3002. The directory is still named after the host. |
-| Idle-exit race: a reset instead of EOF was not retried; a start during the old daemon's exit did nothing | Fixed on the client: reset, broken pipe and unexpected EOF before `HelloAck` count as "not running", and the start is repeated every 250 ms while the socket is missing. SDTEST-3003. Not changed in the daemon: it still exits with connections possibly left in the backlog, and with panes alive at `SIGTERM` the lock is held for the 3 s grace, which equals the client's start timeout. |
+| Run directory keyed on a host name that can change | Fixed: a live daemon in a sibling directory is preferred (`paths::live_run_dir`). SDTEST-3002. Later: the directory is named after the machine identity (SDTEST-3025). |
+| Idle-exit race: a reset instead of EOF was not retried; a start during the old daemon's exit did nothing | Fixed on the client: reset, broken pipe and unexpected EOF before `HelloAck` count as "not running", and the start is repeated every 250 ms while the socket is missing. SDTEST-3003. Later, in the daemon: the idle exit reads the listener once more after taking the socket out of the way, the lock is released before the grace period and a start waits for it (SDTEST-3029, SDTEST-2983). |
 
 Side effects to know:
 
@@ -1491,4 +1560,113 @@ Side effects to know:
 - `default_run_dir()` may open and close one connection to a daemon in a
   sibling directory when the directory for the current host name has no
   socket.
+
+
+
+### Daemon hardening, version skew and packaging
+
+Third step after the prototype. Tests on Linux only; the app was not
+launched, the release pipeline was not run and nothing was published.
+
+Tests that were still to write, and what they changed:
+
+| Test | What it pins | Changed in the code |
+|---|---|---|
+| SDTEST-2981 | A program that does not read its terminal holds back only the connection pasting into it; after the stall timeout the queue is discarded with `Error(Busy)` for that pane; the pane can still be killed | The PTY master is non-blocking and the writer thread waits with `poll`: it sees a discarded queue (it drops the frame it holds) and a closed pane, where it used to stay inside `write` until the program exited. Progress is now bytes accepted by the PTY, not frames taken from the queue. Other connections waiting for room are woken when a queue is discarded. |
+| SDTEST-2982 | The size follows the client that typed last; an active owner keeps it for 1 s; a resize request of a non-owner is only remembered | Nothing: `Pane::note_input` behaved as designed. |
+| SDTEST-2983 | `SIGTERM`: the socket goes at once, a pane that ignores the hangup lives through the grace period and is then killed with its group, and a new daemon serves the directory meanwhile | Lock handoff (section 3). `serve --term-grace-ms` and `--idle-exit-ms` exist for tests and are not in the usage text. |
+| SDTEST-2984 | A parser panic ends only its pane (`Exited`, code -1, signal 0), the chunk that panicked is not forwarded, the program is hung up, everything else goes on | Nothing in the logic. `ServerConfig::fault_parser_panic` is the injection point (hidden, never set by the binary). |
+
+Finished from the review list:
+
+- Descriptor limit (SDTEST-3027, SDTEST-3028): as in section 3. Seen in
+  the test: daemon soft limit 100 raised to 4096, a command pane and a
+  login shell pane both at 100, the login shell with `argv[0]` `-sh`, not
+  ignoring or blocking `SIGHUP`, a missing program still refused.
+- Writer descriptor (SDTEST-3001 extended): the test now runs under 13
+  and under 12 descriptors. With 12 a connection is accepted and has no
+  descriptor left for its writer: it used to be closed without a word and
+  is now told `LimitExceeded`. This was found because the log file takes
+  one descriptor more than before.
+- Idle exit and lock (SDTEST-3029): as in section 3. The race is made
+  certain in the test by a hook (`ServerConfig::before_leaving`, hidden,
+  never set by the binary) that connects after the daemon's last ordinary
+  `accept`: the connection is served and the daemon stays. With the last
+  read of the listener disabled that test fails with a reset connection
+  (checked by hand, once). The test also sweeps a connect across the
+  moment of the exit 40 times; that part passes with or without the fix
+  and only guards the two allowed outcomes. A daemon killed during the
+  30 ms of the exit leaves `sessiond-v1.sock.leaving` behind; the next
+  daemon removes it.
+- Run directory (SDTEST-3025): as in section 3. `default_run_dir()` is
+  used by the app, the proxy and `serve` alike, so a remote host follows
+  the same rule.
+- Log (SDTEST-3026, SDTEST-3028): as in section 3. `tracing-subscriber`
+  is a new dependency of the crate (already in the workspace).
+- History budget (SDTEST-3030): as in section 3. Accounting uses the
+  current column count for every history row.
+
+Version skew (SDTEST-3031, SDTEST-3032; SDTEST-3012 and SDTEST-3013
+extended):
+
+- Compatible: nothing special. `LocalSessions::daemon_version()` exposes
+  the announced version and the supervisor logs once per connection when
+  it differs from its own.
+- Incompatible: the handshake error becomes `AttachError::OtherVersion`;
+  the supervisor remembers it (`daemon_is_other_version`), a session ends
+  at once in `AttachedPhase::OtherVersion` with the notice
+  `terminal.session_daemon.other_version`, and keeps its pane id. The tab
+  shows an error state with "managed by another version of ShellDeck".
+- At startup `restorable_daemon_panes()` returns
+  `RestorablePanes::OtherVersion`; the saved daemon tabs are rebuilt from
+  the saved layout (`WorkspaceState::saved_daemon_panes`) and each pane
+  reports the state. Which of them still run is unknown to this app. The
+  layout saved at the next quit keeps them.
+- A new local terminal is an in-process one while the flag is set, and
+  each such open rechecks in the background (`Supervisor::recheck`) so
+  daemon panes come back once the other daemon has ended.
+- What cannot be done for such a daemon: list, attach, end its panes
+  (closing the tab or signing out leaves them running), or tell the user
+  which version it is (the refusal carries no version).
+- The test daemon for the incompatible case is a stand-in that answers
+  every `Hello` with `UnsupportedVersion` and records what else it
+  receives (nothing). No real daemon of another protocol version exists
+  to test against. The UI part (`restore_session`, the fallback in
+  `daemon::spawn`, the tab text) is compiled and read only.
+- A remote host with an incompatible daemon still falls back to tmux or a
+  plain shell (unchanged); its panes are not shown as tabs.
+
+Packaging:
+
+- `scripts/build-release.sh` builds `shelldeck-sessiond` (release
+  profile) on Linux. `scripts/package-release.sh` requires it and puts it
+  in `shelldeck-linux-x86_64.tar.gz` beside `shelldeck`, with the static
+  remote builds when they exist (only the two shipped names, each checked
+  to be an ELF file).
+- The install script (`cloudflare/update-worker/src/index.ts`) copies
+  those files into `~/.shelldeck/bin` by rename. It takes effect when the
+  worker is deployed, which was not done.
+- The updater (`shelldeck-update::installer::SessiondPayload`) stages the
+  files beside the installed ones before the application binary is
+  swapped and renames them into place after; a failed update removes the
+  staged copies. An archive without them is accepted.
+- A running daemon keeps the file it was started from in all three cases
+  (replacement is always a rename), and starts its panes through
+  `/proc/self/exe`.
+- The AppImage does not carry the daemon: the image is a mount that goes
+  away with the application, and a daemon outlives it. Shipping it there
+  needs a copy to a stable path first (not done). The macOS bundle and
+  the Windows archive are unchanged.
+- Static remote builds: `scripts/build-sessiond-remote.sh` checks the
+  targets, builds with `crt-static`, checks the ELF machine and that the
+  result has no interpreter, and writes
+  `target/release/shelldeck-sessiond-<triple>`. It is opt-in
+  (`SHELLDECK_SESSIOND_REMOTE=1`) and was never executed. An open risk:
+  the crate links `shelldeck-core` through `shelldeck-terminal`, and with
+  it crates that expect system libraries at link time (D-Bus through the
+  keyring); the glibc build drops them as unused, a static musl link may
+  not. If so, the terminal crate has to lose that dependency first.
+- Contract tests: `scripts/test-sessiond-packaging.py` (archive contents,
+  the rendered installer run under a temporary HOME, the remote build
+  script's checks) and SDTEST-3033 for the updater.
 

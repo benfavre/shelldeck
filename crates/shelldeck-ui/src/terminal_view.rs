@@ -204,9 +204,12 @@ enum LocalCwdScope {
     },
 }
 
-/// Live session daemon panes that no session shows yet (app restart).
+pub(crate) use daemon::RestorablePanes;
+
+/// Session daemon panes that no session shows yet (app restart), or the
+/// fact that the daemon belongs to another version of the app.
 /// Blocking: call it from a background thread, never the GPUI thread.
-pub(crate) fn restorable_daemon_panes() -> Vec<Uuid> {
+pub(crate) fn restorable_daemon_panes() -> RestorablePanes {
     daemon::restorable_panes()
 }
 
@@ -617,6 +620,9 @@ impl TerminalView {
             let status = session.attached_status()?;
             match status.phase() {
                 AttachedPhase::Ended { .. } | AttachedPhase::Unavailable => None,
+                // `OtherVersion` included: the pane runs under a daemon
+                // this app cannot speak to, and its place in the layout
+                // is kept for the version that can.
                 _ => status.pane(),
             }
         }
@@ -1937,6 +1943,7 @@ impl TerminalView {
                                 &phase,
                                 &t!("terminal.session_daemon.ended"),
                                 &t!("terminal.session_daemon.unavailable"),
+                                &t!("terminal.session_daemon.other_version_tab"),
                             );
                             if s.state != state {
                                 s.state = state.clone();
@@ -5829,8 +5836,11 @@ mod tests {
             *ratio = 0.3;
             // Tab B: still connecting, its pane does not exist yet.
             terminal.add_session(attached(None, AttachedPhase::Connecting));
-            // Tab C: one pane, active.
+            // Tab C: one pane.
             terminal.add_session(attached(Some(5), AttachedPhase::Live));
+            // Tab D: its pane runs under a daemon of another version of
+            // the app. This app cannot show it, and keeps its place.
+            terminal.add_session(attached(Some(6), AttachedPhase::OtherVersion));
 
             let saved = terminal.daemon_tab_layouts();
             assert_eq!(
@@ -5852,6 +5862,11 @@ mod tests {
                         focused: Some(Uuid::from_u128(5)),
                         named: false,
                     }),
+                    Some(DaemonTabLayout {
+                        tree: leaf(6),
+                        focused: Some(Uuid::from_u128(6)),
+                        named: false,
+                    }),
                 ]
             );
 
@@ -5871,7 +5886,7 @@ mod tests {
             // Sign-out ends every pane, in every tab and split; a plain
             // close (app quit) ends none.
             terminal.end_daemon_panes();
-            assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 5);
+            assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 6);
 
             // A workspace-scoped view never takes daemon panes.
             terminal.default_cwd = LocalCwdScope::Required {
@@ -5880,7 +5895,7 @@ mod tests {
             };
             assert!(!terminal.restores_daemon_panes());
             terminal.close_all_sessions();
-            assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 5);
+            assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 6);
         });
     }
 

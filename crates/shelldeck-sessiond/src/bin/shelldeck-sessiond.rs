@@ -18,7 +18,7 @@ mod unix {
         connect_unix, AttachOptions, Client, ClientOptions, MirrorOutcome, PaneEvent, PaneMirror,
         SpawnOptions,
     };
-    use shelldeck_sessiond::server::{self, ServeOutcome, ServerConfig};
+    use shelldeck_sessiond::server::{self, launch, PaneLauncher, Server, ServerConfig};
     use shelldeck_sessiond::{paths, proxy};
     use std::io::Write;
     use std::path::PathBuf;
@@ -28,7 +28,9 @@ mod unix {
     const USAGE: &str = "\
 usage: shelldeck-sessiond <command>
 
-  serve [--dir DIR] [--detach]        run the session daemon
+  serve [--dir DIR] [--detach] [--history-budget BYTES]
+                                      run the session daemon (the budget
+                                      takes a K, M or G suffix)
   proxy --hello NONCE [--dir DIR]     stdio bridge to the daemon (SSH transport)
   --version
 
@@ -55,6 +57,12 @@ debug commands:
         hello: Option<String>,
         rows: Option<u16>,
         cols: Option<u16>,
+        nofile: Option<u64>,
+        program: Option<String>,
+        history_budget: Option<u64>,
+        term_grace_ms: Option<u64>,
+        idle_exit_ms: Option<u64>,
+        log_cap: Option<u64>,
         seed: u64,
         bytes: u64,
         pace_us: u64,
@@ -73,6 +81,18 @@ debug commands:
                 "--hello" => parsed.hello = Some(value("--hello")?),
                 "--rows" => parsed.rows = Some(number(&value("--rows")?)?),
                 "--cols" => parsed.cols = Some(number(&value("--cols")?)?),
+                "--nofile" => parsed.nofile = Some(number(&value("--nofile")?)?),
+                "--program" => parsed.program = Some(value("--program")?),
+                "--history-budget" => {
+                    parsed.history_budget = Some(byte_size(&value("--history-budget")?)?)
+                }
+                // Not in the usage text: for tests, which cannot wait for
+                // the production timeouts.
+                "--term-grace-ms" => {
+                    parsed.term_grace_ms = Some(number(&value("--term-grace-ms")?)?)
+                }
+                "--idle-exit-ms" => parsed.idle_exit_ms = Some(number(&value("--idle-exit-ms")?)?),
+                "--log-cap" => parsed.log_cap = Some(byte_size(&value("--log-cap")?)?),
                 "--seed" => parsed.seed = number(&value("--seed")?)?,
                 "--bytes" => parsed.bytes = number(&value("--bytes")?)?,
                 "--pace-us" => parsed.pace_us = number(&value("--pace-us")?)?,
@@ -89,6 +109,20 @@ debug commands:
 
     fn number<T: std::str::FromStr>(text: &str) -> Result<T, String> {
         text.parse().map_err(|_| format!("invalid number {text}"))
+    }
+
+    /// A byte count with an optional binary suffix: `512M`, `2G`, `65536`.
+    fn byte_size(text: &str) -> Result<u64, String> {
+        let (digits, shift) = match text.as_bytes().last() {
+            Some(b'k' | b'K') => (&text[..text.len() - 1], 10),
+            Some(b'm' | b'M') => (&text[..text.len() - 1], 20),
+            Some(b'g' | b'G') => (&text[..text.len() - 1], 30),
+            _ => (text, 0),
+        };
+        let value: u64 = number(digits)?;
+        value
+            .checked_mul(1 << shift)
+            .ok_or_else(|| format!("{text} is too large"))
     }
 
     pub fn main() -> ExitCode {
@@ -117,6 +151,12 @@ debug commands:
                 };
                 return ExitCode::from(proxy::run(args.dir.as_deref(), nonce));
             }
+            // Started by the daemon for each pane, never by hand: restore
+            // the descriptor limit, then become the pane program.
+            "exec-pane" => Err(format!(
+                "cannot run the pane program: {}",
+                launch::exec_pane(args.nofile, args.program.as_deref(), &args.trailing)
+            )),
             "debug-flood" => crate::flood::run(args.seed, args.bytes, args.pace_us),
             "list" | "spawn" | "attach" | "kill" => debug_command(&command, args),
             _ => {
@@ -216,13 +256,60 @@ debug commands:
             libc::signal(libc::SIGHUP, on_hangup as *const () as libc::sighandler_t);
         }
         let dir = paths::resolve_run_dir(args.dir.as_deref()).map_err(|e| e.to_string())?;
-        match server::serve(&dir, ServerConfig::default(), &STOP) {
-            // A second `serve` exits 0: the first keeps serving.
-            Ok(ServeOutcome::AlreadyRunning | ServeOutcome::IdleExit | ServeOutcome::Shutdown) => {
-                Ok(())
-            }
-            Err(error) => Err(error.to_string()),
+        let mut config = ServerConfig::default();
+        if let Some(budget) = args.history_budget {
+            config.history_budget = budget;
         }
+        if let Some(ms) = args.term_grace_ms {
+            config.term_grace = std::time::Duration::from_millis(ms);
+        }
+        if let Some(ms) = args.idle_exit_ms {
+            config.idle_exit = Some(std::time::Duration::from_millis(ms));
+        }
+        // The daemon needs more descriptors than a login session gets, the
+        // pane programs must not: they are started through this executable
+        // again, which puts the limit back. Without a way to do that the
+        // limit stays as it is.
+        let nofile_before = launch::nofile_soft();
+        if let Some(exe) = launcher_exe() {
+            if let Some(nofile_soft) = launch::raise_nofile_limit(launch::NOFILE_TARGET) {
+                config.pane_launcher = Some(PaneLauncher { exe, nofile_soft });
+            }
+        }
+        // Only the daemon that holds the instance lock writes the log, and
+        // it opens it before a client can connect.
+        let log_cap = args.log_cap.unwrap_or(server::log::DEFAULT_LOG_CAP);
+        let bound = Server::bind_with(&dir, config, || {
+            server::log::install(&dir, log_cap);
+        });
+        let Some(server) = bound.map_err(|e| e.to_string())? else {
+            // A second `serve` exits 0: the first keeps serving.
+            return Ok(());
+        };
+        tracing::info!(
+            version = env!("CARGO_PKG_VERSION"),
+            pid = std::process::id(),
+            dir = %dir.display(),
+            nofile_before = ?nofile_before,
+            nofile = ?launch::nofile_soft(),
+            "session daemon started"
+        );
+        server.run(&STOP);
+        Ok(())
+    }
+
+    /// The path pane children are started through. On Linux the running
+    /// image itself, which stays valid when an app update replaces or
+    /// removes the file the daemon was started from.
+    fn launcher_exe() -> Option<PathBuf> {
+        #[cfg(target_os = "linux")]
+        {
+            let image = PathBuf::from("/proc/self/exe");
+            if image.exists() {
+                return Some(image);
+            }
+        }
+        std::env::current_exe().ok().filter(|exe| exe.is_absolute())
     }
 
     // -- debug commands -----------------------------------------------------

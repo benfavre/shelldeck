@@ -80,6 +80,8 @@ jobs:
           python3 scripts/test-agents-packaging.py
           python3 scripts/test-macos-branding.py
           python3 scripts/test-browser-packaging.py
+          python3 scripts/test-sessiond-packaging.py
+          bash -n scripts/build-sessiond-remote.sh
           bash -n packaging/linux/build-appimage.sh
           bash -n packaging/windows/build-nsis.sh
           desktop-file-validate packaging/linux/shelldeck.desktop

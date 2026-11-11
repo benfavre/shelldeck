@@ -149,6 +149,7 @@ pub(super) fn host_for(connection: &Connection) -> Result<RemoteHost, String> {
                     connection_lost: notice("terminal.session_daemon.connection_lost"),
                     ended: notice("terminal.session_daemon.ended"),
                     unavailable: notice("terminal.session_daemon.unavailable"),
+                    other_version: notice("terminal.session_daemon.other_version"),
                 },
                 ..SupervisorOptions::default()
             },

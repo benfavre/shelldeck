@@ -63,6 +63,12 @@ mkdir -p "$APPDIR/usr/bin/browser" "$APPDIR/usr/share/applications" \
     "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp "$BINARY" "$APPDIR/usr/bin/shelldeck"
 chmod +x "$APPDIR/usr/bin/shelldeck"
+# The session daemon (shelldeck-sessiond) is deliberately not copied into
+# the AppImage. It outlives the application, and the image is a FUSE mount
+# that goes away when the application exits: a daemon started from it would
+# lose its own executable. Without the binary beside it the application uses
+# in-process terminals (docs/design/session-daemon.md, section 15,
+# "Packaging"). The tar.gz install and its updater carry the daemon.
 cp -a "$BROWSER_SOURCE" "$APPDIR/usr/bin/browser/$VERSION"
 # Staging uses a private 0700 temporary directory. SquashFS normalizes ownership
 # to root, so published runtime directories/data must remain readable/executable

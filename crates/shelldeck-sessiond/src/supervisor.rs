@@ -25,7 +25,7 @@ use shelldeck_terminal::attached::{AttachedFeed, AttachedPhase};
 use shelldeck_terminal::session::TerminalSession;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -115,6 +115,9 @@ pub struct Notices {
     pub ended: Option<String>,
     /// The pane could not be created or reached. The reason is appended.
     pub unavailable: Option<String>,
+    /// The running daemon was left by another version of the app and
+    /// cannot be spoken to; it and its panes are left alone.
+    pub other_version: Option<String>,
 }
 
 /// Delay before reconnect attempt number `attempt` (0 based): `start`
@@ -192,6 +195,8 @@ pub enum LinkEvent {
     Exited(i32),
     /// The daemon does not know the pane (any more).
     PaneGone,
+    /// A daemon runs but speaks no protocol version of this client.
+    OtherVersion,
 }
 
 /// What the supervisor does next.
@@ -286,6 +291,9 @@ impl Reconnect {
             LinkEvent::PaneGone => Step::Finish(AttachedPhase::Ended {
                 exit_code: self.exit_code,
             }),
+            // Retrying cannot help and replacing that daemon would end
+            // its panes: stop, whatever the session was doing.
+            LinkEvent::OtherVersion => Step::Finish(AttachedPhase::OtherVersion),
         }
     }
 }
@@ -407,6 +415,8 @@ struct Inner {
     /// Sessions whose thread still runs (connecting, attached or waiting
     /// to reconnect).
     sessions: AtomicUsize,
+    /// The last connect found a daemon of another, incompatible version.
+    other_version: AtomicBool,
     on_idle: Mutex<Option<IdleFn>>,
     /// The shared connection. Held while connecting, so several sessions
     /// opening at once make one connection and start one daemon. Never
@@ -447,6 +457,7 @@ impl Supervisor {
                 connector,
                 options,
                 sessions: AtomicUsize::new(0),
+                other_version: AtomicBool::new(false),
                 on_idle: Mutex::new(None),
                 connection: Mutex::new(None),
                 panes: Mutex::new(HashSet::new()),
@@ -559,6 +570,23 @@ impl Supervisor {
         *self.inner.on_idle.lock() = Some(Arc::new(callback));
     }
 
+    /// Whether the last attempt to reach the daemon found one left by
+    /// another, incompatible version of the app. While that is so, new
+    /// sessions cannot be daemon panes (the caller opens an ordinary
+    /// terminal instead) and nothing is done to that daemon. Updated by
+    /// every connect, see [`recheck`](Self::recheck).
+    pub fn daemon_is_other_version(&self) -> bool {
+        self.inner.other_version.load(Ordering::SeqCst)
+    }
+
+    /// Look again whether the daemon can be spoken to, without starting
+    /// one. Blocking: call it from a background thread. Returns
+    /// [`daemon_is_other_version`](Self::daemon_is_other_version).
+    pub fn recheck(&self) -> bool {
+        let _ = self.connection(false);
+        self.daemon_is_other_version()
+    }
+
     /// Give the current connection up, as if it had been lost (tests, and
     /// a way to force a reconnect). Panes keep running.
     pub fn drop_connection(&self) {
@@ -583,10 +611,26 @@ impl Supervisor {
             return Ok(Some(sessions.clone()));
         }
         *slot = None;
-        let sessions = self
+        let connected = self
             .inner
             .connector
-            .connect(start, &self.inner.options.sessions)?;
+            .connect(start, &self.inner.options.sessions);
+        self.inner.other_version.store(
+            matches!(connected, Err(AttachError::OtherVersion)),
+            Ordering::SeqCst,
+        );
+        let sessions = connected?;
+        if let Some(sessions) = &sessions {
+            let daemon = sessions.daemon_version();
+            if daemon != env!("CARGO_PKG_VERSION") {
+                // Same protocol, another release: used as it is. It is
+                // replaced only once it has ended by itself.
+                tracing::info!(
+                    daemon_version = daemon,
+                    "using a session daemon left by another version of the app"
+                );
+            }
+        }
         slot.clone_from(&sessions);
         Ok(sessions)
     }
@@ -637,6 +681,14 @@ impl Driver {
                                 feed.local_notice(&format!("{notice} ({reason})"));
                             }
                         }
+                        AttachedPhase::OtherVersion => {
+                            tracing::warn!(
+                                "session daemon of another version left untouched: {reason}"
+                            );
+                            if let Some(notice) = &options.notices.other_version {
+                                feed.local_notice(notice);
+                            }
+                        }
                         // A process that exited keeps its final screen,
                         // like an in-process terminal.
                         _ => {}
@@ -673,6 +725,10 @@ impl Driver {
                 return machine.on(LinkEvent::ConnectFailed {
                     daemon_absent: true,
                 });
+            }
+            Err(AttachError::OtherVersion) => {
+                *reason = AttachError::OtherVersion.to_string();
+                return machine.on(LinkEvent::OtherVersion);
             }
             Err(error) => {
                 *reason = error.to_string();

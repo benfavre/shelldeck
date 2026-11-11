@@ -414,6 +414,7 @@ pub(super) fn attached_tab_state(
     phase: &AttachedPhase,
     ended: &str,
     unavailable: &str,
+    other_version: &str,
 ) -> SessionState {
     match phase {
         AttachedPhase::Connecting | AttachedPhase::Live | AttachedPhase::Reconnecting => {
@@ -424,6 +425,9 @@ pub(super) fn attached_tab_state(
         } => SessionState::Exited(*code),
         AttachedPhase::Ended { exit_code: None } => SessionState::Error(ended.to_string()),
         AttachedPhase::Unavailable => SessionState::Error(unavailable.to_string()),
+        // Not shown as running: this app cannot reach the pane. Not shown
+        // as ended either: it keeps running under the other version.
+        AttachedPhase::OtherVersion => SessionState::Error(other_version.to_string()),
     }
 }
 
@@ -535,7 +539,7 @@ mod daemon_layout_tests {
     // a lost or unreachable pane is an error and never looks alive.
     #[test]
     fn sdtest_3012_tab_state_follows_the_daemon_pane_phase() {
-        let state = |phase| attached_tab_state(&phase, "ended", "unavailable");
+        let state = |phase| attached_tab_state(&phase, "ended", "unavailable", "other version");
         for phase in [
             AttachedPhase::Connecting,
             AttachedPhase::Live,
@@ -554,6 +558,10 @@ mod daemon_layout_tests {
         assert_eq!(
             state(AttachedPhase::Unavailable),
             SessionState::Error("unavailable".into())
+        );
+        assert_eq!(
+            state(AttachedPhase::OtherVersion),
+            SessionState::Error("other version".into())
         );
     }
 }

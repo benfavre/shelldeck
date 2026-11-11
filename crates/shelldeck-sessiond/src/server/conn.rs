@@ -113,8 +113,12 @@ pub(super) fn run(shared: Arc<Shared>, stream: UnixStream, slot: ConnSlot) {
     let out = Arc::new(ConnOut::new(shared.next_conn_id()));
     let writer_stream = match stream.try_clone() {
         Ok(clone) => clone,
-        // Out of descriptors: `slot` is dropped here.
-        Err(_) => return,
+        // Out of descriptors for the writer's half: say so instead of
+        // closing without a word. `slot` is dropped here.
+        Err(_) => {
+            super::refuse(&stream);
+            return;
+        }
     };
     let writer = {
         let out = out.clone();
@@ -255,7 +259,7 @@ fn handshake(shared: &Shared, out: &ConnOut, frame: ClientFrame) -> bool {
     out.send(&DaemonFrame::HelloAck(HelloAck {
         proto: PROTOCOL_VERSION,
         features: 0,
-        daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+        daemon_version: shared.config.daemon_version.clone(),
         instance: shared.instance,
         max_frame: MAX_FRAME_BYTES as u32,
         emulator_rev: shelldeck_terminal::EMULATOR_REV,
@@ -392,13 +396,33 @@ fn spawn_pane(shared: &Arc<Shared>, spawn: Spawn) -> Result<(Arc<Pane>, String),
     }
     let cwd_text = cwd.to_str().ok_or(ErrorCode::SpawnFailed)?.to_string();
 
-    let (pty, _reader) =
-        LocalPty::spawn_command(&spawn.argv, &spawn.env, &cwd, spawn.rows, spawn.cols).map_err(
-            |e| {
-                tracing::warn!(error = %e, "spawn failed");
+    // With a raised descriptor limit the pane starts through the daemon
+    // executable, which puts the original limit back before the program
+    // runs. A program that does not exist is refused here, as it is when
+    // the PTY library starts it directly.
+    let launched;
+    let launcher = shared
+        .config
+        .pane_launcher
+        .as_ref()
+        // The executable can be gone (an update removed it): the pane then
+        // starts directly and keeps the daemon's limit.
+        .filter(|launcher| launcher.exe.exists());
+    let argv: &[String] = match launcher {
+        Some(launcher) => {
+            launched = launcher.command(&spawn.argv, &cwd).ok_or_else(|| {
+                tracing::warn!("spawn failed: no such program");
                 ErrorCode::SpawnFailed
-            },
-        )?;
+            })?;
+            &launched
+        }
+        None => &spawn.argv,
+    };
+    let (pty, _reader) = LocalPty::spawn_command(argv, &spawn.env, &cwd, spawn.rows, spawn.cols)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "spawn failed");
+            ErrorCode::SpawnFailed
+        })?;
     let (writer, master) = pty.into_parts();
     let pid = master.process_id().unwrap_or(0);
     let scrollback = match spawn.scrollback_max {
@@ -424,6 +448,7 @@ fn spawn_pane(shared: &Arc<Shared>, spawn: Spawn) -> Result<(Arc<Pane>, String),
         pane.kill_group();
         return Err(ErrorCode::LimitExceeded);
     }
+    tracing::info!(pane = %pane.id, pid, rows = spawn.rows, cols = spawn.cols, "pane spawned");
     Ok((pane, cwd_text))
 }
 

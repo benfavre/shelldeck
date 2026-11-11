@@ -12,6 +12,10 @@
 #   - Linux:   shelldeck-linux-x86_64.tar.gz
 #   - macOS:   shelldeck-macos-aarch64.zip
 #   - Windows: shelldeck-windows-x86_64.zip
+#
+# Linux also builds the session daemon (shelldeck-sessiond), which ships
+# beside the application binary. The static builds of it for SSH servers
+# are opt-in: SHELLDECK_SESSIOND_REMOTE=1 runs scripts/build-sessiond-remote.sh.
 
 set -euo pipefail
 
@@ -79,6 +83,23 @@ cargo build --locked --release -p shelldeck
 # the dedicated helper enables CEF, and provider stdio mode uses that helper.
 cargo build --locked --release -p shelldeck-browser --features runtime
 python3 scripts/bundle-browser-runtime.py --profile release
+
+# The session daemon is a separate small process that owns the terminals of
+# `general.session_daemon`. The application looks for it beside its own
+# executable, so it is built with the same profile and packaged with it.
+# Linux only for now: the macOS bundle and the Windows archive do not carry
+# it (the application then uses in-process terminals).
+if [ "$PLATFORM" = "linux-x86_64" ]; then
+    echo "==> Building the session daemon..."
+    cargo build --locked --release -p shelldeck-sessiond
+    if [ ! -x target/release/shelldeck-sessiond ]; then
+        echo "ERROR: Expected binary not found: target/release/shelldeck-sessiond" >&2
+        exit 1
+    fi
+    if [ "${SHELLDECK_SESSIOND_REMOTE:-0}" = "1" ]; then
+        bash "$SCRIPT_DIR/build-sessiond-remote.sh"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Determine binary path

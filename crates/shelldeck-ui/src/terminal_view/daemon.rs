@@ -20,6 +20,20 @@
 use shelldeck_terminal::session::TerminalSession;
 use uuid::Uuid;
 
+/// What the local session daemon has to offer back at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+// Without a daemon (non Unix) only `Live` is ever built.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) enum RestorablePanes {
+    /// Live panes this backend spawned and no session shows yet, in the
+    /// daemon's order. Empty when no daemon runs.
+    Live(Vec<Uuid>),
+    /// A daemon runs, left by another version of the app, and cannot be
+    /// spoken to. Which of the saved panes are alive is unknown; none of
+    /// them is touched.
+    OtherVersion,
+}
+
 /// Label of the panes this backend spawns. Only those are offered back at
 /// startup, so panes made by other tools (the debug CLI) stay out.
 #[cfg(unix)]
@@ -27,7 +41,7 @@ const PANE_LABEL: &str = "shelldeck-local";
 
 #[cfg(unix)]
 mod imp {
-    use super::PANE_LABEL;
+    use super::{RestorablePanes, PANE_LABEL};
     use crate::t;
     use shelldeck_sessiond::attached::SessionOptions;
     use shelldeck_sessiond::client::SpawnOptions;
@@ -37,6 +51,7 @@ mod imp {
     };
     use shelldeck_terminal::session::TerminalSession;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, OnceLock};
     use uuid::Uuid;
 
@@ -82,6 +97,7 @@ mod imp {
                             connection_lost: notice("terminal.session_daemon.connection_lost"),
                             ended: notice("terminal.session_daemon.ended"),
                             unavailable: notice("terminal.session_daemon.unavailable"),
+                            other_version: notice("terminal.session_daemon.other_version"),
                         },
                         ..SupervisorOptions::default()
                     },
@@ -135,7 +151,28 @@ mod imp {
         // One `stat`, so a build without the daemon binary falls back to
         // an in-process terminal at once instead of showing a dead tab.
         daemon_binary()?;
-        supervisor()?
+        let supervisor = supervisor()?;
+        if supervisor.daemon_is_other_version() {
+            // The daemon that runs was left by another version and is not
+            // replaced while it lives. This terminal is an ordinary one;
+            // look again, off this thread, so that daemon panes come back
+            // once that daemon is gone.
+            static CHECKING: AtomicBool = AtomicBool::new(false);
+            if !CHECKING.swap(true, Ordering::SeqCst) {
+                let supervisor = supervisor.clone();
+                let started = std::thread::Builder::new()
+                    .name("sessiond-recheck".into())
+                    .spawn(move || {
+                        supervisor.recheck();
+                        CHECKING.store(false, Ordering::SeqCst);
+                    });
+                if started.is_err() {
+                    CHECKING.store(false, Ordering::SeqCst);
+                }
+            }
+            return Err("the session daemon belongs to another version of ShellDeck".into());
+        }
+        supervisor
             .open(
                 PaneTarget::Spawn(SpawnOptions {
                     label: PANE_LABEL.into(),
@@ -183,28 +220,38 @@ mod imp {
             .map_err(|error| error.to_string())
     }
 
-    pub(super) fn restorable_panes() -> Vec<Uuid> {
+    pub(super) fn restorable_panes() -> RestorablePanes {
+        use shelldeck_sessiond::attached::AttachError;
         let supervisor = match supervisor() {
             Ok(supervisor) => supervisor,
             Err(error) => {
                 tracing::warn!("session daemon panes not restored: {error}");
-                return Vec::new();
+                return RestorablePanes::Live(Vec::new());
             }
         };
         let panes = match supervisor.list_panes(false) {
             Ok(Some(panes)) => panes,
-            Ok(None) => return Vec::new(),
+            Ok(None) => return RestorablePanes::Live(Vec::new()),
+            Err(AttachError::OtherVersion) => {
+                tracing::warn!(
+                    "the session daemon belongs to another version of ShellDeck: \
+                     it is left running and its panes are not attached"
+                );
+                return RestorablePanes::OtherVersion;
+            }
             Err(error) => {
                 tracing::warn!("session daemon panes not listed: {error}");
-                return Vec::new();
+                return RestorablePanes::Live(Vec::new());
             }
         };
         let open = supervisor.open_panes();
-        panes
-            .into_iter()
-            .filter(|info| info.alive && info.label == PANE_LABEL && !open.contains(&info.pane))
-            .map(|info| info.pane)
-            .collect()
+        RestorablePanes::Live(
+            panes
+                .into_iter()
+                .filter(|info| info.alive && info.label == PANE_LABEL && !open.contains(&info.pane))
+                .map(|info| info.pane)
+                .collect(),
+        )
     }
 }
 
@@ -253,17 +300,18 @@ pub(super) fn attach(
 }
 
 /// Live panes this backend spawned earlier and that no session shows yet
-/// (app restart), in the daemon's order. Never starts a daemon.
+/// (app restart), in the daemon's order, or the fact that the daemon was
+/// left by another version. Never starts a daemon.
 ///
 /// Blocking (a connect and a round trip on the daemon socket): call it
 /// from a background thread, never from the GPUI thread.
-pub(crate) fn restorable_panes() -> Vec<Uuid> {
+pub(crate) fn restorable_panes() -> RestorablePanes {
     #[cfg(unix)]
     {
         imp::restorable_panes()
     }
     #[cfg(not(unix))]
     {
-        Vec::new()
+        RestorablePanes::Live(Vec::new())
     }
 }

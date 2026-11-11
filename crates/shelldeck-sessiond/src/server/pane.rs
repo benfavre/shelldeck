@@ -27,6 +27,9 @@ const RESIZE_INTERVAL: Duration = Duration::from_millis(50);
 const OWNER_HYSTERESIS: Duration = Duration::from_secs(1);
 const READER_TICK_MS: i32 = 20;
 const BACKFILL_ROWS: usize = 256;
+/// How long the PTY writer waits for room before it looks again at whether
+/// its frame was abandoned.
+const WRITER_TICK_MS: i32 = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameKind {
@@ -201,8 +204,12 @@ struct InputInner {
     frames: VecDeque<Vec<u8>>,
     bytes: usize,
     closed: bool,
-    /// Bumped each time the writer thread takes a frame.
+    /// Bumped each time the writer thread takes a frame and each time the
+    /// PTY accepts bytes of the frame being written.
     progress: u64,
+    /// Bumped each time the queue is discarded for a stall: the frame the
+    /// writer holds at that moment is abandoned too.
+    generation: u64,
 }
 
 /// Bounded input queue of one pane, drained by its single writer thread:
@@ -222,6 +229,7 @@ impl InputQueue {
                 bytes: 0,
                 closed: false,
                 progress: 0,
+                generation: 0,
             }),
             not_empty: Condvar::new(),
             space: Condvar::new(),
@@ -250,6 +258,10 @@ impl InputQueue {
             if timed_out && inner.progress == progress && !inner.closed {
                 inner.frames.clear();
                 inner.bytes = 0;
+                inner.generation = inner.generation.wrapping_add(1);
+                drop(inner);
+                // Other connections waiting for room have it now.
+                self.space.notify_all();
                 return InputPush::Stalled;
             }
         }
@@ -268,21 +280,37 @@ impl InputQueue {
         self.not_empty.notify_one();
     }
 
-    fn pop(&self) -> Option<Vec<u8>> {
+    /// The next frame for the PTY, with the queue generation it belongs
+    /// to. `None`: the queue is closed.
+    fn pop(&self) -> Option<(Vec<u8>, u64)> {
         let mut inner = self.inner.lock();
         loop {
             if let Some(frame) = inner.frames.pop_front() {
                 inner.bytes -= frame.len();
                 inner.progress = inner.progress.wrapping_add(1);
+                let generation = inner.generation;
                 drop(inner);
                 self.space.notify_all();
-                return Some(frame);
+                return Some((frame, generation));
             }
             if inner.closed {
                 return None;
             }
             self.not_empty.wait(&mut inner);
         }
+    }
+
+    /// The PTY accepted bytes of the frame being written.
+    fn note_progress(&self) {
+        let mut inner = self.inner.lock();
+        inner.progress = inner.progress.wrapping_add(1);
+    }
+
+    /// Whether the frame popped at `generation` must not be written any
+    /// further: the queue was closed, or discarded for a stall.
+    fn abandoned(&self, generation: u64) -> bool {
+        let inner = self.inner.lock();
+        inner.closed || inner.generation != generation
     }
 
     fn close(&self) {
@@ -304,6 +332,13 @@ impl InputQueue {
 pub(super) struct ExitInfo {
     pub(super) exit_code: i32,
     pub(super) signal: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct HistoryUsage {
+    pub(super) bytes: u64,
+    pub(super) rows: usize,
+    pub(super) attached: bool,
 }
 
 struct Backfill {
@@ -388,6 +423,26 @@ impl Pane {
         // never invalidates the one being polled.
         // SAFETY: `raw` is the open master descriptor, alive for this call.
         let read_fd: OwnedFd = unsafe { BorrowedFd::borrow_raw(raw) }.try_clone_to_owned()?;
+        // The writer has its own descriptor too, and the master is put in
+        // non-blocking mode: a child that never reads its terminal must
+        // not hold the writer thread inside `write` for ever (it has to
+        // notice a discarded queue and a closed pane). The flag belongs to
+        // the open file, so it also applies to the reader, which polls
+        // before it reads.
+        let write_fd: OwnedFd = read_fd.try_clone()?;
+        // SAFETY: fcntl on a descriptor this function owns.
+        unsafe {
+            let flags = libc::fcntl(write_fd.as_raw_fd(), libc::F_GETFL);
+            if flags == -1
+                || libc::fcntl(
+                    write_fd.as_raw_fd(),
+                    libc::F_SETFL,
+                    flags | libc::O_NONBLOCK,
+                ) == -1
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
 
         let mut grid = TerminalGrid::with_scrollback(rows as usize, cols as usize, scrollback);
         // Only the daemon's grid answers terminal queries (DA, DSR, CPR):
@@ -433,19 +488,54 @@ impl Pane {
             .name("sessiond-pane-reader".into())
             .spawn(move || reader.read_loop(read_fd))?;
         let writer = pane.clone();
-        let mut pty_writer = pty.writer;
+        // Kept only for its `Drop`, which ends a line-mode child's input
+        // with a newline and the EOF character, as for any PTY of the app.
+        let pty_writer = pty.writer;
         std::thread::Builder::new()
             .name("sessiond-pane-writer".into())
             .spawn(move || {
-                // One writer per pane: each frame is one uninterrupted write.
-                while let Some(frame) = writer.input.pop() {
-                    if pty_writer.write_all(&frame).is_err() {
-                        break;
-                    }
-                }
+                writer.write_loop(write_fd);
                 writer.input.close();
+                drop(pty_writer);
             })?;
         Ok(pane)
+    }
+
+    // -- PTY writer ---------------------------------------------------------
+
+    /// One writer per pane: frames reach the PTY whole and in arrival
+    /// order. A frame the PTY does not take is retried until the queue is
+    /// discarded for a stall or the pane is closed.
+    fn write_loop(&self, write_fd: OwnedFd) {
+        let mut file = std::fs::File::from(write_fd);
+        while let Some((frame, generation)) = self.input.pop() {
+            let mut written = 0;
+            while written < frame.len() {
+                if self.input.abandoned(generation) {
+                    break;
+                }
+                match file.write(&frame[written..]) {
+                    Ok(0) => return,
+                    Ok(n) => {
+                        written += n;
+                        self.input.note_progress();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        let mut pollfd = libc::pollfd {
+                            fd: file.as_raw_fd(),
+                            events: libc::POLLOUT,
+                            revents: 0,
+                        };
+                        // SAFETY: one valid pollfd for a descriptor owned
+                        // by `file`.
+                        unsafe { libc::poll(&mut pollfd, 1, WRITER_TICK_MS) };
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    // EIO: the slave side is gone.
+                    Err(_) => return,
+                }
+            }
+        }
     }
 
     // -- PTY reader ---------------------------------------------------------
@@ -484,7 +574,11 @@ impl Pane {
                             return;
                         }
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+                        ) => {}
                     // EIO: every slave descriptor is closed.
                     Err(_) => eof = true,
                 }
@@ -525,7 +619,13 @@ impl Pane {
     fn ingest(&self, bytes: &[u8]) -> bool {
         let mut guard = self.state.lock();
         let state = &mut *guard;
+        let fault = self.config.fault_parser_panic.as_deref();
         let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(marker) = fault.filter(|marker| !marker.is_empty()) {
+                if bytes.windows(marker.len()).any(|window| window == marker) {
+                    panic!("injected parser fault");
+                }
+            }
             state.processor.process_bytes(&mut state.parser, bytes);
         }));
         if parsed.is_err() {
@@ -581,6 +681,12 @@ impl Pane {
         }
         state.exit = Some(info);
         state.died_at = Some(Instant::now());
+        tracing::info!(
+            pane = %self.id,
+            exit_code = info.exit_code,
+            signal = info.signal,
+            "pane ended"
+        );
         state.pending_resize = None;
         let frame = self.exited_frame(state.offset, info);
         for sub in &state.subscribers {
@@ -1059,6 +1165,30 @@ impl Pane {
             sub.attachment
                 .push(frame, FrameKind::Bulk, sub.attach_id, cap);
         }
+    }
+
+    /// Memory held by this pane's history, as the budget counts it.
+    pub(super) fn history_usage(&self) -> HistoryUsage {
+        let state = self.state.lock();
+        let grid = state.grid.lock();
+        let rows = grid.scrollback_len();
+        HistoryUsage {
+            bytes: (rows as u64)
+                .saturating_mul(grid.cols as u64)
+                .saturating_mul(std::mem::size_of::<shelldeck_terminal::grid::Cell>() as u64),
+            rows,
+            attached: !state.subscribers.is_empty(),
+        }
+    }
+
+    /// Drop the older half of the history and keep the pane at that lower
+    /// limit. The screen is not touched. Returns the rows kept.
+    pub(super) fn halve_history(&self) -> usize {
+        let state = self.state.lock();
+        let mut grid = state.grid.lock();
+        let keep = (grid.scrollback_len() / 2).max(1);
+        grid.set_max_scrollback(keep);
+        grid.scrollback_len()
     }
 
     pub(super) fn info(&self) -> PaneInfo {

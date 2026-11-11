@@ -41,7 +41,27 @@ case "$PLATFORM" in
         test -x "target/release/browser/$VERSION/shelldeck-browser"
         test -f "target/release/browser/$VERSION/libcef.so"
         check_browser_resources "target/release/browser/$VERSION"
-        tar -czf dist/shelldeck-linux-x86_64.tar.gz -C target/release shelldeck "browser/$VERSION"
+        # The session daemon sits beside the application binary: that is
+        # where the application, the installer and the updater expect it.
+        if [ ! -x target/release/shelldeck-sessiond ]; then
+            echo "ERROR: Missing session daemon: target/release/shelldeck-sessiond" >&2
+            exit 1
+        fi
+        PAYLOAD=(shelldeck shelldeck-sessiond "browser/$VERSION")
+        # Static builds for SSH servers, when they were built
+        # (scripts/build-sessiond-remote.sh). Only these two names ship.
+        for TRIPLE in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            REMOTE="shelldeck-sessiond-$TRIPLE"
+            if [ -e "target/release/$REMOTE" ]; then
+                if [ -L "target/release/$REMOTE" ] || [ ! -f "target/release/$REMOTE" ] \
+                    || [ "$(head -c 4 "target/release/$REMOTE" | od -An -tx1 | tr -d ' ')" != "7f454c46" ]; then
+                    echo "ERROR: target/release/$REMOTE is not an ELF file" >&2
+                    exit 1
+                fi
+                PAYLOAD+=("$REMOTE")
+            fi
+        done
+        tar -czf dist/shelldeck-linux-x86_64.tar.gz -C target/release "${PAYLOAD[@]}"
         ARCHIVE="dist/shelldeck-linux-x86_64.tar.gz"
         ;;
     macos-aarch64)

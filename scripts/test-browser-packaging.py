@@ -51,6 +51,7 @@ class BrowserPackaging(unittest.TestCase):
     # CEF resources and symlinks, excluding other loaded browser versions.
     def test_sdtest_2595_linux_archive_preserves_versioned_browser(self):
         self.put("shelldeck")
+        self.put("shelldeck-sessiond")
         self.put(f"browser/{VERSION}/shelldeck-browser")
         self.put(f"browser/{VERSION}/libcef.so")
         (self.browser / "library-alias.so").symlink_to("libcef.so")
