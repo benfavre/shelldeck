@@ -1893,8 +1893,25 @@ impl TerminalView {
         if self._refresh_task.is_some() {
             return;
         }
-        let Some(mut rx) = self.output_rx.take() else {
-            return;
+        let mut rx = match self.output_rx.take() {
+            Some(rx) => rx,
+            None => {
+                // The previous loop was stopped (the last tab was closed)
+                // and its receiver went with it. Without a new channel no
+                // loop would ever run again and the next terminals would
+                // repaint only on input events: output of a running
+                // command, and everything a session daemon pane prints,
+                // would stay invisible until a key press or a mouse move.
+                let (output_tx, output_rx) = mpsc::unbounded_channel::<()>();
+                self.output_tx = output_tx;
+                let extras = std::iter::once(&self.layout)
+                    .chain(self.stored_layouts.values())
+                    .flat_map(|layout| layout.extra.values());
+                for session in self.pane.sessions.iter().chain(extras) {
+                    session.set_output_notifier(self.output_tx.clone());
+                }
+                output_rx
+            }
         };
         self._refresh_task = Some(cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -5698,6 +5715,37 @@ mod tests {
             *ratio = 0.25;
             terminal.apply_workspace_snapshot(&captured);
             assert_eq!(terminal.capture_workspace_snapshot(), captured);
+            terminal.close_all_sessions();
+        });
+    }
+
+    // SDTEST-3037 (SDUC-574): closing the last tab stops the refresh loop;
+    // the next terminal must start a new one. Found in the running app:
+    // without it a terminal opened after the last tab was closed repainted
+    // only on input events, so a session daemon pane looked frozen.
+    #[test]
+    fn sdtest_3037_the_refresh_loop_restarts_after_the_last_tab_was_closed() {
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            terminal.spawn_local_terminal(cx);
+            assert!(terminal._refresh_task.is_some());
+            let first = terminal.tabs[0].id;
+            terminal.close_tab(first);
+            assert_eq!(terminal.tab_count(), 0);
+            assert!(
+                terminal._refresh_task.is_none(),
+                "no loop without a terminal"
+            );
+
+            terminal.spawn_local_terminal(cx);
+            assert_eq!(terminal.tab_count(), 1);
+            assert!(
+                terminal._refresh_task.is_some(),
+                "a terminal opened after the last tab was closed needs a refresh loop"
+            );
+            // Sessions are wired to a channel the new loop listens on.
+            assert!(!terminal.output_tx.is_closed());
             terminal.close_all_sessions();
         });
     }

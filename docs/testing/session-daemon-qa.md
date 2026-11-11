@@ -5,12 +5,17 @@ integration" of the session daemon prototype (SDUC-574, design in
 [`session-daemon.md`](../design/session-daemon.md), section 15, "Local
 client integration"). Branch `feat/session-daemon`, Linux x86_64.
 
-**The real application was not launched for these steps.** No visual check
-was done: not with the setting on, not with it off. Everything under
-"Verified automatically" is tests and compile checks. Everything under
-"Manual checks still needed" is unverified. In particular the Settings
-toggle, the "connecting" and "reconnecting" states of a tab, and a layout
-coming back after a restart were never seen on screen.
+**The real application was launched and driven on 2026-11-11, after these
+steps** (private headless desktop, throwaway profile): see the section
+"Checks in the running application" at the end of this file, which says
+for each check whether it passed and what was not checked. Three defects
+were found there and fixed. Before that run nothing had been seen on
+screen: everything under "Verified automatically" is tests and compile
+checks. In "Manual checks still needed", a ticked box means the main case
+of the item was done in that run, as its row in the results table
+describes; variants the item names and the table does not (for example
+quitting from the menu, or closing the window) were not done. An empty box
+is still unverified.
 
 ## What changed for a user
 
@@ -115,7 +120,7 @@ the section "Daemon hardening, version skew and packaging").
 
 Setting off (regression):
 
-- [ ] New tab, split, close tab, close pane, quit: unchanged; no
+- [x] New tab, split, close tab, close pane, quit: unchanged; no
       `shelldeck-sessiond` process appears.
 
 Setting on, basics:
@@ -133,7 +138,7 @@ Setting on, basics:
 - [ ] "Launch Claude" / "Launch Codex" from the empty state with the
       setting on: the command is typed into the new pane after it
       attaches (it is sent before the pane exists).
-- [ ] Open five tabs quickly while no daemon runs: one daemon, five panes.
+- [x] Open five tabs quickly while no daemon runs: one daemon, five panes.
 - [ ] Typing, paste (bracketed), Ctrl-C, Ctrl-D, Ctrl-Z, mouse reporting
       (`htop`, `vim` with mouse), focus reporting.
 - [ ] Rendering parity with an in-process tab: colours, wide and combining
@@ -144,12 +149,12 @@ Setting on, basics:
 - [ ] Window resize and divider drag: the grid follows after the daemon
       applies the size (expect up to about 50 ms lag); no garbled wrap; a
       full-screen program redraws once. Check rapid drags.
-- [ ] Split right and split down: each pane is its own daemon pane
+- [x] Split right and split down: each pane is its own daemon pane
       (`shelldeck-sessiond list` shows one per leaf); focus switching; zoom.
-- [ ] Close a pane, close a tab with several panes, "close tabs to the
+- [x] Close a pane, close a tab with several panes, "close tabs to the
       right/left": the corresponding shells are gone within about 1 s
       (`list`), the others stay.
-- [ ] `exit` in a shell: the tab keeps its final screen and its dot shows
+- [x] `exit` in a shell: the tab keeps its final screen and its dot shows
       the exit state (unlike an in-process tab, which stays green today);
       the pane stays in `list` as `exited(n)`
       until the tab is closed, then it is gone. If the app is quit with
@@ -158,7 +163,7 @@ Setting on, basics:
       that is acceptable.
 - [ ] Ctrl-C during `yes` on a slow or busy machine (and later over SSH):
       the flood stops even if the tab was being resynced.
-- [ ] Heavy output (`yes`, `cat` of a large file, `find /`): UI stays
+- [x] Heavy output (`yes`, `cat` of a large file, `find /`): UI stays
       responsive, no lost or duplicated lines, the app catches up; note
       whether a resync flash is visible.
 - [ ] Environment: `echo $PATH`, `$DISPLAY`, `$SSH_AUTH_SOCK`, `$LANG`,
@@ -173,7 +178,7 @@ Setting on, basics:
 
 Persistence:
 
-- [ ] Quit the app with tabs open (menu quit, window close, Ctrl-Q): the
+- [x] Quit the app with tabs open (menu quit, window close, Ctrl-Q): the
       daemon and the shells keep running; start again: one tab per pane
       with its screen and scrollback; typing works; a long-running command
       (`sleep 600`, a build) is still running.
@@ -191,7 +196,7 @@ Persistence:
 - [ ] With `auto_connect_on_startup` on and saved local and SSH tabs: local
       tabs are not duplicated, SSH tabs still reconnect, the active tab is
       sensible.
-- [ ] Layout after restart: build three tabs, one of them split in three
+- [x] Layout after restart: build three tabs, one of them split in three
       with uneven ratios, focus a non primary pane, make the second tab
       active, quit, start again: same tabs in the same order, same splits
       and ratios, same active tab, same focused pane, each pane showing
@@ -203,12 +208,12 @@ Persistence:
 - [ ] Same, but `kill -9` the app instead of quitting: the layout of the
       last clean quit is used; panes made since then come back as tabs of
       their own (known limit: the layout is saved at shutdown only).
-- [ ] A pane created with the debug CLI (`shelldeck-sessiond spawn`) is
+- [x] A pane created with the debug CLI (`shelldeck-sessiond spawn`) is
       not offered back (other label). A pane of this app that is in no
       saved slot comes back as its own tab, after the saved ones.
-- [ ] Restored tab in the background: `shelldeck-sessiond list` shows its
+- [x] Restored tab in the background: `shelldeck-sessiond list` shows its
       old size until the tab is shown, then the window's size.
-- [ ] Sign out with daemon tabs open: every pane is ended
+- [x] Sign out with daemon tabs open: every pane is ended
       (`shelldeck-sessiond list` is empty within a few seconds); signing
       in again shows no old terminal.
 - [ ] Two app instances at once (if the app allows it): both list the same
@@ -219,15 +224,17 @@ Persistence:
 - [ ] Change the host name while panes run (`hostnamectl set-hostname`,
       or on macOS a network change), then restart the app: the panes are
       found again and no second daemon is started.
-- [ ] Daemon idle exit: close every tab, wait more than 60 s, the daemon is
-      gone; a new tab starts it again.
+- [x] Daemon idle exit: close every tab and quit the app, wait more than
+      60 s, the daemon is gone; a new tab starts it again. While the app
+      runs it keeps its connection, so the daemon stays even with no tab
+      (by design: idle means no pane and no connection).
 
 Failure modes:
 
-- [ ] `shelldeck-sessiond` missing next to the app: new tabs are in-process
+- [x] `shelldeck-sessiond` missing next to the app: new tabs are in-process
       terminals, a warning is logged, nothing is shown to the user (decide
       whether that is acceptable).
-- [ ] Kill the daemon while tabs are open (`kill <pid from the lock
+- [x] Kill the daemon while tabs are open (`kill <pid from the lock
       file>`): each tab shows the "connection lost, reconnecting" line,
       then, within about a second, the "session ended" line and an error
       dot; a daemon is running again; a new tab works; the ended tabs can
@@ -250,7 +257,7 @@ Failure modes:
       to in-process, never repaired.
 - [ ] Home on a path so long that the socket path does not fit: the
       `/tmp/shelldeck-<uid>` fallback is used.
-- [ ] Turn the setting off again with panes still running: they are not
+- [x] Turn the setting off again with panes still running: they are not
       offered back and keep running until closed with
       `shelldeck-sessiond kill` or a daemon stop. Decide whether the app
       should warn.
@@ -517,7 +524,7 @@ Not covered by any automated test, compiled and read only:
 
 Daemon:
 
-- [ ] `cat ~/.shelldeck/run/*/sessiond.log` after a session: start line
+- [x] `cat ~/.shelldeck/run/*/sessiond.log` after a session: start line
       with version and pid, one line per terminal created and ended,
       nothing that was typed or printed. Let it pass 1 MiB (a loop of
       short-lived terminals): `sessiond.log.1` appears once and the pair
@@ -602,3 +609,118 @@ Packaging (needs a release build, which was not made):
 - Old `shelldeck-sessiond-<version>` files on SSH servers are still not
   pruned.
 
+## Checks in the running application (2026-11-11)
+
+Scope: the first run of the real application with the setting, on Linux
+x86_64 (Ubuntu 22.04), debug build of this branch
+(`cargo build --locked -p shelldeck -p shelldeck-sessiond`).
+
+How it was run, so that it can be repeated without touching a real
+profile or a real desktop: a private headless GNOME Shell
+(`gnome-shell --headless --wayland --no-x11 --virtual-monitor 1400x900`
+under its own `dbus-run-session`, own `HOME` and `XDG_RUNTIME_DIR`), the
+app started on that Wayland display with a throwaway `HOME` and XDG
+directories, the demo account of `scripts/demo` (stub Manage server on a
+local port, Dev mode), a D-Bus session without service directories.
+Input came from `org.gnome.Mutter.RemoteDesktop`, screenshots from
+`org.gnome.Shell.Screenshot`. The daemon therefore used
+`<throwaway HOME>/.shelldeck/run/m-…`; the real `~/.shelldeck` was never
+written and no installed ShellDeck was started, stopped or signalled.
+Both the throwaway `HOME` and the runtime directory were reached through
+short symbolic links: the real paths were too long for a socket address
+(the Wayland socket could not be created at all, and the daemon would
+have taken its `/tmp/shelldeck-<uid>` fallback). The login shell was
+`bash`, the interface French, then English for the Settings check.
+
+Five screenshots are kept in
+[`screenshots/2026-11-11-session-daemon/`](./screenshots/2026-11-11-session-daemon/).
+The others (file names in the table) were in a scratch directory and are
+not kept.
+
+### Defects found and fixed
+
+| Defect | Cause | Fix | Test |
+|---|---|---|---|
+| After the last tab was closed, the next terminal repainted only on input events: typed text, command output and everything a daemon pane printed stayed invisible until a key press or a mouse move (`27-refresh-bug.png`, then `28-refresh-fixed.png`). First seen as two split panes that looked frozen. | Not from this branch: closing the last tab drops the refresh task, and the task owned the only receiver of the output channel, so no refresh loop could start again. With in-process terminals a key press usually hid it; with daemon panes it did not. | `TerminalView::ensure_refresh_running` builds a new channel and rewires the live sessions when the receiver is gone. | SDTEST-3037 |
+| `clear` in a new tab ended the terminal: the daemon logged `parser panicked, closing pane` (`grid.rs`, index out of range) and the tab was left with an exit dot and no shell. | Not from this branch: `TerminalGrid::resize` merges soft-wrapped lines when a terminal gets wider and left the screen with fewer rows than its row count; the next whole-screen erase indexed past the end. A new tab is started at the size of the pane that had the focus, then widened, so a tab opened from a narrow split hit it at once. An in-process terminal has the same defect (its reader thread dies). | The screen is padded back to its row count after the merge. `EMULATOR_REV` is now 2, because the grid state for the same input changed. | SDTEST-3038 |
+| Settings, General: the description of "Persistent terminal sessions" was cut in the middle of a sentence (rows show two lines). | Text too long. | Shorter text in English and French (`settings-fr.png`, `settings-en.png`). | Seen on screen |
+
+Also fixed: SDTEST-3028 read `/proc/<pid>/cmdline` right after the pane
+printed its limits and failed once when the `exec` had not happened yet
+(busy machine); it now waits for it.
+
+### Results
+
+| # | Check | Result | Screenshot |
+|---|---|---|---|
+| 1 | Setting off: new tab, split (Ctrl+Shift+D), close split, close tab; shells are children of the app; no `shelldeck-sessiond` process, no `~/.shelldeck` directory. Repeated on the final build, including a new tab after the last one was closed. | Pass | `05-off-split.png`, `07.png`, `09-off-closed.png`, `69-off-final.png` |
+| 2 | Settings row in French and in English, for a Dev account; the toggle saves `session_daemon` and does not touch open tabs; the next new tab uses the new value (on then off). | Pass after the text fix | `settings-fr.png`, `settings-en.png` (kept), `10-settings.png` (before) |
+| 3 | Setting on, first tab: one `shelldeck-sessiond serve --detach`, the shell is a child of the daemon, keys typed right after the click arrive in order. | Pass. The "connecting" line and the pending dot were never caught: the pane was attached before the first screenshot. | `13-on-first-b.png` |
+| 4 | Split right, split again: one daemon pane per leaf (`shelldeck-sessiond list`), each with its own shell pid; closing one pane ends that shell only. | Pass after the refresh fix | `15-on-splitH.png`, `23.png`, `25.png` |
+| 5 | Window resize (maximize and restore), divider drag: the grid follows, `top` redraws to the new size. | Pass | `29-top.png`, `30-top-max.png`, `38-before-quit.png` |
+| 6 | Full-screen programs: `top`, `less` (alternate screen) and back to the shell with the earlier screen. `vim` is not installed on the machine. | Pass | `29-top.png`, `53-vim.png`, `54-after-vim-yes.png` |
+| 7 | Heavy output: `seq 1 200000` complete and in order, last line 200000; `yes abc \| head -200000 \| tail -2`; Ctrl-C stops `yes`; screenshots and scrolling worked while it ran. Debug build: 15.8 s in a daemon pane, about 16 s in an in-process tab (both limited by the unoptimised parser). | Pass | `31-seq.png`, `35-bottom.png`, `55-yes-ctrlc.png`, `61-inproc-seq.png` |
+| 8 | Scrollback with the mouse wheel, during output and afterwards. | Pass | `32-scrolled.png`, `34-scrollback.png` |
+| 9 | Quit (Ctrl+Q) with two tabs, the first split in three with uneven ratios, a counter loop and `sleep 600` running, focus on the middle pane: daemon and shells alive with the same pids and start times. Relaunch: same tabs, splits, ratios, active tab and focused pane, screens intact, the counter still counting, scrollback there; the background tab kept its size until shown. | Pass | `layout-before-quit.png`, `layout-after-relaunch.png` (kept), `40-restored-tab2.png`, `42-restored-scroll.png` |
+| 10 | Close a tab with four panes: the four shells are gone within 2 s, the other tab's stay. | Pass | `26-closed-tab2.png` |
+| 11 | `exit 3` in a shell: final screen kept, exit dot, `exited(3)` in `list` until the tab is closed. | Pass | `56-exit.png` |
+| 12 | `kill <daemon pid>` with two tabs open: both tabs get the error dot, "connection lost, reconnecting" then "session ended" in the terminal, a new daemon runs, a new tab works on it, the ended tabs close. | Pass. In a pane scrolled up in its history the two lines are below the visible part. | `daemon-killed.png` (kept), `45-newtab-after-kill.png` |
+| 13 | `kill -9` of the app: the daemon and the panes survive; relaunch attaches them (as tabs of their own, the layout being the one of the last clean quit). | Pass | `64-after-kill9.png` |
+| 14 | Setting turned off with panes running, quit, relaunch: nothing is offered back, the panes keep running; setting on again: they come back as plain tabs. A pane made with `shelldeck-sessiond spawn` is never offered. | Pass | `60-off-with-panes.png`, `62-relaunch-off.png`, `63-relaunch-on.png` |
+| 15 | Daemon binary missing (`SHELLDECK_SESSIOND_BIN` pointing nowhere, no daemon running): the new tab is an in-process terminal, one warning in the app log, no daemon. | Pass | `65-missing-binary.png` |
+| 16 | Five tabs opened at once with no daemon running: one daemon, five panes. | Pass | `66-five-tabs.png` |
+| 17 | Sign out with five daemon tabs: `list` empty within 3 s. | Pass | `68-signed-out.png` |
+| 18 | Idle exit: 60 s after the app quit with no pane left, the daemon logged `IdleExit` and removed its socket. With the app running and no tab it stays (the app keeps its connection). | Pass | none (process list and log) |
+| 19 | App built from emulator revision 2 against a daemon still running revision 1: the pane came back, resizes and output stayed correct. | Pass | `50-rev-skew-max.png` |
+| 20 | Daemon log after the session: start and stop lines, one line per terminal created and ended, nothing typed or printed; run directory `0700`, files `0600`. | Pass | none |
+| 21 | Environment of a daemon pane: login shell (`-bash`, `login_shell on`), `LANG` and `WAYLAND_DISPLAY` forwarded, `TERM=xterm-256color`, working directory the home directory, parent process the daemon (no `exec-pane` left). `COLORTERM` is empty in both kinds of terminal. | Pass | `52-env.png` |
+| 22 | Remote use over SSH. | Not run: `ssh -o BatchMode=yes localhost true` is refused on this machine (no sshd), and no real server may be used. | none |
+
+### Not checked in this run
+
+- The "connecting" and "reconnecting" states as such (too short to
+  capture locally), a tab closed while connecting, a connection lost with
+  the daemon still alive.
+- Paste, mouse reporting, focus reporting, OSC 8 links, the tab title,
+  selection and copy, search, zoom, rapid divider drags, wide and
+  combining characters.
+- "Launch Claude" and "Launch Codex" (neither is on the `PATH` of the
+  throwaway profile), `terminal.default_shell`, AI features that type
+  into the terminal.
+- The descriptor limit: soft and hard limits are both 1048576 on this
+  machine, so the daemon raised nothing.
+- A daemon of another protocol version, the log rotation, the history
+  budget, more than 256 panes, large pastes, two app instances, a host
+  name change, wrong permissions on the run directory.
+- Everything remote (SSH), packaging, the updater, the install script,
+  macOS and Windows.
+- A release build: all timings above are from a debug build.
+
+### Observations, not changed
+
+- With the side panel hidden, the terminal area leaves an empty strip as
+  wide as the panel on its right until the panel is toggled once
+  (Ctrl+B). Same with the setting off, not from this branch.
+- The Terminal menu entries "Split horizontally" and "Split vertically"
+  did nothing when clicked, and keyboard focus left the terminal until
+  the next click in it (the action is dispatched to the focused element,
+  which is the menu). Same with the setting off; the toolbar buttons and
+  Ctrl+Shift+D work.
+- After a pane has been split, the toolbar offers "Rotate" and "Close
+  split" where "Split H" and "Split V" were; a further split needs the
+  shortcut.
+- A new tab is started at the size of the pane that had the focus and
+  resized on its first frame (seen in the daemon log as a spawn at 39 or
+  45 columns followed by a resize).
+- Narrowing and then widening a pane rewraps old lines differently from
+  the original (existing reflow of the emulator, same in both kinds of
+  terminal). After a narrowing reflow the grid holds more rows than its
+  row count until it is widened again. If a snapshot leaves those rows
+  out, a client that attaches in between could differ from the daemon
+  after a widening, until its next snapshot. This was read in the code,
+  not verified and not seen on screen; it is listed as an open risk in
+  the design document, section 15.
+- When the window is shorter at the next start, the top rows of each
+  screen go to the history (existing behaviour on a row shrink).
+- The language select still showed "Anglais" right after switching to
+  English.

@@ -2373,7 +2373,16 @@ async fn sdtest_3028_daemon_raises_its_descriptor_limit_and_panes_keep_the_origi
     );
     // The pane process is the program itself (same pid as reported).
     assert_eq!(soft_and_hard_nofile(reported.pid).0, "100");
-    let cmdline = std::fs::read(format!("/proc/{}/cmdline", reported.pid)).expect("cmdline");
+    // The shell prints the limits and then replaces itself: wait for the
+    // `exec`, which may not have happened yet on a busy machine.
+    let mut cmdline = Vec::new();
+    for _ in 0..100 {
+        cmdline = std::fs::read(format!("/proc/{}/cmdline", reported.pid)).expect("cmdline");
+        if cmdline.starts_with(b"sleep\0") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     assert!(cmdline.starts_with(b"sleep\0"), "{cmdline:?}");
 
     // The login shell: argv[0] with the leading dash, same limit.

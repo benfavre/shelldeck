@@ -1082,6 +1082,17 @@ Implemented now, with automated tests on Linux:
   release script and carried by the Linux tar.gz, the install script and
   the updater (SDTEST-3033..3036). The release pipeline itself was not
   run, nothing was published, and the app was still not launched.
+- First run of the real application (subsection "First run in the
+  application" below): the local path was driven on a private headless
+  desktop with a throwaway profile, with the setting off and on. Tabs,
+  splits, resize, full-screen programs, heavy output, scrollback, quit
+  and relaunch with the layout and the running commands, daemon kill,
+  app kill, sign-out, idle exit and the Settings row in both languages
+  passed. Three defects were found and fixed (SDTEST-3037, SDTEST-3038,
+  the Settings text). The remote path was not run (no sshd on the
+  machine). Results, one row per check, in
+  [`session-daemon-qa.md`](../testing/session-daemon-qa.md), section
+  "Checks in the running application".
 
 Deferred (details in the subsections below):
 
@@ -1116,7 +1127,8 @@ Layout:
   output generator used by the attach race test.
 - `shelldeck-terminal`: `boundary.rs`, `grid/snapshot.rs`, a history epoch
   in the grid, `LocalPty::spawn_command`, `PtyMaster::{process_id, try_wait,
-  as_raw_fd}`, `EMULATOR_REV = 1`.
+  as_raw_fd}`, `EMULATOR_REV = 1` (2 since the first run in the
+  application, see below).
 - The daemon uses OS threads (one reader and one writer per connection, one
   reader and one writer per pane), no async runtime. The client is async
   (Tokio) over any `AsyncRead + AsyncWrite`.
@@ -1670,3 +1682,40 @@ Packaging:
   the rendered installer run under a temporary HOME, the remote build
   script's checks) and SDTEST-3033 for the updater.
 
+### First run in the application
+
+Until this step every statement about the app came from tests and from
+reading the code. The app was then built (debug) and driven on a private
+headless desktop, with a throwaway profile and its own run directory. The
+record, check by check, is in `docs/testing/session-daemon-qa.md`.
+
+What the run changed:
+
+| Found | Change |
+|---|---|
+| Once the last tab had been closed, no refresh loop ran any more: the loop owned the only receiver of the output channel and was dropped with it. The next terminals repainted on input events only, which made daemon panes look frozen (their output arrives after the key press that caused it). The defect predates the daemon and also affects in-process terminals. | `TerminalView::ensure_refresh_running` creates a new channel and rewires the live sessions when the receiver is gone. SDTEST-3037. |
+| `TerminalGrid::resize` left the screen with fewer rows than its row count after merging soft-wrapped lines on a widening. The next whole-screen erase or scroll indexed past the end and panicked. In the daemon that is a parser panic, which closes the pane (section 12): a tab opened from a narrow split and then `clear` lost its shell. The defect predates the daemon; an in-process terminal loses its reader thread the same way. | The screen is padded back to its row count. Because the grid state for the same input changed, `EMULATOR_REV` is 2. SDTEST-3038. |
+| The description of the setting did not fit the two lines a Settings row shows. | Shorter text, English and French. |
+
+What the run confirmed about the design: the daemon and its shells keep
+their process ids across an app quit and across `kill -9` of the app; the
+layout comes back by pane id with ratios, active tab and focused pane; a
+killed daemon gives the two notices and an error dot, and the next tab
+starts a new daemon; sign-out ends every pane; the daemon leaves 60 s
+after the last connection is gone, not 60 s after the last pane (the app
+keeps its connection while it runs); an app with emulator revision 2
+works against a daemon still running revision 1.
+
+Open risk noted during the run, not verified: after a narrowing reflow
+the grid holds more rows than its row count until it is widened again
+(existing behaviour of `reflow_on_shrink`). If a snapshot does not carry
+those rows, a client that attaches in that state and the daemon would
+reflow differently at the next widening, and the client would show a
+different wrap until its next snapshot. The applied `Resize` frame only
+covers rows pulled back from the history (`pulled`). Either the snapshot
+has to carry the extra rows or `resize` has to normalise the screen to
+its row count in both directions; the second also changes what an
+in-process terminal shows after a split, so it was left alone here.
+
+Not exercised in the app: the remote path, a daemon of another protocol
+version, the connecting and reconnecting states as such, packaging.

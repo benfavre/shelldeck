@@ -14,4 +14,7 @@ pub use error::{Result, TerminalError};
 /// parser or the grid alters grid state for the same input bytes. The
 /// session daemon announces it so a client built from another revision
 /// knows its own grid may drift and refreshes from the daemon's.
-pub const EMULATOR_REV: u16 = 1;
+///
+/// 2: a resize that merges soft-wrapped lines keeps the row count (blank
+/// rows at the bottom) instead of leaving a short screen.
+pub const EMULATOR_REV: u16 = 2;
