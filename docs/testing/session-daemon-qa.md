@@ -1127,3 +1127,18 @@ that it held only what this run had created.
   a real server (the last one was seen on the container).
 - The plain-tab fallbacks on these servers beyond the first connection.
 
+### The fixes, checked again on rbx1 and activ-2
+
+Application and static build of the commit "no linger after a sign-out,
+one dial per retry round, notices that can be read".
+
+| Check | Result |
+|---|---|
+| rbx1: connect (the recorded "allow" installs the new build), two panes, `sleep 3000` in one, sign out | Pass. Five seconds later the daemon lists no pane (before: the ended panes stayed listed as `exited(129)`) and `sleep` is gone |
+| rbx1: the daemon after the sign-out | Pass. Its log ends with "session daemon stopping outcome=IdleExit" 65 s after the panes ended; no process left |
+| activ-2: a fallback notice (no bundled build; nothing is written to the server in that case) | Pass. The three-line notice is still on screen 5.5 s after the connection, when the short "connected" toast is already gone. When it disappears was not looked at |
+
+One dial per retry round was not repeated on a real server (it needs an
+outage with several panes): SDTEST-3055 only. `~/.shelldeck` was removed
+from rbx1 again; activ-2 was not written to.
+
