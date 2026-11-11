@@ -10,6 +10,29 @@ pub struct WorkspaceState {
     pub tabs: Vec<TabState>,
     pub active_tab: usize,
     pub sidebar_visible: bool,
+    /// Session daemon panes on SSH servers that are still to be ended:
+    /// the work is done at the next contact with each server, which may
+    /// be in a later run of the application.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub daemon_cleanup: Vec<DaemonCleanup>,
+}
+
+/// What is left to end on the session daemon of one SSH server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonCleanup {
+    /// The SSH connection entry.
+    pub connection_id: Uuid,
+    /// What the entry dialed when this was recorded
+    /// (`Connection::dial_identity`). An entry edited to another server
+    /// does not carry the work over to it.
+    pub target: String,
+    /// Panes closed by the user while the server could not be reached.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panes: Vec<Uuid>,
+    /// Every shell the application left there: the user signed out while
+    /// the server was not connected.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +258,7 @@ impl Default for WorkspaceState {
             tabs: Vec::new(),
             active_tab: 0,
             sidebar_visible: true,
+            daemon_cleanup: Vec::new(),
         }
     }
 }
@@ -337,6 +361,7 @@ mod tests {
             ],
             active_tab: 1,
             sidebar_visible: false,
+            daemon_cleanup: Vec::new(),
         };
 
         state.save_to(&path).expect("save_to");
@@ -455,6 +480,7 @@ mod tests {
             ],
             active_tab: 0,
             sidebar_visible: true,
+            daemon_cleanup: Vec::new(),
         };
         state.save_to(&path).expect("save_to");
         let text = std::fs::read_to_string(&path).expect("read");
@@ -470,6 +496,51 @@ mod tests {
         assert_eq!(loaded.tabs[0].daemon, None);
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // SDTEST-3051 (SDUC-574): the session file carries what is left to
+    // end on the session daemons of SSH servers (panes closed while the
+    // server was out of reach, or everything after a sign-out), so the
+    // work survives a restart. A file from before the field loads with
+    // nothing to do, and a file with nothing to do does not have the key.
+    #[test]
+    fn sdtest_3051_daemon_cleanup_round_trips_and_is_optional() {
+        let path = temp_path("workspace-cleanup.json");
+        let (server_a, server_b) = (Uuid::new_v4(), Uuid::new_v4());
+        let (pane_1, pane_2) = (Uuid::new_v4(), Uuid::new_v4());
+        let state = WorkspaceState {
+            daemon_cleanup: vec![
+                DaemonCleanup {
+                    connection_id: server_a,
+                    target: "deploy@prod-a:22|".into(),
+                    panes: vec![pane_1, pane_2],
+                    all: false,
+                },
+                DaemonCleanup {
+                    connection_id: server_b,
+                    target: "deploy@prod-b:22|bastion".into(),
+                    panes: Vec::new(),
+                    all: true,
+                },
+            ],
+            ..WorkspaceState::default()
+        };
+        state.save_to(&path).expect("save_to");
+        let loaded = WorkspaceState::load_from(&path).expect("load_from");
+        assert_eq!(loaded.daemon_cleanup, state.daemon_cleanup);
+
+        // Written by a release from before the field.
+        std::fs::write(
+            &path,
+            r#"{"tabs":[],"active_tab":0,"sidebar_visible":true}"#,
+        )
+        .expect("write");
+        let old = WorkspaceState::load_from(&path).expect("load_from");
+        assert!(old.daemon_cleanup.is_empty());
+
+        WorkspaceState::default().save_to(&path).expect("save_to");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains("daemon_cleanup"), "{text}");
     }
 
     // SDTEST-3009 (SDUC-574): what comes back at startup for a saved
@@ -493,6 +564,7 @@ mod tests {
             ],
             active_tab: 3,
             sidebar_visible: true,
+            daemon_cleanup: Vec::new(),
         };
 
         // Everything alive: the layout comes back as saved, in place.
@@ -591,6 +663,7 @@ mod tests {
             ],
             active_tab: 2,
             sidebar_visible: true,
+            daemon_cleanup: Vec::new(),
         };
         assert_eq!(
             state.saved_daemon_panes(),
@@ -616,6 +689,7 @@ mod tests {
             tabs: vec![plain_tab("local", TabType::Local)],
             active_tab: 0,
             sidebar_visible: true,
+            daemon_cleanup: Vec::new(),
         };
         assert!(empty.saved_daemon_panes().is_empty());
     }
@@ -633,6 +707,7 @@ mod tests {
             ],
             active_tab: 99,
             sidebar_visible: true,
+            daemon_cleanup: Vec::new(),
         };
         let plan = state.daemon_restore_plan(&[pane(1), pane(2), pane(3), pane(4)]);
         let trees: Vec<DaemonPaneNode> = plan
@@ -658,6 +733,7 @@ mod tests {
             tabs: vec![daemon_tab("b", split(false, 40.0, leaf(1), leaf(3)), None)],
             active_tab: 0,
             sidebar_visible: true,
+            daemon_cleanup: Vec::new(),
         };
         let plan = state.daemon_restore_plan(&[pane(1), pane(3)]);
         let RestoredTab::Daemon { layout, .. } = &plan.tabs[0] else {

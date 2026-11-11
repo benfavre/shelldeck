@@ -682,6 +682,31 @@ impl Supervisor {
         });
     }
 
+    /// Panes still to be ended at the next contact with the daemon,
+    /// sorted. For a caller that keeps them across a restart of the
+    /// application ([`doom`](Self::doom)).
+    pub fn doomed_panes(&self) -> Vec<Uuid> {
+        let mut panes: Vec<Uuid> = self.inner.activity.doomed.lock().iter().copied().collect();
+        panes.sort();
+        panes
+    }
+
+    /// Panes to end at the next contact with the daemon, and never to
+    /// offer back meanwhile: closed by the user in an earlier run of the
+    /// application, while the daemon could not be reached. Nothing is
+    /// contacted here.
+    pub fn doom(&self, panes: impl IntoIterator<Item = Uuid>) {
+        self.inner.activity.doomed.lock().extend(panes);
+    }
+
+    /// End a pane that no session of this process shows (one left on the
+    /// daemon by an earlier run, when it must not be offered back). Never
+    /// blocks; a pane that cannot be ended right now is ended at the next
+    /// contact.
+    pub fn end_unattached(&self, pane: Uuid) {
+        self.end_unattached_pane(pane);
+    }
+
     /// End a pane no session thread looks after any more. Never blocks:
     /// uses the shared connection only if it is there and free right now.
     fn end_unattached_pane(&self, pane: Uuid) {

@@ -18,6 +18,8 @@
 use crate::t;
 use parking_lot::Mutex;
 use shelldeck_core::config::app_config::{AppConfig, GeneralConfig, RemoteDaemonInstall};
+use shelldeck_core::config::workspace_state::DaemonCleanup;
+use shelldeck_core::config::WorkspaceState;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_sessiond::attached::SessionOptions;
 use shelldeck_sessiond::client::SpawnOptions;
@@ -48,7 +50,23 @@ struct Entry {
     target: String,
 }
 
+/// What is left to end on one host at the next contact with its daemon.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct HostCleanup {
+    /// Where the entry dialed when the work was recorded.
+    target: String,
+    /// Panes closed while the host could not be reached, in an earlier
+    /// run (the supervisor of the host holds the ones of this run).
+    panes: Vec<Uuid>,
+    /// Sign-out while the host was not connected: end every shell the
+    /// app left there.
+    all: bool,
+}
+
 struct State {
+    /// Work carried from earlier runs (the workspace state file) and
+    /// sign-outs of this one, by connection id.
+    cleanup: HashMap<Uuid, HostCleanup>,
     hosts: HashMap<Uuid, Entry>,
     /// Hosts replaced after their connection entry changed. Kept so the
     /// sessions they still show keep working.
@@ -66,6 +84,7 @@ fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         Mutex::new(State {
+            cleanup: saved_cleanup(),
             hosts: HashMap::new(),
             retired: Vec::new(),
             pending: HashMap::new(),
@@ -75,6 +94,148 @@ fn state() -> &'static Mutex<State> {
             events_rx: Some(events_rx),
         })
     })
+}
+
+/// The cleanup work an earlier run left in the workspace state file.
+fn saved_cleanup() -> HashMap<Uuid, HostCleanup> {
+    WorkspaceState::load()
+        .map(|state| state.daemon_cleanup)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|saved| {
+            (
+                saved.connection_id,
+                HostCleanup {
+                    target: saved.target,
+                    panes: saved.panes,
+                    all: saved.all,
+                },
+            )
+        })
+        .collect()
+}
+
+/// What goes into the workspace state file. `carried`: the work known
+/// from earlier runs and sign-outs. `live`: for each host made in this
+/// run, where it dials and the panes its supervisor still has to end
+/// (they include the carried ones of that host that are not done yet).
+/// Work recorded for a server an entry no longer dials is dropped: that
+/// server cannot be reached through the entry any more.
+fn cleanup_snapshot(
+    carried: &HashMap<Uuid, HostCleanup>,
+    live: &[(Uuid, String, Vec<Uuid>)],
+) -> Vec<DaemonCleanup> {
+    let mut saved: Vec<DaemonCleanup> = Vec::new();
+    for (connection_id, target, doomed) in live {
+        let all = carried
+            .get(connection_id)
+            .is_some_and(|cleanup| cleanup.all && cleanup.target == *target);
+        saved.push(DaemonCleanup {
+            connection_id: *connection_id,
+            target: target.clone(),
+            panes: doomed.clone(),
+            all,
+        });
+    }
+    for (connection_id, cleanup) in carried {
+        if live.iter().all(|(id, _, _)| id != connection_id) {
+            saved.push(DaemonCleanup {
+                connection_id: *connection_id,
+                target: cleanup.target.clone(),
+                panes: cleanup.panes.clone(),
+                all: cleanup.all,
+            });
+        }
+    }
+    saved.retain(|cleanup| cleanup.all || !cleanup.panes.is_empty());
+    saved.sort_by_key(|cleanup| cleanup.connection_id);
+    saved
+}
+
+/// The cleanup work to write to the workspace state file.
+pub(super) fn cleanup_to_save() -> Vec<DaemonCleanup> {
+    let state = state().lock();
+    let live: Vec<(Uuid, String, Vec<Uuid>)> = state
+        .hosts
+        .iter()
+        .map(|(connection_id, entry)| {
+            (
+                *connection_id,
+                entry.target.clone(),
+                entry.host.supervisor().doomed_panes(),
+            )
+        })
+        .collect();
+    cleanup_snapshot(&state.cleanup, &live)
+}
+
+/// Sign-out: every server the user allowed the daemon on, and that is not
+/// connected right now, may still run shells of this account. They are
+/// ended at the next contact (`take_purge`). `ready`: is the daemon of
+/// that connection reachable right now (its shells were just ended).
+fn mark_cleanup_all(
+    cleanup: &mut HashMap<Uuid, HostCleanup>,
+    allowed: &[(Uuid, String)],
+    ready: impl Fn(Uuid, &str) -> bool,
+) {
+    for (connection_id, target) in allowed {
+        if ready(*connection_id, target) {
+            continue;
+        }
+        let entry = cleanup.entry(*connection_id).or_default();
+        if entry.target != *target {
+            // Recorded for another server: not reachable through this
+            // entry any more.
+            entry.panes.clear();
+            entry.target.clone_from(target);
+        }
+        entry.all = true;
+    }
+}
+
+/// See [`mark_cleanup_all`].
+pub(super) fn mark_signed_out(connections: &[Connection], general: &GeneralConfig) {
+    let allowed: Vec<(Uuid, String)> = connections
+        .iter()
+        .filter(|connection| consent(general, connection) == InstallConsent::Allow)
+        .map(|connection| (connection.id, dial_target(connection)))
+        .collect();
+    let mut state = state().lock();
+    let state = &mut *state;
+    let hosts = &state.hosts;
+    mark_cleanup_all(&mut state.cleanup, &allowed, |connection_id, target| {
+        hosts
+            .get(&connection_id)
+            .is_some_and(|entry| entry.target == target && entry.host.is_ready())
+    });
+}
+
+/// `true` once after a sign-out that could not reach this host: the
+/// shells the app left there are to be ended now.
+pub(super) fn take_purge(connection_id: Uuid) -> bool {
+    let mut state = state().lock();
+    let state = &mut *state;
+    let Some(target) = state.hosts.get(&connection_id).map(|entry| &entry.target) else {
+        return false;
+    };
+    match state.cleanup.get_mut(&connection_id) {
+        Some(cleanup) if cleanup.all && cleanup.target == *target => {
+            cleanup.all = false;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// For a purge: the panes to end, and the listing without them. Only
+/// what `ready_plan` could offer is ended: live shells the app made, not
+/// shown here, and not shown by another client right now (the app on
+/// another machine with the same account on the host).
+pub(super) fn split_purged(panes: Vec<PaneInfo>, open: &[Uuid]) -> (Vec<Uuid>, Vec<PaneInfo>) {
+    let (ended, kept): (Vec<PaneInfo>, Vec<PaneInfo>) = panes.into_iter().partition(|info| {
+        info.alive && info.label == PANE_LABEL && info.clients == 0 && !open.contains(&info.pane)
+    });
+    (ended.into_iter().map(|info| info.pane).collect(), kept)
 }
 
 /// The runtime the shared SSH connections live on. Never dropped.
@@ -160,6 +321,18 @@ pub(super) fn host_for(connection: &Connection) -> Result<RemoteHost, String> {
     host.set_event_handler(move |event| {
         let _ = events.send((connection_id, event));
     });
+    // Panes closed in an earlier run while this server was out of reach:
+    // the supervisor ends them at its first contact and never offers them.
+    match state.cleanup.get_mut(&connection.id) {
+        Some(cleanup) if cleanup.target == target => {
+            host.supervisor().doom(std::mem::take(&mut cleanup.panes));
+        }
+        // Recorded for a server this entry no longer dials.
+        Some(_) => {
+            state.cleanup.remove(&connection.id);
+        }
+        None => {}
+    }
     let entry = Entry {
         host: host.clone(),
         target,
@@ -498,6 +671,153 @@ mod tests {
                 assert!(!copy.trim().is_empty(), "{locale}: {key} is empty");
             }
         }
+    }
+
+    // SDTEST-3052 (SDUC-574): the rules of the cleanup work that is kept
+    // for a later contact with a server.
+    //
+    // Saving: a host made in this run saves what its supervisor still has
+    // to end, with the pending "everything" mark when it is for the server
+    // the host dials; a host not made in this run keeps what was carried;
+    // an entry with nothing left is not saved.
+    //
+    // Sign-out: every allowed server that is not reachable right now is
+    // marked "everything"; a mark recorded for a server the entry no
+    // longer dials drops the old panes.
+    //
+    // Purge: only what could be offered back is ended (a live shell of
+    // the app, not shown here, not shown by another client), and the
+    // listing that remains offers nothing of it.
+    #[test]
+    fn sdtest_3052_cleanup_is_carried_merged_and_applied() {
+        use super::{cleanup_snapshot, mark_cleanup_all, split_purged, HostCleanup};
+        use std::collections::HashMap;
+
+        let (made, away, done, moved) = (
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            Uuid::from_u128(3),
+            Uuid::from_u128(4),
+        );
+        let (old_pane, new_pane, away_pane) = (
+            Uuid::from_u128(11),
+            Uuid::from_u128(12),
+            Uuid::from_u128(13),
+        );
+        let mut carried = HashMap::new();
+        carried.insert(
+            made,
+            HostCleanup {
+                target: "a@made:22|".into(),
+                panes: Vec::new(), // given to the supervisor when the host was made
+                all: true,
+            },
+        );
+        carried.insert(
+            away,
+            HostCleanup {
+                target: "a@away:22|".into(),
+                panes: vec![away_pane],
+                all: false,
+            },
+        );
+        carried.insert(
+            done,
+            HostCleanup {
+                target: "a@done:22|".into(),
+                panes: Vec::new(),
+                all: false,
+            },
+        );
+        carried.insert(
+            moved,
+            HostCleanup {
+                target: "a@old:22|".into(),
+                panes: Vec::new(),
+                all: true,
+            },
+        );
+        let live = vec![
+            (made, "a@made:22|".to_string(), vec![old_pane, new_pane]),
+            (done, "a@done:22|".to_string(), Vec::new()),
+            // The entry dials another server now: the mark for the old
+            // one does not follow it.
+            (moved, "a@new:22|".to_string(), Vec::new()),
+        ];
+        let saved = cleanup_snapshot(&carried, &live);
+        let summary: Vec<_> = saved
+            .iter()
+            .map(|cleanup| {
+                (
+                    cleanup.connection_id,
+                    cleanup.target.as_str(),
+                    cleanup.panes.clone(),
+                    cleanup.all,
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (made, "a@made:22|", vec![old_pane, new_pane], true),
+                (away, "a@away:22|", vec![away_pane], false),
+            ]
+        );
+
+        // Sign-out.
+        let mut cleanup = HashMap::new();
+        cleanup.insert(
+            away,
+            HostCleanup {
+                target: "a@elsewhere:22|".into(),
+                panes: vec![away_pane],
+                all: false,
+            },
+        );
+        let allowed = vec![
+            (made, "a@made:22|".to_string()),
+            (away, "a@away:22|".to_string()),
+        ];
+        mark_cleanup_all(&mut cleanup, &allowed, |id, _| id == made);
+        assert!(!cleanup.contains_key(&made), "reachable: ended right now");
+        assert_eq!(
+            cleanup.get(&away),
+            Some(&HostCleanup {
+                target: "a@away:22|".into(),
+                panes: Vec::new(),
+                all: true,
+            })
+        );
+
+        // Purge.
+        let shown = pane(PANE_LABEL, true);
+        let left = pane(PANE_LABEL, true);
+        let dead = pane(PANE_LABEL, false);
+        let foreign = pane("something-else", true);
+        let mut elsewhere = pane(PANE_LABEL, true);
+        elsewhere.clients = 1;
+        let listing = vec![
+            shown.clone(),
+            left.clone(),
+            dead.clone(),
+            foreign.clone(),
+            elsewhere.clone(),
+        ];
+        let (ended, kept) = split_purged(listing, &[shown.pane]);
+        assert_eq!(ended, vec![left.pane]);
+        let kept_ids: Vec<Uuid> = kept.iter().map(|info| info.pane).collect();
+        assert_eq!(
+            kept_ids,
+            vec![shown.pane, dead.pane, foreign.pane, elsewhere.pane]
+        );
+        assert_eq!(
+            ready_plan(&kept, &[shown.pane], false),
+            ReadyPlan {
+                tab: None,
+                extra_tabs: Vec::new(),
+            },
+            "nothing of the previous account is offered"
+        );
     }
 
     fn pane(label: &str, alive: bool) -> PaneInfo {

@@ -431,8 +431,8 @@ binaries are not pruned (done since), no Settings control to change a
 recorded answer (a "forget all" row exists since),
 no remote daemon from a Windows client, no latency measurement. A tab
 closed while the server is unreachable now ends its shell at the next
-contact in the same run (not across an app restart), see "Final review
-fixes".
+contact, also across an app restart since "Cleanup kept for the next
+contact, checked on the same server".
 
 ## Daemon hardening, version skew and packaging (2026-11-11)
 
@@ -842,9 +842,12 @@ that follows says what to look at.
 ### Known gaps of this step
 
 - A pane closed while unreachable is forgotten when the app quits before
-  the daemon is reached again: it is then offered back.
-- Sign-out does not contact hosts that were not connected in this run,
-  nor a local daemon left by another version.
+  the daemon is reached again: it is then offered back. (Closed since
+  for SSH servers: "Cleanup kept for the next contact, checked on the
+  same server" at the end.)
+- Sign-out does not contact hosts that were not connected in this run
+  (closed since, same section), nor a local daemon left by another
+  version (still open).
 - A stale bundled remote build is refused but stays on disk until an
   update that carries a new one.
 - A pane whose previous client is not yet known to be gone is not offered
@@ -1012,6 +1015,22 @@ two lines. After a click the two tables are gone from the configuration
 file and the next connection to one of the servers asked the question
 again, in the same run. Not looked at: the row in English, and that it
 disappears from the open Settings window at once.
+
+### Cleanup kept for the next contact, checked on the same server
+
+Application rebuilt with the change (the commit "panes to end survive a
+restart, sign-out reaches servers that are not connected").
+
+| Check | Result |
+|---|---|
+| Two daemon tabs on the server; network detached; one tab closed; quit | Pass. The session file has `daemon_cleanup` with that pane for the connection entry and its dialed target. On the server both shells still run |
+| Network back; start; connect | Pass. Toast "1 session(s) retrouvée(s)": only the tab that was kept. The closed shell is gone from the server a few seconds later; the session file has no cleanup left after the next quit |
+| Start with one shell left on the server, without connecting to it; sign out; quit | Pass. The session file marks the connection entry "everything"; the server was not contacted, its shell still runs |
+| Start (signed in again); connect | Pass. Log: "ended the shells left on qa-sshd before the sign-out count=1". The tab is a new shell, the old one is gone from the server, the toast is the plain "connected" one, the session file has no cleanup left |
+
+Not checked: a crash instead of a quit, an edited connection entry, a
+shell shown by another client at the time of the purge, several tabs of
+one server connecting at once after a sign-out.
 
 ### macOS and Windows, through CI
 

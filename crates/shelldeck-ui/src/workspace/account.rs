@@ -524,6 +524,11 @@ impl Workspace {
         self.terminal
             .update(cx, |terminal, _| terminal.end_daemon_panes());
         self.stop_authenticated_runtime(cx);
+        // The servers that are not connected right now may still run
+        // shells of this account: they are ended at the next contact,
+        // whoever is signed in then, instead of being offered back.
+        #[cfg(unix)]
+        super::remote_daemon::mark_signed_out(&self.connections, &self.app_config.general);
         // Overwrite the persisted workspace after closing sessions. Otherwise
         // a later launch/account could restore terminals from the old session.
         self.save_workspace_state(cx);

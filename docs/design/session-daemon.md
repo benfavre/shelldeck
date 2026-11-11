@@ -1153,8 +1153,7 @@ Deferred (details in the subsections below):
   in-process until the protocol can carry a directory identity (see
   "Workspace-scoped terminals" below).
 - Daemon: quiescent refresh on emulator revision mismatch.
-- Remote: ending panes at sign-out on hosts that were not connected in
-  this run, an upgrade
+- Remote: an upgrade
   path for a running daemon of an incompatible release (today: fallback),
   latency work (`nodelay`), SSH tabs opened in a directory (they keep
   the plain path), a remote daemon from a Windows client.
@@ -1812,7 +1811,7 @@ real daemon binary or the in-memory SSH fixture.
 | 2 | `replace_session` left `tab.id` at the old session id, so the handed-over first tab of each host was missed by the tab dot, `@terminal` mentions, AI naming, snapshots and `select_tab`. | Fixed. The new session takes the id of the one it replaces, for a tab and for a split (whose layout key is that id). SDTEST-3022 now asserts `tab.id == pane.sessions[i].id`. The dependent features were not exercised one by one. |
 | 3 | Closing the last daemon tab of a host released the SSH connection right after the first hang-up: a pane ignoring `SIGHUP` kept running and was offered back, and a dead pane stayed listed for an hour. | Fixed. A pane being ended counts as activity of the supervisor (`is_idle`); the idle callback, which releases the connection, runs only once the pane was killed and removed, or after 15 s. `RemoteHost` releases and hands its connection over only when idle in that sense. The callback now runs on a plain thread and may run more than once per idle period. SDTEST-3040, SDTEST-3048. |
 | 4 | `ready_plan` offered back panes another ShellDeck was attached to; closing the tab killed them for the other machine. | Fixed. Panes with `clients > 0` are not offered, for remote hosts and for the local daemon (a second instance of the app). Cost: a pane whose previous client has not been noticed as gone yet (a dead TCP connection the server has not timed out) is not offered at that connect; it is at a later one. SDTEST-3021, SDTEST-3042. |
-| 5 | Sign-out only ended panes that were attached at that instant. | Fixed in part. A pane closed (tab, split, sign-out) while it cannot be reached, or after its session thread ended, is remembered by its supervisor: it is left out of every pane list (`Supervisor::list_panes`, `without_doomed`, `RemoteHost::prepare`) and ended on the next connection to that daemon. SDTEST-3041. Not covered: the memory is per process, so after an app restart such a pane is offered back; hosts that were not connected in this run and a local daemon left by another version are not contacted at sign-out. |
+| 5 | Sign-out only ended panes that were attached at that instant. | Fixed in part. A pane closed (tab, split, sign-out) while it cannot be reached, or after its session thread ended, is remembered by its supervisor: it is left out of every pane list (`Supervisor::list_panes`, `without_doomed`, `RemoteHost::prepare`) and ended on the next connection to that daemon. SDTEST-3041. Not covered at the time: the memory was per process, so after an app restart such a pane was offered back, and hosts that were not connected in that run were not reached by a sign-out. Both are covered since for SSH servers (see "Cleanup kept for the next contact" at the end). Still not covered: a local daemon left by another version is not contacted at sign-out. |
 | 6 | A saved daemon tab with no live pane was dropped, so "restore tabs on startup" reopened fewer local tabs than before phase 2, also with the setting off. | Fixed. Such a tab is planned as an ordinary saved tab in its place. With no live pane at all the local tabs are reopened as fresh terminals, as before; with some panes alive they are the local tabs and no fresh shell is added (existing rule). SDTEST-3009. |
 | 7 | The install consent was keyed on the connection id only: an entry edited to another server kept its "allow". | Fixed. The answer is stored with the server it was given for (`[general.session_daemon_host_targets]`) and counts only while the entry dials it. The question toast records the server it asked about, and "Install" uploads only to a host object that still dials it. An answer without a recorded server (written by hand) reads as "not asked". Within one run the question is still shown once per entry: after an edit the new server falls back and is asked at the next start. SDTEST-3014, SDTEST-3043. |
 | 8 | The bundled remote build was found by an unversioned name and uploaded under the app's version name: a build left by an older release could be installed as the new one and never replaced. | Fixed on the client. Every daemon binary carries a build marker line with its version (`BUILD_MARKER`, also what `--version` prints). A bundled file is used only if it carries the marker of the app's version; otherwise it does not count as a build (fallback `NoArtifact`, no question) and a later directory is tried. SDTEST-3044, SDTEST-3047, SDTEST-3024 (real binary). Not done: the updater and the install script still leave a stale build beside the app; it is refused, not removed. |
@@ -1957,4 +1956,43 @@ in the daemon can change that. The test now accepts a close for that
 case on macOS and keeps its other checks (an answer at once, no slot
 lost). A client that is closed without the words treats it as a lost
 connection and retries with its usual delays.
+
+### Cleanup kept for the next contact
+
+What is left to end on the daemon of an SSH server now survives a restart
+of the application. It is kept in the session file (`workspace.json`,
+`daemon_cleanup`), one entry per connection entry, with the server the
+entry dialed at the time:
+
+- Panes the user closed while the server could not be reached. They come
+  from the supervisor of the host (`Supervisor::doomed_panes`) each time
+  the session file is written, and are given to the supervisor of the
+  next run when the host object is made (`Supervisor::doom`), before
+  anything is dialed. From there the existing rules apply: never offered
+  back, ended at the first contact.
+- A mark "everything", set at sign-out for every server whose install
+  was allowed and whose daemon is not reachable at that moment (the
+  reachable ones have their shells ended at once, as before). At the
+  next contact, in that run or a later one and whoever is signed in, the
+  shells the application left there are ended instead of offered back,
+  and the tab gets a new shell. Only what could have been offered is
+  ended: live shells with the application's label, not shown in this
+  process, and not shown by another client at that moment (the same
+  account used from another machine keeps its shells).
+
+Limits, on purpose or not:
+
+- The session file is written at shutdown and at sign-out. After a crash
+  the panes closed during an outage in that run are offered back again.
+- An entry edited to dial another server drops the work recorded for the
+  old one: it cannot be reached through that entry any more.
+- A server whose install was never allowed is not marked at sign-out
+  (the application left nothing there through the daemon).
+- The local daemon is not covered: a local daemon left by another
+  version of the application is still not contacted at sign-out.
+
+Tests: SDTEST-3051 (the file), SDTEST-3052 (the rules, no GPUI),
+SDTEST-3053 (two supervisors standing for two runs, a real daemon). Both
+cases were also run in the application against the container server of
+the previous step (QA document).
 

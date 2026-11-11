@@ -104,6 +104,12 @@ impl Workspace {
             tabs,
             active_tab,
             sidebar_visible: self.sidebar_visible,
+            // Remote daemon panes still to be ended: kept until their
+            // server is reached, in this run or a later one.
+            #[cfg(unix)]
+            daemon_cleanup: super::remote_daemon::cleanup_to_save(),
+            #[cfg(not(unix))]
+            daemon_cleanup: Vec::new(),
         };
 
         if let Err(e) = state.save() {

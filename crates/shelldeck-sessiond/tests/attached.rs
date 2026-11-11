@@ -1120,3 +1120,72 @@ fn sdtest_3041_a_pane_closed_during_an_outage_is_ended_at_the_next_contact() {
         supervisor.is_idle() && bounded.is_idle()
     });
 }
+
+// SDTEST-3053 (SDUC-574): the panes still to be ended are carried across
+// a restart of the application. Read from one supervisor while the daemon
+// is out of reach (`doomed_panes`) and given to a new one (`doom`), they
+// are not offered back and are ended at its first contact. A pane that
+// was only detached is still offered.
+#[test]
+fn sdtest_3053_panes_to_end_are_carried_to_the_next_run() {
+    let (_temp, dir) = private_run_dir();
+    let connector = AwayConnector::new(&dir);
+    let first_run = away_supervisor(connector.clone(), UNLIMITED_ATTEMPTS);
+    let closed = first_run.open(shell(), view("closed")).expect("open");
+    wait_until("the first session to go live", || {
+        phase(&closed) == AttachedPhase::Live
+    });
+    let _cleanup = TerminateOnDrop(daemon_pid(&dir).expect("daemon pid"));
+    let kept = first_run.open(shell(), view("kept")).expect("open");
+    wait_until("the second session to go live", || {
+        phase(&kept) == AttachedPhase::Live
+    });
+    let (closed_pane, kept_pane) = (
+        closed.daemon_pane().expect("pane"),
+        kept.daemon_pane().expect("pane"),
+    );
+    let observer = observer(&dir);
+    assert!(first_run.doomed_panes().is_empty());
+
+    // The daemon goes out of reach, one tab is closed, the app quits.
+    connector.away.store(true, Ordering::SeqCst);
+    first_run.drop_connection();
+    wait_until("the closed session to wait", || {
+        phase(&closed) == AttachedPhase::Reconnecting
+    });
+    closed.terminate();
+    drop(closed);
+    drop(kept);
+    wait_until("the session threads to end", || {
+        first_run.session_count() == 0
+    });
+    let carried = first_run.doomed_panes();
+    assert_eq!(carried, vec![closed_pane]);
+    drop(first_run);
+    assert!(
+        pane_listed(&observer, closed_pane),
+        "nothing could reach the daemon: the pane still runs"
+    );
+
+    // The next run: a new supervisor is given the list before it
+    // reaches the daemon.
+    connector.away.store(false, Ordering::SeqCst);
+    let next_run = away_supervisor(connector.clone(), UNLIMITED_ATTEMPTS);
+    next_run.doom(carried);
+    let offered: Vec<Uuid> = next_run
+        .list_panes(true)
+        .expect("list")
+        .expect("a daemon runs")
+        .iter()
+        .map(|info| info.pane)
+        .collect();
+    assert!(!offered.contains(&closed_pane), "closed in the earlier run");
+    assert!(offered.contains(&kept_pane), "only detached: still offered");
+    wait_until("the closed pane to be ended", || {
+        !pane_listed(&observer, closed_pane)
+    });
+    wait_until("nothing to be left to end", || {
+        next_run.doomed_panes().is_empty()
+    });
+    assert!(pane_listed(&observer, kept_pane));
+}

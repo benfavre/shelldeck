@@ -930,6 +930,25 @@ impl Workspace {
             release(host);
             return;
         }
+        // A pane that is being ended is never offered, also when this
+        // listing was taken before the decision to end it.
+        let mut panes = host.supervisor().without_doomed(panes);
+        if super::remote_daemon::take_purge(conn_id) {
+            // The user signed out while this server was not connected:
+            // the shells the app left there are ended, not offered back.
+            let (ended, kept) =
+                super::remote_daemon::split_purged(panes, &host.supervisor().open_panes());
+            for pane in &ended {
+                host.supervisor().end_unattached(*pane);
+            }
+            if !ended.is_empty() {
+                tracing::info!(
+                    count = ended.len(),
+                    "ended the shells left on {title} before the sign-out"
+                );
+            }
+            panes = kept;
+        }
         let plan = super::remote_daemon::ready_plan(
             &panes,
             &host.supervisor().open_panes(),

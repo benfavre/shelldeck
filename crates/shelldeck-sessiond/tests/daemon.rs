@@ -2438,17 +2438,24 @@ async fn sdtest_3028_daemon_raises_its_descriptor_limit_and_panes_keep_the_origi
     .await;
     assert_eq!(soft_and_hard_nofile(login.pid).0, "100");
     // It is a session and group leader with the PTY as its terminal, and
-    // it neither ignores nor blocks the hangup.
-    let status = std::fs::read_to_string(format!("/proc/{}/status", login.pid)).expect("status");
+    // it neither ignores nor blocks the hangup. A shell may block signals
+    // for a moment while it starts (seen once as a blocked SIGHUP right
+    // after the exec, on a loaded machine): what counts is the state it
+    // settles in.
     let mask = |name: &str| {
+        let status =
+            std::fs::read_to_string(format!("/proc/{}/status", login.pid)).expect("status");
         let line = status
             .lines()
             .find(|line| line.starts_with(name))
             .expect("mask");
         u64::from_str_radix(line.split_whitespace().nth(1).expect("value"), 16).expect("hex")
     };
+    wait_for("the login shell to leave the hangup unblocked", || {
+        mask("SigBlk:") & 1 == 0
+    })
+    .await;
     assert_eq!(mask("SigIgn:") & 1, 0, "SIGHUP ignored");
-    assert_eq!(mask("SigBlk:") & 1, 0, "SIGHUP blocked");
 
     // No such program: refused before a pane exists, as without the
     // launcher.
