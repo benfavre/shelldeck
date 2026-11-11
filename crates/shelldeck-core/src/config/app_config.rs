@@ -204,6 +204,12 @@ pub struct GeneralConfig {
     #[serde(default = "default_true")]
     pub menu_bar_visible: bool,
     pub auto_attach_tmux: bool,
+    /// Opt-in prototype (`docs/design/session-daemon.md`): new local
+    /// terminal tabs and splits run in panes owned by the per-user
+    /// `shelldeck-sessiond` daemon, so they survive quitting or updating
+    /// the app and are offered back at the next start. Unix only; off by
+    /// default; no Settings toggle yet (edit the config file).
+    pub session_daemon: bool,
     pub auto_update: bool,
     /// Interface language. `system` follows the OS locale (French default).
     #[serde(default)]
@@ -415,6 +421,7 @@ impl Default for GeneralConfig {
             sidebar_nav_collapsed: false,
             menu_bar_visible: true,
             auto_attach_tmux: false,
+            session_daemon: false,
             auto_update: true,
             ui_language: UiLanguage::default(),
             ui_font_family: "Inter".to_string(),
@@ -934,6 +941,7 @@ ui_font_size = 14.0
         assert_eq!(cfg.general.sidebar_width, 260.0);
         assert!(!cfg.general.sidebar_nav_collapsed);
         assert!(!cfg.general.auto_attach_tmux);
+        assert!(!cfg.general.session_daemon);
         assert!(cfg.general.auto_update);
         assert_eq!(cfg.general.ui_language, UiLanguage::System);
         assert_eq!(cfg.general.ui_font_family, "Inter");

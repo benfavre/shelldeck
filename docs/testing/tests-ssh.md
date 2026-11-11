@@ -220,3 +220,21 @@ Existing: **0 tests.**
 | SDTEST-2864 | SDUC-557 | Bounded SSH stdin is sent concurrently with streamed output; Stop releases input/exec/forwarding and EOF does not lose a later exit status | `session`, `browser_bridge` | Green |
 | SDTEST-2865 | SDUC-557 | Production Python launcher and proxy drive fake Claude/Codex MCP conversations, keep private configuration scoped and remove it on completion/failure/signals | `scripts/test-remote-browser-bridge.py` | Green |
 | SDTEST-2867 | SDUC-557 | Opt-in packaged CEF plus actual SSH channels and a harmless fake provider exercise browser observation/control and revocation end to end | `browser_bridge` | Yellow / native gate — passed locally with packaged CEF; explicit runtime/display opt-in, Linux/macOS browser CI |
+
+## Session daemon transport: 2026-11-11
+
+`sessiond.rs` (tests in `sessiond_tests.rs`, Unix only). A real russh client
+and server over an in-memory duplex, with a dedicated server handler in the
+test file (the `session.rs` fixture answers an exec with a fixed result and
+cannot relay channel data). The exec request is answered by a relay to a real
+daemon on a private temporary run directory, by the real `/bin/sh`, by a fixed
+script, or by a refusal. No ephemeral port is used, so these run in parallel.
+
+| ID | SDUC | Scenario | Location | Status |
+|---|---|---|---|---|
+| SDTEST-2985 | SDUC-574 | Spawn, attach, input and echoed output end to end through an SSH exec channel to a real daemon and PTY; banner noise and a look-alike marker before the nonce marker are skipped; UTF-8 crosses unchanged; dropping the client sends EOF and Close and reports `LocalClose`; a second channel on the same connection uses a fresh nonce and finds the pane and its screen again; the daemon stopping is reported as `RemoteExit` with status 0 | `sessiond::tests::sdtest_2985_daemon_over_ssh_spawns_attaches_echoes_and_survives_the_channel` | Green |
+| SDTEST-2987 | SDUC-574 | The real `/bin/sh` runs the real fixed command: a path that does not exist is `BinaryMissing` (127), a file without the execute bit is `BinaryNotExecutable` (126), both `is_unavailable()` for the tmux fallback; a program that exits 1 without the marker is `ProxyExited`, not a fallback | `sessiond::tests::sdtest_2987_missing_or_unusable_remote_binary_is_a_typed_fallback_error` | Green |
+| SDTEST-2988 | SDUC-574 | Startup classification: exit status 127 arriving after the output EOF (OpenSSH order) and before it; `SDSD-ERR 1/2/3` on stderr after rc noise map to the three proxy refusals; an unknown code is a plain early exit; 70 KiB without the marker is refused; the channel is released every time | `sessiond::tests::sdtest_2988_startup_failures_are_classified_and_release_the_channel` | Green |
+| SDTEST-2989 | SDUC-574 | A daemon answering `UnsupportedVersion` is `VersionMismatch`; stderr after the marker fails closed; a refused exec request is `ExecRefused` (fallback); a version or path setting with shell syntax is `InvalidBinary` and sends no exec request; the default command names the per-user install of the app version | `sessiond::tests::sdtest_2989_version_mismatch_refused_exec_and_bad_setting_are_distinct` | Green |
+| SDTEST-2990 | SDUC-574 | A proxy that never answers times out; a timed-out and a cancelled connect both send EOF and Close; losing the SSH connection during startup is `SessionClosed`, not a missing binary | `sessiond::tests::sdtest_2990_a_proxy_that_never_answers_times_out_and_is_released` | Green |
+| SDTEST-2991 | SDUC-574 | The real `shelldeck-sessiond` binary behind the real command under a private `HOME`: the proxy starts the daemon, a pane echoes through SSH, a second channel finds the pane | `sessiond::tests::sdtest_2991_real_proxy_binary_starts_the_daemon_and_serves_a_pane_over_ssh` | Yellow / opt-in: `#[ignore]`, needs `SHELLDECK_SESSIOND_BIN=<built binary>`; passed locally on Linux, not in CI |

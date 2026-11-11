@@ -1164,6 +1164,7 @@ impl Workspace {
                         scrollback_lines: scrollback,
                         sidebar_width: initial_sidebar_width + crate::sidebar::RAIL_WIDTH,
                         menu_bar_visible,
+                        persistent_sessions: config.general.session_daemon,
                     },
                     cx,
                 );

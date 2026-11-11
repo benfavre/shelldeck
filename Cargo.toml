@@ -5,6 +5,7 @@ members = [
     "crates/shelldeck-core",
     "crates/shelldeck-ssh",
     "crates/shelldeck-terminal",
+    "crates/shelldeck-sessiond",
     "crates/shelldeck-ui",
     "crates/shelldeck-update",
     "crates/shelldeck-browser",

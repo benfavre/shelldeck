@@ -62,6 +62,7 @@ shelldeck/
 │   ├── shelldeck-core/     # Models, config, SSH config parser, keychain
 │   ├── shelldeck-ssh/      # SSH client, sessions, tunnels, remote exec
 │   ├── shelldeck-terminal/ # PTY, VTE parser, terminal grid
+│   ├── shelldeck-sessiond/ # Session daemon prototype: protocol, client, daemon, stdio proxy
 │   └── shelldeck-ui/       # GPUI views, sidebar, dashboard, forms
 ```
 
@@ -101,10 +102,13 @@ cargo run --example hello_world
 Models (Connection, PortForward, Script, ExecutionRecord), SSH config parser, app config (TOML), connection store (JSON), keychain wrapper, config file watcher.
 
 ### shelldeck-ssh
-SSH client (russh), session management, port forwarding tunnels (local/remote/SOCKS), remote command execution with streaming output, connection pool.
+SSH client (russh), session management, port forwarding tunnels (local/remote/SOCKS), remote command execution with streaming output, connection pool. `sessiond.rs` is the remote transport of the session daemon: an exec channel running `shelldeck-sessiond proxy`, handed to the `shelldeck-sessiond` client library (depends on `shelldeck-sessiond`).
 
 ### shelldeck-terminal
 Terminal grid (with scrollback, alt screen buffer, scroll regions), VTE escape sequence parser (full SGR, CSI, OSC support), local PTY spawning, terminal session management.
+
+### shelldeck-sessiond
+Session daemon prototype (`docs/design/session-daemon.md`): one PTY per pane owned by a per-user daemon, wire protocol v1, async client library with a headless client emulator, stdio proxy for the SSH transport. Depends on `shelldeck-terminal` (grid, parser, `StreamBoundary`, snapshot), never on GPUI or `shelldeck-ui`. Daemon code is Unix only. `attached.rs` (`LocalSessions`) is the synchronous facade the app uses: it starts the local daemon and turns a pane into a `TerminalSession` (`TerminalSession::spawn_attached` in `shelldeck-terminal`). Wired into the app only behind `general.session_daemon` (default off, local unscoped terminals, `shelldeck-ui/src/terminal_view/daemon.rs`); manual QA list in `docs/testing/session-daemon-qa.md`. Tests: `cargo test --locked -p shelldeck-sessiond` (private temp directories only).
 
 ### shelldeck-ui
 GPUI views: Workspace layout, Sidebar (connection tree), Dashboard (stats cards, activity feed), Terminal view (grid renderer, tabs), Port Forward view (table + visual map), Script Editor, Settings, Status Bar, Connection Form.

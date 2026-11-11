@@ -4,6 +4,9 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthChar;
 
+mod snapshot;
+pub use snapshot::{HistoryChunk, SnapshotError, MAX_SNAPSHOT_DIMENSION, SNAPSHOT_FORMAT};
+
 // ---------------------------------------------------------------------------
 // Ring Buffer
 // ---------------------------------------------------------------------------
@@ -463,6 +466,9 @@ pub struct TerminalGrid {
     /// Selection anchors add this monotonic base so output cannot retarget a
     /// selection to whichever text later occupies the same display row.
     selection_history_base: usize,
+    /// Bumped whenever the history is cleared (ED 3, RIS), so a session
+    /// daemon backfill that spans the clear can stop.
+    history_epoch: u64,
     max_scrollback: usize,
     scroll_offset: usize,
     scroll_top: usize,
@@ -567,6 +573,7 @@ impl TerminalGrid {
             scrollback: RingBuffer::new(max_scrollback),
             scrollback_line_flags: RingBuffer::new(max_scrollback),
             selection_history_base: 0,
+            history_epoch: 0,
             max_scrollback,
             scroll_offset: 0,
             scroll_top: 0,
@@ -1010,6 +1017,7 @@ impl TerminalGrid {
                     .saturating_add(self.scrollback.len());
                 self.scrollback.clear();
                 self.scrollback_line_flags.clear();
+                self.history_epoch = self.history_epoch.wrapping_add(1);
                 self.scroll_offset = 0;
             }
             _ => {}
@@ -1714,7 +1722,9 @@ impl TerminalGrid {
         // makes existing command-completion observers miss subsequent events.
         let response_tx = self.response_tx.take();
         let prompt_mark_sequence = self.prompt_mark_sequence;
+        let history_epoch = self.history_epoch.wrapping_add(1);
         *self = Self::with_scrollback(rows, cols, max_scrollback);
+        self.history_epoch = history_epoch;
         self.response_tx = response_tx;
         self.prompt_mark_sequence = prompt_mark_sequence;
     }

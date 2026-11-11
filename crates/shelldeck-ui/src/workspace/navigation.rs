@@ -20,6 +20,7 @@ impl Workspace {
             // `total_width` inclut le rail et respecte l'état replié courant.
             sidebar_width: self.sidebar.read(cx).total_width(),
             menu_bar_visible: self.app_config.general.menu_bar_visible,
+            persistent_sessions: self.app_config.general.session_daemon,
         };
         workspaces::apply_terminal_config(&self.terminal, &config, cx);
         self.sync_scripts_to_terminal_toolbar(cx);
@@ -583,6 +584,23 @@ impl Workspace {
         use shelldeck_core::config::workspace_state::TabType;
         use shelldeck_core::config::WorkspaceState;
 
+        // Session daemon panes left running by an earlier run come back as
+        // tabs, whatever the "restore tabs" preference says: they are live
+        // processes, not saved state. Never starts a daemon.
+        let daemon_tabs = if self.app_config.general.session_daemon {
+            self.terminal.update(cx, |terminal, cx| {
+                terminal.set_persistent_sessions(true);
+                terminal.restore_daemon_panes(cx)
+            })
+        } else {
+            0
+        };
+        if daemon_tabs > 0 {
+            self.update_dashboard_stats(cx);
+            self.sync_terminal_tab_count(cx);
+            cx.notify();
+        }
+
         if !self.app_config.general.auto_connect_on_startup {
             return;
         }
@@ -604,6 +622,11 @@ impl Workspace {
         for tab in &state.tabs {
             match tab.tab_type {
                 TabType::Local => {
+                    if daemon_tabs > 0 {
+                        // The reattached panes are the local tabs; a fresh
+                        // shell per saved tab would duplicate them.
+                        continue;
+                    }
                     self.terminal.update(cx, |terminal, cx| {
                         terminal.spawn_local_terminal(cx);
                     });

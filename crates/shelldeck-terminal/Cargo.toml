@@ -22,6 +22,10 @@ regex = "1"
 
 [dev-dependencies]
 criterion = { workspace = true }
+tempfile = { workspace = true }
+# Dev-only cycle (allowed by Cargo): the attached backend is tested against a
+# real daemon, which lives in the crate that depends on this one.
+shelldeck-sessiond = { path = "../shelldeck-sessiond" }
 
 [[bench]]
 name = "terminal"

@@ -3367,6 +3367,14 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-11**: SDUC-574: review fixes for the session daemon prototype: attach without a size for panes offered back at startup, input accepted while a slow client waits to reattach, a dead pane is removed only by closing its tab and other viewers still get its end, decode budget for snapshots and history, connection slots and accept loop under descriptor exhaustion, handshake deadlines against trickled bytes, daemon found after a host name change, start repeated during the old daemon's exit. SDTEST-2997..3003; SDTEST-2978 and SDTEST-2995 changed.
+
+- **2026-11-11**: SDUC-574: opt-in local use of the session daemon (`general.session_daemon`, default off): `TerminalSession::spawn_attached`, `shelldeck_sessiond::attached::LocalSessions`, local tabs and splits of the main terminal as daemon panes, panes offered back as tabs at startup. SDTEST-2992..2996. Manual checks pending in `session-daemon-qa.md`.
+
+- **2026-11-11**: SDUC-574: session daemon SSH transport (`shelldeck_ssh::sessiond::connect`): exec channel to `shelldeck-sessiond proxy`, typed fallback errors, tunnel end reporting. SDTEST-2985..2991. No app wiring yet.
+
+- **2026-11-11**: SDUC-574: session daemon prototype (`shelldeck-sessiond`): protocol v1, snapshot and restore of the terminal grid, stream boundary tail, attach handoff by byte offset, slow-client resync, history backfill, stdio proxy. SDTEST-2955..2980. No app wiring yet.
+
 - **2026-11-04** — SDUC-565: Settings → Général and the palette set up the Inklura Chrome extension (download, stable folder, computed ID, chrome://extensions, optional Craft bridge). SDTEST-2875–2879.
 
 - **2026-10-31** — SDUC-475/564: reuse unchanged visible row layout/paint with bounded retained views; invalidate on content, source, typography/locale and width changes. Correct native benchmarking to exclude GPUI test-support and per-frame font discovery; record frame phases and input-to-submit separately (SDTEST-2915/2916, AGENTS_PERFORMANCE.md).
@@ -5067,3 +5075,60 @@ The scoped CEF backend remains available through Built-in Chromium.
 Verification separates disposable dummy-password fixtures and native GPUI input
 from actual Google account sync, which needs user sign-in. See
 [`browser-chrome-preview.md`](../browser-chrome-preview.md).
+
+### SDUC-574: Session daemon owns panes and serves them to attached clients
+
+Prototype (crate `shelldeck-sessiond`, design in
+[`session-daemon.md`](../design/session-daemon.md)), opt-in for local
+terminals through `general.session_daemon` (off by default, no Settings
+toggle yet). A per-user daemon owns
+one PTY per pane and keeps the authoritative screen. Clients attach over a
+Unix socket (or through `shelldeck-sessiond proxy` on an SSH exec channel),
+receive a binary snapshot, a ready marker and then the raw byte stream, and
+parse it with their own emulator.
+
+Observable contract:
+
+- A pane keeps running when every client detaches or disconnects; a later
+  attach reproduces the screen, attributes, cursor and modes exactly.
+- An attach during continuous output loses and duplicates no byte, also when
+  the stream is cut inside an escape sequence or a multi-byte character.
+- Several clients may attach to one pane. Input frames arrive whole, the
+  application gets exactly one reply to a terminal query, a read-only client
+  cannot write, resize or kill, and the last active client owns the size.
+- A client that reads too slowly is dropped and resynced from a fresh
+  snapshot; the pane and the other clients are never throttled.
+- History is backfilled newest first after the snapshot; an applied resize
+  the client cannot reproduce makes it resync instead of diverging.
+- Pane exit is reported after the final output with the exit status; the
+  dead pane stays listed until it is closed. When one client closes it,
+  the others still receive its final output and are told it is gone.
+- An attach may ask for no size: the pane keeps its size and its history
+  width until that client sends one.
+- A client dropped for reading too slowly can still type into the pane
+  (for example Ctrl-C) before it reattaches.
+- Over SSH the daemon is reached through one exec channel without a PTY
+  running a fixed command. A host where the binary is absent, not
+  executable, or where exec is refused reports a typed "unavailable" error
+  so the caller can use the tmux mode; a protocol version mismatch, a proxy
+  refusal and a lost connection are reported as such. Dropping the client
+  releases the remote proxy and leaves the panes running.
+- One daemon per run directory; the directory must be private (0700, owned,
+  not a symlink), the socket is 0600 and the peer uid is checked on both
+  sides. Malformed, oversize, early or stalled frames only close that
+  connection.
+- The tmux mode is unchanged and remains the fallback.
+- With `general.session_daemon` on (Unix), a new local tab or split of the
+  main terminal is a daemon pane: the app starts the daemon when needed,
+  closing the tab or pane ends the shell, quitting the app does not, and
+  at the next start every pane still running comes back as a tab with its
+  screen, at the size it had (never resized to a placeholder). If the daemon cannot be started the tab is an ordinary in-process
+  terminal. Workspace-scoped terminals and SSH tabs are unchanged.
+
+Verified by SDTEST-2955..2980, SDTEST-2997..3003 and, for the local opt-in,
+SDTEST-2992..2996 and SDTEST-2998
+(backend and daemon start; the GPUI wiring is compile-checked only, see
+[`session-daemon-qa.md`](./session-daemon-qa.md)). Not done: Settings
+toggle, layout restore, SSH use of the daemon in the app, binary packaging
+and remote delivery.
+

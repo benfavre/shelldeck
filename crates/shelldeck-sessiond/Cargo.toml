@@ -1,0 +1,21 @@
+[package]
+name = "shelldeck-sessiond"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ShellDeck session daemon: owns PTYs, one per pane, and serves them to clients"
+
+[dependencies]
+shelldeck-terminal = { path = "../shelldeck-terminal" }
+vte = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

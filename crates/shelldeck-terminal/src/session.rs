@@ -18,6 +18,18 @@ pub enum SessionState {
 /// Callback to resize the underlying PTY or SSH channel.
 type ResizeFn = Box<dyn Fn(u16, u16) + Send>;
 
+/// Callback that ends the process behind a daemon-attached session.
+type TerminateFn = Box<dyn Fn() + Send>;
+
+/// Result of [`TerminalSession::spawn_attached`]: the session, the feed the
+/// transport applies daemon events to, and the receiver of keyboard input
+/// to forward to the daemon.
+type AttachedSpawn = (
+    TerminalSession,
+    crate::attached::AttachedFeed,
+    mpsc::UnboundedReceiver<Vec<u8>>,
+);
+
 /// Result of [`TerminalSession::spawn_ssh`]: the session plus the input sender
 /// (keyboard data into the SSH channel) and output receiver (channel data into
 /// the grid).
@@ -48,6 +60,13 @@ pub struct TerminalSession {
     shell_flavor: ShellFlavor,
     initial_cwd: Option<std::path::PathBuf>,
     tmux_control: Option<mpsc::UnboundedSender<shelldeck_core::tmux::TmuxAction>>,
+    /// Attached to a pane owned by the session daemon: the grid follows the
+    /// size the daemon applies and dropping the session only detaches.
+    attached: bool,
+    /// Last size requested from the daemon (`rows << 16 | cols`, 0 for
+    /// none). The view asks on every render; only a change is sent.
+    requested_size: std::sync::atomic::AtomicU32,
+    terminate_fn: Option<TerminateFn>,
 }
 
 impl TerminalSession {
@@ -219,6 +238,9 @@ impl TerminalSession {
             shell_flavor,
             initial_cwd: Some(canonical_cwd.to_path_buf()),
             tmux_control: None,
+            attached: false,
+            requested_size: std::sync::atomic::AtomicU32::new(0),
+            terminate_fn: None,
         })
     }
 
@@ -291,9 +313,91 @@ impl TerminalSession {
             shell_flavor: ShellFlavor::Posix,
             initial_cwd: None,
             tmux_control: None,
+            attached: false,
+            requested_size: std::sync::atomic::AtomicU32::new(0),
+            terminate_fn: None,
         };
 
         Ok((session, data_tx, input_rx))
+    }
+
+    /// Create a session attached to a pane owned by the session daemon
+    /// (`docs/design/session-daemon.md`, section 10).
+    ///
+    /// Like `spawn_ssh` there is no PTY here. The caller (the
+    /// `shelldeck-sessiond` client glue) applies daemon events to the
+    /// returned [`AttachedFeed`](crate::attached::AttachedFeed) and forwards
+    /// what it reads from the input receiver to the daemon. Differences:
+    ///
+    /// - the grid has no `response_tx`: only the daemon's grid answers
+    ///   terminal queries;
+    /// - [`resize`](Self::resize) does not touch the local grid, it only
+    ///   calls the resize callback (a request to the daemon); the grid
+    ///   changes when the feed applies the daemon's resize;
+    /// - dropping the session closes the input channel, which the caller
+    ///   treats as "detach": the pane keeps running. Ending the pane is the
+    ///   explicit [`terminate`](Self::terminate).
+    pub fn spawn_attached(
+        title: String,
+        rows: u16,
+        cols: u16,
+        max_scrollback: usize,
+        daemon_emulator_rev: u16,
+    ) -> crate::Result<AttachedSpawn> {
+        let grid = Arc::new(Mutex::new(TerminalGrid::with_scrollback(
+            rows as usize,
+            cols as usize,
+            max_scrollback,
+        )));
+        let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let output_notifier: Arc<Mutex<Option<mpsc::UnboundedSender<()>>>> =
+            Arc::new(Mutex::new(None));
+        let feed = crate::attached::AttachedFeed::new(
+            grid.clone(),
+            output_notifier.clone(),
+            daemon_emulator_rev,
+        );
+        let session = Self {
+            id: Uuid::new_v4(),
+            title,
+            created_at: Utc::now(),
+            state: SessionState::Running,
+            grid,
+            input_tx,
+            resize_fn: None,
+            output_notifier,
+            shell_flavor: ShellFlavor::Posix,
+            initial_cwd: None,
+            tmux_control: None,
+            attached: true,
+            requested_size: std::sync::atomic::AtomicU32::new(0),
+            terminate_fn: None,
+        };
+        Ok((session, feed, input_rx))
+    }
+
+    /// Whether this session is attached to a pane of the session daemon.
+    pub fn is_daemon_attached(&self) -> bool {
+        self.attached
+    }
+
+    /// Record the canonical working directory the daemon reported.
+    pub fn set_initial_cwd(&mut self, cwd: std::path::PathBuf) {
+        self.initial_cwd = Some(cwd);
+    }
+
+    /// Install the callback that ends the pane behind an attached session.
+    pub fn set_terminate_fn(&mut self, f: TerminateFn) {
+        self.terminate_fn = Some(f);
+    }
+
+    /// End the process behind a daemon-attached session (the user closed
+    /// the tab or the pane). No-op for local PTY and SSH sessions, which
+    /// end when the session is dropped.
+    pub fn terminate(&self) {
+        if let Some(ref terminate_fn) = self.terminate_fn {
+            terminate_fn();
+        }
     }
 
     /// Send input data to the terminal (e.g., keyboard input).
@@ -325,8 +429,21 @@ impl TerminalSession {
     }
 
     /// Resize the terminal grid and underlying PTY / SSH channel.
+    ///
+    /// A daemon-attached session only sends the request: its grid follows
+    /// the size the daemon applies, at the right position in the stream.
     pub fn resize(&self, rows: u16, cols: u16) {
-        self.grid.lock().resize(rows as usize, cols as usize);
+        if self.attached {
+            let packed = (u32::from(rows) << 16) | u32::from(cols);
+            let previous = self
+                .requested_size
+                .swap(packed, std::sync::atomic::Ordering::Relaxed);
+            if previous == packed {
+                return;
+            }
+        } else {
+            self.grid.lock().resize(rows as usize, cols as usize);
+        }
         if let Some(ref resize_fn) = self.resize_fn {
             resize_fn(rows, cols);
         }
@@ -368,6 +485,86 @@ mod tests {
         assert!(matches!(
             input.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    // SDTEST-2992 (SDUC-574): a daemon-attached session shows what the feed
+    // applies, never answers terminal queries itself and never resizes its
+    // own grid from the view.
+    #[test]
+    fn sdtest_2992_attached_session_follows_the_feed_not_the_view() {
+        use crate::attached::AttachedOutcome;
+
+        // A grid playing the daemon's side.
+        let source = Arc::new(Mutex::new(TerminalGrid::new(24, 80)));
+        let mut source_parser = vte::Parser::new();
+        TerminalProcessor::new(source.clone())
+            .process_bytes(&mut source_parser, b"daemon screen\r\n");
+        let snapshot = source.lock().snapshot();
+
+        let (mut session, mut feed, mut input_rx) =
+            TerminalSession::spawn_attached("pane".into(), 24, 80, 1_000, crate::EMULATOR_REV)
+                .unwrap();
+        assert!(session.is_daemon_attached());
+        let (wake_tx, mut wake_rx) = mpsc::unbounded_channel();
+        session.set_output_notifier(wake_tx);
+
+        // Output that arrives before the snapshot belongs to a stream
+        // position the grid does not have: it must not be painted.
+        feed.bytes(b"too early");
+        assert!(!screen_text(&session).contains("too early"));
+        assert!(wake_rx.try_recv().is_err());
+
+        feed.restore(&snapshot, false).unwrap();
+        assert!(screen_text(&session).contains("daemon screen"));
+        assert!(wake_rx.try_recv().is_ok(), "a restore must wake the UI");
+
+        // Cursor position and device attribute queries: only the daemon's
+        // grid may answer, or the application gets one reply per client.
+        feed.bytes(b"\x1b[6n\x1b[clive output");
+        assert!(screen_text(&session).contains("live output"));
+        assert!(matches!(
+            input_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        // The view asks for a size on every render: one request per change,
+        // and the grid keeps the daemon's size until the daemon applies it.
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        session.set_resize_fn(Box::new(move |rows, cols| seen.lock().push((rows, cols))));
+        session.resize(30, 100);
+        session.resize(30, 100);
+        session.resize(31, 100);
+        assert_eq!(*requests.lock(), vec![(30, 100), (31, 100)]);
+        {
+            let grid = session.grid.lock();
+            assert_eq!((grid.rows, grid.cols), (24, 80));
+        }
+        assert_eq!(feed.resize(31, 100, 0), AttachedOutcome::Applied);
+        {
+            let grid = session.grid.lock();
+            assert_eq!((grid.rows, grid.cols), (31, 100));
+        }
+
+        // A resize that pulled back more history than this grid holds
+        // cannot be reproduced: nothing is applied until the next restore.
+        assert_eq!(feed.resize(40, 100, 5), AttachedOutcome::NeedsReattach);
+        feed.bytes(b"after the gap");
+        {
+            let grid = session.grid.lock();
+            assert_eq!((grid.rows, grid.cols), (31, 100));
+        }
+        assert!(!screen_text(&session).contains("after the gap"));
+        feed.restore(&snapshot, false).unwrap();
+        assert!(feed.in_sync());
+        assert!(screen_text(&session).contains("daemon screen"));
+
+        // Dropping the session is the detach signal for the transport.
+        drop(session);
+        assert!(matches!(
+            input_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
         ));
     }
 

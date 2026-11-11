@@ -531,6 +531,7 @@ impl Workspace {
                             scrollback_lines: self.app_config.terminal.scrollback_lines,
                             sidebar_width: total,
                             menu_bar_visible: self.app_config.general.menu_bar_visible,
+                            persistent_sessions: self.app_config.general.session_daemon,
                         },
                         cx,
                     );

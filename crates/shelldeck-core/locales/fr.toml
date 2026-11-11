@@ -1223,6 +1223,7 @@ terminal.empty.launch_codex = "Lancer Codex"
 terminal.empty.launch_codex_caption = "Bac à sable, accord à la demande"
 terminal.empty.workspace_unavailable_title = "Dossier du workspace indisponible"
 terminal.empty.workspace_folder_unavailable = "Le dossier requis n'est pas accessible : %{path}. Aucun terminal local ne sera ouvert."
+terminal.session_daemon.connection_lost = "[connexion au démon de sessions perdue]"
 
 # User mode
 user.account.title = "Compte Inklura Manage"

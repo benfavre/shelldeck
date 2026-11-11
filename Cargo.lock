@@ -7479,6 +7479,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "shelldeck-sessiond"
+version = "0.20.0"
+dependencies = [
+ "libc",
+ "parking_lot",
+ "shelldeck-terminal",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "vte",
+]
+
+[[package]]
 name = "shelldeck-ssh"
 version = "0.20.0"
 dependencies = [
@@ -7495,6 +7510,7 @@ dependencies = [
  "serde_json",
  "shelldeck-browser",
  "shelldeck-core",
+ "shelldeck-sessiond",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -7514,7 +7530,9 @@ dependencies = [
  "portable-pty",
  "regex",
  "shelldeck-core",
+ "shelldeck-sessiond",
  "smallvec",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -7550,6 +7568,7 @@ dependencies = [
  "serde_json",
  "shelldeck-browser",
  "shelldeck-core",
+ "shelldeck-sessiond",
  "shelldeck-ssh",
  "shelldeck-terminal",
  "shelldeck-update",

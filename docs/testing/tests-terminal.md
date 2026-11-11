@@ -205,6 +205,48 @@ Existing: **3 tests**, all driving a real `/bin/sh` PTY.
 
 ---
 
+## 6b. `boundary.rs` and `grid/snapshot.rs` (session daemon support)
+
+Used by `shelldeck-sessiond` (SDUC-574). Design:
+[`session-daemon.md`](../design/session-daemon.md), sections 5 and 6.
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2955 | `boundary.rs::sdtest_2955_attach_at_any_byte_resumes_utf8_csi_osc_and_dcs` | SDUC-574 | Green | Splits a tricky stream at every byte index: snapshot plus `StreamBoundary` tail restored into a fresh grid and parser, then the rest of the stream, must equal the unsplit reference. Covers UTF-8 (valid and invalid, including an ESC swallowed inside a sequence), CSI with an embedded C0 control, ignored CSI, OSC, DCS, APC, charsets. |
+| SDTEST-2956 | `boundary.rs::sdtest_2956_unterminated_strings_have_a_tail_and_never_block` | SDUC-574 | Green | A stray `ESC P`, `ESC ]` or `ESC _` followed by silence still yields a tail at once. |
+| SDTEST-2957 | `boundary.rs::sdtest_2957_oversize_strings_use_a_canonical_prefix_and_end_at_the_same_byte` | SDUC-574 | Green | Past 4 KiB the tail becomes a canonical prefix; the string ends at the same byte on both sides for OSC, DCS (passthrough and parameters) and CSI. |
+| SDTEST-2958 | `grid/snapshot.rs::sdtest_2958_restored_grid_continues_exactly_like_the_source` | SDUC-574 | Green | Corpus (SGR and underline colour, wide and combining, pending wrap, alt screen, scroll region and origin mode, tab stops, OSC 8, OSC 133, DEC graphics, modes, saved cursor, REP, palette): restore is byte-exact and both grids stay identical after the same continuation. |
+| SDTEST-2959 | `grid/snapshot.rs::sdtest_2959_restore_keeps_scroll_offset_and_drops_selection` | SDUC-574 | Green | Client-local state: scroll offset kept (clamped when history is dropped), selection and clipboard request cleared, history kept only on a refresh. |
+| SDTEST-2960 | `grid/snapshot.rs::sdtest_2960_alt_screen_resize_keeps_saved_primary_with_its_old_size` | SDUC-574 | Green | The saved primary screen carries its own size (existing grid behaviour, reproduced on purpose). |
+| SDTEST-2961 | `grid/snapshot.rs::sdtest_2961_command_output_start_follows_the_clients_history_length` | SDUC-574 | Green | `command_output_start` travels relative to the first screen row. |
+| SDTEST-2962 | `grid/snapshot.rs::sdtest_2962_malformed_snapshots_are_rejected_without_touching_the_grid` | SDUC-574 | Green | Unknown format, unknown or duplicate section, every truncation, out-of-range size; a byte flip at every position never panics; a rejected restore leaves the grid unchanged. |
+| SDTEST-2963 | `grid/snapshot.rs::sdtest_2963_history_backfill_newest_first_rebuilds_the_server_history` | SDUC-574 | Green | Chunks prepended while live output keeps flowing rebuild the same history, hyperlinks included. |
+| SDTEST-2964 | `grid/snapshot.rs::sdtest_2964_prepend_history_keeps_selection_and_stops_at_the_client_limit` | SDUC-574 | Green | Selection and command output stay on the same text; the client stops at its own `max_scrollback`, keeping the newest rows. |
+| SDTEST-2965 | `grid/snapshot.rs::sdtest_2965_history_clear_bumps_the_epoch_and_ends_a_backfill` | SDUC-574 | Green | Evicted rows are no longer offered; ED 3 and RIS bump the history epoch. |
+| SDTEST-2997 | `grid/snapshot.rs::sdtest_2997_run_length_expansion_is_charged_before_it_is_allocated` | SDUC-574 | Green | A hand-built snapshot under 80 KiB describing 4000 rows of 1000 cells that each copy a 2 KiB hyperlink (more than 8 GiB decoded) is refused with `Invalid("decoded size")` and leaves the grid untouched; the budget is exact to the cell; a 60 000 row history chunk is decoded only for the rows the grid has room for, the skipped rows are still validated, and hyperlink copies past the chunk budget are refused. |
+
+## 6c. Daemon-attached session backend (`session.rs`, `attached.rs`, `tests/attached_daemon.rs`)
+
+`TerminalSession::spawn_attached` and `AttachedFeed` (SDUC-574, design
+section 15, "Local client integration"). The integration tests run a real
+daemon in-process on a private temporary run directory, with real PTYs,
+through `shelldeck_sessiond::attached::LocalSessions` (a dev-dependency:
+Cargo allows the dev-only cycle). They touch no user directory, socket,
+tmux session or process. Run:
+`cargo test --locked -p shelldeck-terminal --test attached_daemon`.
+The auto-start through the real daemon binary is SDTEST-2996 in
+[`tests-sessiond.md`](./tests-sessiond.md).
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-2992 | `session.rs::sdtest_2992_attached_session_follows_the_feed_not_the_view` | SDUC-574 | Green | No daemon: output before the snapshot is not painted; a restore wakes the UI; CPR and DA queries get no reply from the client grid; the view's resize sends one request per size change and leaves the grid alone until the feed applies it; a resize that pulled more history than the grid holds stops the feed until the next restore; dropping the session closes the input channel. |
+| SDTEST-2993 | `tests/attached_daemon.rs::sdtest_2993_drop_detaches_and_reattach_finds_the_same_shell` | SDUC-574 | Green | Attach, `echo first_$$` answers with the pid reported at spawn; dropping the session leaves the pane alive with zero clients; a new connection lists it, the reattached grid shows the old screen before any input, and `$$` is still the same pid; a second attach of the same pane on one connection is refused. |
+| SDTEST-2994 | `tests/attached_daemon.rs::sdtest_2994_resize_request_reaches_the_child_and_comes_back_to_the_grid` | SDUC-574 | Green | `resize` only requests: the grid reaches 31x97 through the daemon's applied resize and `stty size` reports it from the tty. |
+| SDTEST-2995 | `tests/attached_daemon.rs::sdtest_2995_terminate_removes_the_pane_and_an_exited_shell_keeps_its_final_screen` | SDUC-574 | Green | `terminate` then drop (a closed tab) removes the pane and its shell process is gone; a shell that exits on its own stays listed as dead and is not removed by the session that saw the exit: a second connection attaching later still gets the final screen; `terminate` on the dead pane removes it; an untouched pane stays alive. |
+| SDTEST-2998 | `tests/attached_daemon.rs::sdtest_2998_attach_without_a_size_keeps_the_pane_size_and_history_width` | SDUC-574 | Green | A pane at 40x150 with a 140 column line in history is attached with `keep_pane_size` (app restart, view size unknown): the pane and the client grid stay 40x150 and the backfilled line is whole; the session's first `resize` is applied and reaches the child (`stty size`). With a placeholder 24x80 attach the daemon cut its history to 80 columns. |
+
+---
+
 ## 7. `error.rs`
 
 No behaviour to test — pure `thiserror` enums. **Do not** write tests

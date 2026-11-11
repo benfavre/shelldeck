@@ -24,6 +24,7 @@ use crate::t;
 use crate::theme::ShellDeckColors;
 
 mod block_drawing;
+mod daemon;
 mod empty_state;
 pub(crate) use empty_state::trace_layout_for_preview;
 mod layout;
@@ -221,6 +222,9 @@ pub struct TerminalView {
     default_shell: Option<String>,
     /// Portée de checkout exigée par chaque nouveau PTY local.
     default_cwd: LocalCwdScope,
+    /// `general.session_daemon`: new unscoped local tabs and splits run in
+    /// panes owned by the session daemon instead of an in-process PTY.
+    persistent_sessions: bool,
     empty_state_width: f32,
     pub focus_handle: FocusHandle,
     _refresh_task: Option<gpui::Task<()>>,
@@ -385,6 +389,7 @@ impl TerminalView {
             font_family: "JetBrains Mono".to_string(),
             default_shell: None,
             default_cwd: LocalCwdScope::Unscoped,
+            persistent_sessions: false,
             empty_state_width: 0.0,
             focus_handle: cx.focus_handle(),
             _refresh_task: None,
@@ -497,6 +502,37 @@ impl TerminalView {
         self.default_shell = shell.filter(|s| !s.trim().is_empty());
     }
 
+    /// Opt-in session daemon backend (`general.session_daemon`). Applies to
+    /// *new* unscoped local terminals; running sessions keep their backend.
+    pub fn set_persistent_sessions(&mut self, enabled: bool) {
+        self.persistent_sessions = enabled;
+    }
+
+    /// Reopen, one tab each, the session daemon panes that an earlier run
+    /// of the app left running. Returns the number of tabs added. No-op
+    /// unless the setting is on and this view is the unscoped terminal;
+    /// never starts a daemon.
+    pub fn restore_daemon_panes(&mut self, cx: &mut Context<Self>) -> usize {
+        if !self.persistent_sessions || !matches!(self.default_cwd, LocalCwdScope::Unscoped) {
+            return 0;
+        }
+        let (rows, cols) = if self.last_grid_rows > 0 {
+            (self.last_grid_rows, self.last_grid_cols)
+        } else {
+            (24, 80)
+        };
+        let sessions = daemon::restore(rows, cols, self.configured_scrollback);
+        let restored = sessions.len();
+        for session in sessions {
+            self.add_session(session);
+        }
+        if restored > 0 {
+            tracing::info!("Reattached {restored} session daemon pane(s)");
+            self.ensure_refresh_running(cx);
+        }
+        restored
+    }
+
     /// Set the canonical checkout root for every future local tab, split, or
     /// CLI-created terminal owned by this view.
     pub(crate) fn set_default_cwd(&mut self, cwd: &std::path::Path) -> Result<(), String> {
@@ -563,6 +599,22 @@ impl TerminalView {
     ) -> shelldeck_terminal::Result<TerminalSession> {
         let (authority_cwd, canonical_cwd, authority) = match &self.default_cwd {
             LocalCwdScope::Unscoped => {
+                if self.persistent_sessions {
+                    // Workspace-scoped terminals stay in-process: their
+                    // directory authority is a held descriptor the daemon
+                    // cannot honour (design doc, section 15).
+                    match daemon::spawn(
+                        self.default_shell.as_deref(),
+                        rows,
+                        cols,
+                        self.configured_scrollback,
+                    ) {
+                        Ok(session) => return Ok(session),
+                        Err(error) => tracing::warn!(
+                            "Session daemon unavailable, using an in-process terminal: {error}"
+                        ),
+                    }
+                }
                 return TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols);
             }
             LocalCwdScope::Required {
@@ -790,6 +842,20 @@ impl TerminalView {
             }
             // Drop the tab's entire pane layout (all its split sessions).
             let was_active = pos == self.pane.active_index;
+            // A session daemon pane outlives its dropped session: closing
+            // the tab is what ends it (no-op for PTY and SSH sessions).
+            self.pane.sessions[pos].terminate();
+            let closing_layout = if was_active {
+                Some(&self.layout)
+            } else {
+                self.stored_layouts.get(&id)
+            };
+            for session in closing_layout
+                .into_iter()
+                .flat_map(|layout| layout.extra.values())
+            {
+                session.terminate();
+            }
             if was_active {
                 self.layout = TabLayout::single();
             } else {
@@ -4819,7 +4885,9 @@ impl TerminalView {
         match self.layout.focused {
             PaneId::Extra(id) => {
                 self.layout.remove_leaf(PaneId::Extra(id));
-                self.layout.extra.remove(&id);
+                if let Some(session) = self.layout.extra.remove(&id) {
+                    session.terminate();
+                }
             }
             PaneId::Primary => {
                 // Promote the first extra pane into the primary slot.
@@ -4836,7 +4904,8 @@ impl TerminalView {
                             tab.title = session.title.clone();
                             tab.state = session.state.clone();
                         }
-                        self.pane.sessions[idx] = session;
+                        let closed = std::mem::replace(&mut self.pane.sessions[idx], session);
+                        closed.terminate();
                     }
                 }
                 // The primary leaf now shows the promoted session; drop the
