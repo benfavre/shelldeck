@@ -25,6 +25,7 @@ use shelldeck_terminal::attached::{AttachedFeed, AttachedPhase};
 use shelldeck_terminal::session::TerminalSession;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -47,6 +48,60 @@ pub struct DaemonTarget {
 /// (never the caller of [`Supervisor::open`]): finding the run directory
 /// may touch the file system and probe a socket.
 pub type TargetResolver = Arc<dyn Fn() -> Result<DaemonTarget, String> + Send + Sync>;
+
+/// Makes the daemon connection of a [`Supervisor`]. The local daemon uses
+/// a [`TargetResolver`] ([`Supervisor::new`]); a daemon on another host
+/// brings its own transport ([`Supervisor::with_connector`]), for example
+/// an SSH exec channel, and hands over a connected client wrapped with
+/// [`LocalSessions::from_client`].
+///
+/// Called on the thread that connects (a session thread or a background
+/// thread), never on the caller of [`Supervisor::open`]. It may block.
+pub trait Connector: Send + Sync {
+    /// `start`: reach the daemon whatever it takes (start it, connect the
+    /// transport again). Without it, only say what is known right now.
+    ///
+    /// `Ok(None)` means "no daemon runs, so no pane can have survived": a
+    /// session whose pane existed is then reported as ended. A transport
+    /// that cannot tell (the host is unreachable) must return an error
+    /// instead, so the session keeps retrying.
+    fn connect(
+        &self,
+        start: bool,
+        options: &SessionsOptions,
+    ) -> Result<Option<LocalSessions>, AttachError>;
+}
+
+/// The per-user daemon of this machine, found through a resolver.
+struct LocalConnector {
+    resolver: TargetResolver,
+}
+
+impl Connector for LocalConnector {
+    fn connect(
+        &self,
+        start: bool,
+        options: &SessionsOptions,
+    ) -> Result<Option<LocalSessions>, AttachError> {
+        let target = (self.resolver)().map_err(AttachError::Unavailable)?;
+        let options = options.clone();
+        match (start, target.daemon_exe) {
+            (true, Ok(exe)) => {
+                LocalSessions::connect(&target.dir, target.explicit_dir, &exe, options).map(Some)
+            }
+            // Nothing to start a daemon with: one that already runs is
+            // still good.
+            (true, Err(reason)) => match LocalSessions::connect_existing(&target.dir, options)? {
+                Some(sessions) => Ok(Some(sessions)),
+                None => Err(AttachError::Unavailable(reason)),
+            },
+            (false, _) => LocalSessions::connect_existing(&target.dir, options),
+        }
+    }
+}
+
+/// Called when the last session of a supervisor is over.
+type IdleFn = Arc<dyn Fn() + Send + Sync>;
 
 /// Lines shown inside a terminal by the supervisor. User facing, so the
 /// caller provides them (translated). `None` shows nothing.
@@ -347,8 +402,12 @@ async fn forward(
 // ---------------------------------------------------------------------------
 
 struct Inner {
-    resolver: TargetResolver,
+    connector: Arc<dyn Connector>,
     options: SupervisorOptions,
+    /// Sessions whose thread still runs (connecting, attached or waiting
+    /// to reconnect).
+    sessions: AtomicUsize,
+    on_idle: Mutex<Option<IdleFn>>,
     /// The shared connection. Held while connecting, so several sessions
     /// opening at once make one connection and start one daemon. Never
     /// taken by [`Supervisor::open`].
@@ -367,7 +426,17 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
+    /// A supervisor for the per-user daemon of this machine.
     pub fn new(resolver: TargetResolver, options: SupervisorOptions) -> std::io::Result<Self> {
+        Self::with_connector(Arc::new(LocalConnector { resolver }), options)
+    }
+
+    /// A supervisor whose daemon is reached through `connector` (a daemon
+    /// on another host, behind its own transport).
+    pub fn with_connector(
+        connector: Arc<dyn Connector>,
+        options: SupervisorOptions,
+    ) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("sessiond-input")
@@ -375,8 +444,10 @@ impl Supervisor {
             .build()?;
         Ok(Self {
             inner: Arc::new(Inner {
-                resolver,
+                connector,
                 options,
+                sessions: AtomicUsize::new(0),
+                on_idle: Mutex::new(None),
                 connection: Mutex::new(None),
                 panes: Mutex::new(HashSet::new()),
                 runtime,
@@ -444,10 +515,12 @@ impl Supervisor {
                 ..session
             },
         };
+        self.inner.sessions.fetch_add(1, Ordering::SeqCst);
         let spawned = std::thread::Builder::new()
             .name("sessiond-pane".into())
             .spawn(move || driver.run(target, feed));
         if let Err(error) = spawned {
+            self.inner.sessions.fetch_sub(1, Ordering::SeqCst);
             if let Some(pane) = link.state.lock().pane {
                 self.inner.panes.lock().remove(&pane);
             }
@@ -471,10 +544,33 @@ impl Supervisor {
         self.inner.panes.lock().iter().copied().collect()
     }
 
+    /// Sessions whose thread still runs: connecting, attached or waiting
+    /// to reconnect. A session that ended or gave up no longer counts,
+    /// even while its tab is still shown.
+    pub fn session_count(&self) -> usize {
+        self.inner.sessions.load(Ordering::SeqCst)
+    }
+
+    /// `callback` runs, on a session thread, each time the last session is
+    /// over. A transport that costs something to keep (an SSH connection)
+    /// uses it to let go; it must check [`session_count`](Self::session_count)
+    /// again, a new session may have been opened meanwhile.
+    pub fn set_on_idle(&self, callback: impl Fn() + Send + Sync + 'static) {
+        *self.inner.on_idle.lock() = Some(Arc::new(callback));
+    }
+
     /// Give the current connection up, as if it had been lost (tests, and
     /// a way to force a reconnect). Panes keep running.
     pub fn drop_connection(&self) {
         if let Some(sessions) = self.inner.connection.lock().as_ref() {
+            sessions.client().close();
+        }
+    }
+
+    /// Close the shared connection and forget it. Panes keep running; a
+    /// session still attached reconnects by itself.
+    pub fn close_connection(&self) {
+        if let Some(sessions) = self.inner.connection.lock().take() {
             sessions.client().close();
         }
     }
@@ -487,23 +583,10 @@ impl Supervisor {
             return Ok(Some(sessions.clone()));
         }
         *slot = None;
-        let target = (self.inner.resolver)().map_err(AttachError::Unavailable)?;
-        let options = self.inner.options.sessions.clone();
-        let sessions = match (start, target.daemon_exe) {
-            (true, Ok(exe)) => Some(LocalSessions::connect(
-                &target.dir,
-                target.explicit_dir,
-                &exe,
-                options,
-            )?),
-            // Nothing to start a daemon with: one that already runs is
-            // still good.
-            (true, Err(reason)) => match LocalSessions::connect_existing(&target.dir, options)? {
-                Some(sessions) => Some(sessions),
-                None => return Err(AttachError::Unavailable(reason)),
-            },
-            (false, _) => LocalSessions::connect_existing(&target.dir, options)?,
-        };
+        let sessions = self
+            .inner
+            .connector
+            .connect(start, &self.inner.options.sessions)?;
         slot.clone_from(&sessions);
         Ok(sessions)
     }
@@ -565,6 +648,13 @@ impl Driver {
             }
         }
         self.finish();
+        let inner = &self.supervisor.inner;
+        if inner.sessions.fetch_sub(1, Ordering::SeqCst) == 1 {
+            let on_idle = inner.on_idle.lock().clone();
+            if let Some(on_idle) = on_idle {
+                on_idle();
+            }
+        }
     }
 
     /// One connect, spawn if needed, attach, and the whole life of that

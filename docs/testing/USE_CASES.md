@@ -3367,6 +3367,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-11**: SDUC-574: remote (SSH) use of the session daemon behind the same opt-in: probe of the remote binary, upload with SHA-256 verification under a per-host consent (`[general.session_daemon_hosts]`, asked once by a non-blocking toast), one SSH connection per host for all its panes (`shelldeck_ssh::sessiond_host::RemoteHost`, `supervisor::Connector`), panes offered back at the next connect, typed fallback to the tmux attachment or a plain shell with one notice. SDTEST-3014..3024. No real SSH server and no app launch: manual checks pending in `session-daemon-qa.md`; the remote builds are not packaged.
+
 - **2026-11-11**: SDUC-574: local app integration completed behind the opt-in: no daemon call on the UI thread (`supervisor::Supervisor`, sessions start in a "connecting" phase), automatic reattach with backoff after a connection loss and "session ended" for panes that did not survive, native layout saved by pane id in `workspace.json` and rebuilt at startup, Settings toggle, sign-out ends the panes. Workspace-scoped terminals stay in-process (reason in the design document). SDTEST-3004..3013; SDTEST-1718 and SDTEST-2992 extended. The app was not launched: manual checks pending in `session-daemon-qa.md`.
 
 - **2026-11-11**: SDUC-574: review fixes for the session daemon prototype: attach without a size for panes offered back at startup, input accepted while a slow client waits to reattach, a dead pane is removed only by closing its tab and other viewers still get its end, decode budget for snapshots and history, connection slots and accept loop under descriptor exhaustion, handshake deadlines against trickled bytes, daemon found after a host name change, start repeated during the old daemon's exit. SDTEST-2997..3003; SDTEST-2978 and SDTEST-2995 changed.
@@ -5089,6 +5091,13 @@ one PTY per pane and keeps the authoritative screen. Clients attach over a
 Unix socket (or through `shelldeck-sessiond proxy` on an SSH exec channel),
 receive a binary snapshot, a ready marker and then the raw byte stream, and
 parse it with their own emulator.
+
+With the same setting, an SSH tab opened without a directory is a pane of
+the daemon on that host when the host has (or, with the user's recorded
+consent for that host, is given) the matching binary in
+`~/.shelldeck/bin`; all panes of a host share one SSH connection, survive
+the app and are offered back at the next connect. Otherwise the tab uses
+the tmux attachment or a plain shell, with one notice.
 
 Observable contract:
 

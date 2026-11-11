@@ -163,6 +163,17 @@ impl LocalSessions {
         }
     }
 
+    /// Sessions over a client that is already connected, whatever carries
+    /// its byte stream (an SSH exec channel for a daemon on another host).
+    /// The client keeps running on the runtime it was connected on; the
+    /// private runtime made here only serves the blocking calls.
+    ///
+    /// Like every `LocalSessions`, the value must not be dropped inside an
+    /// async task (it owns a runtime).
+    pub fn from_client(client: Client, options: SessionsOptions) -> std::io::Result<Self> {
+        Ok(Self::from_parts(new_runtime()?, client, options))
+    }
+
     fn from_parts(
         runtime: tokio::runtime::Runtime,
         client: Client,
@@ -182,6 +193,11 @@ impl LocalSessions {
     /// not reopened: the caller connects again.
     pub fn is_closed(&self) -> bool {
         self.inner.client.is_closed()
+    }
+
+    /// Give the connection up. Panes keep running.
+    pub fn close(&self) {
+        self.inner.client.close();
     }
 
     /// Emulator revision announced by the daemon.

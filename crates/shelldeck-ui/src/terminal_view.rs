@@ -625,6 +625,12 @@ impl TerminalView {
             .iter()
             .enumerate()
             .map(|(index, tab)| {
+                // A tab of an SSH connection shows panes of that host's
+                // daemon: they are offered back when the host is
+                // connected again, never attached to the local daemon.
+                if tab.connection_id.is_some() {
+                    return None;
+                }
                 let primary = self.pane.sessions.get(index)?;
                 live_pane(primary)?;
                 let layout = if index == self.pane.active_index {
@@ -947,6 +953,54 @@ impl TerminalView {
 
         // Request focus on next render
         self.needs_focus = true;
+    }
+
+    /// Scrollback rows configured for the sessions of this view.
+    pub(crate) fn configured_scrollback(&self) -> usize {
+        self.configured_scrollback
+    }
+
+    /// Whether a session with this id is shown, in any tab or split.
+    pub(crate) fn has_session(&self, session_id: Uuid) -> bool {
+        let extras = std::iter::once(&self.layout)
+            .chain(self.stored_layouts.values())
+            .flat_map(|layout| layout.extra.values());
+        self.pane
+            .sessions
+            .iter()
+            .chain(extras)
+            .any(|session| session.id == session_id)
+    }
+
+    /// Put `session` in the place of the session `old_id` (a tab's primary
+    /// pane or a split), keeping the tab, its title and the layout. Used
+    /// when the backend of a tab is only known after it was opened (an SSH
+    /// tab that turns out to be a session daemon pane). The replaced
+    /// session is dropped, not terminated. `false`: no such session (the
+    /// tab was closed meanwhile); `session` is dropped.
+    pub(crate) fn replace_session(&mut self, old_id: Uuid, session: TerminalSession) -> bool {
+        session
+            .grid
+            .lock()
+            .set_max_scrollback(self.configured_scrollback);
+        session.set_output_notifier(self.output_tx.clone());
+        let extras = std::iter::once(&mut self.layout)
+            .chain(self.stored_layouts.values_mut())
+            .flat_map(|layout| layout.extra.values_mut());
+        let Some(slot) = self
+            .pane
+            .sessions
+            .iter_mut()
+            .chain(extras)
+            .find(|slot| slot.id == old_id)
+        else {
+            return false;
+        };
+        *slot = session;
+        // Size the new session on the next render.
+        self.last_grid_rows = 0;
+        self.last_grid_cols = 0;
+        true
     }
 
     pub fn close_tab(&mut self, id: Uuid) {
@@ -5638,6 +5692,84 @@ mod tests {
             terminal.apply_workspace_snapshot(&captured);
             assert_eq!(terminal.capture_workspace_snapshot(), captured);
             terminal.close_all_sessions();
+        });
+    }
+
+    // SDTEST-3022 (SDUC-574): an SSH tab whose host turns out to run the
+    // session daemon is handed over to a daemon pane in place: same tab,
+    // same position, the old session dropped and never terminated. Such a
+    // tab is not saved as a local daemon layout.
+    #[test]
+    fn sdtest_3022_an_ssh_tab_is_handed_over_to_a_daemon_pane_in_place() {
+        use super::SplitDirection;
+        use shelldeck_terminal::attached::AttachedPhase;
+        use shelldeck_terminal::session::TerminalSession;
+        use uuid::Uuid;
+
+        static ENDED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn attached(pane: u128) -> TerminalSession {
+            let (mut session, feed, _input) =
+                TerminalSession::spawn_attached("host".into(), 24, 80, 100, 1).unwrap();
+            session.set_terminate_fn(Box::new(|| {
+                ENDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }));
+            feed.status().set_pane(Uuid::from_u128(pane));
+            feed.status().set_phase(AttachedPhase::Live);
+            session
+        }
+        fn ssh() -> TerminalSession {
+            TerminalSession::spawn_ssh("host".into(), 24, 80).unwrap().0
+        }
+
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, _| {
+            terminal.set_persistent_sessions(true);
+            let connection = Uuid::from_u128(77);
+            let first = ssh();
+            let first_id = first.id;
+            terminal.add_session_with_connection(first, Some(connection));
+            let second = ssh();
+            let second_id = second.id;
+            terminal.add_session_with_connection(second, Some(connection));
+            terminal.last_grid_rows = 24;
+            terminal.last_grid_cols = 80;
+            assert!(terminal.has_session(first_id) && terminal.has_session(second_id));
+
+            // The background tab is handed over: its place, id and
+            // connection stay, the session behind it is the daemon pane.
+            assert!(terminal.replace_session(first_id, attached(1)));
+            assert_eq!(terminal.tabs.len(), 2);
+            assert_eq!(terminal.tabs[0].id, first_id);
+            assert_eq!(terminal.tabs[0].connection_id, Some(connection));
+            assert_eq!(
+                terminal.pane.sessions[0].daemon_pane(),
+                Some(Uuid::from_u128(1))
+            );
+            assert!(!terminal.has_session(first_id), "the old session is gone");
+            assert_eq!(terminal.pane.active_index, 1, "the active tab did not move");
+            assert_eq!(terminal.last_grid_rows, 0, "the new session gets sized");
+            assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+            // A session that is no longer shown (tab closed while it was
+            // connecting) is not replaced.
+            assert!(!terminal.replace_session(first_id, attached(2)));
+
+            // A split pane can be handed over as well.
+            let split = ssh();
+            let split_id = split.id;
+            terminal.install_split_pane(split, SplitDirection::Horizontal);
+            assert!(terminal.replace_session(split_id, attached(3)));
+            assert!(terminal
+                .layout
+                .extra
+                .values()
+                .any(|session| session.daemon_pane() == Some(Uuid::from_u128(3))));
+
+            // Tabs of an SSH connection are never saved as panes of the
+            // local daemon: their panes live on the host.
+            assert_eq!(terminal.daemon_tab_layouts(), vec![None, None]);
+            assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 0);
         });
     }
 

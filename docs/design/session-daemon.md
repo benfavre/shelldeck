@@ -987,8 +987,7 @@ Implemented now, with automated tests on Linux:
 - Daemon, protocol v1, snapshot and restore, attach handoff by byte
   offset, slow-client resync, history backfill, multi-client rules, stdio
   proxy, debug commands (SDTEST-2955..2980, 2986).
-- SSH transport in `shelldeck-ssh` (SDTEST-2985, 2987..2991), not wired
-  into the app.
+- SSH transport in `shelldeck-ssh` (SDTEST-2985, 2987..2991).
 - Opt-in local use in the app (`general.session_daemon`, default off,
   toggle in Settings, General): new unscoped local tabs and splits are
   daemon panes (SDTEST-2992..2996). No call waits for the daemon on the
@@ -997,13 +996,28 @@ Implemented now, with automated tests on Linux:
   saved by pane id and rebuilt at startup (SDTEST-3004..3013). The pure
   parts and the layout capture are tested; the app itself was never
   launched with the setting, so nothing was checked on screen.
+- Opt-in remote use in the app, with the same setting (subsection "Remote
+  app integration" below): an SSH tab opened without a directory is a
+  pane of the host's daemon when the host has the binary, one SSH
+  connection per host carries all its panes, panes survive the app and
+  are offered back at the next connect. Probe of the remote binary,
+  upload with SHA-256 verification under a per-host consent recorded in
+  the configuration, and a typed fallback to the tmux attachment or a
+  plain shell (SDTEST-3014..3024). The transport, the install and the
+  host object are tested on the in-memory SSH fixture, once with the
+  real binary (SDTEST-3024, opt-in); the workspace wiring is compiled
+  and read only, and no real SSH server was used: nothing was checked on
+  screen or against `sshd`.
 - Review fixes (subsection "Review fixes" below, SDTEST-2997..3003 and an
   extended SDTEST-2978).
 
 Deferred (details in the subsections below):
 
-- App: remote (SSH) use of the daemon, packaging of the daemon binary,
-  version check against a daemon left by another app version.
+- App: packaging of the daemon binary and of the two static remote
+  builds (nothing ships them yet, so on a release build every host
+  falls back with "no program for this kind of server" unless the
+  binary was installed by hand), version check against a daemon left by
+  another app version, saving the split tree of remote tabs.
   Workspace-scoped terminals are not deferred but excluded: they stay
   in-process until the protocol can carry a directory identity (see
   "Workspace-scoped terminals" below).
@@ -1012,7 +1026,10 @@ Deferred (details in the subsections below):
   not fit a 256 or 1024 soft limit; a raised limit would be inherited by
   pane children, so it needs a reset in the child first), closing the
   idle-exit race on the daemon side (today the client retries).
-- Remote: binary delivery, probe and upgrade, latency work (`nodelay`).
+- Remote: pruning old versioned binaries after an install, an upgrade
+  path for a running daemon of an incompatible release (today: fallback),
+  latency work (`nodelay`), SSH tabs opened in a directory (they keep
+  the plain path), a remote daemon from a Windows client.
 - Platforms: macOS is coded but never built or run; Windows is a stub.
 - Tests to write: SDTEST-2981..2984 in `docs/testing/tests-sessiond.md`.
 
@@ -1081,7 +1098,7 @@ Known cost: `shelldeck-sessiond` links `shelldeck-core` through
 ### Remote transport (as implemented in phase 3, step 1)
 
 `crates/shelldeck-ssh/src/sessiond.rs`, tests in `sessiond_tests.rs`
-(SDTEST-2985, 2987..2991). Not wired into the app.
+(SDTEST-2985, 2987..2991). Wired into the app by the next subsection.
 
 - Entry point: `shelldeck_ssh::sessiond::connect(&SshSession, options)`
   returning `SessiondConnection { client, ended }`, instead of the
@@ -1119,10 +1136,122 @@ Open points:
   would stop draining the channel and russh would block the whole
   connection, as described in section 8.
 - `nodelay` is unchanged (Nagle on); no latency measurement was made.
-- No install, probe or upgrade flow: the remote binary must already be at
-  the configured path.
+- Install and probe exist since step 2 (next subsection); there is still
+  no upgrade flow.
 - On Windows the module compiles against the client library only; that
   build was not checked here.
+
+### Remote app integration (as implemented in phase 3, step 2)
+
+Same opt-in (`general.session_daemon`), Unix clients only. With the
+setting off, `workspace/ssh.rs` behaves as before: the shell body was moved
+into a function (`run_ssh_shell`) that both paths call, nothing else.
+
+Pieces:
+
+- `shelldeck-sessiond`: `supervisor::Connector`, the way a `Supervisor`
+  reaches its daemon. `Supervisor::new` wraps the local resolver in one;
+  `Supervisor::with_connector` takes any other. `LocalSessions::from_client`
+  wraps a client that is already connected. `Supervisor::session_count`,
+  `set_on_idle` (called when the last session thread ends) and
+  `close_connection`.
+- `shelldeck-ssh/src/sessiond_install.rs`: `probe` (one exec:
+  `present | absent | noexec`, `uname -s`, `uname -m`, found by a nonce
+  among rc noise), `install` (binary on stdin of a fixed script: private
+  umask, `mkdir -p "$HOME/.shelldeck/bin"`, temporary file there, SHA-256
+  with `sha256sum`, `shasum` or `openssl`, compare, `chmod 700`, rename;
+  the temporary file is removed on every failure; the digest printed by
+  the host is compared again on the client), `target_triple`,
+  `find_artifact` / `load_artifact` (the file must be a 64-bit
+  little-endian ELF for the right machine), and the decision table
+  `decide(probe, consent, has_artifact)`. Only a checked version, a nonce
+  and a hex digest are placed in a script; both scripts run through
+  `sh -c`. No `sudo`, nothing outside `$HOME/.shelldeck`.
+- `shelldeck-ssh/src/sessiond_host.rs`: `RemoteHost`, one per SSH
+  connection entry. It owns the shared SSH connection (dialed on a runtime
+  given by the app) and a `Supervisor` whose connector opens the exec
+  channel on it. `prepare(consent)` is the first contact: dial, probe,
+  decide, upload if allowed, connect, list. It returns `Ready { panes }`,
+  `Fallback { reason, ask, session }` (the SSH connection is handed back
+  for the fallback backend) or `ConnectFailed`. When the channel ends with
+  `ConnectionLost` the connection is forgotten and the next attempt of a
+  session dials again (`HostEvent::ConnectionLost`, `Reconnected`). When
+  the last session is over the channel and the connection are released
+  (`HostEvent::Idle`).
+- `shelldeck-ui/src/workspace/remote_daemon.rs`: the process-wide registry
+  of hosts (keyed by connection id, replaced when the entry points
+  elsewhere), one two-thread runtime for all shared SSH connections, the
+  artifact directories, and `ready_plan` (which pane a connecting tab
+  takes, which come back as tabs).
+- `workspace/ssh.rs`: with the setting on and no directory asked,
+  `connect_ssh_at` still opens the tab at once with an SSH session, and
+  its thread calls `prepare` first. `DaemonReady`: the workspace replaces
+  the tab's session in place with a supervisor session
+  (`TerminalView::replace_session`). `DaemonFallback`: the thread goes on
+  with `run_ssh_shell` on the connection it was handed, tmux attachment
+  or plain shell as with the setting off. A host whose daemon is already
+  connected skips all of it: a new tab or split is `Supervisor::open` on
+  the UI thread, without a second SSH connection.
+
+Decision table (SDTEST-3015), in this order:
+
+| Probe | Consent | Artifact for the host | Outcome |
+|---|---|---|---|
+| no usable answer | any | any | fallback `ProbeFailed` |
+| binary present | any | any | connect |
+| missing or not executable, platform without a build | any | any | fallback `UnsupportedPlatform` |
+| missing or not executable | any | not bundled | fallback `NoArtifact` |
+| missing or not executable | allow | bundled | upload, verify, connect |
+| missing or not executable | never | bundled | fallback `ConsentDeclined` |
+| missing or not executable | not asked | bundled | fallback `ConsentPending`, ask |
+
+After a connect attempt: `is_unavailable()` gives `Unavailable`,
+`VersionMismatch` gives `VersionMismatch` (the old daemon is never stopped:
+its panes belong to the user), a failed upload gives `InstallFailed`,
+anything else `ConnectFailed`. Every fallback continues with
+`open_tmux_shell` when `general.auto_attach_tmux` is on, else a plain
+shell.
+
+Consent: `[general.session_daemon_hosts]` in the configuration, connection
+id to `allow` or `never` (SDTEST-3014). A host without an entry is asked
+once per run, by a toast with three buttons (install, later, never for
+this server) that blocks nothing: the tab is already running on the
+fallback backend. "Install" records `allow` and uploads in the background;
+the next tab of that host uses the daemon. "Later" records nothing.
+
+Notices: one per host and per run. The install question is the notice when
+it is shown; otherwise one toast names the reason and the backend in use.
+
+Artifacts: `shelldeck-sessiond-x86_64-unknown-linux-musl` and
+`shelldeck-sessiond-aarch64-unknown-linux-musl`, looked up in
+`SHELLDECK_SESSIOND_ARTIFACT_DIR` (development), next to the app binary,
+then in `sessiond/` of the app data directory. No build step or package
+produces them yet.
+
+Panes offered back: the app labels its remote panes `shelldeck-remote`.
+On `DaemonReady` the connecting tab takes the first live pane with that
+label that no session shows, else spawns one; the other such panes become
+tabs, unless other tabs of the same host are still connecting (a restored
+session), in which case each of them takes one (SDTEST-3021). Closing a
+tab or a pane ends the remote pane; quitting the app does not.
+
+Differences from sections 8 and 10, and limits:
+
+- The split tree of a remote tab is not saved: after a restart its panes
+  come back as tabs.
+- An SSH tab opened in a directory (`workdir`) keeps the plain path.
+- Old `shelldeck-sessiond-*` files are not pruned after an install.
+- The consent is per host and permanent until the entry is removed from
+  the configuration file (there is no Settings control for it), not "for
+  this connection" as section 8 says.
+- A tab closed while the host is unreachable does not end its pane: the
+  pane is offered back at the next connect.
+- A new tab opened while the host is reconnecting goes through `prepare`
+  again and may fall back.
+- The supervisor and the host object are Unix only, so a Windows client
+  never uses a remote daemon.
+- Only one workspace applies host events (idle, lost, reconnected) to the
+  connection status.
 
 ### Local client integration (as implemented in phase 2, steps 1 and 2)
 
@@ -1329,18 +1458,9 @@ Differences from sections 9 and 10, and limits of this slice:
   `docs/testing/session-daemon-qa.md` for what was verified automatically
   and the manual checks still to do.
 
-Follow-up, remote SSH use of the daemon in the app (NOT wired): the
-transport of the previous subsection is ready, but `connect_ssh_at` and
-`connect_ssh_split` are untouched. Wiring it means: one
-`shelldeck_ssh::sessiond::connect` per host connection kept next to the
-`SshSession`; a variant of `LocalSessions` built from that `Client` (the
-attach, reader and input code is transport agnostic, only `connect` is
-local); `SplitRequested` spawning a pane on the existing tunnel instead of
-a new SSH connection; the tmux fallback on `is_unavailable()`; reconnect on
-`TunnelEnd::ConnectionLost`; and a way to get the binary onto the host. It
-was left out of this step because it changes the SSH lifecycle code
-(`SshLifecycleEvent`, reconnect, tab state) and cannot be checked without a
-real host.
+Follow-up done: the remote SSH use of the daemon in the app is described
+in "Remote app integration" above. It was written without a real host: see
+the status summary for what was and was not verified.
 
 ### Review fixes (final step of the prototype)
 

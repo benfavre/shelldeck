@@ -20,9 +20,11 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = "0.22"
+sha2 = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
+shelldeck-terminal = { path = "../shelldeck-terminal" }
 shelldeck-browser = { path = "../shelldeck-browser" }
 tempfile = { workspace = true }
 rand = { version = "0.10", features = ["thread_rng"] }

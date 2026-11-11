@@ -34,8 +34,9 @@ terminals only. With it on:
   dropped.
 
 Workspace-scoped terminals stay in-process (decision and reason in the
-design document, section 15, "Workspace-scoped terminals"). SSH tabs and
-the tmux mode are not touched.
+design document, section 15, "Workspace-scoped terminals"). SSH tabs are
+covered by the section "Remote (SSH) use" at the end of this file; with
+the setting off they and the tmux mode behave as before.
 
 ## Verified automatically
 
@@ -270,7 +271,7 @@ in-process (excluded, not deferred), the layout is saved at shutdown and
 sign-out only, scroll positions, zoom and the focus of background tabs are
 not restored, no automatic fallback once a tab has been opened as a daemon
 tab, input typed while disconnected is dropped, notices keep the language
-of the first daemon session, no remote (SSH) use of the daemon in the app,
+of the first daemon session,
 no version check against a daemon left by another app version, the daemon
 binary is not packaged, the daemon does not raise its descriptor limit
 (about 80 panes under a 256 limit, about 330 under 1024, before new
@@ -282,3 +283,135 @@ Nine review findings were fixed after the step above; the table is in the
 design document, section 15, "Review fixes". Automated coverage is in the
 table "Verified automatically" (SDTEST-2997..3003, SDTEST-2978 extended,
 SDTEST-2995 changed). None of the fixes was checked in the running app.
+
+## Remote (SSH) use (2026-11-11)
+
+Scope: step "remote use of the session daemon in the app, with tmux as
+fallback" (design document, section 15, "Remote app integration").
+
+**The real application was not launched and no real SSH server was used.**
+There is no `sshd` on this machine (`ssh -o BatchMode=yes localhost true`
+is refused), so the planned live test against localhost was not written.
+The remote side of every test is the in-memory SSH fixture: a real russh
+client and server over an in-process pipe, the real `/bin/sh` under a
+private temporary `HOME`, and a real daemon on a private run directory.
+The workspace code in `workspace/ssh.rs` (the tab hand-over, the fallback
+notice, the install question and its answer handling, the host events)
+is compiled and read, never executed.
+
+### What changes for a user
+
+Nothing with the setting off. With "Persistent terminal sessions" on, for
+an SSH tab opened without a directory:
+
+- the tab opens at once as before. If the server has the session daemon
+  (`~/.shelldeck/bin/shelldeck-sessiond-<app version>`), the tab becomes a
+  pane of it: further tabs and splits of that server use the same SSH
+  connection, closing a tab ends its shell, quitting the app does not, and
+  connecting again brings the running shells back as tabs;
+- if the server does not have it and the app ships a build for that
+  server, a toast asks once: install (copies the program to
+  `~/.shelldeck/bin` on the server, no `sudo`), later, or never for this
+  server. The current tab is not held up: it uses tmux (when automatic
+  tmux attachment is on) or a plain SSH shell;
+- in every other case (no build for that server, unsupported system,
+  refused, failed upload, a restricted account, an incompatible daemon
+  already running) the tab uses tmux or a plain shell and one toast says
+  why, once per server and per run.
+
+Today no package ships the server builds, so outside a development setup
+every server falls back.
+
+### Verified automatically
+
+| What | How |
+|---|---|
+| The per-server answer is stored in `[general.session_daemon_hosts]` as `allow` or `never`, omitted when empty, absent means "not asked" | SDTEST-3014 (`shelldeck-core`) |
+| Decision table: an installed binary is used whatever the answer; an upload happens only with a recorded "allow" and a bundled build for the server's platform; each other case names its reason; the question is offered only when an install is possible and nobody answered; connect errors map to their fallback reason; the fallback backend is the choice made with the setting off | SDTEST-3015 (pure) |
+| Only a checked version, nonce and digest can reach a remote script; the probe answer is found among rc noise and only with the right nonce; a local file is an artifact only by name and as an ELF of the right machine | SDTEST-3016 (pure, temporary directories) |
+| Probe and upload against the real `/bin/sh` under a private `HOME`: nothing written by a probe; upload gives the same bytes, mode 0700 in 0700 directories, the remote digest equals the local one, no temporary file left, nothing else in the home; a file without the execute bit is reported and replaced; six fixed `sh -c` commands, no `sudo` | SDTEST-3017 |
+| A byte changed in transit: checksum mismatch, the previous install untouched, temporary file removed; a server with no digest tool: nothing installed | SDTEST-3018 |
+| The host object: not asked gives a fallback that offers the install, writes nothing and hands the working SSH connection back; "never", a wrong local file, a missing build, a damaged upload, a refused exec each give their reason and install nothing unverified; an unreachable server is a connect failure, not a fallback; an install after the user's answer works and releases the connection; then the binary is used without any answer | SDTEST-3019 |
+| End to end through the tunnel: consented upload, then a tab and a split spawn two panes that echo their own input over one SSH connection and one exec channel; the SSH connection is cut: both sessions reattach over a new one with their screens; sessions dropped (app quit): connection released, panes alive; next connect lists both, one is reattached with its screen; closing it ends only that pane | SDTEST-3020 |
+| The same with nothing simulated on the remote side: the real binary (a stripped build) uploaded by the real script, started by the real proxy command under a private `HOME`, a pane echoing, surviving and reattached | SDTEST-3024 (opt-in, run once for this step with `SHELLDECK_SESSIOND_BIN`, green) |
+| Which panes a connecting tab takes and which come back as tabs, also when several restored tabs connect at once | SDTEST-3021 (`shelldeck-ui`, pure) |
+| In a real `TerminalView`: an SSH tab (or split) is handed over to a daemon pane in place, the old session dropped and not terminated; tabs of an SSH connection are not saved as local daemon layouts | SDTEST-3022 |
+| A question toast is not pushed out by later notifications, closing it chooses nothing, an answer runs its handler | SDTEST-3023 (no rendering) |
+| `shelldeck-ui` and `shelldeck` compile with the wiring | `cargo check --locked -p shelldeck-ui -p shelldeck` |
+
+Suites run for this step, all green: `cargo fmt --all -- --check`;
+`cargo test --locked -p shelldeck-ssh --lib -- --test-threads=1`;
+`cargo test --locked -p shelldeck-sessiond`; `cargo test --locked -p
+shelldeck-core --lib config::app_config`; `cargo test --locked -p
+shelldeck-ui --lib -- --test-threads=1` (disposable XDG roots);
+`cargo check --locked -p shelldeck-ui -p shelldeck`; `cargo clippy --locked
+-p shelldeck-ssh -p shelldeck-sessiond -p shelldeck-core -p shelldeck-ui
+--all-targets -- -D warnings`. Counts are in the commit message.
+
+### Not verified
+
+- Anything against a real `sshd`: authentication, jump hosts, login
+  banners and rc files of real accounts, a non-POSIX login shell (the
+  scripts run through `sh -c`), a `noexec` home, a forced command.
+- The static musl builds: none was built; the uploaded binary of
+  SDTEST-3024 is a stripped glibc build for this machine.
+- `workspace/ssh.rs`: `run_ssh_daemon_or_shell`, the `DaemonReady` and
+  `DaemonFallback` handlers, the fast path for a host that is already
+  connected, the split path, the connection status after `Idle`,
+  `ConnectionLost` and `Reconnected`, the install answer handler.
+- The question toast on screen (buttons, wrapping, light and dark theme).
+- That the setting off path is unchanged was checked by reading the diff
+  (the shell body moved into `run_ssh_shell`); no SSH tab was opened.
+- macOS and Windows builds.
+
+### Manual checks still needed
+
+Setup: a throwaway profile, a test server you own, and a daemon build for
+the server placed as `shelldeck-sessiond-x86_64-unknown-linux-musl` (or
+`aarch64`) in a directory named by `SHELLDECK_SESSIOND_ARTIFACT_DIR`.
+
+- [ ] Setting off: SSH tab, split, duplicate, tmux attachment on and off,
+      disconnect notification: unchanged; nothing appears under
+      `~/.shelldeck` on the server.
+- [ ] Setting on, server without the binary, never asked: the tab works
+      at once (tmux or plain), the question toast appears once, stays
+      until answered, and does not block typing. "Later": nothing in the
+      configuration file, asked again after an app restart, not again in
+      the same run.
+- [ ] "Never for this server": `never` in
+      `[general.session_daemon_hosts]`, no further question, one notice
+      per run.
+- [ ] "Install": `allow` recorded, the "installing" then "installed"
+      toasts, on the server only
+      `~/.shelldeck/bin/shelldeck-sessiond-<version>` (0700) is new. The
+      next tab of that server is a daemon tab.
+- [ ] Daemon tab: prompt appears, typing, resize, full-screen programs;
+      a second tab and a split do not open a second SSH connection
+      (`ss -tnp` or the server's `who`); each is its own shell.
+- [ ] Close one tab: its shell is gone on the server
+      (`shelldeck-sessiond-<version> list` there), the others stay. Close
+      the last one: the sidebar shows the server as disconnected.
+- [ ] Quit the app with daemon tabs open, start again, connect: the
+      shells come back as tabs with their screens. With
+      `auto_connect_on_startup` and three saved tabs of one server: three
+      tabs, not five.
+- [ ] Cut the network for a few seconds: the tabs say "connection lost",
+      the sidebar shows "connecting", then the screens are back, same
+      shells. Cut it for more than a minute: the tabs end as
+      "unavailable"; connecting again offers the shells back.
+- [ ] Server where the binary cannot run (`noexec` home, other
+      architecture without a build, forced command): plain or tmux tab
+      and one notice with the reason.
+- [ ] Sign out with remote daemon tabs open: the remote shells are ended.
+- [ ] Edit a connection entry to point at another server while a daemon
+      tab of the old one is open: the old tab keeps working, a new tab
+      talks to the new server.
+
+### Known gaps (remote)
+
+Listed in the design document, section 15, "Remote app integration": the
+server builds are not built or packaged, the split tree of remote tabs is
+not saved, tabs opened in a directory keep the plain path, old remote
+binaries are not pruned, no Settings control to change a recorded answer,
+a tab closed while the server is unreachable leaves its shell running, no
+remote daemon from a Windows client, no latency measurement.

@@ -148,6 +148,8 @@ mod polling;
 mod presentation;
 pub use presentation::WorkspacePresentation;
 mod agent_project_repair;
+#[cfg(unix)]
+mod remote_daemon;
 mod remote_project;
 mod render;
 mod request_views;

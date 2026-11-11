@@ -67,6 +67,34 @@ enum ExecMode {
     },
     Script(Script),
     Refuse,
+    /// A whole host. The proxy command reaches the daemon serving `dir`
+    /// when the versioned binary it names is installed and executable
+    /// under `home` (else it ends with the status a shell would give:
+    /// 127 or 126). Every other command runs in the real `/bin/sh` with
+    /// that `HOME`.
+    Host(HostMode),
+}
+
+#[derive(Clone)]
+struct HostMode {
+    home: PathBuf,
+    dir: PathBuf,
+    /// `PATH` of the commands run by `/bin/sh`, when not the inherited one.
+    path: Option<PathBuf>,
+    /// Flip one byte of what the client sends to a command's stdin.
+    tamper_stdin: bool,
+    /// Refuse the exec request of the proxy command.
+    refuse_proxy: bool,
+}
+
+/// The file a proxy command starts, when `command` is the fixed command
+/// of the versioned install location.
+fn proxied_binary(command: &str, home: &Path) -> Option<PathBuf> {
+    let name = command
+        .strip_prefix("exec \"$HOME/.shelldeck/bin/")?
+        .split_once("\" proxy --hello ")?
+        .0;
+    Some(home.join(".shelldeck/bin").join(name))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -140,6 +168,8 @@ async fn run_shell(
     channel: ChannelId,
     command: String,
     home: Option<PathBuf>,
+    path: Option<PathBuf>,
+    mut tamper_stdin: bool,
     mut input: mpsc::UnboundedReceiver<Vec<u8>>,
 ) {
     let mut process = tokio::process::Command::new("/bin/sh");
@@ -153,12 +183,19 @@ async fn run_shell(
     if let Some(home) = home {
         process.env("HOME", home);
     }
+    if let Some(path) = path {
+        process.env("PATH", path);
+    }
     let mut child = process.spawn().expect("spawn /bin/sh");
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
     let mut stderr = child.stderr.take().expect("stderr");
     tokio::spawn(async move {
-        while let Some(bytes) = input.recv().await {
+        while let Some(mut bytes) = input.recv().await {
+            if let (true, Some(first)) = (tamper_stdin, bytes.first_mut()) {
+                *first ^= 0xff;
+                tamper_stdin = false;
+            }
             if stdin.write_all(&bytes).await.is_err() {
                 break;
             }
@@ -235,9 +272,46 @@ impl server::Handler for InMemoryServer {
                     channel,
                     command,
                     home,
+                    None,
+                    false,
                     input_rx,
                 ));
             }
+            ExecMode::Host(host) => match proxied_binary(&command, &host.home) {
+                Some(_) if host.refuse_proxy => session.channel_failure(channel)?,
+                Some(binary) => {
+                    session.channel_success(channel)?;
+                    let mode = std::fs::metadata(&binary).map(|meta| meta.permissions().mode());
+                    let handle = session.handle();
+                    match mode {
+                        Ok(mode) if mode & 0o100 != 0 => {
+                            self.inputs.insert(channel, input_tx);
+                            tokio::spawn(relay_to_daemon(
+                                handle, channel, host.dir, marker, input_rx,
+                            ));
+                        }
+                        other => {
+                            let status = if other.is_ok() { 126 } else { 127 };
+                            tokio::spawn(
+                                async move { finish(&handle, channel, Some(status)).await },
+                            );
+                        }
+                    }
+                }
+                None => {
+                    session.channel_success(channel)?;
+                    self.inputs.insert(channel, input_tx);
+                    tokio::spawn(run_shell(
+                        session.handle(),
+                        channel,
+                        command,
+                        Some(host.home),
+                        host.path,
+                        host.tamper_stdin,
+                        input_rx,
+                    ));
+                }
+            },
             ExecMode::Script(script) => {
                 session.channel_success(channel)?;
                 let mut stdout = script.banner;
@@ -301,55 +375,62 @@ struct Fixture {
     server_task: JoinHandle<()>,
 }
 
-impl Fixture {
-    async fn start(mode: ExecMode) -> Self {
-        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
-        let (server_event_tx, events) = mpsc::unbounded_channel();
-        let server_config = server::Config {
-            inactivity_timeout: None,
-            auth_rejection_time: Duration::from_millis(1),
-            auth_rejection_time_initial: Some(Duration::from_millis(1)),
-            keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
-                .expect("generate in-memory SSH host key")],
-            ..Default::default()
-        };
-        let server_task = tokio::spawn(async move {
-            let running = server::run_stream(
-                Arc::new(server_config),
-                server_stream,
-                InMemoryServer {
-                    events: server_event_tx,
-                    mode,
-                    inputs: HashMap::new(),
-                },
-            )
-            .await
-            .expect("start in-memory SSH server");
-            let _ = running.await;
-        });
-
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let (forwarded_tx, forwarded_rx) = mpsc::unbounded_channel();
-        let handler = ClientHandler::new_trusting_server_key_for_test(event_tx, forwarded_tx);
-        let mut handle = russh::client::connect_stream(
-            Arc::new(russh::client::Config::default()),
-            client_stream,
-            handler,
+/// A new in-memory SSH server answering exec requests with `mode`, and a
+/// client session connected to it.
+async fn open_session(
+    mode: ExecMode,
+    server_event_tx: mpsc::UnboundedSender<ServerEvent>,
+) -> (SshSession, JoinHandle<()>) {
+    let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+    let server_config = server::Config {
+        inactivity_timeout: None,
+        auth_rejection_time: Duration::from_millis(1),
+        auth_rejection_time_initial: Some(Duration::from_millis(1)),
+        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+            .expect("generate in-memory SSH host key")],
+        ..Default::default()
+    };
+    let server_task = tokio::spawn(async move {
+        let running = server::run_stream(
+            Arc::new(server_config),
+            server_stream,
+            InMemoryServer {
+                events: server_event_tx,
+                mode,
+                inputs: HashMap::new(),
+            },
         )
         .await
-        .expect("connect to in-memory SSH server");
-        assert!(handle
-            .authenticate_none("shelldeck-test")
-            .await
-            .expect("authenticate in-memory SSH client")
-            .success());
+        .expect("start in-memory SSH server");
+        let _ = running.await;
+    });
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let (forwarded_tx, forwarded_rx) = mpsc::unbounded_channel();
+    let handler = ClientHandler::new_trusting_server_key_for_test(event_tx, forwarded_tx);
+    let mut handle = russh::client::connect_stream(
+        Arc::new(russh::client::Config::default()),
+        client_stream,
+        handler,
+    )
+    .await
+    .expect("connect to in-memory SSH server");
+    assert!(handle
+        .authenticate_none("shelldeck-test")
+        .await
+        .expect("authenticate in-memory SSH client")
+        .success());
+    (
+        SshSession::new(Uuid::new_v4(), handle, event_rx, forwarded_rx),
+        server_task,
+    )
+}
+
+impl Fixture {
+    async fn start(mode: ExecMode) -> Self {
+        let (server_event_tx, events) = mpsc::unbounded_channel();
+        let (session, server_task) = open_session(mode, server_event_tx).await;
         Self {
-            session: Arc::new(SshSession::new(
-                Uuid::new_v4(),
-                handle,
-                event_rx,
-                forwarded_rx,
-            )),
+            session: Arc::new(session),
             events,
             server_task,
         }
@@ -1018,3 +1099,7 @@ async fn sdtest_2991_real_proxy_binary_starts_the_daemon_and_serves_a_pane_over_
     client.kill(spawned.pane, SIGNAL_KILL).expect("kill");
     fixture.server_task.abort();
 }
+
+// Probe, install, fallback rules and the host object of the app.
+#[path = "sessiond_remote_tests.rs"]
+mod remote;

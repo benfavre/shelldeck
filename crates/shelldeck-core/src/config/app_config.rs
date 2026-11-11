@@ -237,6 +237,44 @@ pub struct GeneralConfig {
     /// tour; replayable from Settings → Général.
     #[serde(default)]
     pub onboarding_completed: bool,
+    /// `[general.session_daemon_hosts]`: for each SSH connection (key: its
+    /// id), whether the app may upload the `shelldeck-sessiond` binary to
+    /// `~/.shelldeck/bin` on that host when it is missing there. A host
+    /// without an entry is asked about once per run; nothing is ever
+    /// uploaded without an `allow` entry. Only read with
+    /// `session_daemon` on.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub session_daemon_hosts: std::collections::BTreeMap<String, RemoteDaemonInstall>,
+}
+
+/// The user's recorded answer to "install the session daemon on this
+/// host?" (`[general.session_daemon_hosts]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteDaemonInstall {
+    /// Upload the binary when it is missing.
+    Allow,
+    /// Never upload and never ask again for this host.
+    Never,
+}
+
+impl GeneralConfig {
+    /// The recorded answer for the SSH connection `connection_id`, or
+    /// `None` when the user was never asked (or did not decide).
+    pub fn remote_daemon_install(&self, connection_id: uuid::Uuid) -> Option<RemoteDaemonInstall> {
+        self.session_daemon_hosts
+            .get(&connection_id.to_string())
+            .copied()
+    }
+
+    pub fn set_remote_daemon_install(
+        &mut self,
+        connection_id: uuid::Uuid,
+        answer: RemoteDaemonInstall,
+    ) {
+        self.session_daemon_hosts
+            .insert(connection_id.to_string(), answer);
+    }
 }
 
 /// System-tray preferences. Per-category opt-in on the OS notifications
@@ -429,6 +467,7 @@ impl Default for GeneralConfig {
             ui_font_size: 14.0,
             autostart: false,
             onboarding_completed: false,
+            session_daemon_hosts: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -526,6 +565,49 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir.join(name)
+    }
+
+    // SDTEST-3014 (SDUC-574): the per-host answer to "install the session
+    // daemon there?" is a file contract: it decides whether a binary may
+    // be uploaded to a server.
+    #[test]
+    fn sdtest_3014_remote_daemon_install_answers_round_trip_and_default_to_unasked() {
+        let path = temp_path("config.toml");
+        let allowed = uuid::Uuid::new_v4();
+        let refused = uuid::Uuid::new_v4();
+        let unasked = uuid::Uuid::new_v4();
+
+        let mut config = AppConfig::default();
+        assert_eq!(config.general.remote_daemon_install(allowed), None);
+        // No entry, no table in the file.
+        config.save_to(&path).expect("save_to");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains("session_daemon_hosts"), "{text}");
+
+        config
+            .general
+            .set_remote_daemon_install(allowed, RemoteDaemonInstall::Allow);
+        config
+            .general
+            .set_remote_daemon_install(refused, RemoteDaemonInstall::Never);
+        config.save_to(&path).expect("save_to");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.contains("[general.session_daemon_hosts]"), "{text}");
+        assert!(text.contains(&format!("{allowed} = \"allow\"")), "{text}");
+        assert!(text.contains(&format!("{refused} = \"never\"")), "{text}");
+
+        let loaded = AppConfig::load_from(&path).expect("load_from");
+        assert_eq!(
+            loaded.general.remote_daemon_install(allowed),
+            Some(RemoteDaemonInstall::Allow)
+        );
+        assert_eq!(
+            loaded.general.remote_daemon_install(refused),
+            Some(RemoteDaemonInstall::Never)
+        );
+        assert_eq!(loaded.general.remote_daemon_install(unasked), None);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     #[test]

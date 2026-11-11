@@ -84,7 +84,14 @@ an in-process daemon by SDTEST-2992..2995 and SDTEST-2998 in [`tests-terminal.md
 
 The daemon over SSH is tested inside `shelldeck-ssh`, where the in-memory
 russh fixtures live: SDTEST-2985 and SDTEST-2987..2991 in
-[`tests-ssh.md`](./tests-ssh.md), section "Session daemon transport".
+[`tests-ssh.md`](./tests-ssh.md), section "Session daemon transport", and
+the remote binary (probe, upload, checksum), the fallback rules and the
+host object of the app in SDTEST-3015..3020 and SDTEST-3024, section
+"Session daemon remote binary and host object". Those also exercise
+`supervisor::Connector`, `Supervisor::with_connector`, `set_on_idle` and
+`LocalSessions::from_client` of this crate. The per-host consent is
+SDTEST-3014 ([`tests-core.md`](./tests-core.md)); the UI parts are
+SDTEST-3021..3023 ([`tests-ui-and-app.md`](./tests-ui-and-app.md)).
 
 ## Retired tests
 
