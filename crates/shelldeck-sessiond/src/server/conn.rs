@@ -368,6 +368,12 @@ fn handle(
             if pane.is_read_only_for(out.id) {
                 out.error(0, id, ErrorCode::ReadOnly, false);
             } else if pane.is_alive() {
+                // The three signals a client may send all mean "end this
+                // pane". A client that goes away right after (sign-out,
+                // app quit) never comes back to remove the dead pane,
+                // which would otherwise keep the daemon from going idle
+                // for the whole dead pane period.
+                pane.discard_at_exit();
                 pane.signal_group(signal as i32);
             } else {
                 // On a dead pane Kill means "close".

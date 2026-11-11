@@ -379,6 +379,10 @@ struct PaneState {
     master: Option<PtyMaster>,
     exit: Option<ExitInfo>,
     died_at: Option<Instant>,
+    /// A client asked for the pane to be ended (`Kill`): nobody wants its
+    /// last screen, so it is removed as soon as it has exited instead of
+    /// being kept for a later reattach.
+    discard: bool,
     /// Connection whose attachment owns the pane size.
     owner: Option<u64>,
     pending_resize: Option<(u16, u16)>,
@@ -474,6 +478,7 @@ impl Pane {
                 master: Some(pty.master),
                 exit: None,
                 died_at: None,
+                discard: false,
                 owner: None,
                 pending_resize: None,
                 last_resize: None,
@@ -1043,11 +1048,19 @@ impl Pane {
         self.state.lock().exit.is_none()
     }
 
+    /// A client asked for this pane to be ended: see `PaneState::discard`.
+    pub(super) fn discard_at_exit(&self) {
+        self.state.lock().discard = true;
+    }
+
+    /// Whether the dead pane is to be removed now: kept for `ttl` so a
+    /// reattach can still show how it ended, unless a client asked for
+    /// its end.
     pub(super) fn expired(&self, ttl: Duration) -> bool {
-        self.state
-            .lock()
+        let state = self.state.lock();
+        state
             .died_at
-            .is_some_and(|at| at.elapsed() >= ttl)
+            .is_some_and(|at| state.discard || at.elapsed() >= ttl)
     }
 
     /// Send a signal to the pane child's process group (the child is a

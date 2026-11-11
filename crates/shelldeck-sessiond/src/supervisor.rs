@@ -457,6 +457,11 @@ struct Inner {
     /// opening at once make one connection and start one daemon. Never
     /// taken by [`Supervisor::open`].
     connection: Mutex<Option<LocalSessions>>,
+    /// The last full connect (one that may start the daemon) that failed:
+    /// when it ended, and its text (`None`: the daemon is of another
+    /// version). The sessions that were queued behind it get its answer
+    /// instead of trying again one after the other.
+    connect_failed: Mutex<Option<(std::time::Instant, Option<String>)>>,
     /// Panes shown by a live session of this supervisor.
     panes: Mutex<HashSet<Uuid>>,
     /// Input forwarders and pane terminations.
@@ -495,6 +500,7 @@ impl Supervisor {
                 other_version: AtomicBool::new(false),
                 on_idle: Mutex::new(None),
                 connection: Mutex::new(None),
+                connect_failed: Mutex::new(None),
                 panes: Mutex::new(HashSet::new()),
                 runtime,
             }),
@@ -759,11 +765,32 @@ impl Supervisor {
     /// The shared connection, opened when there is none. `start`: launch
     /// the daemon when it is not running. Blocking.
     fn connection(&self, start: bool) -> Result<Option<LocalSessions>, AttachError> {
+        let asked_at = std::time::Instant::now();
         let mut slot = self.inner.connection.lock();
         if let Some(sessions) = slot.as_ref().filter(|sessions| !sessions.is_closed()) {
             return Ok(Some(sessions.clone()));
         }
         *slot = None;
+        // All sessions of a supervisor lose their connection together and
+        // ask for a new one at the same moments. The ones that waited
+        // here while another one tried and failed would each try again
+        // at once, for the same answer: behind a transport whose connect
+        // takes seconds to fail (an SSH host that is away), ten tabs made
+        // a retry round last ten timeouts. They get the answer of the
+        // attempt they waited behind. An attempt asked for after that
+        // failure is always made. Only full attempts count, on both
+        // sides: a look without starting anything (`start` false) is
+        // cheap, means something else, and is always made.
+        if start {
+            if let Some((failed_at, text)) = self.inner.connect_failed.lock().as_ref() {
+                if *failed_at >= asked_at {
+                    return Err(match text {
+                        Some(text) => AttachError::Unavailable(text.clone()),
+                        None => AttachError::OtherVersion,
+                    });
+                }
+            }
+        }
         let connected = self
             .inner
             .connector
@@ -772,6 +799,14 @@ impl Supervisor {
             matches!(connected, Err(AttachError::OtherVersion)),
             Ordering::SeqCst,
         );
+        if let (true, Err(error)) = (start, &connected) {
+            let text = match error {
+                AttachError::OtherVersion => None,
+                AttachError::Unavailable(text) => Some(text.clone()),
+                other => Some(other.to_string()),
+            };
+            *self.inner.connect_failed.lock() = Some((std::time::Instant::now(), text));
+        }
         let sessions = connected?;
         if let Some(sessions) = &sessions {
             let daemon = sessions.daemon_version();

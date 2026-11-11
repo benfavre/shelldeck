@@ -388,8 +388,12 @@ struct World {
     /// Handles of the dialed connections, to cut them.
     connections: Arc<parking_lot::Mutex<Vec<crate::session::SharedHandle>>>,
     dials: Arc<AtomicUsize>,
+    /// When each dial started.
+    dial_starts: Arc<parking_lot::Mutex<Vec<Instant>>>,
     mode: Arc<parking_lot::Mutex<HostMode>>,
     refuse_dial: Arc<AtomicBool>,
+    /// How long a refused dial takes to fail, in milliseconds.
+    refusal_delay: Arc<AtomicUsize>,
     // Last: everything above may still use it while it is dropped.
     runtime: tokio::runtime::Runtime,
 }
@@ -413,8 +417,10 @@ impl World {
             servers: Arc::default(),
             connections: Arc::default(),
             dials: Arc::default(),
+            dial_starts: Arc::default(),
             mode: Arc::new(parking_lot::Mutex::new(mode)),
             refuse_dial: Arc::default(),
+            refusal_delay: Arc::default(),
             runtime: tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
@@ -427,14 +433,21 @@ impl World {
         let (mode, events) = (self.mode.clone(), self.event_tx.clone());
         let (servers, dials) = (self.servers.clone(), self.dials.clone());
         let refuse = self.refuse_dial.clone();
+        let (starts, delay) = (self.dial_starts.clone(), self.refusal_delay.clone());
         let connections = self.connections.clone();
         let dial: Dial = Arc::new(move || {
             let (mode, events) = (mode.lock().clone(), events.clone());
             let connections = connections.clone();
             let (servers, dials, refuse) = (servers.clone(), dials.clone(), refuse.clone());
+            let (starts, delay) = (starts.clone(), delay.clone());
             Box::pin(async move {
                 dials.fetch_add(1, Ordering::SeqCst);
+                starts.lock().push(Instant::now());
                 if refuse.load(Ordering::SeqCst) {
+                    let wait = delay.load(Ordering::SeqCst) as u64;
+                    if wait > 0 {
+                        tokio::time::sleep(Duration::from_millis(wait)).await;
+                    }
                     return Err(SshError::ConnectionFailed("refused by the test".into()));
                 }
                 let (session, server) = open_session(ExecMode::Host(mode), events).await;
@@ -1113,4 +1126,65 @@ fn sdtest_3024_real_binary_is_uploaded_started_and_serves_panes_over_ssh() {
     });
     back.terminate();
     assert_eq!(host_events.recv_timeout(LIMIT), Ok(HostEvent::Idle));
+}
+
+// SDTEST-3055 (SDUC-574): during an outage a host is dialed once per
+// retry round, not once per waiting pane. Three sessions of one host
+// lose their connection; every dial takes 120 ms to fail. The sessions
+// ask for the connection at the same moments: the two queued behind the
+// first get its failure and wait for the next round, so two dials never
+// follow each other without a retry delay in between. (Before, each
+// waiter dialed in turn: with a dial timeout of seconds and ten tabs, a
+// round lasted ten timeouts.) When the host is back, one dial serves all.
+#[test]
+fn sdtest_3055_an_outage_costs_one_dial_per_round_whatever_the_number_of_panes() {
+    const DIAL_TIME: Duration = Duration::from_millis(120);
+    let world = World::new();
+    let host = world.host();
+    world.put_artifact(&fake_artifact(local_target(), 10));
+    assert!(matches!(
+        host.prepare(InstallConsent::Allow),
+        Prepared::Ready { .. }
+    ));
+    let sessions: Vec<TerminalSession> = (0..3)
+        .map(|index| {
+            host.supervisor()
+                .open(cat(), view(&format!("pane {index}")))
+                .expect("open")
+        })
+        .collect();
+    wait_until("three panes live", || {
+        sessions
+            .iter()
+            .all(|session| phase(session) == AttachedPhase::Live)
+    });
+
+    world
+        .refusal_delay
+        .store(DIAL_TIME.as_millis() as usize, Ordering::SeqCst);
+    world.refuse_dial.store(true, Ordering::SeqCst);
+    let outage_from = world.dial_starts.lock().len();
+    world.cut_connections();
+    wait_until("six rounds of failed dials", || {
+        world.dial_starts.lock().len() >= outage_from + 6
+    });
+    world.refuse_dial.store(false, Ordering::SeqCst);
+    wait_until("three panes live again", || {
+        sessions
+            .iter()
+            .all(|session| phase(session) == AttachedPhase::Live)
+    });
+
+    let starts: Vec<Instant> = world.dial_starts.lock()[outage_from..].to_vec();
+    // The first retry delay of the fixture is 50 ms: a dial that follows
+    // another without one starts 120 ms after it, one that waited for a
+    // round starts 170 ms after it or later.
+    for pair in starts.windows(2) {
+        let gap = pair[1].duration_since(pair[0]);
+        assert!(
+            gap >= DIAL_TIME + Duration::from_millis(30),
+            "two dials in one round: {gap:?} apart ({starts:?})"
+        );
+    }
+    drop(sessions);
 }

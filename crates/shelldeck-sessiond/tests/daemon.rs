@@ -1681,6 +1681,69 @@ async fn sdtest_3000_removing_a_dead_pane_still_delivers_its_end_to_other_viewer
     );
 }
 
+// SDTEST-3054 (SDUC-574): a pane ended on request leaves nothing behind.
+// The client that asked goes away at once (a sign-out, an app quit) and
+// never removes the dead pane: the daemon drops it as soon as it has
+// exited, so it does not stay listed, and does not keep the daemon from
+// going idle, for the dead pane period. A pane that ended by itself is
+// still kept, for a later reattach to show how it ended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3054_a_pane_ended_on_request_is_removed_when_it_exits() {
+    let dir = run_dir();
+    let _daemon = start(&dir, test_config());
+    let client = connect(&dir).await;
+    let by_itself = client.spawn(sh("exit 4")).await.expect("spawn").pane;
+    let on_request = client.spawn(sh("sleep 1000")).await.expect("spawn").pane;
+    let ignores = client
+        .spawn(sh("trap '' HUP; echo ready; sleep 1000"))
+        .await
+        .expect("spawn")
+        .pane;
+    // The trap must be in place before the hangup is sent.
+    let deadline = Instant::now() + STEP;
+    while pane_info(&client, ignores).await.expect("listed").offset == 0 {
+        assert!(Instant::now() < deadline, "the shell never started");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let asking = connect(&dir).await;
+    asking
+        .kill(on_request, shelldeck_sessiond::protocol::SIGNAL_HUP)
+        .expect("kill");
+    asking
+        .kill(ignores, shelldeck_sessiond::protocol::SIGNAL_HUP)
+        .expect("kill");
+    drop(asking);
+
+    let deadline = Instant::now() + STEP;
+    while pane_info(&client, on_request).await.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the pane ended on request is still listed"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The hangup was ignored: still running, and not forgotten. It goes
+    // the same way once something does end it.
+    assert!(pane_info(&client, ignores).await.expect("listed").alive);
+    client.kill(ignores, SIGNAL_KILL).expect("kill");
+    let deadline = Instant::now() + STEP;
+    while pane_info(&client, ignores).await.is_some() {
+        assert!(Instant::now() < deadline, "the killed pane is still listed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let deadline = Instant::now() + STEP;
+    let kept = loop {
+        let info = pane_info(&client, by_itself).await.expect("still listed");
+        if !info.alive {
+            break info;
+        }
+        assert!(Instant::now() < deadline, "the pane never exited");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(kept.exit_code, 4, "kept with how it ended");
+}
+
 /// A foreground daemon process started by a test, stopped on drop.
 struct DaemonProcess(std::process::Child);
 
@@ -1789,22 +1852,34 @@ fn descriptor_exhaustion(limit: u32) {
     }
 
     // Fill it up: some connections are served, then descriptors run out.
-    let mut held = Vec::new();
-    loop {
-        let (greeting, stream) = greet(&dir.path);
-        if greeting != Greeting::Served {
-            break;
+    // The probe above was a connection too: until the daemon has let go
+    // of it, two descriptors are missing and one client fewer fits (seen
+    // once in nine runs). Count again until the expected number fits.
+    let expected = 3 - usize::from(limit == 12);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut held = loop {
+        let mut held = Vec::new();
+        loop {
+            let (greeting, stream) = greet(&dir.path);
+            if greeting != Greeting::Served {
+                break;
+            }
+            held.push(stream);
+            assert!(held.len() < 12, "the descriptor limit did not apply");
         }
-        held.push(stream);
-        assert!(held.len() < 12, "the descriptor limit did not apply");
-    }
+        if held.len() >= expected || cfg!(target_os = "macos") || Instant::now() >= deadline {
+            break held;
+        }
+        drop(held);
+        std::thread::sleep(Duration::from_millis(50));
+    };
     let capacity = held.len();
     if cfg!(target_os = "macos") {
         // The daemon's own descriptors are not counted here for macOS:
         // only that the limit applied and left room for a connection.
         assert!((1..=3).contains(&capacity), "limit {limit}: {capacity}");
     } else {
-        assert_eq!(capacity, 3 - usize::from(limit == 12), "limit {limit}");
+        assert_eq!(capacity, expected, "limit {limit}");
     }
 
     // Many more attempts than there are slots. Each one is answered at

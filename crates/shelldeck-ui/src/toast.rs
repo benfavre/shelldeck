@@ -36,7 +36,7 @@ impl ToastLevel {
         }
     }
 
-    /// Auto-dismiss duration for each level.
+    /// Auto-dismiss duration for each level, for a short message.
     fn dismiss_duration(&self) -> Duration {
         match self {
             ToastLevel::Info | ToastLevel::Success => Duration::from_secs(3),
@@ -70,6 +70,23 @@ impl ToastAction {
             on_choose: Rc::new(on_choose),
         }
     }
+}
+
+/// Characters a short notice may have before it earns more time.
+const SHORT_TOAST_CHARS: usize = 60;
+/// Reading time added per character beyond that.
+const TOAST_MILLIS_PER_CHAR: u64 = 40;
+/// No notice stays longer than this by itself.
+const MAX_TOAST_DURATION: Duration = Duration::from_secs(12);
+
+/// How long a toast of `chars` characters stays before it dismisses
+/// itself: the duration of its level, plus reading time for a long text.
+/// A notice of two or three lines (why a terminal fell back to plain SSH,
+/// why an install failed) was gone before it could be read at the fixed
+/// three seconds.
+fn dismiss_after(level: ToastLevel, chars: usize) -> Duration {
+    let extra = chars.saturating_sub(SHORT_TOAST_CHARS) as u64 * TOAST_MILLIS_PER_CHAR;
+    (level.dismiss_duration() + Duration::from_millis(extra)).min(MAX_TOAST_DURATION)
 }
 
 /// A single toast notification.
@@ -120,6 +137,7 @@ impl ToastContainer {
     pub fn push(&mut self, message: String, level: ToastLevel, cx: &mut Context<Self>) {
         let id = self.next_id;
         self.next_id += 1;
+        let chars = message.chars().count();
 
         self.toasts.push(Toast {
             id,
@@ -130,7 +148,7 @@ impl ToastContainer {
         self.enforce_visible_limit();
 
         // Spawn an auto-dismiss timer
-        let duration = level.dismiss_duration();
+        let duration = dismiss_after(level, chars);
         let task = cx.spawn(
             async move |this: WeakEntity<ToastContainer>, cx: &mut AsyncApp| {
                 cx.background_executor().timer(duration).await;
@@ -345,6 +363,29 @@ mod tests {
     use gpui::{AppContext as _, TestAppContext};
     use std::cell::Cell;
     use std::rc::Rc;
+
+    // SDTEST-3056 (SDUC-574): a toast stays long enough to be read. A
+    // short one keeps the duration of its level; a long one (why a
+    // terminal fell back, why an install failed) gets reading time for
+    // what exceeds a short sentence, up to a cap.
+    #[test]
+    fn sdtest_3056_a_long_notice_stays_longer_than_a_short_one() {
+        use super::dismiss_after;
+        use std::time::Duration;
+
+        let secs = |level, chars| dismiss_after(level, chars).as_secs_f32();
+        assert_eq!(secs(ToastLevel::Info, 0), 3.0);
+        assert_eq!(secs(ToastLevel::Success, 60), 3.0);
+        assert_eq!(secs(ToastLevel::Error, 40), 5.0);
+        // The fallback notice of the session daemon, about 170 characters.
+        let fallback = secs(ToastLevel::Info, 170);
+        assert!((7.0..8.0).contains(&fallback), "{fallback}");
+        assert!(secs(ToastLevel::Error, 170) > fallback);
+        assert_eq!(
+            dismiss_after(ToastLevel::Info, 100_000),
+            Duration::from_secs(12)
+        );
+    }
 
     // SDTEST-3023 (SDUC-574): a question shown as a toast waits for its
     // answer: newer notifications never push it out, and closing it

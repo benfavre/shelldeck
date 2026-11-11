@@ -2011,14 +2011,64 @@ servers. Three things the run made visible, none changed:
 
 - The environment of a pane. Its shell is started by the daemon, not by
   `sshd`: a login shell with a small environment and no `SSH_*`
-  variable. No agent forwarding, no `SSH_CONNECTION`, no banner. A tmux
-  server started over SSH has the same property for the same reason;
-  the difference is that here the user never asked for a multiplexer,
-  so the setting's description or the install question should say it.
+  variable (section 3 scrubs them on purpose). No `SSH_CONNECTION`, no
+  `SSH_TTY`, no banner. A tmux server started over SSH differs only in
+  that it keeps the values of the login that started it. What this
+  costs in practice: prompts and rc files that show the host name or
+  change behaviour "when over SSH" (they test `SSH_CONNECTION` or
+  `SSH_TTY`) treat a daemon pane as a local login. Agent forwarding is
+  not affected: the application's SSH client does not forward an agent
+  in plain tabs either (the connection option is stored and not used).
+  Still open, as a design decision: give each pane the `SSH_CONNECTION`
+  and `SSH_CLIENT` of the connection that spawned it. The proxy knows
+  them and today only copies bytes; the client does not know them.
 - The daemon stays in the logind session of the SSH login that started
   it (one open session per account while it runs).
-- After a sign-out the daemon can stay up to an hour with nothing alive:
-  dead panes are kept for `dead_pane_ttl` and count against the idle
-  exit. Ending panes at sign-out could wait for their removal, or the
-  idle exit could ignore dead panes that no client is attached to.
+- After a sign-out the daemon could stay up to an hour with nothing
+  alive: dead panes are kept for `dead_pane_ttl` and count against the
+  idle exit. Fixed in the next step.
+
+### After the real servers
+
+What the two QA rounds showed and what was changed for it.
+
+- A pane ended on request is removed when it exits. `Kill` on a live
+  pane (the three signals a client may send all mean "end this pane")
+  marks it, and a marked pane expires the moment it is dead instead of
+  after `dead_pane_ttl`. The client that asked may be gone by then (a
+  sign-out, an app quit): nobody was left to remove the dead pane, it
+  stayed listed for an hour and kept the daemon, and the logind session
+  the daemon lives in, for as long. A pane that ends by itself is kept
+  as before, so a later reattach still shows how it ended. A program
+  that ignores the hangup keeps running and is removed whenever it does
+  end. No change on the wire. SDTEST-3054.
+- A failed connect is shared with the sessions queued behind it. All
+  sessions of a supervisor lose their connection together and ask for a
+  new one at the same moments; they are serialized, and each one used
+  to try in turn. On an SSH host that is away, each try is a dial that
+  can take the whole dial timeout to fail, so a retry round lasted as
+  many timeouts as the host had panes. A session that was waiting while
+  another one tried now gets that attempt's answer and waits for the
+  next round. An attempt asked for after the failure is always made,
+  and so is a look that starts nothing (`start` false). SDTEST-3055
+  (three panes, a dial that takes 120 ms to fail: never two dials
+  without a retry delay between them).
+- Notices stay long enough to be read. A toast kept three seconds
+  (five for an error) whatever its length; the fallback notice and the
+  install failure are two or three lines. A toast now gets 40 ms per
+  character beyond 60, up to 12 s: about seven seconds for the fallback
+  notice, unchanged for a short one. This applies to every toast of the
+  application. SDTEST-3056.
+- Two tests of this branch were racy and failed once each under load:
+  SDTEST-3001 counted the daemon's free descriptors while the daemon
+  might still hold the connection the test had probed it with, and
+  SDTEST-3028 read a shell's signal mask right after its exec. Both now
+  wait for the state they mean.
+
+Not changed, on purpose: the daemon stays in the logind session of the
+login that started it. Leaving that scope needs either root or the
+user's systemd instance, and the user instance ends with the last
+session unless lingering is enabled, which would end the panes with it.
+A tmux server makes the same choice. With the first fix above the
+session is released one minute after the last shell is closed.
 

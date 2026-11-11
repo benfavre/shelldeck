@@ -984,16 +984,19 @@ three oldest were deleted.
 
 - Information toasts stay about three seconds. The fallback notices are
   two or three lines long and were hard to read in that time. The
-  question toast stays until answered.
+  question toast stays until answered. Fixed since: a toast gets reading
+  time for its length (SDTEST-3056).
 - After a failed install on a `noexec` home the answer stays `allow`: the
   upload is tried once per app run (not once per tab, SDTEST-3046).
 - During an outage with two panes the log shows two dials per retry
   round, one after the other (each session asks for the connection once).
   One connection results. With many panes that is as many dials per round.
+  Fixed since: one dial per round (SDTEST-3055).
 - A pane that sign-out ended before its exit was collected stays listed
   as `exited(129)` with no client until the daemon idles out. Whether
   such an entry can be offered back was not checked (the code offers only
-  live panes).
+  live panes). Fixed since: such a pane is removed when it exits
+  (SDTEST-3054).
 - Splitting a tab makes its pane shorter, and `TerminalGrid::resize`
   moves as many rows as were removed from the top of the screen into the
   history, even when the cursor is near the top: the pane shows only its
@@ -1089,12 +1092,14 @@ that it held only what this run had created.
   `/proc/<pid>/environ` on activ-2: a login shell (`-bash`) with `HOME`,
   `LANG`, `LOGNAME`, `PATH`, `PWD`, `SHELL`, `SHLVL`, `TERM`, `USER`, the
   `XDG_*` session variables and `DBUS_SESSION_BUS_ADDRESS`, and no
-  `SSH_*` variable. So in a daemon pane there is no `SSH_AUTH_SOCK`
-  (agent forwarding does not reach it), no `SSH_CONNECTION` and no
-  `SSH_TTY`: prompts and rc files that test for them behave as on a
+  `SSH_*` variable. So in a daemon pane there is no `SSH_CONNECTION` and
+  no `SSH_TTY`: prompts and rc files that test for them behave as on a
   local login, and there is no "Last login" line or banner. This follows
-  from the design (the pane outlives the connection) and is not written
-  anywhere a user would read it.
+  from the design (the daemon scrubs them: the pane outlives the
+  connection). Agent forwarding is not a difference: the application's
+  SSH client does not forward an agent in plain tabs either. Whether a
+  pane should get the `SSH_CONNECTION` of the connection that spawned it
+  is left as a design decision (design document, "Two real servers").
 - The `XDG_SESSION_ID` and D-Bus address in that environment are those
   of the SSH login that started the daemon. The daemon stays in that
   login's session scope, like a tmux server would: one logind session
@@ -1106,7 +1111,8 @@ that it held only what this run had created.
   for stay listed as `exited(129)`, a dead pane is kept for an hour
   (`dead_pane_ttl`), and the daemon does not count as idle while it
   lists a pane. So a daemon can stay up to an hour after a sign-out,
-  holding a few megabytes and the logind session above.
+  holding a few megabytes and the logind session above. Fixed since: a
+  pane ended on request is removed when it exits (SDTEST-3054).
 - The test harness types `NN` as `Nn`; a command that seemed to print an
   empty `$SSH_CONNECTION` was a typing artefact. The statement above
   comes from the server side, not from that command.
