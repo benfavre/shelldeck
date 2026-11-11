@@ -63,25 +63,13 @@ mkdir -p "$APPDIR/usr/bin/browser" "$APPDIR/usr/share/applications" \
     "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp "$BINARY" "$APPDIR/usr/bin/shelldeck"
 chmod +x "$APPDIR/usr/bin/shelldeck"
-# The session daemon and its static builds for SSH servers sit beside the
-# application binary, as in the tar.gz. The daemon outlives the application
-# and the image is a mount that goes away when the application exits, so the
-# application never runs it from here: it copies it to its per-user
-# directory and starts it from there (crates/shelldeck-ui/src/sessiond_files.rs).
+# The session daemon ships in the image (copied in further down, once the
+# shared-library bundler is done); an image without it is not built.
 SESSIOND_SOURCE="$(dirname "$BINARY")"
 if [ ! -x "$SESSIOND_SOURCE/shelldeck-sessiond" ]; then
     echo "ERROR: Missing session daemon: $SESSIOND_SOURCE/shelldeck-sessiond" >&2
     exit 1
 fi
-cp "$SESSIOND_SOURCE/shelldeck-sessiond" "$APPDIR/usr/bin/shelldeck-sessiond"
-chmod 755 "$APPDIR/usr/bin/shelldeck-sessiond"
-for TRIPLE in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
-    if [ -f "$SESSIOND_SOURCE/shelldeck-sessiond-$TRIPLE" ] \
-        && [ ! -L "$SESSIOND_SOURCE/shelldeck-sessiond-$TRIPLE" ]; then
-        cp "$SESSIOND_SOURCE/shelldeck-sessiond-$TRIPLE" "$APPDIR/usr/bin/"
-        chmod 755 "$APPDIR/usr/bin/shelldeck-sessiond-$TRIPLE"
-    fi
-done
 cp -a "$BROWSER_SOURCE" "$APPDIR/usr/bin/browser/$VERSION"
 # Staging uses a private 0700 temporary directory. SquashFS normalizes ownership
 # to root, so published runtime directories/data must remain readable/executable
@@ -174,6 +162,24 @@ if [ -e "$APPDIR/usr/lib/libcef.so" ]; then
     echo "ERROR: Browser engine was duplicated outside its versioned runtime" >&2
     exit 1
 fi
+
+# The session daemon and its static builds for SSH servers sit beside the
+# application binary, as in the tar.gz. The daemon outlives the application
+# and the image is a mount that goes away when the application exits, so the
+# application never runs it from here: it copies it to its per-user
+# directory and starts it from there (crates/shelldeck-ui/src/sessiond_files.rs).
+# Copied in after the bundler ran: it inspects every program in usr/bin, and
+# the builds for SSH servers are static and partly for another architecture.
+# The daemon itself needs nothing bundled (libc and libgcc only).
+cp "$SESSIOND_SOURCE/shelldeck-sessiond" "$APPDIR/usr/bin/shelldeck-sessiond"
+chmod 755 "$APPDIR/usr/bin/shelldeck-sessiond"
+for TRIPLE in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+    if [ -f "$SESSIOND_SOURCE/shelldeck-sessiond-$TRIPLE" ] \
+        && [ ! -L "$SESSIOND_SOURCE/shelldeck-sessiond-$TRIPLE" ]; then
+        cp "$SESSIOND_SOURCE/shelldeck-sessiond-$TRIPLE" "$APPDIR/usr/bin/"
+        chmod 755 "$APPDIR/usr/bin/shelldeck-sessiond-$TRIPLE"
+    fi
+done
 
 # Successful older linuxdeploy versions may omit the root entry point. Preserve
 # arguments exactly, including --agents, while exposing bundled dependencies.
