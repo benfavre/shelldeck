@@ -2710,7 +2710,10 @@ fn sdtest_3029_idle_exit_and_lock_handoff_lose_no_start_and_no_connection() {
 
     // 3. Connections aimed at the moment of the idle exit, 40 times with
     // a growing delay that sweeps across it (a regression guard for the
-    // outcomes, not a proof: it also passes without the step above).
+    // outcomes, not a proof: it also passes without the step above). The
+    // sweep starts at no delay at all: on a loaded machine `start` can
+    // return when part of the 60 ms is already gone, and a sweep that
+    // began at 40 ms once found the daemon gone every time (macOS CI).
     let mut served = 0;
     let mut absent = 0;
     for round in 0..40u64 {
@@ -2720,7 +2723,7 @@ fn sdtest_3029_idle_exit_and_lock_handoff_lose_no_start_and_no_connection() {
             ..test_config()
         };
         let daemon = start(&dir, idle);
-        std::thread::sleep(Duration::from_millis(40 + round * 4));
+        std::thread::sleep(Duration::from_millis(round * 5));
         match paths::connect_checked(&dir.path) {
             Ok(mut stream) => {
                 // Accepted: it must be served, whatever the daemon was
