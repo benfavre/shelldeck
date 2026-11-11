@@ -370,7 +370,7 @@ impl HostInner {
             target,
             &self.options.version,
         )
-        .map_err(|error| InstallFailure(error.to_string()))?;
+        .map_err(|error| InstallFailure::new(InstallFailureKind::NoArtifact, &error))?;
         let session = session.clone();
         let version = self.options.version.clone();
         let installed = self
@@ -387,7 +387,18 @@ impl HostInner {
                 if matches!(error, InstallError::CannotExecute) {
                     self.cannot_run.store(true, Ordering::SeqCst);
                 }
-                Err(InstallFailure(error.to_string()))
+                let kind = match &error {
+                    InstallError::ChecksumMismatch => InstallFailureKind::Checksum,
+                    InstallError::NoChecksumTool => InstallFailureKind::NoChecksumTool,
+                    InstallError::CannotExecute => InstallFailureKind::CannotExecute,
+                    InstallError::Timeout => InstallFailureKind::Timeout,
+                    InstallError::Ssh(_) => InstallFailureKind::Connection,
+                    InstallError::BadArtifact => InstallFailureKind::NoArtifact,
+                    InstallError::InvalidVersion | InstallError::Failed { .. } => {
+                        InstallFailureKind::Other
+                    }
+                };
+                Err(InstallFailure::new(kind, &error))
             }
         }
     }
@@ -402,10 +413,48 @@ impl HostInner {
     }
 }
 
-/// Why an upload did not happen or did not verify. User facing detail.
+/// The cause of an [`InstallFailure`], for the text shown to the user
+/// (which the application translates; [`InstallFailure::detail`] is in
+/// English and goes to the log).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallFailureKind {
+    /// No usable build for the host ships with the app (missing, for
+    /// another release, not an executable for that platform, too large).
+    NoArtifact,
+    /// The copy on the host does not have the digest of the original.
+    Checksum,
+    /// The host has no tool to compute a SHA-256.
+    NoChecksumTool,
+    /// The host does not run files from the home directory (`noexec`).
+    CannotExecute,
+    /// The upload did not finish in time.
+    Timeout,
+    /// The SSH connection could not be opened or broke.
+    Connection,
+    /// The host is in a state where nothing is uploaded: the reason is
+    /// the one a connection would fall back with.
+    Fallback(FallbackReason),
+    /// The install script failed in another way.
+    Other,
+}
+
+/// Why an upload did not happen or did not verify.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct InstallFailure(pub String);
+#[error("{detail}")]
+pub struct InstallFailure {
+    pub kind: InstallFailureKind,
+    /// English detail, for the log.
+    pub detail: String,
+}
+
+impl InstallFailure {
+    fn new(kind: InstallFailureKind, detail: &dyn std::fmt::Display) -> Self {
+        Self {
+            kind,
+            detail: detail.to_string(),
+        }
+    }
+}
 
 /// The session daemon of one remote host. Cheap to clone.
 #[derive(Clone)]
@@ -551,15 +600,19 @@ impl RemoteHost {
         let _setup = host.setup.lock();
         let session = host
             .ensure_ssh()
-            .map_err(|error| InstallFailure(error.to_string()))?;
+            .map_err(|error| InstallFailure::new(InstallFailureKind::Connection, &error))?;
         let result = match host.probe(&session) {
-            None => Err(InstallFailure(
-                "the remote host did not answer the probe".into(),
+            None => Err(InstallFailure::new(
+                InstallFailureKind::Fallback(FallbackReason::ProbeFailed),
+                &"the remote host did not answer the probe",
             )),
             Some(probe) => match host.decision(Some(&probe), InstallConsent::Allow) {
                 Decision::Connect => Ok(()),
                 Decision::Install { target } => host.upload(&session, target),
-                Decision::Fallback { reason, .. } => Err(InstallFailure(format!("{reason:?}"))),
+                Decision::Fallback { reason, .. } => Err(InstallFailure::new(
+                    InstallFailureKind::Fallback(reason),
+                    &format_args!("nothing is uploaded to this host: {reason:?}"),
+                )),
             },
         };
         drop(session);

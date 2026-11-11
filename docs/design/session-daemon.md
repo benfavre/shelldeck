@@ -1127,6 +1127,24 @@ Implemented now, with automated tests on Linux:
   neither workflow has run with these changes, and no real SSH server was
   used.
 
+- First run against a real `sshd` (subsection "Real sshd run, pruning
+  and install failures" at the end): the remote path was driven in the
+  real application against an OpenSSH server in a throwaway container on
+  the development machine. Probe, the question toast and its three
+  answers, upload and checksum, panes for tabs and splits on one SSH
+  connection, loss and return of the connection, quit and reconnect with
+  the panes offered back, sign-out, and the four fallback notices
+  passed. One defect was found and fixed (an untranslated cause in the
+  install failure toast, SDTEST-3050). The local checks changed by the
+  final review were repeated and passed. No server named by the owner,
+  no `aarch64` server, no real network. Results in
+  [`session-daemon-qa.md`](../testing/session-daemon-qa.md), section
+  "Remote path against a real sshd, local recheck".
+- Old builds are pruned on a host after an install (SDTEST-3049), and a
+  bundled build for SSH servers left by an older release is deleted from
+  the client by the updater and by the install script when the new
+  release carries none (SDTEST-3033 and SDTEST-3035 extended).
+
 Deferred (details in the subsections below):
 
 - Packaging: the AppImage, the macOS bundle and the Windows archive do
@@ -1135,15 +1153,21 @@ Deferred (details in the subsections below):
   in-process until the protocol can carry a directory identity (see
   "Workspace-scoped terminals" below).
 - Daemon: quiescent refresh on emulator revision mismatch.
-- Remote: pruning old versioned binaries after an install, removing a
-  stale bundled build from the client on update (it is refused, not
-  removed), ending panes at sign-out on hosts that were not connected in
+- Remote: ending panes at sign-out on hosts that were not connected in
   this run, an upgrade
   path for a running daemon of an incompatible release (today: fallback),
   latency work (`nodelay`), SSH tabs opened in a directory (they keep
   the plain path), a remote daemon from a Windows client.
-- Platforms: macOS is coded but never built or run (this now includes the
-  `kern.uuid` lookup for the run directory name); Windows is a stub.
+- Platforms: macOS is coded and compiled, never run. The application,
+  with the client side of the daemon, is compile-checked on macOS by the
+  CI job "Core tests (macos-aarch64)" (`cargo check -p shelldeck`), and
+  the daemon crate without the `app` feature type-checks and passes
+  Clippy for `aarch64-apple-darwin` and `x86_64-pc-windows-msvc` from
+  Linux. Nothing of the daemon has been executed on macOS (the
+  `kern.uuid` lookup, `getpeereid`, the 104-byte socket path): a CI step
+  that runs the crate's tests there was added and has not run yet.
+  Windows is a stub; a CI step now builds it and checks that it refuses
+  to run.
 
 Layout:
 
@@ -1868,3 +1892,43 @@ Not done, not verified:
 - No upload to a real server (section 8 flow against `sshd`).
 - The static builds are not signed and are not listed in the release
   checksums on their own: they travel inside the signed Linux archive.
+
+### Real sshd run, pruning and install failures
+
+Step after the static builds. The remote path ran for the first time
+against a real `sshd`, in the real application (QA document, section
+"Remote path against a real sshd, local recheck"). What changed in the
+code:
+
+- Pruning (section 8). The install script, after the rename, lists
+  `~/.shelldeck/bin` by modification time and deletes the builds beyond
+  the three most recent (`KEPT_REMOTE_BUILDS`), never the one it just
+  installed. A build is a regular file whose name is exactly
+  `shelldeck-sessiond-` followed by a valid version (`[0-9a-z.-]`):
+  other names, directories and symlinks are left alone. "Most recent" is
+  the time of the install, so a build that an older release installs
+  again becomes the newest. A failure of this step never fails the
+  install. The step was tried as written on dash, bash and busybox `sh`
+  before it went into the script (SDTEST-3049 runs it under `/bin/sh`).
+- Install failures. `InstallFailure` was a string shown as is, in
+  English, inside a translated toast; for a host where nothing is
+  uploaded it was the name of an enum variant. It now carries
+  `InstallFailureKind` (no usable build, checksum, no checksum tool,
+  cannot execute, timeout, connection, a fallback reason, other). The
+  application has one sentence per cause in both languages and logs the
+  English detail.
+- Stale bundled builds. A build for SSH servers is tied to its release
+  by its marker, so one left beside a newer application is never
+  uploaded. The updater (`SessiondPayload`) now deletes it when the new
+  archive carries none, after the update went through and not before;
+  the install script of the update worker does the same. The local
+  daemon is still kept when an archive has none. The worker change takes
+  effect when the worker is deployed, which was not done.
+
+Seen in that run and left as is (details in the QA document): the
+information toasts are short-lived for their length; with several panes
+an outage makes one dial per pane and per retry round; a pane ended at
+sign-out can stay listed as exited until the daemon idles out; and the
+existing row handling of `TerminalGrid::resize` moves the visible lines
+of a pane into the history when a split makes it shorter.
+

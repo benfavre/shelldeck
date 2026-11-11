@@ -471,6 +471,11 @@ const MAX_SESSIOND_BYTES: u64 = 256 * 1024 * 1024;
 struct SessiondPayload {
     /// (staged copy, final path)
     staged: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    /// Installed builds for SSH servers that the archive does not
+    /// replace. Each is the build of an older release: the application
+    /// refuses to upload it (it does not carry the new release's marker),
+    /// so it is deleted once the update went through.
+    stale: Vec<std::path::PathBuf>,
 }
 
 #[cfg(target_os = "linux")]
@@ -485,10 +490,24 @@ impl SessiondPayload {
         let source_dir = new_binary
             .parent()
             .context("Update executable has no parent")?;
-        let mut payload = Self { staged: Vec::new() };
+        let mut payload = Self {
+            staged: Vec::new(),
+            stale: Vec::new(),
+        };
         for name in SESSIOND_FILES {
             let source = source_dir.join(name);
             let Ok(metadata) = source.symlink_metadata() else {
+                // The local daemon stays when an archive has none (it
+                // negotiates with whatever application talks to it). A
+                // build for SSH servers is tied to its release.
+                let installed = install_dir.join(name);
+                if name.ends_with("-unknown-linux-musl")
+                    && installed
+                        .symlink_metadata()
+                        .is_ok_and(|metadata| metadata.is_file())
+                {
+                    payload.stale.push(installed);
+                }
                 continue;
             };
             anyhow::ensure!(
@@ -524,6 +543,11 @@ impl SessiondPayload {
             if let Err(error) = std::fs::rename(&staged, &destination) {
                 tracing::warn!("Failed to publish {}: {error}", destination.display());
                 let _ = std::fs::remove_file(&staged);
+            }
+        }
+        for stale in self.stale.drain(..) {
+            if let Err(error) = std::fs::remove_file(&stale) {
+                tracing::warn!("Failed to delete {}: {error}", stale.display());
             }
         }
     }
@@ -789,6 +813,25 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o755);
         }
+
+        // An archive without the build for SSH servers (a release built
+        // without it, or a rollback): the installed one belongs to another
+        // release and is deleted, but only once the update went through.
+        // The local daemon is replaced as usual.
+        std::fs::remove_file(stage.join(remote)).unwrap();
+        std::fs::write(stage.join(daemon), b"\x7fELF newer daemon").unwrap();
+        drop(SessiondPayload::stage(&binary, &install).unwrap());
+        assert_eq!(listing(&install), [daemon, remote]);
+        SessiondPayload::stage(&binary, &install).unwrap().commit();
+        assert_eq!(listing(&install), [daemon]);
+        assert_eq!(
+            std::fs::read(install.join(daemon)).unwrap(),
+            b"\x7fELF newer daemon"
+        );
+        std::fs::write(stage.join(daemon), b"\x7fELF new daemon").unwrap();
+        std::fs::write(stage.join(remote), b"\x7fELF new remote build").unwrap();
+        SessiondPayload::stage(&binary, &install).unwrap().commit();
+        assert_eq!(listing(&install), [daemon, remote]);
 
         // A file that is not an ELF executable, or a symlink, stops the
         // update before anything is staged or replaced.

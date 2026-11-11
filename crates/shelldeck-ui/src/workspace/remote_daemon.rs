@@ -24,7 +24,9 @@ use shelldeck_sessiond::client::SpawnOptions;
 use shelldeck_sessiond::protocol::PaneInfo;
 use shelldeck_sessiond::supervisor::{Notices, PaneTarget, SupervisorOptions, UNLIMITED_ATTEMPTS};
 use shelldeck_ssh::client::SshClient;
-use shelldeck_ssh::sessiond_host::{Dial, HostEvent, RemoteHost, RemoteHostOptions};
+use shelldeck_ssh::sessiond_host::{
+    Dial, HostEvent, InstallFailure, InstallFailureKind, RemoteHost, RemoteHostOptions,
+};
 use shelldeck_ssh::sessiond_install::{FallbackReason, InstallConsent};
 use shelldeck_terminal::session::TerminalSession;
 use std::collections::{HashMap, HashSet};
@@ -327,8 +329,36 @@ pub(super) fn open_existing(
 }
 
 /// Why a host does not get persistent sessions, for the notice.
+/// i18n key of the cause of a failed install.
+fn install_failure_key(kind: InstallFailureKind) -> &'static str {
+    match kind {
+        InstallFailureKind::NoArtifact => "toast.ssh.session_daemon.install_error.no_artifact",
+        InstallFailureKind::Checksum => "toast.ssh.session_daemon.install_error.checksum",
+        InstallFailureKind::NoChecksumTool => {
+            "toast.ssh.session_daemon.install_error.no_checksum_tool"
+        }
+        InstallFailureKind::CannotExecute => {
+            "toast.ssh.session_daemon.install_error.cannot_execute"
+        }
+        InstallFailureKind::Timeout => "toast.ssh.session_daemon.install_error.timeout",
+        InstallFailureKind::Connection => "toast.ssh.session_daemon.install_error.connection",
+        InstallFailureKind::Fallback(reason) => fallback_reason_key(reason),
+        InstallFailureKind::Other => "toast.ssh.session_daemon.install_error.other",
+    }
+}
+
+/// The cause of a failed install, in the user's language. The English
+/// detail of the failure is for the log.
+pub(super) fn install_failure_text(failure: &InstallFailure) -> String {
+    t!(install_failure_key(failure.kind)).to_string()
+}
+
 pub(super) fn fallback_reason_text(reason: FallbackReason) -> String {
-    let key = match reason {
+    t!(fallback_reason_key(reason)).to_string()
+}
+
+fn fallback_reason_key(reason: FallbackReason) -> &'static str {
+    match reason {
         FallbackReason::ProbeFailed => "toast.ssh.session_daemon.reason.probe_failed",
         FallbackReason::UnsupportedPlatform => "toast.ssh.session_daemon.reason.unsupported",
         FallbackReason::NoArtifact => "toast.ssh.session_daemon.reason.no_artifact",
@@ -338,8 +368,7 @@ pub(super) fn fallback_reason_text(reason: FallbackReason) -> String {
         FallbackReason::Unavailable => "toast.ssh.session_daemon.reason.unavailable",
         FallbackReason::VersionMismatch => "toast.ssh.session_daemon.reason.version_mismatch",
         FallbackReason::ConnectFailed => "toast.ssh.session_daemon.reason.connect_failed",
-    };
-    t!(key).to_string()
+    }
 }
 
 #[cfg(test)]
@@ -400,6 +429,68 @@ mod tests {
         let mut moved = entry.clone();
         moved.hostname = "prod-b.example".into();
         assert_eq!(consent(&general, &moved), InstallConsent::Ask);
+    }
+
+    // SDTEST-3050 (SDUC-574): a failed install reaches the user as a
+    // sentence of the interface language, never as the English detail of
+    // the error or the name of an enum variant. Every cause has copy in
+    // both shipped locales.
+    #[test]
+    fn sdtest_3050_every_install_failure_has_copy_in_both_locales() {
+        use super::{install_failure_key, InstallFailureKind};
+        use shelldeck_ssh::sessiond_install::FallbackReason;
+        use std::collections::BTreeSet;
+
+        let reasons = [
+            FallbackReason::ProbeFailed,
+            FallbackReason::UnsupportedPlatform,
+            FallbackReason::NoArtifact,
+            FallbackReason::ConsentPending,
+            FallbackReason::ConsentDeclined,
+            FallbackReason::InstallFailed,
+            FallbackReason::Unavailable,
+            FallbackReason::VersionMismatch,
+            FallbackReason::ConnectFailed,
+        ];
+        let kinds = [
+            InstallFailureKind::NoArtifact,
+            InstallFailureKind::Checksum,
+            InstallFailureKind::NoChecksumTool,
+            InstallFailureKind::CannotExecute,
+            InstallFailureKind::Timeout,
+            InstallFailureKind::Connection,
+            InstallFailureKind::Other,
+        ]
+        .into_iter()
+        .chain(reasons.into_iter().map(InstallFailureKind::Fallback));
+        let keys: Vec<&str> = kinds.map(install_failure_key).collect();
+        assert_eq!(
+            keys.iter().collect::<BTreeSet<_>>().len(),
+            keys.len(),
+            "two causes must not share one sentence"
+        );
+        for (locale, source) in [
+            (
+                "fr",
+                include_str!("../../../shelldeck-core/locales/fr.toml"),
+            ),
+            (
+                "en",
+                include_str!("../../../shelldeck-core/locales/en.toml"),
+            ),
+        ] {
+            let table: toml::Table = toml::from_str(source).expect(locale);
+            for key in &keys {
+                // The locale files use unquoted dotted keys: TOML nests them.
+                let mut segments = key.split('.');
+                let last = segments.next_back().expect("a key has segments");
+                let copy = segments
+                    .try_fold(&table, |table, segment| table.get(segment)?.as_table())
+                    .and_then(|table| table.get(last)?.as_str())
+                    .unwrap_or_else(|| panic!("{locale}: {key} is missing"));
+                assert!(!copy.trim().is_empty(), "{locale}: {key} is empty");
+            }
+        }
     }
 
     fn pane(label: &str, alive: bool) -> PaneInfo {

@@ -1136,16 +1136,19 @@ impl Workspace {
                     ToastLevel::Success,
                     cx,
                 ),
-                Err(error) => ws.show_toast(
-                    t!(
-                        "toast.ssh.session_daemon.install_failed",
-                        name = name.as_str(),
-                        error = error.to_string()
+                Err(error) => {
+                    tracing::warn!("Session daemon not installed on {name}: {error}");
+                    ws.show_toast(
+                        t!(
+                            "toast.ssh.session_daemon.install_failed",
+                            name = name.as_str(),
+                            error = super::remote_daemon::install_failure_text(&error)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
                     )
-                    .to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
+                }
             });
         })
         .detach();

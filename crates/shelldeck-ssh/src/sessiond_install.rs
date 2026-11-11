@@ -29,6 +29,10 @@ pub const TARGET_LINUX_AARCH64: &str = "aarch64-unknown-linux-musl";
 /// Largest artifact that is ever uploaded.
 pub const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 /// Remote stdout and stderr kept from a probe or an install.
+/// How many installed builds stay on a host after an install (design
+/// section 8).
+pub const KEPT_REMOTE_BUILDS: usize = 3;
+
 const MAX_SCRIPT_OUTPUT: usize = 64 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
@@ -316,6 +320,15 @@ pub enum InstallError {
 /// rename over the final name. The temporary file is removed on every
 /// failure. The answer is one line, `SDSD-INSTALL-<nonce> ok <digest>`,
 /// `... mismatch <digest>`, `... nosha` or `... noexec`.
+///
+/// After a successful install the builds of older releases are pruned:
+/// the [`KEPT_REMOTE_BUILDS`] most recently installed
+/// `shelldeck-sessiond-<version>` files stay, the one just installed
+/// always among them. Only regular files whose name is exactly that
+/// prefix and a valid version are touched. A daemon still running from a
+/// removed file keeps it (the file is only unlinked), and an app of that
+/// release installs its build again when it connects. A failure here
+/// never fails the install.
 pub fn install_command(version: &str, sha256: &str, nonce: &str) -> Option<String> {
     (version_is_valid(version) && is_lower_hex(sha256, 64) && is_lower_hex(nonce, 32)).then(|| {
         format!(
@@ -337,6 +350,18 @@ chmod 700 "$t"
 if [ ! -x "$t" ]; then echo "SDSD-INSTALL-{nonce} noexec"; exit 5; fi
 mv -f "$t" "$d/shelldeck-sessiond-{version}"
 trap - EXIT
+(
+  cd "$d" || exit 0
+  n=0
+  ls -t 2>/dev/null | while IFS= read -r f; do
+    case "$f" in shelldeck-sessiond-*) ;; *) continue ;; esac
+    v=${{f#shelldeck-sessiond-}}
+    case "$v" in ""|*[!0-9a-z.-]*) continue ;; esac
+    if [ ! -f "$f" ] || [ -L "$f" ]; then continue; fi
+    n=$((n+1))
+    if [ "$n" -gt {KEPT_REMOTE_BUILDS} ] && [ "$f" != "shelldeck-sessiond-{version}" ]; then rm -f -- "$f"; fi
+  done
+) || true
 echo "SDSD-INSTALL-{nonce} ok $sum"
 "#
         )

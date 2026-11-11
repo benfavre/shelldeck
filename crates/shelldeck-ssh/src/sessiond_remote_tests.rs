@@ -10,7 +10,9 @@
 //! user's home, sockets or processes, and no real host is contacted.
 
 use super::*;
-use crate::sessiond_host::{Dial, HostEvent, Prepared, RemoteHost, RemoteHostOptions};
+use crate::sessiond_host::{
+    Dial, HostEvent, InstallFailureKind, Prepared, RemoteHost, RemoteHostOptions,
+};
 use crate::sessiond_install::{
     artifact_file_name, install, probe, sha256_hex, target_triple, FallbackReason, InstallConsent,
     InstallError, ProbeError, RemoteBinaryState,
@@ -209,6 +211,94 @@ async fn sdtest_3017_probe_and_upload_install_a_verified_private_binary() {
     let error = install(&session, VERSION, &[]).await.expect_err("empty");
     assert!(matches!(error, InstallError::BadArtifact), "{error:?}");
     assert!(drain_commands(&mut fixture.events).is_empty());
+    fixture.server_task.abort();
+}
+
+// SDTEST-3049 (SDUC-574): an install prunes the builds of older releases
+// on the host (real /bin/sh, private HOME). The three most recently
+// installed builds stay, the one just installed among them; anything
+// that is not exactly a build of the app (another name, a directory, a
+// symlink) is never touched; an older release installing its build again
+// makes that one the newest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3049_an_install_keeps_the_three_newest_builds_on_the_host() {
+    let home = temp_dir();
+    let run = temp_dir();
+    let fixture = Fixture::start(ExecMode::Host(host_mode(home.path(), run.path()))).await;
+    let session = fixture.session.clone();
+    let bin = home.path().join(".shelldeck/bin");
+    std::fs::create_dir_all(&bin).expect("bin directory");
+    let aged = |name: &str, days: u64| {
+        let path = bin.join(name);
+        std::fs::write(&path, name).expect("write");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| {
+                file.set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 86_400))
+            })
+            .expect("set the modification time");
+    };
+    // Four builds of older releases.
+    aged("shelldeck-sessiond-0.17.0", 40);
+    aged("shelldeck-sessiond-0.18.0", 30);
+    aged("shelldeck-sessiond-0.18.2", 20);
+    aged("shelldeck-sessiond-0.19.0", 10);
+    // Not builds of the app, all older than every build.
+    let bystanders = [
+        "notes.txt",
+        "shelldeck-sessiond-0.16.0 copy",
+        "shelldeck-sessiond-OLD",
+        "shelldeck-workspace-helper",
+    ];
+    for name in bystanders {
+        aged(name, 400);
+    }
+    std::fs::create_dir(bin.join("shelldeck-sessiond-0.1.0")).expect("directory");
+    std::os::unix::fs::symlink("notes.txt", bin.join("shelldeck-sessiond-0.2.0")).expect("symlink");
+    let listing = |builds: &[&str]| {
+        let mut names: Vec<String> = bystanders
+            .iter()
+            .chain(["shelldeck-sessiond-0.1.0", "shelldeck-sessiond-0.2.0"].iter())
+            .chain(builds)
+            .map(|name| name.to_string())
+            .collect();
+        names.sort();
+        names
+    };
+    let current = format!("shelldeck-sessiond-{VERSION}");
+
+    let artifact = fake_artifact(local_target(), 9);
+    timeout(STEP, install(&session, VERSION, &artifact))
+        .await
+        .expect("install in time")
+        .expect("install");
+    assert_eq!(
+        bin_entries(home.path()),
+        listing(&[
+            &current,
+            "shelldeck-sessiond-0.19.0",
+            "shelldeck-sessiond-0.18.2"
+        ])
+    );
+    assert_eq!(
+        std::fs::read(bin.join(&current)).expect("installed"),
+        artifact
+    );
+
+    // An app of an older release connects and installs its build again.
+    timeout(STEP, install(&session, "0.17.0", &artifact))
+        .await
+        .expect("install in time")
+        .expect("install of an older release");
+    assert_eq!(
+        bin_entries(home.path()),
+        listing(&[
+            "shelldeck-sessiond-0.17.0",
+            &current,
+            "shelldeck-sessiond-0.19.0"
+        ])
+    );
     fixture.server_task.abort();
 }
 
@@ -663,8 +753,14 @@ fn sdtest_3046_a_host_that_cannot_execute_the_upload_is_uploaded_to_once() {
         assert!(commands[0].contains("SDSD-PROBE-"), "{commands:?}");
     }
     // The answer given later to an earlier question uploads nothing.
-    host.install()
+    // That refusal is typed, so the app can say it in the user's language.
+    let refused = host
+        .install()
         .expect_err("no upload to a host that cannot run it");
+    assert_eq!(
+        refused.kind,
+        InstallFailureKind::Fallback(FallbackReason::Unavailable)
+    );
     assert!(!world
         .commands()
         .iter()

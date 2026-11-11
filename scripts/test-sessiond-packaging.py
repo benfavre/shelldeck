@@ -203,13 +203,17 @@ process.stdout.write(await response.text());'''
         self.assertEqual(leftovers, [])
 
         # A release from before the daemon shipped: installs, and leaves
-        # the daemon files that are there.
+        # the daemon that is there. The builds for SSH servers are those of
+        # another release, which this one never uploads: they are deleted.
         legacy = self.root / "legacy.tar.gz"
         with tarfile.open(legacy, "w:gz") as archive:
             archive.add(self.release / "shelldeck", "shelldeck")
         result = self.run_installer(self.render_installer(node, legacy), home, tools)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((install / DAEMON).read_bytes(), ELF + b" daemon two")
+        self.assertFalse((install / REMOTE_X86).exists())
+        self.assertFalse((install / REMOTE_ARM).exists())
+        self.assertEqual((install / "shelldeck").read_bytes(), b"application fixture")
 
         # Nothing was written outside the temporary HOME's own tree.
         self.assertTrue(str(install).startswith(str(self.root)))

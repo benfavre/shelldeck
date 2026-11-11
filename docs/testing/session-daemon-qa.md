@@ -376,6 +376,10 @@ shelldeck-ui --lib -- --test-threads=1` (disposable XDG roots);
 
 ### Manual checks still needed
 
+Most of this list was run on 2026-11-11 against an OpenSSH server in a
+container: see "Remote path against a real sshd, local recheck" at the
+end, which also says what is still open.
+
 Setup: a throwaway profile, a test server you own, and a daemon build for
 the server placed as `shelldeck-sessiond-x86_64-unknown-linux-musl` (or
 `aarch64`) in a directory named by `SHELLDECK_SESSIOND_ARTIFACT_DIR`.
@@ -903,3 +907,112 @@ this step, because no code of theirs changed: `shelldeck-core`,
       install, then a tab and a split.
 - [ ] After the first CI run of the branch: the step "Build and exercise
       the static session daemon" is green.
+
+## Remote path against a real sshd, local recheck (2026-11-11)
+
+Scope: tasks 2 and 3 of the handoff (issue 228). First run of the remote
+path against a real OpenSSH server, in the real application, and a
+repeat of the local checks that the final review changed.
+
+**Not an owner-named server.** The server is a throwaway Debian container
+on this machine (`debian:stable-slim`, OpenSSH server, key login, published
+on `127.0.0.1:2222`), with two accounts: `qa`, and `qanoexec` whose home is
+a `noexec` tmpfs. So: a real `sshd`, a real login shell with a banner, a
+separate file system, `x86_64` only, no real network, no jump host, no
+`aarch64`. The application is the debug build of commit `e624e3f`, on the
+private headless desktop of the first run, with a throwaway `HOME` and
+XDG directories. The bundled build is the static `x86_64` one from
+`scripts/build-sessiond-remote.sh`, found through
+`SHELLDECK_SESSIOND_ARTIFACT_DIR`. Tabs were opened with
+`shelldeck://ssh/connect/<id>` links handed to the running instance.
+Server state was read over a second `ssh` and with `docker exec`.
+
+### Results (remote)
+
+| Check | Result |
+|---|---|
+| Setting on, server never asked | Pass. The tab is a plain SSH shell at once (banner, prompt). The question toast shows its text and the three buttons; a command typed while it was shown ran. Nothing under `~/.shelldeck` on the server |
+| "Later" | Pass. Nothing written to the configuration file; a second tab of the same run opens plain with no question; the question is back after an app restart |
+| "Install" | Pass. `allow` recorded with the dialed target; "installing" then "installed" toasts; on the server only `~/.shelldeck/bin/shelldeck-sessiond-0.20.0`, mode 0700, in 0700 directories; its SHA-256 equals the local build; it answers `--version` there |
+| Daemon tab | Pass. Prompt, typing and output. On the server: one `proxy` and one detached `serve`, the socket and the log in `~/.shelldeck/run/m-<id>/`, mode 0700 |
+| A second daemon tab and a split | Pass. Three panes, three ptys, one SSH connection without a tty carrying all of them (the first plain tab keeps its own) |
+| Close one daemon tab | Pass. Its pane is gone from `list` on the server, the two others stay |
+| The SSH connection is killed on the server | Pass. Warning toast "Connexion SSH interrompue", a new dial 250 ms later, a new proxy, both panes attached again; a loop printing a line every two seconds went on without a gap |
+| Quit with daemon tabs, start again, connect | Pass. After quit: both panes alive with no client, no SSH connection left. After connect: toast "2 session(s) retrouvée(s)", two tabs with their screens. They are flat tabs: the split is not restored (known gap) |
+| Network detached for 20 s, then for 80 s | Pass. The tab prints "connexion au démon de sessions perdue, reconnexion…", tab dots take the pending colour, the status bar counts 0 servers; still so after 60 s (not "unavailable"); dials every 5 s; back by itself 3 s after the network, same shells and screens. Docker's port forwarder closes the connection the moment the network is detached, so the application saw an end of stream: silent packet loss (the keepalive path) was not exercised |
+| Sign out with two remote daemon tabs | Pass. No shell of the account is left on the server; the daemon stays and idles |
+| Fallback, no bundled build (no artifact directory) | Pass. Plain tab, one toast: "aucun programme fourni avec l'application pour ce type de serveur", with the backend sentence |
+| Fallback, "Never for this server" | Pass. `never` recorded, toast "ne seront plus proposées"; next tab and next run: `ConsentDeclined`, one toast "installation refusée pour ce serveur" per run, no question, nothing uploaded |
+| Fallback, `noexec` home ("Install" answered) | Pass, one defect. "installing" then an error toast; on the server `~/.shelldeck/bin` exists and is empty (the temporary file was removed). Defect: the cause was in English inside the French sentence, see below |
+| Fallback, incompatible daemon already running | Pass. A throwaway build with protocol version 2 was started by hand with one pane. The application reports "une version incompatible tourne déjà sur le serveur", opens a plain tab, and the foreign daemon and its pane are untouched |
+
+### Results (local, repeated after the final review)
+
+| Check | Result |
+|---|---|
+| Restore at startup: two tabs, the second split, a command running in each | Pass. Both tabs, the split, the running commands and the focused pane are back; the daemon lists the three panes with one client each |
+| Close a tab | Pass. Its pane is gone from the daemon, the others stay |
+| Sign out | Pass. The daemon lists no pane |
+
+### Defect found and fixed
+
+- A failed install showed the English text of the error (or, for a host
+  where nothing is uploaded, the name of an enum variant) inside the
+  translated toast. `InstallFailure` now carries its cause
+  (`InstallFailureKind`) and the application has a sentence for each
+  cause in both languages; the English detail goes to the log
+  (SDTEST-3050, SDTEST-3046 extended). Checked again on screen with the
+  rebuilt application (commit `a789ed4`): on the `noexec` account the
+  toast reads "le serveur n'autorise pas l'exécution de programmes
+  depuis le dossier personnel", and the log has the English line.
+
+### Pruning, checked on the same server
+
+With five files standing for the builds of older releases in
+`~/.shelldeck/bin` (dated one month apart), a `notes.txt`, and the
+current build removed, a connect with the recorded "allow" installed the
+build again and the tab was a daemon tab at once. Left on the server:
+the current build, the two most recent older ones and `notes.txt`. The
+three oldest were deleted.
+
+### Observations, not changed
+
+- Information toasts stay about three seconds. The fallback notices are
+  two or three lines long and were hard to read in that time. The
+  question toast stays until answered.
+- After a failed install on a `noexec` home the answer stays `allow`: the
+  upload is tried once per app run (not once per tab, SDTEST-3046).
+- During an outage with two panes the log shows two dials per retry
+  round, one after the other (each session asks for the connection once).
+  One connection results. With many panes that is as many dials per round.
+- A pane that sign-out ended before its exit was collected stays listed
+  as `exited(129)` with no client until the daemon idles out. Whether
+  such an entry can be offered back was not checked (the code offers only
+  live panes).
+- Splitting a tab makes its pane shorter, and `TerminalGrid::resize`
+  moves as many rows as were removed from the top of the screen into the
+  history, even when the cursor is near the top: the pane shows only its
+  prompt after the split, and after growing again the old lines come
+  back above a gap. The lines are not lost. This is the behaviour of
+  `main` for every terminal (the function is not changed by this
+  branch), seen here on a daemon pane and confirmed in the daemon's own
+  grid.
+- A tab opened by an SSH link leaves the activity rail on "Agents" while
+  the terminals are shown. Not related to the daemon.
+- The empty strip on the right of the terminal area (already noted on
+  `main`) was present in every run.
+
+### Not verified
+
+- A server named by the owner: a real network, latency, a jump host, a
+  login shell that is not POSIX, a forced command, an `aarch64` server.
+- Setting off with SSH tabs (unchanged path), tmux attachment on with the
+  daemon fallback ("Ce terminal utilise tmux").
+- Closing the last daemon tab of a server (sidebar back to
+  disconnected), `auto_connect_on_startup` with saved tabs of one
+  server, an edited connection entry, two profiles on one account.
+- The handed-over SSH tab beyond its dot colour: AI naming, an
+  `@terminal` mention, snapshots.
+- Full-screen programs and resize on a remote daemon tab.
+- macOS and Windows.
+
