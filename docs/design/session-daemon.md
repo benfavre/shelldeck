@@ -1136,8 +1136,9 @@ Implemented now, with automated tests on Linux:
   the panes offered back, sign-out, and the four fallback notices
   passed. One defect was found and fixed (an untranslated cause in the
   install failure toast, SDTEST-3050). The local checks changed by the
-  final review were repeated and passed. No server named by the owner,
-  no `aarch64` server, no real network. Results in
+  final review were repeated and passed. Two servers named by the owner
+  followed, over the real network and through a jump host (subsection
+  "Two real servers" at the end); still no `aarch64` server. Results in
   [`session-daemon-qa.md`](../testing/session-daemon-qa.md), section
   "Remote path against a real sshd, local recheck".
 - Old builds are pruned on a host after an install (SDTEST-3049), and a
@@ -1988,6 +1989,9 @@ Limits, on purpose or not:
   old one: it cannot be reached through that entry any more.
 - A server whose install was never allowed is not marked at sign-out
   (the application left nothing there through the daemon).
+- Work recorded for a connection entry that the user deletes afterwards
+  stays in the session file: nothing reaches that server again through
+  the application, and nothing removes the entry.
 - The local daemon is not covered: a local daemon left by another
   version of the application is still not contacted at sign-out.
 
@@ -1995,4 +1999,26 @@ Tests: SDTEST-3051 (the file), SDTEST-3052 (the rules, no GPUI),
 SDTEST-3053 (two supervisors standing for two runs, a real daemon). Both
 cases were also run in the application against the container server of
 the previous step (QA document).
+
+### Two real servers
+
+After the container, the remote path ran against two servers named by
+the owner, over the real network (QA document, "Two servers named by the
+owner"): install, tabs and splits, a full-screen program, loss and
+return of the SSH connection, quit and reconnect, sign-out, and a
+connection through a jump host. All passed, and nothing was left on the
+servers. Three things the run made visible, none changed:
+
+- The environment of a pane. Its shell is started by the daemon, not by
+  `sshd`: a login shell with a small environment and no `SSH_*`
+  variable. No agent forwarding, no `SSH_CONNECTION`, no banner. A tmux
+  server started over SSH has the same property for the same reason;
+  the difference is that here the user never asked for a multiplexer,
+  so the setting's description or the install question should say it.
+- The daemon stays in the logind session of the SSH login that started
+  it (one open session per account while it runs).
+- After a sign-out the daemon can stay up to an hour with nothing alive:
+  dead panes are kept for `dead_pane_ttl` and count against the idle
+  exit. Ending panes at sign-out could wait for their removal, or the
+  idle exit could ignore dead panes that no client is attached to.
 

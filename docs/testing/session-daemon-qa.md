@@ -918,7 +918,8 @@ Scope: tasks 2 and 3 of the handoff (issue 228). First run of the remote
 path against a real OpenSSH server, in the real application, and a
 repeat of the local checks that the final review changed.
 
-**Not an owner-named server.** The server is a throwaway Debian container
+**Not an owner-named server** (two real ones were used afterwards: see
+"Two servers named by the owner" at the end). The server is a throwaway Debian container
 on this machine (`debian:stable-slim`, OpenSSH server, key login, published
 on `127.0.0.1:2222`), with two accounts: `qa`, and `qanoexec` whose home is
 a `noexec` tmpfs. So: a real `sshd`, a real login shell with a banner, a
@@ -1056,4 +1057,67 @@ one server connecting at once after a sign-out.
 - The handed-over SSH tab beyond its dot colour: AI naming, an
   `@terminal` mention, snapshots.
 - Full-screen programs and resize on a remote daemon tab.
+
+## Two servers named by the owner (2026-11-11)
+
+Scope: task 2 of the handoff on real servers, over the real network. The
+owner named `rbx1` and `activ-2`. Accounts used: `bextdev` on rbx1 (no
+sudo) and `infra-sj278` on activ-2. Both are Ubuntu, `x86_64`, with a
+bash login shell; neither had a `~/.shelldeck` before. Same application
+build as the cleanup checks above, same private headless desktop and
+throwaway profile; the application's `known_hosts` is the private one.
+
+**Left on the servers: nothing.** At the end the two test daemons were
+stopped and `~/.shelldeck` was removed on both accounts, after checking
+that it held only what this run had created.
+
+| Check | Result |
+|---|---|
+| First connection (both servers) | Pass. Plain SSH tab at once, the question toast. Nothing written before the answer |
+| "Install" (both) | Pass. On rbx1 the dial, the probe, the upload of 1.9 MB and the checksum took under one second. On each server one file, mode 0700 in 0700 directories, SHA-256 equal to the local build, `--version` answers |
+| Daemon tabs (rbx1: three panes, one of them a split; activ-2: a split) | Pass. One `proxy` and one detached `serve` per account, about 1.3 MB and 3 MB resident. The tab titles follow the remote shell's title |
+| A full-screen program on a remote pane, then a split (rbx1, `top`) | Pass. `top` redraws for the shorter pane and keeps updating |
+| The SSH session carrying the panes is killed on the server (rbx1; only that one process, found as the parent of the proxy) | Pass. End of stream seen, new dial 250 ms later, authenticated 240 ms after that, all three panes attached again, `top` never stopped |
+| Quit, start, connect (rbx1) | Pass. "Session daemon ready", the three panes come back as three tabs |
+| Sign out with both servers connected | Pass. Every shell ended on both, `top` included; nothing to keep for later in the session file |
+| Jump host: an entry for activ-2 with `proxy_jump` through rbx1 | Pass. Jump authenticated, direct-tcpip channel, handshake and login on activ-2, "Session daemon ready" 0.4 s later, a pane spawned and usable. No question: the build was already installed there |
+| Close the last tab, quit | Pass. No live pane on either server |
+
+### Observations, not changed
+
+- The shell of a daemon pane is not a child of `sshd`. Read from
+  `/proc/<pid>/environ` on activ-2: a login shell (`-bash`) with `HOME`,
+  `LANG`, `LOGNAME`, `PATH`, `PWD`, `SHELL`, `SHLVL`, `TERM`, `USER`, the
+  `XDG_*` session variables and `DBUS_SESSION_BUS_ADDRESS`, and no
+  `SSH_*` variable. So in a daemon pane there is no `SSH_AUTH_SOCK`
+  (agent forwarding does not reach it), no `SSH_CONNECTION` and no
+  `SSH_TTY`: prompts and rc files that test for them behave as on a
+  local login, and there is no "Last login" line or banner. This follows
+  from the design (the pane outlives the connection) and is not written
+  anywhere a user would read it.
+- The `XDG_SESSION_ID` and D-Bus address in that environment are those
+  of the SSH login that started the daemon. The daemon stays in that
+  login's session scope, like a tmux server would: one logind session
+  per running daemon stays open after the connection is gone. activ-2
+  has a history of leaked logind sessions, so this is worth knowing
+  there, although it is one session per account, not one per tab.
+- After the sign-out the daemons were still running four minutes later
+  with nothing alive: the panes whose end the application did not wait
+  for stay listed as `exited(129)`, a dead pane is kept for an hour
+  (`dead_pane_ttl`), and the daemon does not count as idle while it
+  lists a pane. So a daemon can stay up to an hour after a sign-out,
+  holding a few megabytes and the logind session above.
+- The test harness types `NN` as `Nn`; a command that seemed to print an
+  empty `$SSH_CONNECTION` was a typing artefact. The statement above
+  comes from the server side, not from that command.
+
+### Not verified here
+
+- An `aarch64` server (both are `x86_64`): that build is still never
+  executed.
+- Packet loss without an end of stream (the keepalive path): the network
+  to a remote server cannot be cut from this machine without root.
+- A login shell that is not POSIX, a forced command, a `noexec` home on
+  a real server (the last one was seen on the container).
+- The plain-tab fallbacks on these servers beyond the first connection.
 
