@@ -19,6 +19,60 @@ use crate::parser::TerminalProcessor;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use uuid::Uuid;
+
+/// Where an attached session stands with its daemon pane. Written by the
+/// transport (reader or supervisor thread), read by the view to show a
+/// state on the tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachedPhase {
+    /// No screen from the daemon yet: connecting, spawning or attaching.
+    Connecting,
+    /// The grid follows the pane.
+    Live,
+    /// The daemon connection was lost; the last screen stays while the
+    /// transport tries to attach again.
+    Reconnecting,
+    /// The pane's process exited, or the pane no longer exists (closed
+    /// elsewhere, expired, or lost with its daemon). `exit_code` is known
+    /// only when the exit itself was seen.
+    Ended { exit_code: Option<i32> },
+    /// The pane could not be created or reached; nothing runs behind this
+    /// session.
+    Unavailable,
+}
+
+/// Shared state of one attached session: its phase and the daemon pane it
+/// shows (unknown until the pane is spawned).
+#[derive(Debug)]
+pub struct AttachedStatus {
+    inner: Mutex<(AttachedPhase, Option<Uuid>)>,
+}
+
+impl AttachedStatus {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Mutex::new((AttachedPhase::Connecting, None)),
+        }
+    }
+
+    pub fn phase(&self) -> AttachedPhase {
+        self.inner.lock().0.clone()
+    }
+
+    pub fn set_phase(&self, phase: AttachedPhase) {
+        self.inner.lock().0 = phase;
+    }
+
+    /// The daemon pane behind the session, once known.
+    pub fn pane(&self) -> Option<Uuid> {
+        self.inner.lock().1
+    }
+
+    pub fn set_pane(&self, pane: Uuid) {
+        self.inner.lock().1 = Some(pane);
+    }
+}
 
 /// What the driver must do after an applied resize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +93,7 @@ pub struct AttachedFeed {
     same_emulator: bool,
     /// Out of step with the daemon until the next restore.
     stale: bool,
+    status: Arc<AttachedStatus>,
 }
 
 impl AttachedFeed {
@@ -46,8 +101,10 @@ impl AttachedFeed {
         grid: Arc<Mutex<TerminalGrid>>,
         notifier: Arc<Mutex<Option<mpsc::UnboundedSender<()>>>>,
         daemon_emulator_rev: u16,
+        status: Arc<AttachedStatus>,
     ) -> Self {
         Self {
+            status,
             processor: TerminalProcessor::new(grid.clone()),
             grid,
             parser: vte::Parser::new(),
@@ -55,6 +112,18 @@ impl AttachedFeed {
             same_emulator: daemon_emulator_rev == crate::EMULATOR_REV,
             stale: true,
         }
+    }
+
+    /// Phase and pane of the session this feed belongs to.
+    pub fn status(&self) -> &Arc<AttachedStatus> {
+        &self.status
+    }
+
+    /// Emulator revision of the daemon the feed is now attached through.
+    /// A session can outlive a daemon (reconnect), so this is set on every
+    /// attach, before the snapshot is applied.
+    pub fn set_daemon_emulator_rev(&mut self, daemon_emulator_rev: u16) {
+        self.same_emulator = daemon_emulator_rev == crate::EMULATOR_REV;
     }
 
     /// Whether the grid reflects the daemon's stream.
@@ -71,6 +140,7 @@ impl AttachedFeed {
         self.parser = vte::Parser::new();
         self.processor.process_bytes(&mut self.parser, &tail);
         self.stale = false;
+        self.status.set_phase(AttachedPhase::Live);
         self.wake();
         Ok(())
     }

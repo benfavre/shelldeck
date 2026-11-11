@@ -62,7 +62,7 @@ pub struct TerminalSession {
     tmux_control: Option<mpsc::UnboundedSender<shelldeck_core::tmux::TmuxAction>>,
     /// Attached to a pane owned by the session daemon: the grid follows the
     /// size the daemon applies and dropping the session only detaches.
-    attached: bool,
+    attached: Option<Arc<crate::attached::AttachedStatus>>,
     /// Last size requested from the daemon (`rows << 16 | cols`, 0 for
     /// none). The view asks on every render; only a change is sent.
     requested_size: std::sync::atomic::AtomicU32,
@@ -238,7 +238,7 @@ impl TerminalSession {
             shell_flavor,
             initial_cwd: Some(canonical_cwd.to_path_buf()),
             tmux_control: None,
-            attached: false,
+            attached: None,
             requested_size: std::sync::atomic::AtomicU32::new(0),
             terminate_fn: None,
         })
@@ -313,7 +313,7 @@ impl TerminalSession {
             shell_flavor: ShellFlavor::Posix,
             initial_cwd: None,
             tmux_control: None,
-            attached: false,
+            attached: None,
             requested_size: std::sync::atomic::AtomicU32::new(0),
             terminate_fn: None,
         };
@@ -352,10 +352,12 @@ impl TerminalSession {
         let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let output_notifier: Arc<Mutex<Option<mpsc::UnboundedSender<()>>>> =
             Arc::new(Mutex::new(None));
+        let status = Arc::new(crate::attached::AttachedStatus::new());
         let feed = crate::attached::AttachedFeed::new(
             grid.clone(),
             output_notifier.clone(),
             daemon_emulator_rev,
+            status.clone(),
         );
         let session = Self {
             id: Uuid::new_v4(),
@@ -369,7 +371,7 @@ impl TerminalSession {
             shell_flavor: ShellFlavor::Posix,
             initial_cwd: None,
             tmux_control: None,
-            attached: true,
+            attached: Some(status),
             requested_size: std::sync::atomic::AtomicU32::new(0),
             terminate_fn: None,
         };
@@ -378,7 +380,18 @@ impl TerminalSession {
 
     /// Whether this session is attached to a pane of the session daemon.
     pub fn is_daemon_attached(&self) -> bool {
-        self.attached
+        self.attached.is_some()
+    }
+
+    /// Phase and pane of a daemon-attached session; `None` for PTY and
+    /// SSH sessions.
+    pub fn attached_status(&self) -> Option<&Arc<crate::attached::AttachedStatus>> {
+        self.attached.as_ref()
+    }
+
+    /// The session daemon pane this session shows, once it is known.
+    pub fn daemon_pane(&self) -> Option<Uuid> {
+        self.attached.as_ref().and_then(|status| status.pane())
     }
 
     /// Record the canonical working directory the daemon reported.
@@ -433,7 +446,7 @@ impl TerminalSession {
     /// A daemon-attached session only sends the request: its grid follows
     /// the size the daemon applies, at the right position in the stream.
     pub fn resize(&self, rows: u16, cols: u16) {
-        if self.attached {
+        if self.attached.is_some() {
             let packed = (u32::from(rows) << 16) | u32::from(cols);
             let previous = self
                 .requested_size
@@ -514,9 +527,18 @@ mod tests {
         feed.bytes(b"too early");
         assert!(!screen_text(&session).contains("too early"));
         assert!(wake_rx.try_recv().is_err());
+        // Until the first snapshot the session is "connecting", with no
+        // pane known yet.
+        let status = session.attached_status().expect("attached status").clone();
+        assert_eq!(status.phase(), crate::attached::AttachedPhase::Connecting);
+        assert_eq!(session.daemon_pane(), None);
 
         feed.restore(&snapshot, false).unwrap();
         assert!(screen_text(&session).contains("daemon screen"));
+        assert_eq!(status.phase(), crate::attached::AttachedPhase::Live);
+        let pane = Uuid::from_u128(7);
+        feed.status().set_pane(pane);
+        assert_eq!(session.daemon_pane(), Some(pane));
         assert!(wake_rx.try_recv().is_ok(), "a restore must wake the UI");
 
         // Cursor position and device attribute queries: only the daemon's

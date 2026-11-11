@@ -1,26 +1,41 @@
 # Session daemon: QA record for the local opt-in (2026-11-11)
 
-Scope: build step "opt-in client integration" of the session daemon
-prototype (SDUC-574, design in
+Scope: build steps "opt-in client integration" and "complete the local app
+integration" of the session daemon prototype (SDUC-574, design in
 [`session-daemon.md`](../design/session-daemon.md), section 15, "Local
 client integration"). Branch `feat/session-daemon`, Linux x86_64.
 
-**The real application was not launched for this step.** No visual check
+**The real application was not launched for these steps.** No visual check
 was done: not with the setting on, not with it off. Everything under
 "Verified automatically" is tests and compile checks. Everything under
-"Manual checks still needed" is unverified.
+"Manual checks still needed" is unverified. In particular the Settings
+toggle, the "connecting" and "reconnecting" states of a tab, and a layout
+coming back after a restart were never seen on screen.
 
 ## What changed for a user
 
-Nothing unless `session_daemon = true` is added to the `[general]` table of
-`config.toml` (default false, no Settings toggle). With it on, on Unix:
+Nothing unless "Persistent terminal sessions" is turned on in Settings,
+General (dev-capable roles, Unix; `session_daemon = true` in the
+`[general]` table of `config.toml`, default false). It applies to new
+terminals only. With it on:
 
 - a new local tab or split of the main terminal runs in a pane owned by the
-  per-user `shelldeck-sessiond` daemon (started on demand);
+  per-user `shelldeck-sessiond` daemon (started on demand). The tab opens
+  at once with a "connecting" line and shows the shell when the pane is
+  attached; nothing waits for the daemon on the UI thread;
 - closing the tab or the pane ends its shell; quitting the app does not;
-- at the next start, panes still running come back, one tab each.
+  signing out ends every pane;
+- if the connection to the daemon is lost, each terminal says so and
+  reattaches by itself; a terminal whose pane did not survive (the daemon
+  died) says the session ended instead of freezing;
+- at the next start, panes still running come back in their saved layout:
+  tabs, splits, ratios, active tab and focused pane. A pane the saved
+  layout does not know becomes a tab; a saved slot whose pane is gone is
+  dropped.
 
-Workspace-scoped terminals, SSH tabs and the tmux mode are not touched.
+Workspace-scoped terminals stay in-process (decision and reason in the
+design document, section 15, "Workspace-scoped terminals"). SSH tabs and
+the tmux mode are not touched.
 
 ## Verified automatically
 
@@ -40,17 +55,49 @@ an existing socket, tmux or a user process.
 | The real daemon under a 12 descriptor limit: extra connections are refused at once, 40 failed attempts cost no connection slot | SDTEST-3001 (real binary, foreground, private directory) |
 | A daemon started under an earlier host name is found; a start that lands while the old daemon is exiting is repeated | SDTEST-3002, SDTEST-3003 |
 | The real daemon binary is started on demand; looking for panes never starts one; a relative binary path is refused; a pane survives the loss of every session and of the connection, and is found again with its screen | SDTEST-2996 (`shelldeck-sessiond`, real binary, detached) |
+| A supervised session is returned before the daemon is reached (the test delays the connect), says "connecting", goes live by itself, delivers input typed before the pane existed, publishes its pane id; the same pane cannot be opened twice; after the connection is dropped (daemon alive) it reattaches to the same shell without a second daemon; a pane opened by id from a second supervisor keeps its 24x80 size although that session was created 10x40; an unknown pane id is reported as ended; after `SIGTERM` to the daemon the session shows the "lost" then "ended" notices, a daemon is running again and new terminals work; `terminate` removes the pane; `exit 3` ends the session with code 3 and no notice | SDTEST-3006 (`shelldeck-sessiond`, real binary, detached, private directory) |
+| A daemon binary that cannot be started makes the session unavailable with the reason on screen and creates nothing | SDTEST-3007 |
+| Reconnect delays (doubling, capped) and the reconnect rules: when to retry, when a pane is ended, when it is unavailable, exit code kept | SDTEST-3004, SDTEST-3005 (pure, no I/O) |
+| The saved session file carries the daemon layout per tab; files written before still load; restore plan: live panes keep tree and ratios, dead slots dropped and splits collapsed, unknown panes appended as tabs, active tab remapped, damaged files (duplicate pane, bad ratio) tolerated | SDTEST-3008..3010 (`shelldeck-core`) |
+| Native split tree to daemon pane ids and back (shape, directions, ratios; leaves that are not live daemon panes left out); tab state for each pane phase | SDTEST-3011, SDTEST-3012 (`shelldeck-ui`, no GPUI) |
+| In a real `TerminalView` (GPUI test context, attached sessions without a daemon): the layout captured for saving, tab by tab; a tab whose pane does not exist yet is not saved; an ended pane is left out; the saved pane gets focus back when a restored tab is activated; sign-out ends every pane of every tab and split, an app quit ends none; a workspace-scoped view never takes daemon panes | SDTEST-3013 (`shelldeck-ui`) |
+| The Settings toggle is offered to dev-capable roles on Unix only | SDTEST-1718 extended (`settings.rs`) |
 | The setting defaults to false and an older config file without the key still loads | existing `shelldeck-core` config tests (default values test extended; the legacy file fixture has no such key) |
 | `shelldeck-ui` and `shelldeck` compile with the wiring; the `shelldeck-ui` test targets compile | `cargo check --locked -p shelldeck-ui -p shelldeck`, `cargo check --locked -p shelldeck-ui --tests` |
 
-Not covered by any automated test: every line of the GPUI wiring
-(`terminal_view/daemon.rs`, the branch in `spawn_configured_local`,
-`close_tab`, `close_split`, `restore_daemon_panes`, the call in
-`Workspace::restore_session`). It was compile-checked and reviewed by
-reading only. The `shelldeck-ui` test suite was not run. This includes the
-review fix in `daemon.rs` (panes offered back are attached with
-`keep_pane_size`): the library behaviour behind it is SDTEST-2998, the
-call site itself is unverified.
+Suites run for this step, all green: `cargo test --locked -p
+shelldeck-sessiond` (26 tests), `-p shelldeck-terminal`, `-p shelldeck-core
+--lib config::`, `-p shelldeck-ui --lib -- --test-threads=1` (388 tests, with disposable
+XDG roots as `.agents/testing.md` requires), `cargo fmt --all -- --check`,
+`cargo check --locked -p shelldeck-ui -p shelldeck`, `cargo clippy --locked
+-p shelldeck-ui -p shelldeck-sessiond -p shelldeck-terminal -p
+shelldeck-core --all-targets -- -D warnings`. `shelldeck-ssh` was compiled
+but its tests were not rerun (the crate is not changed by this step).
+
+One observation outside this work: in one of two parallel runs of the
+`shelldeck-ui` suite (default thread count),
+`agent_console_view::interaction_tests::rendered_transcript_reveal_copy_and_collapse_keep_the_composer_accessible`
+failed on its clipboard read. It passes alone (three runs) and in the
+serial run above, and touches no terminal code; it looks like tests
+sharing the test clipboard. Not investigated.
+
+Not covered by any automated test, compile-checked and reviewed by reading
+only:
+
+- `terminal_view/daemon.rs` (the process-wide supervisor, the resolver, the
+  forwarded environment). No UI test opens a daemon session through it: it
+  would use the real run directory.
+- `TerminalView::restore_daemon_tab` (it opens sessions through that
+  backend) and the whole of `Workspace::restore_session` /
+  `finish_restore_session`: the background listing, the order of daemon
+  and SSH tabs, the active tab choice. The plan they execute is
+  SDTEST-3009; the execution is unverified.
+- The phase to tab state sync inside the refresh loop and the pending
+  colour of the tab dot (the mapping itself is SDTEST-3012).
+- The Settings row itself (only its visibility rule is tested).
+- The call to `end_daemon_panes` in `invalidate_cloud_session`.
+- `close_tab`, `close_split` and the branch in `spawn_configured_local`
+  (unchanged since the previous step, still unverified in the app).
 
 ## Manual checks still needed
 
@@ -70,9 +117,20 @@ Setting off (regression):
 
 Setting on, basics:
 
-- [ ] First new tab: the daemon starts (one `shelldeck-sessiond serve`
-      process), the prompt appears without visible delay; note the delay of
-      the very first tab (daemon start blocks the UI thread, up to 3 s).
+- [ ] Settings, General: the row "Persistent terminal sessions" (French:
+      "Sessions de terminal persistantes") is there for a dev-capable
+      account, absent for a user-only account; toggling it saves and does
+      not touch open tabs; the next new tab uses the new value.
+- [ ] First new tab: the tab opens at once with the "connecting" line and
+      a pending (warning colour) dot, the daemon starts (one
+      `shelldeck-sessiond serve` process), then the prompt replaces the
+      line and the dot turns green. The window must stay responsive during
+      the daemon start. Type immediately after opening the tab: the keys
+      must arrive once the shell is there, in order.
+- [ ] "Launch Claude" / "Launch Codex" from the empty state with the
+      setting on: the command is typed into the new pane after it
+      attaches (it is sent before the pane exists).
+- [ ] Open five tabs quickly while no daemon runs: one daemon, five panes.
 - [ ] Typing, paste (bracketed), Ctrl-C, Ctrl-D, Ctrl-Z, mouse reporting
       (`htop`, `vim` with mouse), focus reporting.
 - [ ] Rendering parity with an in-process tab: colours, wide and combining
@@ -88,8 +146,9 @@ Setting on, basics:
 - [ ] Close a pane, close a tab with several panes, "close tabs to the
       right/left": the corresponding shells are gone within about 1 s
       (`list`), the others stay.
-- [ ] `exit` in a shell: the tab behaves like an in-process tab after exit
-      and keeps its final screen; the pane stays in `list` as `exited(n)`
+- [ ] `exit` in a shell: the tab keeps its final screen and its dot shows
+      the exit state (unlike an in-process tab, which stays green today);
+      the pane stays in `list` as `exited(n)`
       until the tab is closed, then it is gone. If the app is quit with
       such a tab open, the dead pane is not offered back and expires after
       an hour (the daemon does not idle out before that): decide whether
@@ -129,8 +188,26 @@ Persistence:
 - [ ] With `auto_connect_on_startup` on and saved local and SSH tabs: local
       tabs are not duplicated, SSH tabs still reconnect, the active tab is
       sensible.
-- [ ] Layout after restart: splits come back as separate tabs (known
-      limit); confirm nothing worse happens.
+- [ ] Layout after restart: build three tabs, one of them split in three
+      with uneven ratios, focus a non primary pane, make the second tab
+      active, quit, start again: same tabs in the same order, same splits
+      and ratios, same active tab, same focused pane, each pane showing
+      its own screen. Scroll positions are not restored (known limit).
+- [ ] Same, but before the restart end one pane of the split from outside
+      (`shelldeck-sessiond kill <pane>`): its slot is gone, the split
+      closes around the others. End every pane of one tab: that tab does
+      not come back.
+- [ ] Same, but `kill -9` the app instead of quitting: the layout of the
+      last clean quit is used; panes made since then come back as tabs of
+      their own (known limit: the layout is saved at shutdown only).
+- [ ] A pane created with the debug CLI (`shelldeck-sessiond spawn`) is
+      not offered back (other label). A pane of this app that is in no
+      saved slot comes back as its own tab, after the saved ones.
+- [ ] Restored tab in the background: `shelldeck-sessiond list` shows its
+      old size until the tab is shown, then the window's size.
+- [ ] Sign out with daemon tabs open: every pane is ended
+      (`shelldeck-sessiond list` is empty within a few seconds); signing
+      in again shows no old terminal.
 - [ ] Two app instances at once (if the app allows it): both list the same
       panes; the second start attaches panes the first one already shows.
       Record the behaviour (shared typing, size ownership). `exit` in one
@@ -147,9 +224,25 @@ Failure modes:
 - [ ] `shelldeck-sessiond` missing next to the app: new tabs are in-process
       terminals, a warning is logged, nothing is shown to the user (decide
       whether that is acceptable).
-- [ ] Kill the daemon while tabs are open: each tab shows the "connection
-      lost" line and freezes; a new tab works (new daemon); the frozen tabs
-      can be closed.
+- [ ] Kill the daemon while tabs are open (`kill <pid from the lock
+      file>`): each tab shows the "connection lost, reconnecting" line,
+      then, within about a second, the "session ended" line and an error
+      dot; a daemon is running again; a new tab works; the ended tabs can
+      be closed. No tab stays frozen without a message.
+- [ ] Connection loss with the daemon alive (hard to provoke by hand:
+      `gdb -p <app pid>` and `call (int)shutdown(<socket fd>, 2)`, or a
+      debug build calling `Supervisor::drop_connection`): each tab shows
+      the notice briefly, then its screen again, same shell (`echo $$`),
+      scrollback intact; keys typed during the gap are lost (by design).
+- [ ] `chmod 000` the daemon binary while the app runs with daemon tabs,
+      then kill the daemon: the tabs end ("session ended"), a new tab
+      shows "session daemon unavailable" with the reason. Decide whether
+      a new tab should fall back to an in-process terminal in that case
+      (today it only does so when the binary is missing when the tab is
+      opened).
+- [ ] Close a tab while it is still "connecting" (slow first start) and
+      while it is "reconnecting": no pane is left behind
+      (`shelldeck-sessiond list`).
 - [ ] Run directory with wrong permissions (`chmod 755`): refused, fallback
       to in-process, never repaired.
 - [ ] Home on a path so long that the socket path does not fit: the
@@ -172,13 +265,16 @@ Platforms and packaging:
 ## Known gaps (not bugs to report again)
 
 Listed with their reasons in the design document, section 15 (status
-summary and the subsections after it): no Settings toggle, no layout
-restore, workspace-scoped terminals stay in-process, no reconnect after a
-daemon loss, blocking calls on the UI thread, no remote (SSH) use of the
-daemon in the app, no version check against a daemon left by another app
-version, the daemon does not raise its descriptor limit (about 80 panes
-under a 256 limit, about 330 under 1024, before new connections are
-refused with `LimitExceeded`), no daemon log file.
+summary and the subsections after it): workspace-scoped terminals stay
+in-process (excluded, not deferred), the layout is saved at shutdown and
+sign-out only, scroll positions, zoom and the focus of background tabs are
+not restored, no automatic fallback once a tab has been opened as a daemon
+tab, input typed while disconnected is dropped, notices keep the language
+of the first daemon session, no remote (SSH) use of the daemon in the app,
+no version check against a daemon left by another app version, the daemon
+binary is not packaged, the daemon does not raise its descriptor limit
+(about 80 panes under a 256 limit, about 330 under 1024, before new
+connections are refused with `LimitExceeded`), no daemon log file.
 
 ## Review fixes (2026-11-11)
 

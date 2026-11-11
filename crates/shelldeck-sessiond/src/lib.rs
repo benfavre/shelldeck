@@ -12,6 +12,9 @@
 //! - [`attached`]: synchronous facade for the app: connects to (and starts)
 //!   the local daemon and turns a pane into a
 //!   `shelldeck_terminal::session::TerminalSession`. Unix only.
+//! - [`supervisor`]: what the app uses on top of it: sessions that are
+//!   returned at once, connect and attach on their own thread, and
+//!   reattach after the daemon connection is lost. Unix only.
 
 pub mod client;
 pub mod protocol;
@@ -24,3 +27,5 @@ pub mod paths;
 pub mod proxy;
 #[cfg(unix)]
 pub mod server;
+#[cfg(unix)]
+pub mod supervisor;

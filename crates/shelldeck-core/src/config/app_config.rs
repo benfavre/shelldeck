@@ -207,8 +207,9 @@ pub struct GeneralConfig {
     /// Opt-in prototype (`docs/design/session-daemon.md`): new local
     /// terminal tabs and splits run in panes owned by the per-user
     /// `shelldeck-sessiond` daemon, so they survive quitting or updating
-    /// the app and are offered back at the next start. Unix only; off by
-    /// default; no Settings toggle yet (edit the config file).
+    /// the app and come back in their saved layout at the next start.
+    /// Unix only; off by default; toggle in Settings, General. Read when a
+    /// terminal is created: changing it applies to new terminals only.
     pub session_daemon: bool,
     pub auto_update: bool,
     /// Interface language. `system` follows the OS locale (French default).

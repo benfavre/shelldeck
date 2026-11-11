@@ -14,11 +14,12 @@
 
 use crate::client::{
     AttachOptions, Client, ClientError, ClientOptions, PaneEvent, PaneEvents, SpawnOptions,
+    SpawnedPane,
 };
 use crate::protocol::{ErrorCode, PaneInfo, MAX_SCROLLBACK, SIGNAL_HUP, SIGNAL_KILL};
 use crate::proxy::{self, ProxyFailure};
 use parking_lot::Mutex;
-use shelldeck_terminal::attached::{AttachedFeed, AttachedOutcome};
+use shelldeck_terminal::attached::{AttachedFeed, AttachedOutcome, AttachedPhase};
 use shelldeck_terminal::session::TerminalSession;
 use std::collections::HashSet;
 use std::future::Future;
@@ -41,6 +42,8 @@ pub enum AttachError {
     AlreadyAttached,
     #[error("terminal session: {0}")]
     Terminal(String),
+    #[error("the session daemon is not available: {0}")]
+    Unavailable(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -215,12 +218,7 @@ impl LocalSessions {
             keep_pane_size: false,
             ..session
         };
-        let client = self.inner.client.clone();
-        let spawned = wait(
-            &self.inner.runtime,
-            self.inner.options.request_timeout,
-            async move { client.spawn(spawn).await },
-        )??;
+        let spawned = self.spawn_pane(spawn)?;
         match self.attach(spawned.pane, session) {
             Ok(mut session) => {
                 session.set_initial_cwd(PathBuf::from(&spawned.cwd));
@@ -250,7 +248,7 @@ impl LocalSessions {
         if inner.client.is_closed() {
             return Err(AttachError::Client(ClientError::Closed));
         }
-        if !inner.attached.lock().insert(pane) {
+        if inner.attached.lock().contains(&pane) {
             return Err(AttachError::AlreadyAttached);
         }
         let scrollback = session.scrollback.clamp(1, MAX_SCROLLBACK as usize);
@@ -262,42 +260,26 @@ impl LocalSessions {
             self.daemon_emulator_rev(),
         )
         .map_err(|error| AttachError::Terminal(error.to_string()));
-        let (mut terminal, feed, input_rx) = match built {
-            Ok(parts) => parts,
-            Err(error) => {
-                inner.attached.lock().remove(&pane);
-                return Err(error);
-            }
-        };
+        let (mut terminal, feed, input_rx) = built?;
 
-        let events = {
-            // The client spawns its timers on the current runtime.
-            let _runtime = inner.runtime.enter();
-            inner.client.attach(
-                pane,
-                AttachOptions {
-                    rows: if session.keep_pane_size {
-                        0
-                    } else {
-                        session.rows
-                    },
-                    cols: if session.keep_pane_size {
-                        0
-                    } else {
-                        session.cols
-                    },
-                    scrollback_rows: scrollback as u32,
-                    read_only: false,
+        let events = self.attach_events(
+            pane,
+            AttachOptions {
+                rows: if session.keep_pane_size {
+                    0
+                } else {
+                    session.rows
                 },
-            )
-        };
-        let events = match events {
-            Ok(events) => events,
-            Err(error) => {
-                inner.attached.lock().remove(&pane);
-                return Err(error.into());
-            }
-        };
+                cols: if session.keep_pane_size {
+                    0
+                } else {
+                    session.cols
+                },
+                scrollback_rows: scrollback as u32,
+                read_only: false,
+            },
+        )?;
+        feed.status().set_pane(pane);
 
         let (resize_tx, resize_rx) = mpsc::unbounded_channel::<(u16, u16)>();
         terminal.set_resize_fn(Box::new(move |rows, cols| {
@@ -318,19 +300,73 @@ impl LocalSessions {
             resize_rx,
         ));
 
-        let reader = PaneReader {
-            handle: inner.runtime.handle().clone(),
-            client: inner.client.clone(),
-            lost_notice: inner.options.connection_lost_notice.clone(),
-        };
+        let handle = inner.runtime.handle().clone();
+        let client = inner.client.clone();
+        let lost_notice = inner.options.connection_lost_notice.clone();
         let spawned = std::thread::Builder::new()
             .name("sessiond-reader".into())
-            .spawn(move || reader.run(events, feed));
+            .spawn(move || {
+                let mut feed = feed;
+                let pumped = pump(&handle, &client, events, &mut feed);
+                if pumped.end == PumpEnd::ConnectionLost {
+                    if let Some(notice) = &lost_notice {
+                        feed.local_notice(notice);
+                    }
+                }
+                feed.wake();
+            });
         if let Err(error) = spawned {
             // Dropping `terminal` closes its input channel, which detaches.
             return Err(AttachError::Io(error));
         }
         Ok(terminal)
+    }
+
+    /// Spawn a pane without attaching to it. Blocks for the round trip.
+    pub(crate) fn spawn_pane(&self, spawn: SpawnOptions) -> Result<SpawnedPane, AttachError> {
+        let client = self.inner.client.clone();
+        wait(
+            &self.inner.runtime,
+            self.inner.options.request_timeout,
+            async move { client.spawn(spawn).await },
+        )?
+        .map_err(AttachError::from)
+    }
+
+    /// Start an attach and return the pane's event stream. The pane counts
+    /// as attached on this connection until [`forget`](Self::forget).
+    pub(crate) fn attach_events(
+        &self,
+        pane: Uuid,
+        options: AttachOptions,
+    ) -> Result<PaneEvents, AttachError> {
+        let inner = &self.inner;
+        if inner.client.is_closed() {
+            return Err(AttachError::Client(ClientError::Closed));
+        }
+        if !inner.attached.lock().insert(pane) {
+            return Err(AttachError::AlreadyAttached);
+        }
+        // The client spawns its timers on the current runtime.
+        let _runtime = inner.runtime.enter();
+        inner.client.attach(pane, options).map_err(|error| {
+            inner.attached.lock().remove(&pane);
+            AttachError::from(error)
+        })
+    }
+
+    /// The attachment made with [`attach_events`](Self::attach_events) is
+    /// over (its event stream ended).
+    pub(crate) fn forget(&self, pane: Uuid) {
+        self.inner.attached.lock().remove(&pane);
+    }
+
+    pub(crate) fn client(&self) -> &Client {
+        &self.inner.client
+    }
+
+    pub(crate) fn handle(&self) -> &tokio::runtime::Handle {
+        self.inner.runtime.handle()
     }
 
     /// End a pane: hang up its process group, kill it if it does not exit,
@@ -432,7 +468,7 @@ async fn forward_input(
     attached.lock().remove(&pane);
 }
 
-async fn terminate_pane(client: Client, pane: Uuid) {
+pub(crate) async fn terminate_pane(client: Client, pane: Uuid) {
     const POLL: Duration = Duration::from_millis(50);
     const KILL_AFTER: u32 = 20;
     const GIVE_UP_AFTER: u32 = 60;
@@ -460,80 +496,107 @@ async fn terminate_pane(client: Client, pane: Uuid) {
     tracing::warn!(%pane, "pane did not exit after SIGKILL");
 }
 
-struct PaneReader {
-    handle: tokio::runtime::Handle,
-    client: Client,
-    lost_notice: Option<String>,
+/// How a pane's event stream ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PumpEnd {
+    /// Detached on this side (the session was dropped).
+    Detached,
+    /// The daemon connection is gone; the pane may still be running.
+    ConnectionLost,
+    /// The pane no longer exists: closed by another client, expired, or
+    /// unknown to this daemon.
+    PaneGone,
 }
 
-impl PaneReader {
-    /// Apply the pane's events in order. Parsing happens here, off the
-    /// runtime, so a busy pane never delays the connection reader; the
-    /// client's per-pane feed cap bounds what can queue up meanwhile.
-    fn run(self, mut events: PaneEvents, mut feed: AttachedFeed) {
-        let pane = events.pane();
-        loop {
-            let event = match events.try_next() {
+pub(crate) struct Pumped {
+    pub(crate) end: PumpEnd,
+    /// Exit code, when the pane's process was seen exiting.
+    pub(crate) exited: Option<i32>,
+    /// At least one snapshot was applied, so the session showed the pane.
+    pub(crate) synced: bool,
+}
+
+/// Apply a pane's events to its feed, in order, until the stream ends.
+/// Parsing happens here, on the caller's thread and off the runtime, so a
+/// busy pane never delays the connection reader; the client's per-pane
+/// feed cap bounds what can queue up meanwhile.
+pub(crate) fn pump(
+    handle: &tokio::runtime::Handle,
+    client: &Client,
+    mut events: PaneEvents,
+    feed: &mut AttachedFeed,
+) -> Pumped {
+    let pane = events.pane();
+    let mut pumped = Pumped {
+        end: PumpEnd::Detached,
+        exited: None,
+        synced: false,
+    };
+    loop {
+        let event = match events.try_next() {
+            Some(event) => event,
+            None => match handle.block_on(events.next()) {
                 Some(event) => event,
-                None => match self.handle.block_on(events.next()) {
-                    Some(event) => event,
-                    None => break,
-                },
-            };
-            match event {
-                PaneEvent::Restore {
-                    snapshot,
-                    keep_history,
-                    ..
-                } => {
-                    if let Err(error) = feed.restore(&snapshot, keep_history) {
-                        tracing::error!(%pane, %error, "snapshot rejected");
-                        feed.mark_stale();
-                    }
+                None => break,
+            },
+        };
+        match event {
+            PaneEvent::Restore {
+                snapshot,
+                keep_history,
+                ..
+            } => match feed.restore(&snapshot, keep_history) {
+                Ok(()) => pumped.synced = true,
+                Err(error) => {
+                    tracing::error!(%pane, %error, "snapshot rejected");
+                    feed.mark_stale();
                 }
-                PaneEvent::Bytes { data, .. } => feed.bytes(&data),
-                PaneEvent::Resize {
-                    rows, cols, pulled, ..
-                } => {
-                    if feed.resize(rows, cols, pulled) == AttachedOutcome::NeedsReattach {
-                        let _runtime = self.handle.enter();
-                        let _ = self.client.reattach(pane, true);
-                    }
-                }
-                PaneEvent::History { rows, count, .. } => {
-                    if count > 0 {
-                        if let Err(error) = feed.history(&rows) {
-                            tracing::warn!(%pane, %error, "history chunk rejected");
-                        }
-                    }
-                }
-                PaneEvent::Exited { exit_code, .. } => {
-                    // The dead pane is not removed here: another client
-                    // attached to it may not have read its final output
-                    // yet. It goes away when the user closes the tab
-                    // (`terminate`) or when the daemon expires it, and
-                    // dead panes are never offered back.
-                    tracing::debug!(%pane, exit_code, "pane exited");
-                    feed.wake();
-                }
-                PaneEvent::Resyncing => feed.mark_stale(),
-                PaneEvent::Error(ErrorCode::NoSuchPane) => {
-                    // Closed by another client, or expired: the last
-                    // screen stays, nothing more will come.
-                    tracing::debug!(%pane, "pane is gone");
-                    break;
-                }
-                PaneEvent::Error(code) => {
-                    tracing::warn!(%pane, ?code, "session daemon reported an error");
-                }
-                PaneEvent::Closed => {
-                    if let Some(notice) = &self.lost_notice {
-                        feed.local_notice(notice);
-                    }
-                    break;
+            },
+            PaneEvent::Bytes { data, .. } => feed.bytes(&data),
+            PaneEvent::Resize {
+                rows, cols, pulled, ..
+            } => {
+                if feed.resize(rows, cols, pulled) == AttachedOutcome::NeedsReattach {
+                    let _runtime = handle.enter();
+                    let _ = client.reattach(pane, true);
                 }
             }
+            PaneEvent::History { rows, count, .. } => {
+                if count > 0 {
+                    if let Err(error) = feed.history(&rows) {
+                        tracing::warn!(%pane, %error, "history chunk rejected");
+                    }
+                }
+            }
+            PaneEvent::Exited { exit_code, .. } => {
+                // The dead pane is not removed here: another client
+                // attached to it may not have read its final output
+                // yet. It goes away when the user closes the tab
+                // (`terminate`) or when the daemon expires it, and
+                // dead panes are never offered back.
+                tracing::debug!(%pane, exit_code, "pane exited");
+                pumped.exited = Some(exit_code);
+                feed.status().set_phase(AttachedPhase::Ended {
+                    exit_code: Some(exit_code),
+                });
+                feed.wake();
+            }
+            PaneEvent::Resyncing => feed.mark_stale(),
+            PaneEvent::Error(ErrorCode::NoSuchPane) => {
+                // Closed by another client, or expired: the last
+                // screen stays, nothing more will come.
+                tracing::debug!(%pane, "pane is gone");
+                pumped.end = PumpEnd::PaneGone;
+                break;
+            }
+            PaneEvent::Error(code) => {
+                tracing::warn!(%pane, ?code, "session daemon reported an error");
+            }
+            PaneEvent::Closed => {
+                pumped.end = PumpEnd::ConnectionLost;
+                break;
+            }
         }
-        feed.wake();
     }
+    pumped
 }

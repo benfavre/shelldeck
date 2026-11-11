@@ -3367,6 +3367,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-11**: SDUC-574: local app integration completed behind the opt-in: no daemon call on the UI thread (`supervisor::Supervisor`, sessions start in a "connecting" phase), automatic reattach with backoff after a connection loss and "session ended" for panes that did not survive, native layout saved by pane id in `workspace.json` and rebuilt at startup, Settings toggle, sign-out ends the panes. Workspace-scoped terminals stay in-process (reason in the design document). SDTEST-3004..3013; SDTEST-1718 and SDTEST-2992 extended. The app was not launched: manual checks pending in `session-daemon-qa.md`.
+
 - **2026-11-11**: SDUC-574: review fixes for the session daemon prototype: attach without a size for panes offered back at startup, input accepted while a slow client waits to reattach, a dead pane is removed only by closing its tab and other viewers still get its end, decode budget for snapshots and history, connection slots and accept loop under descriptor exhaustion, handshake deadlines against trickled bytes, daemon found after a host name change, start repeated during the old daemon's exit. SDTEST-2997..3003; SDTEST-2978 and SDTEST-2995 changed.
 
 - **2026-11-11**: SDUC-574: opt-in local use of the session daemon (`general.session_daemon`, default off): `TerminalSession::spawn_attached`, `shelldeck_sessiond::attached::LocalSessions`, local tabs and splits of the main terminal as daemon panes, panes offered back as tabs at startup. SDTEST-2992..2996. Manual checks pending in `session-daemon-qa.md`.
@@ -5080,8 +5082,9 @@ from actual Google account sync, which needs user sign-in. See
 
 Prototype (crate `shelldeck-sessiond`, design in
 [`session-daemon.md`](../design/session-daemon.md)), opt-in for local
-terminals through `general.session_daemon` (off by default, no Settings
-toggle yet). A per-user daemon owns
+terminals through `general.session_daemon` (off by default, toggle
+"Persistent terminal sessions" in Settings, General, for dev-capable roles
+on Unix). A per-user daemon owns
 one PTY per pane and keeps the authoritative screen. Clients attach over a
 Unix socket (or through `shelldeck-sessiond proxy` on an SSH exec channel),
 receive a binary snapshot, a ready marker and then the raw byte stream, and
@@ -5121,13 +5124,27 @@ Observable contract:
 - With `general.session_daemon` on (Unix), a new local tab or split of the
   main terminal is a daemon pane: the app starts the daemon when needed,
   closing the tab or pane ends the shell, quitting the app does not, and
-  at the next start every pane still running comes back as a tab with its
-  screen, at the size it had (never resized to a placeholder). If the daemon cannot be started the tab is an ordinary in-process
-  terminal. Workspace-scoped terminals and SSH tabs are unchanged.
+  signing out ends every pane. The setting applies to new terminals only.
+  Without the daemon binary the tab is an ordinary in-process terminal.
+  Workspace-scoped terminals and SSH tabs are unchanged.
+- Opening such a tab never waits for the daemon: the tab appears at once
+  in a "connecting" state and becomes live when the pane is attached;
+  keys typed meanwhile are delivered then. A daemon that cannot be
+  started is reported inside the tab.
+- When the daemon connection is lost, each terminal says so and reattaches
+  by itself, with growing delays, starting the daemon again when it is
+  gone. A terminal whose pane did not survive says that the session
+  ended; it is never left frozen without a message.
+- At the next start the panes still running come back in their saved
+  layout (tabs, split tree, ratios, active tab, focused pane), each with
+  its screen and at the size it had (never resized to a placeholder). A
+  pane without a saved slot comes back as a tab; a saved slot whose pane
+  is gone is dropped.
 
 Verified by SDTEST-2955..2980, SDTEST-2997..3003 and, for the local opt-in,
-SDTEST-2992..2996 and SDTEST-2998
-(backend and daemon start; the GPUI wiring is compile-checked only, see
+SDTEST-2992..2996, SDTEST-2998 and SDTEST-3004..3013
+(backend, daemon start, reconnect, layout plan and capture; most of the
+GPUI wiring is compile-checked only and the app was never launched, see
 [`session-daemon-qa.md`](./session-daemon-qa.md)). Not done: Settings
 toggle, layout restore, SSH use of the daemon in the app, binary packaging
 and remote delivery.

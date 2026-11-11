@@ -113,6 +113,9 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-091 | `workspace_state.rs::load_from_missing_returns_default` | SDUC-089 | Green | |
 | SDTEST-092 | `workspace_state.rs::clear_at_removes_file` | SDUC-089 | Green | |
 | SDTEST-093 | `workspace_state.rs::load_from_corrupt_returns_err` | SDUC-089 | Green | |
+| SDTEST-3008 | `workspace_state.rs::sdtest_3008_daemon_layout_round_trips_and_old_files_still_load` | SDUC-574 | Green | The session daemon layout of a tab (`TabState.daemon`: split tree by pane id, focused pane) survives the file; a tab without daemon panes writes no `daemon` key; a file written before the field existed loads. |
+| SDTEST-3009 | `workspace_state.rs::sdtest_3009_restore_plan_keeps_live_panes_and_drops_dead_slots` | SDUC-574 | Green | `daemon_restore_plan`: all panes alive gives the saved layout in place; dead panes are dropped, their split collapses and outer ratios are kept; a tab with no pane left disappears; live panes without a slot become tabs after the saved ones, in the daemon's order; the active index follows the surviving tab or is none; focus on a dead pane is forgotten; other saved tabs (SSH, plain local) keep their place. |
+| SDTEST-3010 | `workspace_state.rs::sdtest_3010_restore_plan_survives_a_damaged_layout` | SDUC-574 | Green | A pane saved in two slots is shown once; a NaN ratio becomes 0.5 and an out of range one is clamped to 0.15..0.85; an active index beyond the tabs selects nothing. |
 
 ---
 

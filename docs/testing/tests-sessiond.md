@@ -10,7 +10,7 @@ daemon, real PTYs and the real client library: the daemon runs in-process
 on a private temporary run directory, except for the proxy test, which
 starts the real binary (detached) on its own private directory and stops it
 with `SIGTERM` at the end. No test touches `~/.shelldeck`, an existing
-socket, tmux or any user process. The whole crate runs in about eight
+socket, tmux or any user process. The whole crate runs in about ten
 seconds: `cargo test --locked -p shelldeck-sessiond`.
 
 The snapshot, history and stream boundary tests live with the code they
@@ -59,7 +59,7 @@ Unix only (`#![cfg(unix)]`); verified on Linux. macOS is not verified.
 | SDTEST-2983 | *to write*: `SIGTERM` to the daemon kills a pane child that ignores `SIGHUP` after the grace period | SDUC-574 | **Red / P2** | Needs the 3 s grace to be injectable in the binary to stay fast. |
 | SDTEST-2984 | *to write*: parser panic in one pane marks only that pane dead | SDUC-574 | **Red / P2** | Needs a fault injection point. |
 
-## 4. `tests/attached.rs`: app facade (`attached::LocalSessions`)
+## 4. `tests/attached.rs`: app facade (`attached::LocalSessions`, `supervisor::Supervisor`)
 
 Starts the real daemon binary, detached, on a private temporary run
 directory and stops it with `SIGTERM` (also when the test fails).
@@ -70,6 +70,15 @@ an in-process daemon by SDTEST-2992..2995 and SDTEST-2998 in [`tests-terminal.md
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-2996 | `sdtest_2996_connect_starts_the_daemon_and_panes_survive_the_client` | SDUC-574 | Green | `connect_existing` on a directory without daemon returns none and creates nothing; a relative daemon path is refused before anything starts; `connect` starts the binary; a pane echoes; every session and the connection are dropped (app quit) and the daemon keeps running; a new `connect_existing` lists the pane, the attached grid shows the earlier screen and `$$` is the same pid; `terminate` removes the pane. |
+| SDTEST-3006 | `sdtest_3006_supervised_session_connects_in_the_background_and_reconnects` | SDUC-574 | Green | `supervisor::Supervisor`: `open` returns in under 400 ms while the connect is delayed by 800 ms and no daemon runs; phase `Connecting` with the notice, then `Live` with the pane id; input typed before the pane existed is delivered; the same pane cannot be opened twice; `drop_connection` (daemon alive) is followed by a reattach to the same shell pid, same daemon; a second supervisor that has no daemon binary lists the pane and opens it by id with `keep_pane_size` and the grid ends 24x80 although created 10x40; an unknown pane id ends with the notice; `SIGTERM` to the daemon gives the "lost" and "ended" notices, phase `Ended { None }`, a new daemon pid and no claimed pane; a new session works on the new daemon; `terminate` removes the pane; `exit 3` gives `Ended { Some(3) }` without notice. |
+| SDTEST-3007 | `sdtest_3007_supervised_session_reports_a_daemon_that_cannot_start` | SDUC-574 | Green | A relative daemon path: phase `Unavailable`, notice on screen, no pane id, no run directory created; input and `terminate` on that session are harmless; `list_panes(false)` reports no daemon. Without any binary the reason given by the app is shown and nothing is created either. |
+
+## 5. `supervisor.rs`: reconnect rules (unit tests)
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3004 | `supervisor.rs::sdtest_3004_backoff_doubles_up_to_the_cap` | SDUC-574 | Green | Delays 100, 200, 400, 800 ms then the 1 s cap; no overflow for huge attempt numbers or durations. |
+| SDTEST-3005 | `supervisor.rs::sdtest_3005_reconnect_state_machine` | SDUC-574 | Green | `Reconnect`, no I/O: a new pane that cannot be created is unavailable at once; a lost connection retries with growing delays and a reattach that showed the pane resets them; attempts without the pane's screen are bounded; no daemon at all, or `NoSuchPane`, ends the session; the exit code survives a later loss or removal; "connecting" until first shown, "reconnecting" after. |
 
 ## SSH transport
 

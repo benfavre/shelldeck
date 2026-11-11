@@ -829,6 +829,13 @@ impl Client {
         self.inner.closed.load(Ordering::Relaxed)
     }
 
+    /// Give the connection up: every attached pane's stream ends with
+    /// `Closed` and pending requests fail. The transport is released when
+    /// the last clone of the client is dropped. Panes keep running.
+    pub fn close(&self) {
+        self.inner.close();
+    }
+
     pub async fn list_panes(&self) -> Result<Vec<PaneInfo>, ClientError> {
         let (tx, rx) = oneshot::channel();
         {

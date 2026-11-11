@@ -768,6 +768,9 @@ UI plug points:
   cwd rule is kept: the `AuthorizedLocalRoot` is validated before `Spawn`,
   the canonical cwd goes in the frame, and the path returned in `Spawned` is
   revalidated before the pane is shown; on mismatch the pane is killed.
+  This rule is not implemented and workspace-scoped terminals stay
+  in-process: with protocol v1 it cannot be met safely (section 15,
+  "Workspace-scoped terminals").
 - Remote: `connect_ssh_at` and `connect_ssh_split` in `workspace/ssh.rs`,
   beside the `attach_tmux` branch. `TerminalEvent::SplitRequested` spawns a
   new pane over the existing tunnel and calls `set_split_session`.
@@ -784,11 +787,11 @@ UI plug points:
 
 Setting: `general.session_daemon: bool`, `#[serde(default)]`, default false,
 next to `auto_attach_tmux` in `GeneralConfig` (default, sample TOML and
-config test updated). The field and the local wiring exist (section 15,
-"Local client integration"); the toggle row described next does not yet. Toggle row in `settings.rs` near the tmux row, gated by
-a new `GeneralSettingsVisibility` entry (dev-capable roles first), with i18n
-keys `settings.general.session_daemon.*`. Being a `general.*` field it
-follows the existing slice merge in `handle_settings_event`.
+config test updated). Toggle row in `settings.rs` after the tmux row, gated
+by a `GeneralSettingsVisibility` entry (dev-capable roles, Unix only), with
+i18n keys `settings.general.session_daemon.*`. Being a `general.*` field it
+follows the existing slice merge in `handle_settings_event`. The field, the
+local wiring and the toggle exist (section 15, "Local client integration").
 
 ## 11. Security and threat model
 
@@ -986,19 +989,24 @@ Implemented now, with automated tests on Linux:
   proxy, debug commands (SDTEST-2955..2980, 2986).
 - SSH transport in `shelldeck-ssh` (SDTEST-2985, 2987..2991), not wired
   into the app.
-- Opt-in local use in the app (`general.session_daemon`, default off):
-  new unscoped local tabs and splits are daemon panes, panes are offered
-  back as tabs at startup (SDTEST-2992..2996). The GPUI wiring is
-  compile-checked only; the app was never launched with it.
+- Opt-in local use in the app (`general.session_daemon`, default off,
+  toggle in Settings, General): new unscoped local tabs and splits are
+  daemon panes (SDTEST-2992..2996). No call waits for the daemon on the
+  UI thread; a session reattaches by itself after the daemon connection
+  is lost and reports a pane that did not survive; the native layout is
+  saved by pane id and rebuilt at startup (SDTEST-3004..3013). The pure
+  parts and the layout capture are tested; the app itself was never
+  launched with the setting, so nothing was checked on screen.
 - Review fixes (subsection "Review fixes" below, SDTEST-2997..3003 and an
   extended SDTEST-2978).
 
 Deferred (details in the subsections below):
 
-- App: Settings toggle, layout restore, reconnect after a daemon loss,
-  remote (SSH) use of the daemon, workspace-scoped terminals, non-blocking
-  connect and spawn, packaging of the daemon binary, version check against
-  a daemon left by another app version.
+- App: remote (SSH) use of the daemon, packaging of the daemon binary,
+  version check against a daemon left by another app version.
+  Workspace-scoped terminals are not deferred but excluded: they stay
+  in-process until the protocol can carry a directory identity (see
+  "Workspace-scoped terminals" below).
 - Daemon: log file, history budget, quiescent refresh on emulator revision
   mismatch, raising `RLIMIT_NOFILE` (256 panes at 3 descriptors each do
   not fit a 256 or 1024 soft limit; a raised limit would be inherited by
@@ -1116,21 +1124,18 @@ Open points:
 - On Windows the module compiles against the client library only; that
   build was not checked here.
 
-### Local client integration (as implemented in phase 2, step 1)
+### Local client integration (as implemented in phase 2, steps 1 and 2)
 
 Opt-in, off by default, Unix only. What exists:
 
 - Setting `general.session_daemon` (`GeneralConfig`, `#[serde(default)]`,
-  default false). To try it, add to the `[general]` table of `config.toml`:
-
-  ```toml
-  session_daemon = true
-  ```
-
-  There is no Settings toggle yet. The value reaches every `TerminalView`
+  default false), with a toggle in Settings, General, after the tmux row
+  ("Persistent terminal sessions", French and English), shown to
+  dev-capable roles on Unix. The value reaches every `TerminalView`
   through `WorkspaceTerminalConfig.persistent_sessions` and
   `TerminalView::set_persistent_sessions`, the same path as
-  `default_shell`.
+  `default_shell`. It is read when a terminal is created: changing it
+  applies to new terminals only, running ones keep their backend.
 - `shelldeck-terminal`: `TerminalSession::spawn_attached(title, rows, cols,
   max_scrollback, daemon_emulator_rev)` returns the session, an
   `attached::AttachedFeed` and the input receiver. The session has no
@@ -1138,50 +1143,146 @@ Opt-in, off by default, Unix only. What exists:
   change (the view asks on every render), and never touches the grid;
   `terminate` runs an optional callback (end the pane) and is a no-op for
   PTY and SSH sessions; dropping the session closes the input channel.
-- `shelldeck-sessiond::attached::LocalSessions`: a synchronous facade for
-  the app. It owns one connection and a private two-worker Tokio runtime,
-  so the GPUI thread needs no async context. `connect(dir, explicit_dir,
-  daemon_exe, options)` starts the daemon when absent (and once more when
-  the connection ends before `HelloAck`); `connect_existing` never starts
-  one. `spawn`
-  and `attach` return a `TerminalSession`. Per session: one OS thread
-  (`sessiond-reader`) applies the pane events to the feed, so parsing never
-  runs on the runtime and the client's per-pane feed cap still bounds the
-  backlog; one task forwards input and resize requests and sends `Detach`
-  when the session is dropped. `terminate` sends `Kill(HUP)`, `Kill(KILL)`
-  after 1 s if the pane is still alive, then `Kill` on the dead pane, which
-  removes it. A pane whose process exits on its own is not removed by the
-  session that sees the exit (another client may not have read its end
-  yet): it stays listed as dead, with its final screen, until its tab is
-  closed (`terminate`) or the daemon expires it after an hour. Dead panes
-  are never offered back. `SessionOptions.keep_pane_size` attaches with
-  size 0 x 0 (section 7).
-- `shelldeck-ui`, `terminal_view/daemon.rs`: one process-wide
-  `LocalSessions` on `paths::default_run_dir()`. The daemon binary is
-  `shelldeck-sessiond` next to the app executable, or the absolute path in
+  The session and its feed share an `attached::AttachedStatus`: the phase
+  (`Connecting`, `Live`, `Reconnecting`, `Ended { exit_code }`,
+  `Unavailable`) and the daemon pane id once known
+  (`TerminalSession::attached_status`, `daemon_pane`). A restore sets
+  `Live`; the feed's emulator revision is set on every attach, because a
+  session can outlive a daemon.
+- `shelldeck-sessiond::attached::LocalSessions`: a synchronous facade over
+  one connection, with a private two-worker Tokio runtime. `connect(dir,
+  explicit_dir, daemon_exe, options)` starts the daemon when absent (and
+  once more when the connection ends before `HelloAck`);
+  `connect_existing` never starts one. `spawn` and `attach` return a
+  `TerminalSession` and block for the round trip: they are used by tests
+  and by the supervisor below, not by the UI thread. `terminate` sends
+  `Kill(HUP)`, `Kill(KILL)` after 1 s if the pane is still alive, then
+  `Kill` on the dead pane, which removes it. A pane whose process exits
+  on its own is not removed by the session that sees the exit (another
+  client may not have read its end yet): it stays listed as dead, with
+  its final screen, until its tab is closed (`terminate`) or the daemon
+  expires it after an hour. Dead panes are never offered back.
+  `SessionOptions.keep_pane_size` attaches with size 0 x 0 (section 7).
+- `shelldeck-sessiond::supervisor::Supervisor`: what the app uses.
+  `open(PaneTarget::Spawn(..) | PaneTarget::Existing(pane), options)`
+  returns a `TerminalSession` at once, in the `Connecting` phase, and
+  never takes the connection lock. One OS thread per session
+  (`sessiond-pane`) then connects (one shared connection, opened under a
+  lock so several tabs opening together start one daemon), spawns the
+  pane if it is a new one, attaches and applies the pane's events to the
+  feed (parsing stays off the runtime; the client's per-pane feed cap
+  still bounds the backlog). A task on the supervisor's own one-worker
+  runtime forwards input and resize requests to whatever connection the
+  pane is attached through. Input typed before the first attach is kept
+  (up to 64 KiB) and delivered once attached, so a command sent right
+  after opening a tab is not lost; input typed while a session is
+  disconnected is dropped. The target (run directory, daemon binary) is
+  resolved on the connecting thread, on every connect; without a daemon
+  binary a daemon that already runs is still used.
+- Reconnect: when the connection ends, the session thread shows a notice,
+  sets `Reconnecting` and tries again after a delay that doubles from
+  250 ms to 5 s (`supervisor::Backoff`), connecting with "start the
+  daemon when absent". The rules are a pure state machine
+  (`supervisor::Reconnect`): a reattach that shows the pane resets the
+  delays; `NoSuchPane` from the daemon (a new daemon never has the old
+  panes; the pane was closed elsewhere or expired) ends the session as
+  `Ended` with a notice; a daemon that can neither be reached nor
+  started, with none running, ends it the same way (its panes died with
+  it); 12 attempts in a row without the pane's screen end it as
+  `Unavailable`. A new pane whose daemon cannot be started or that the
+  daemon refuses is `Unavailable` at once, with the reason on screen. A
+  process that exits is `Ended` with its exit code and keeps its final
+  screen, without a notice. The view maps the phase of a tab's primary
+  session to the tab state in its refresh loop (exit code, or an error
+  for a lost or unreachable pane) and shows a pending colour on the tab
+  dot while `Connecting` or `Reconnecting`.
+- `shelldeck-ui`, `terminal_view/daemon.rs`: one process-wide `Supervisor`
+  on `paths::default_run_dir()`. The daemon binary is `shelldeck-sessiond`
+  next to the app executable, or the absolute path in
   `SHELLDECK_SESSIOND_BIN` (development). `TerminalView::
   spawn_configured_local` uses it for new tabs and splits of an unscoped
-  terminal; each native pane (`PaneNode::Leaf`) is one daemon pane. If the
-  daemon cannot be reached or started the view logs a warning and opens an
-  in-process PTY, as with the setting off.
+  terminal; each native pane (`PaneNode::Leaf`) is one daemon pane. The
+  only synchronous check is one `stat` of the daemon binary: without it
+  the view logs a warning and opens an in-process PTY, as with the
+  setting off. Any later failure (run directory refused, daemon not
+  starting) is shown inside the tab, which stays `Unavailable`; there is
+  no automatic fallback to an in-process terminal at that point.
 - Spawn request: `argv` is the configured `terminal.default_shell` alone, or
   empty (login shell); `cwd` is empty (home); `env` is `TERM` plus, when
   set in the app, `LANG`, `LC_ALL`, `LC_CTYPE`, `LC_MESSAGES`, `COLORTERM`,
   `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `SSH_AUTH_SOCK`; label
-  `shelldeck-local`.
+  `shelldeck-local`. The pane is spawned at the size the view last asked
+  for.
 - Closing a tab (`close_tab`) or a pane (`close_split`) calls `terminate`
-  on the sessions it drops. `close_all_sessions` (app shutdown) does not:
-  the sessions are dropped, which only detaches.
-- Restore: `Workspace::restore_session` (called once at startup) asks the
-  main terminal view for `restore_daemon_panes`, which connects only if a
-  daemon is already running, lists the panes and opens one tab per live
-  pane labelled `shelldeck-local` that this process has not attached. The
-  panes are attached with `keep_pane_size`: the view has no size at that
-  point, and a tab in the background is not laid out until it is shown, so
-  each pane keeps its size until its session sends the first real one.
-  This happens whatever `auto_connect_on_startup` says; when at least one pane
-  came back, saved local tabs are not recreated (they would duplicate the
-  panes), saved SSH tabs still are.
+  on the sessions it drops; a session that is not attached at that moment
+  (still connecting, or reconnecting) ends its pane as soon as it can
+  reach it, without starting a daemon for that. `close_all_sessions` (app
+  shutdown) does not: the sessions are dropped, which only detaches. A
+  sign-out (`invalidate_cloud_session`) ends every daemon pane first
+  (`TerminalView::end_daemon_panes`), so the shells of one account are
+  not offered back to the next.
+- Layout save: `Workspace::save_workspace_state` (app shutdown and
+  sign-out, the existing `workspace.json`) stores, for each tab of the
+  main terminal whose primary pane is a live daemon pane, a
+  `DaemonTabLayout` in the tab's `TabState.daemon`: the split tree with
+  directions and ratios, leaves named by daemon pane id, the focused pane
+  and whether the tab title was chosen deliberately. Leaves that are not
+  live daemon panes (in-process, ended, not spawned yet) are left out and
+  their split collapses. Files written before the field existed load
+  unchanged; a tab without daemon panes writes no `daemon` key.
+- Layout restore: `Workspace::restore_session` (called once at startup)
+  lists the panes on the background executor (`restorable_daemon_panes`:
+  connect only if a daemon already runs, never start one; live panes
+  labelled `shelldeck-local` that this process does not show), then
+  continues on the UI thread with `WorkspaceState::daemon_restore_plan`:
+  a saved daemon tab keeps its place, tree and ratios for the panes still
+  alive; a slot whose pane is gone is dropped (its split collapses, a tab
+  with none left disappears); a live pane without a slot comes back as a
+  tab of its own, after the saved ones; a pane saved twice is used once
+  and ratios are clamped to the range a divider drag allows.
+  `TerminalView::restore_daemon_tab` opens one session per pane with
+  `keep_pane_size`: the view has no size at that point, and a tab in the
+  background is not laid out until it is shown, so each pane keeps its
+  size until its session sends the first real one. The saved active tab
+  is selected again and its focused pane refocused. This happens whatever
+  `auto_connect_on_startup` says (the panes are live processes, not saved
+  state); with that preference on, saved SSH tabs are restored at their
+  saved place between the daemon tabs. When at least one pane came back,
+  saved local tabs without daemon panes are not recreated (they would
+  duplicate the panes). With the setting off the restore runs
+  synchronously, as before.
+
+#### Workspace-scoped terminals
+
+Decision: `LocalCwdScope::Required` terminals (workspace terminals,
+including `prepare_authorized_local_terminal`) keep their in-process PTY,
+with the setting on or off. The rule of section 10 (validate the
+`AuthorizedLocalRoot`, send the canonical path, revalidate the path
+returned in `Spawned`, kill on mismatch) is not implemented because it
+cannot be met safely with protocol v1:
+
+- The authority of a workspace terminal is a held directory descriptor
+  with a recorded device and inode; the PTY child is started through
+  `/proc/<pid>/fd/<n>` (Linux) so a rename or a symlink swap between the
+  check and the `chdir` cannot redirect it.
+- The daemon receives a path string, canonicalizes it, then the child
+  does `chdir` by name after `fork` (`conn.rs`, `LocalPty::spawn_command`).
+  The `cwd` returned in `Spawned` is the string computed before that
+  `chdir`. A directory swapped in between leaves the returned path equal
+  to the authorized one while the shell runs somewhere else, so
+  revalidating the returned path proves nothing.
+- Even a mismatch that is detected is detected after the login shell
+  started and ran its startup files in the wrong directory. The
+  in-process path fails closed before any process exists.
+- A pane offered back after an app restart would be shown without any
+  held descriptor: the directory may have been replaced while the app
+  was not running.
+
+What would make it possible: a `Spawn` field carrying the expected device
+and inode, checked by the daemon on a descriptor it opened with
+`O_DIRECTORY | O_NOFOLLOW` and used for the child's `fchdir`, with the
+identity reported in `PaneInfo` so a reattach can verify it. That is a
+protocol change, not part of this step.
 
 Differences from sections 9 and 10, and limits of this slice:
 
@@ -1189,33 +1290,32 @@ Differences from sections 9 and 10, and limits of this slice:
   plain methods (`restore`, `bytes`, `resize`, `history`); it is not a
   channel drained by a thread inside `shelldeck-terminal`. This keeps the
   client's feed cap effective and reports `NeedsReattach` directly.
-- Workspace-scoped terminals (`LocalCwdScope::Required`, including
-  `prepare_authorized_local_terminal`) keep their in-process PTY. Their
-  working directory authority is a held directory descriptor
-  (`/proc/<pid>/fd/<n>` on Linux); sending the canonical path to the daemon
-  would reopen it by name and weaken that guarantee. The rule of section 10
-  (validate, send the canonical path, revalidate the returned path, kill on
-  mismatch) is not implemented.
 - A pane's environment is the login shell's own (the daemon scrubs its
   environment and starts a login shell) plus the forwarded names above. An
   in-process terminal inherits the whole environment of the app. Variables
   exported only in the app's environment are therefore missing in a daemon
   pane.
-- Layout is not restored: every pane comes back as its own tab, in creation
-  order; splits, ratios, focus, tab titles set by the user and the active
-  tab are lost. `TerminalWorkspaceSnapshot` does not carry pane ids yet and
-  `group` is not used.
+- The layout is saved when the app shuts down or signs out, not on every
+  change. After a crash or `kill -9` the previous file is used: panes
+  created since then come back as tabs of their own and splits made
+  since then are lost.
+- Not restored: scroll positions, per-tab zoom, the focused pane of tabs
+  other than the active one (selecting a tab focuses its primary pane, as
+  before), and titles set by programs before the restart until the
+  program sets them again. `group` is still not used.
 - Panes are offered back only at startup. Turning the setting on while the
   app runs affects new tabs only.
-- No reconnect: when the daemon connection ends, each attached terminal
-  shows a one-line notice (`terminal.session_daemon.connection_lost`) and
-  stays frozen; the next new tab opens a new connection (starting a daemon
-  if needed) but the frozen tabs are not reattached.
-- `spawn`, `list` and the first connect block the UI thread: a round trip
-  on a Unix socket, or up to 3 s when the daemon has to be started, with a
-  10 s cap per request.
-- The session `state` stays `Running` after the pane exits, as for an
-  in-process local terminal today.
+- The notices shown inside a terminal are translated once, when the first
+  daemon session is opened: a language change applies to them after a
+  restart.
+- A reconnect starts a daemon when none runs, only to learn from it that
+  the panes are gone; that daemon idles out after 60 s if nothing else
+  uses it.
+- The tab state follows the pane: after `exit` the tab shows the exit
+  state (an in-process local terminal stays "running" today).
+- Reading `workspace.json` at restore still happens on the UI thread (a
+  small local file, as before); it now also happens with
+  `auto_connect_on_startup` off when panes came back.
 - The daemon binary is not packaged: the bundle, installer and updater do
   not ship `shelldeck-sessiond` yet, so outside a development build the
   setting falls back to in-process terminals (with a warning in the log).
@@ -1223,7 +1323,8 @@ Differences from sections 9 and 10, and limits of this slice:
   out (60 s without pane or client); the version check and upgrade story
   of section 3 are not implemented.
 - Not built or run on macOS or Windows. On non Unix targets the backend is
-  a stub that reports "not available", so the setting has no effect.
+  a stub that reports "not available", so the setting has no effect and
+  the toggle is hidden.
 - The real app was not launched with the setting on: see
   `docs/testing/session-daemon-qa.md` for what was verified automatically
   and the manual checks still to do.

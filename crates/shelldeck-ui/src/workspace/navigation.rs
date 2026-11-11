@@ -67,11 +67,21 @@ impl Workspace {
         let terminal = self.terminal.read(cx);
         let sessions = terminal.session_states();
         let active_tab = terminal.active_tab_index();
+        // Tabs made of session daemon panes also save their native layout
+        // by pane id: those panes outlive the app, and the next start
+        // rebuilds the tabs around the ones still running.
+        let mut daemon_layouts = if terminal.restores_daemon_panes() {
+            terminal.daemon_tab_layouts()
+        } else {
+            Vec::new()
+        };
+        daemon_layouts.resize(sessions.len(), None);
 
         let tabs: Vec<TabState> = sessions
             .into_iter()
+            .zip(daemon_layouts)
             .enumerate()
-            .map(|(i, (title, connection_id))| {
+            .map(|(i, ((title, connection_id), daemon))| {
                 let tab_type = if connection_id.is_some() {
                     TabType::Ssh
                 } else {
@@ -85,6 +95,7 @@ impl Workspace {
                     // Local tabs are spawned with the default shell, which the
                     // terminal session does not track, so leave this unset.
                     shell: None,
+                    daemon: daemon.filter(|_| connection_id.is_none()),
                 }
             })
             .collect();
@@ -575,33 +586,53 @@ impl Workspace {
         self.sync_terminal_tab_count(cx);
     }
 
-    /// Restore the previously-saved session on startup when
-    /// `auto_connect_on_startup` is enabled. Local tabs reopen a default-shell
-    /// terminal; SSH tabs reconnect via the existing `connect_ssh` path if the
-    /// connection still exists. No-op (and no behavior change) when the flag is
-    /// off or there is nothing to restore. Failures are logged, never fatal.
+    /// Restore the previously-saved session on startup.
+    ///
+    /// With `general.session_daemon` on, the panes an earlier run left
+    /// running come back first, whatever `auto_connect_on_startup` says:
+    /// they are live processes, not saved state. Listing them is a round
+    /// trip to the daemon, so it runs on the background executor and the
+    /// restore continues when the answer is in; no daemon is ever started
+    /// for it. With the setting off the restore is synchronous, as before.
     pub fn restore_session(&mut self, cx: &mut Context<Self>) {
-        use shelldeck_core::config::workspace_state::TabType;
+        let wants_panes = self.app_config.general.session_daemon
+            && self.terminal.update(cx, |terminal, _| {
+                terminal.set_persistent_sessions(true);
+                terminal.restores_daemon_panes()
+            });
+        if !wants_panes {
+            self.finish_restore_session(Vec::new(), cx);
+            return;
+        }
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let panes = cx
+                .background_executor()
+                .spawn(async { crate::terminal_view::restorable_daemon_panes() })
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.finish_restore_session(panes, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Second half of [`restore_session`](Self::restore_session).
+    /// `live_panes`: session daemon panes still running and not shown yet.
+    ///
+    /// Daemon tabs are rebuilt from the layout saved by pane id (tabs,
+    /// split tree, ratios, focused pane); a live pane with no saved slot
+    /// becomes a tab of its own and a saved slot whose pane is gone is
+    /// dropped. When `auto_connect_on_startup` is enabled, the other saved
+    /// tabs are restored in their saved order: local tabs reopen a
+    /// default-shell terminal, SSH tabs reconnect via the existing
+    /// `connect_ssh` path if the connection still exists. Failures are
+    /// logged, never fatal.
+    fn finish_restore_session(&mut self, live_panes: Vec<Uuid>, cx: &mut Context<Self>) {
+        use shelldeck_core::config::workspace_state::{RestoredTab, TabType};
         use shelldeck_core::config::WorkspaceState;
 
-        // Session daemon panes left running by an earlier run come back as
-        // tabs, whatever the "restore tabs" preference says: they are live
-        // processes, not saved state. Never starts a daemon.
-        let daemon_tabs = if self.app_config.general.session_daemon {
-            self.terminal.update(cx, |terminal, cx| {
-                terminal.set_persistent_sessions(true);
-                terminal.restore_daemon_panes(cx)
-            })
-        } else {
-            0
-        };
-        if daemon_tabs > 0 {
-            self.update_dashboard_stats(cx);
-            self.sync_terminal_tab_count(cx);
-            cx.notify();
-        }
-
-        if !self.app_config.general.auto_connect_on_startup {
+        let restore_saved = self.app_config.general.auto_connect_on_startup;
+        if !restore_saved && live_panes.is_empty() {
             return;
         }
 
@@ -609,45 +640,70 @@ impl Workspace {
             Ok(state) => state,
             Err(e) => {
                 tracing::warn!("Failed to load workspace state for restore: {}", e);
-                return;
+                // Live panes still come back, one tab each.
+                WorkspaceState::default()
             }
         };
 
-        if state.tabs.is_empty() {
-            // Nothing saved — leave the normal default (empty) startup untouched.
+        let plan = state.daemon_restore_plan(&live_panes);
+        if plan.tabs.is_empty() {
+            // Nothing saved and nothing running: leave the normal default
+            // (empty) startup untouched.
             return;
         }
 
         let mut restored = 0usize;
-        for tab in &state.tabs {
-            match tab.tab_type {
-                TabType::Local => {
-                    if daemon_tabs > 0 {
+        let mut restored_saved = 0usize;
+        // Terminal tab opened for each planned tab, with the pane to focus.
+        let mut opened: Vec<Option<(Uuid, Option<Uuid>)>> = Vec::with_capacity(plan.tabs.len());
+        for planned in &plan.tabs {
+            let before = self.terminal.read(cx).tabs.len();
+            let mut focused = None;
+            match planned {
+                RestoredTab::Daemon { title, layout } => {
+                    focused = layout.focused;
+                    self.terminal.update(cx, |terminal, cx| {
+                        terminal.restore_daemon_tab(title.as_deref(), layout, cx);
+                    });
+                }
+                RestoredTab::Saved(_) if !restore_saved => {}
+                RestoredTab::Saved(index) => {
+                    let tab = &state.tabs[*index];
+                    match tab.tab_type {
                         // The reattached panes are the local tabs; a fresh
                         // shell per saved tab would duplicate them.
-                        continue;
-                    }
-                    self.terminal.update(cx, |terminal, cx| {
-                        terminal.spawn_local_terminal(cx);
-                    });
-                    restored += 1;
-                }
-                TabType::Ssh => {
-                    let Some(conn_id) = tab.connection_id else {
-                        tracing::warn!("Skipping SSH tab restore: missing connection id");
-                        continue;
-                    };
-                    if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id).cloned() {
-                        self.connect_ssh(conn, cx);
-                        restored += 1;
-                    } else {
-                        tracing::warn!(
-                            "Skipping SSH tab restore: connection {} no longer exists",
-                            conn_id
-                        );
+                        TabType::Local if !live_panes.is_empty() => {}
+                        TabType::Local => {
+                            self.terminal.update(cx, |terminal, cx| {
+                                terminal.spawn_local_terminal(cx);
+                            });
+                        }
+                        TabType::Ssh => {
+                            let connection = tab.connection_id.and_then(|conn_id| {
+                                self.connections.iter().find(|c| c.id == conn_id).cloned()
+                            });
+                            match connection {
+                                Some(conn) => self.connect_ssh(conn, cx),
+                                None => tracing::warn!(
+                                    "Skipping SSH tab restore: connection {:?} no longer exists",
+                                    tab.connection_id
+                                ),
+                            }
+                        }
                     }
                 }
             }
+            let terminal = self.terminal.read(cx);
+            let tab = (terminal.tabs.len() > before)
+                .then(|| terminal.tabs.last().map(|tab| (tab.id, focused)))
+                .flatten();
+            if tab.is_some() {
+                restored += 1;
+                if matches!(planned, RestoredTab::Saved(_)) {
+                    restored_saved += 1;
+                }
+            }
+            opened.push(tab);
         }
 
         if restored == 0 {
@@ -655,23 +711,31 @@ impl Workspace {
         }
 
         // Restore sidebar visibility if it differs from the current state.
-        if state.sidebar_visible != self.sidebar_visible {
+        // Only with saved tabs: live panes alone do not bring the saved
+        // window state back.
+        if restored_saved > 0 && state.sidebar_visible != self.sidebar_visible {
             self.toggle_sidebar(cx);
         }
 
-        // Restore the active tab (clamped to the number of tabs actually
-        // recreated, since some saved tabs may have been skipped).
-        self.terminal.update(cx, |terminal, _| {
-            if let Some(tab) = terminal
-                .tabs
-                .get(state.active_tab.min(terminal.tabs.len() - 1))
-            {
-                let id = tab.id;
-                terminal.select_tab(id);
-            }
-        });
+        // Restore the active tab: the saved one when it came back, else
+        // the nearest restored tab at or before its place.
+        let target = plan
+            .active
+            .and_then(|index| opened.get(index).copied().flatten())
+            .or_else(|| {
+                let at = state.active_tab.min(opened.len() - 1);
+                opened[..=at].iter().rev().find_map(|tab| *tab)
+            })
+            .or_else(|| opened.iter().find_map(|tab| *tab));
+        if let Some((tab_id, focused)) = target {
+            self.terminal.update(cx, |terminal, _| {
+                terminal.activate_restored_tab(tab_id, focused);
+            });
+        }
 
-        self.active_view = ActiveView::Terminal;
+        if restored_saved > 0 {
+            self.active_view = ActiveView::Terminal;
+        }
         self.update_dashboard_stats(cx);
         self.sync_terminal_tab_count(cx);
         cx.notify();

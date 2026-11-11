@@ -73,12 +73,16 @@ const UI_FONT_FAMILIES: &[&str] = &["Inter", "SF Pro Text", "Segoe UI", "Ubuntu"
 struct GeneralSettingsVisibility {
     reconnect_sessions: bool,
     auto_attach_tmux: bool,
+    /// `general.session_daemon`: a terminal control, and the daemon only
+    /// exists on Unix (elsewhere the setting would do nothing).
+    session_daemon: bool,
 }
 
 fn general_settings_visibility(dev_capable: bool) -> GeneralSettingsVisibility {
     GeneralSettingsVisibility {
         reconnect_sessions: dev_capable,
         auto_attach_tmux: dev_capable,
+        session_daemon: dev_capable && cfg!(unix),
     }
 }
 
@@ -1023,6 +1027,22 @@ impl SettingsView {
                     &entity,
                     |this, value| {
                         this.config.general.auto_attach_tmux = value;
+                    },
+                ),
+            ));
+        }
+        if visibility.session_daemon {
+            // Read when a terminal is created: tabs and panes that are
+            // already open keep the backend they started with.
+            settings = settings.child(Self::render_setting_row(
+                t!("settings.general.session_daemon.label").as_ref(),
+                t!("settings.general.session_daemon.description").as_ref(),
+                Self::bind_toggle(
+                    "general-session-daemon",
+                    self.config.general.session_daemon,
+                    &entity,
+                    |this, value| {
+                        this.config.general.session_daemon = value;
                     },
                 ),
             ));
@@ -3562,6 +3582,7 @@ mod tests {
             GeneralSettingsVisibility {
                 reconnect_sessions: false,
                 auto_attach_tmux: false,
+                session_daemon: false,
             }
         );
         assert_eq!(
@@ -3569,6 +3590,9 @@ mod tests {
             GeneralSettingsVisibility {
                 reconnect_sessions: true,
                 auto_attach_tmux: true,
+                // The session daemon toggle is offered where the daemon
+                // exists.
+                session_daemon: cfg!(unix),
             }
         );
     }

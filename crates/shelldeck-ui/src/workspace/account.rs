@@ -518,6 +518,11 @@ impl Workspace {
     pub(super) fn invalidate_cloud_session(&mut self, cx: &mut Context<Self>) {
         self.manage_requests.change_session();
         self.clear_inklura_notifications();
+        // Session daemon panes outlive their sessions by design (app quit).
+        // A sign-out is not a quit: end them, or the next launch would
+        // offer the old account's shells back.
+        self.terminal
+            .update(cx, |terminal, _| terminal.end_daemon_panes());
         self.stop_authenticated_runtime(cx);
         // Overwrite the persisted workspace after closing sessions. Otherwise
         // a later launch/account could restore terminals from the old session.
