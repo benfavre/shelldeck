@@ -245,6 +245,15 @@ pub struct GeneralConfig {
     /// `session_daemon` on.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub session_daemon_hosts: std::collections::BTreeMap<String, RemoteDaemonInstall>,
+    /// `[general.session_daemon_host_targets]`: for each answer above, the
+    /// server it was given for (`Connection::dial_identity`: user, host,
+    /// port and jump host). An answer only counts while the connection
+    /// still dials that server: after the entry is edited to point at
+    /// another machine or account, the user is asked again instead of
+    /// the old answer being applied to a server it was never given for.
+    /// An answer without a recorded server reads as "not asked".
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub session_daemon_host_targets: std::collections::BTreeMap<String, String>,
 }
 
 /// The user's recorded answer to "install the session daemon on this
@@ -259,21 +268,35 @@ pub enum RemoteDaemonInstall {
 }
 
 impl GeneralConfig {
-    /// The recorded answer for the SSH connection `connection_id`, or
-    /// `None` when the user was never asked (or did not decide).
-    pub fn remote_daemon_install(&self, connection_id: uuid::Uuid) -> Option<RemoteDaemonInstall> {
-        self.session_daemon_hosts
-            .get(&connection_id.to_string())
-            .copied()
+    /// The recorded answer for the SSH connection `connection_id`, which
+    /// now dials `target` (`Connection::dial_identity`). `None` when the
+    /// user was never asked, did not decide, or answered for another
+    /// server: the connection entry was edited since (other host, user,
+    /// port or jump host), and consent for one server is not consent for
+    /// another.
+    pub fn remote_daemon_install(
+        &self,
+        connection_id: uuid::Uuid,
+        target: &str,
+    ) -> Option<RemoteDaemonInstall> {
+        let key = connection_id.to_string();
+        let answer = self.session_daemon_hosts.get(&key).copied()?;
+        let answered_for = self.session_daemon_host_targets.get(&key)?;
+        (answered_for == target).then_some(answer)
     }
 
+    /// Record the answer for `connection_id`, given while it dials
+    /// `target`.
     pub fn set_remote_daemon_install(
         &mut self,
         connection_id: uuid::Uuid,
+        target: &str,
         answer: RemoteDaemonInstall,
     ) {
-        self.session_daemon_hosts
-            .insert(connection_id.to_string(), answer);
+        let key = connection_id.to_string();
+        self.session_daemon_host_targets
+            .insert(key.clone(), target.to_string());
+        self.session_daemon_hosts.insert(key, answer);
     }
 }
 
@@ -468,6 +491,7 @@ impl Default for GeneralConfig {
             autostart: false,
             onboarding_completed: false,
             session_daemon_hosts: std::collections::BTreeMap::new(),
+            session_daemon_host_targets: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -576,36 +600,88 @@ mod tests {
         let allowed = uuid::Uuid::new_v4();
         let refused = uuid::Uuid::new_v4();
         let unasked = uuid::Uuid::new_v4();
+        let (prod_a, prod_b) = ("deploy@prod-a:22|", "deploy@prod-b:22|");
 
         let mut config = AppConfig::default();
-        assert_eq!(config.general.remote_daemon_install(allowed), None);
+        assert_eq!(config.general.remote_daemon_install(allowed, prod_a), None);
         // No entry, no table in the file.
         config.save_to(&path).expect("save_to");
         let text = std::fs::read_to_string(&path).expect("read");
-        assert!(!text.contains("session_daemon_hosts"), "{text}");
+        assert!(!text.contains("session_daemon_host"), "{text}");
 
         config
             .general
-            .set_remote_daemon_install(allowed, RemoteDaemonInstall::Allow);
+            .set_remote_daemon_install(allowed, prod_a, RemoteDaemonInstall::Allow);
         config
             .general
-            .set_remote_daemon_install(refused, RemoteDaemonInstall::Never);
+            .set_remote_daemon_install(refused, prod_b, RemoteDaemonInstall::Never);
         config.save_to(&path).expect("save_to");
         let text = std::fs::read_to_string(&path).expect("read");
         assert!(text.contains("[general.session_daemon_hosts]"), "{text}");
         assert!(text.contains(&format!("{allowed} = \"allow\"")), "{text}");
         assert!(text.contains(&format!("{refused} = \"never\"")), "{text}");
+        assert!(
+            text.contains("[general.session_daemon_host_targets]"),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("{allowed} = \"{prod_a}\"")),
+            "{text}"
+        );
 
         let loaded = AppConfig::load_from(&path).expect("load_from");
         assert_eq!(
-            loaded.general.remote_daemon_install(allowed),
+            loaded.general.remote_daemon_install(allowed, prod_a),
             Some(RemoteDaemonInstall::Allow)
         );
         assert_eq!(
-            loaded.general.remote_daemon_install(refused),
+            loaded.general.remote_daemon_install(refused, prod_b),
             Some(RemoteDaemonInstall::Never)
         );
-        assert_eq!(loaded.general.remote_daemon_install(unasked), None);
+        assert_eq!(loaded.general.remote_daemon_install(unasked, prod_a), None);
+
+        // SDTEST-3043: an answer counts only for the server it was given
+        // for. The same connection entry edited to dial another host,
+        // user, port or jump host is "not asked": nothing is uploaded
+        // there without a new answer, and a "never" does not silence the
+        // question for the new server either.
+        for other in [
+            prod_b,
+            "root@prod-a:22|",
+            "deploy@prod-a:2222|",
+            "deploy@prod-a:22|bastion",
+            "",
+        ] {
+            assert_eq!(
+                loaded.general.remote_daemon_install(allowed, other),
+                None,
+                "{other:?}"
+            );
+        }
+        assert_eq!(loaded.general.remote_daemon_install(refused, prod_a), None);
+        // Answering again for the new server replaces the old answer.
+        let mut edited = loaded.clone();
+        edited
+            .general
+            .set_remote_daemon_install(allowed, prod_b, RemoteDaemonInstall::Never);
+        assert_eq!(edited.general.remote_daemon_install(allowed, prod_a), None);
+        assert_eq!(
+            edited.general.remote_daemon_install(allowed, prod_b),
+            Some(RemoteDaemonInstall::Never)
+        );
+        // An answer without a recorded server (written by hand) is not
+        // trusted for any server.
+        let mut by_hand = loaded.clone();
+        by_hand.general.session_daemon_host_targets.clear();
+        by_hand.save_to(&path).expect("save_to");
+        let by_hand = AppConfig::load_from(&path).expect("load_from");
+        assert_eq!(
+            by_hand.general.session_daemon_hosts.len(),
+            2,
+            "the answers are still in the file"
+        );
+        assert_eq!(by_hand.general.remote_daemon_install(allowed, prod_a), None);
+        assert_eq!(by_hand.general.remote_daemon_install(refused, prod_b), None);
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

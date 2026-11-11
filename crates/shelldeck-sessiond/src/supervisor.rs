@@ -144,6 +144,14 @@ impl Backoff {
     }
 }
 
+/// Value of [`SupervisorOptions::max_attempts`] for a session that never
+/// gives up on a pane that exists.
+pub const UNLIMITED_ATTEMPTS: u32 = u32::MAX;
+
+/// Longest time ending one pane may take (hang up, kill, remove) before
+/// the supervisor stops waiting for it.
+const TERMINATE_LIMIT: Duration = Duration::from_secs(15);
+
 #[derive(Debug, Clone)]
 pub struct SupervisorOptions {
     pub sessions: SessionsOptions,
@@ -151,6 +159,12 @@ pub struct SupervisorOptions {
     pub backoff: Backoff,
     /// Consecutive failed attempts (no snapshot in between) after which a
     /// session gives up and reports `Unavailable`.
+    ///
+    /// [`UNLIMITED_ATTEMPTS`]: keep trying, at the capped delay, for as
+    /// long as the session is open. For a daemon behind a transport that
+    /// can be away for any length of time (another host: a network loss, a
+    /// suspended laptop), where giving up would leave a tab that nothing
+    /// ever reattaches.
     pub max_attempts: u32,
 }
 
@@ -247,11 +261,11 @@ impl Reconnect {
     }
 
     fn retry(&mut self) -> Step {
-        if self.attempt >= self.max_attempts {
+        if self.max_attempts != UNLIMITED_ATTEMPTS && self.attempt >= self.max_attempts {
             return Step::Finish(AttachedPhase::Unavailable);
         }
         let delay = self.backoff.delay(self.attempt);
-        self.attempt += 1;
+        self.attempt = self.attempt.saturating_add(1);
         Step::RetryAfter(delay)
     }
 
@@ -318,6 +332,8 @@ struct LinkState {
     dropped: bool,
     /// The user closed the tab or pane and the pane is not ended yet.
     terminate: bool,
+    /// The supervisor thread of this session is over.
+    finished: bool,
     /// Last size the view asked for.
     size: Option<(u16, u16)>,
     pending: Vec<Vec<u8>>,
@@ -409,12 +425,31 @@ async fn forward(
 // Supervisor
 // ---------------------------------------------------------------------------
 
-struct Inner {
-    connector: Arc<dyn Connector>,
-    options: SupervisorOptions,
+/// What keeps a supervisor busy. Apart from `Inner` so a task of the
+/// supervisor's own runtime can count without holding the runtime.
+#[derive(Default)]
+struct Activity {
     /// Sessions whose thread still runs (connecting, attached or waiting
     /// to reconnect).
     sessions: AtomicUsize,
+    /// Panes being ended right now (hang up, kill, remove).
+    terminations: AtomicUsize,
+    /// Panes the user closed while they could not be reached. They are
+    /// ended on every new connection, until one confirms they are gone,
+    /// and never offered back.
+    doomed: Mutex<HashSet<Uuid>>,
+}
+
+impl Activity {
+    fn is_idle(&self) -> bool {
+        self.sessions.load(Ordering::SeqCst) == 0 && self.terminations.load(Ordering::SeqCst) == 0
+    }
+}
+
+struct Inner {
+    connector: Arc<dyn Connector>,
+    options: SupervisorOptions,
+    activity: Arc<Activity>,
     /// The last connect found a daemon of another, incompatible version.
     other_version: AtomicBool,
     on_idle: Mutex<Option<IdleFn>>,
@@ -456,7 +491,7 @@ impl Supervisor {
             inner: Arc::new(Inner {
                 connector,
                 options,
-                sessions: AtomicUsize::new(0),
+                activity: Arc::new(Activity::default()),
                 other_version: AtomicBool::new(false),
                 on_idle: Mutex::new(None),
                 connection: Mutex::new(None),
@@ -504,7 +539,14 @@ impl Supervisor {
             let mut state = terminate_link.state.lock();
             match (&state.bound, state.pane, supervisor.upgrade()) {
                 (Some(client), Some(pane), Some(inner)) => {
-                    inner.runtime.spawn(terminate_pane(client.clone(), pane));
+                    Supervisor { inner }.end_pane(client.clone(), pane);
+                }
+                // The thread of this session is over (it gave up, or the
+                // daemon is of another version): end the pane through the
+                // shared connection if there is one right now, else at
+                // the next contact with the daemon. Never waits here.
+                (None, Some(pane), Some(inner)) if state.finished => {
+                    Supervisor { inner }.end_unattached_pane(pane);
                 }
                 // Not attached right now: the supervisor thread ends the
                 // pane as soon as it can reach it.
@@ -526,12 +568,12 @@ impl Supervisor {
                 ..session
             },
         };
-        self.inner.sessions.fetch_add(1, Ordering::SeqCst);
+        self.inner.activity.sessions.fetch_add(1, Ordering::SeqCst);
         let spawned = std::thread::Builder::new()
             .name("sessiond-pane".into())
             .spawn(move || driver.run(target, feed));
         if let Err(error) = spawned {
-            self.inner.sessions.fetch_sub(1, Ordering::SeqCst);
+            self.inner.activity.sessions.fetch_sub(1, Ordering::SeqCst);
             if let Some(pane) = link.state.lock().pane {
                 self.inner.panes.lock().remove(&pane);
             }
@@ -543,11 +585,26 @@ impl Supervisor {
     /// Panes of the daemon, or `None` when no daemon runs and `start` is
     /// false. Blocks for the connect and the round trip: call it from a
     /// background thread.
+    ///
+    /// Panes that are being ended because the user closed them while they
+    /// could not be reached are left out, see
+    /// [`without_doomed`](Self::without_doomed).
     pub fn list_panes(&self, start: bool) -> Result<Option<Vec<PaneInfo>>, AttachError> {
         match self.connection(start)? {
-            Some(sessions) => sessions.list_panes().map(Some),
+            Some(sessions) => Ok(Some(self.without_doomed(sessions.list_panes()?))),
             None => Ok(None),
         }
+    }
+
+    /// `panes` without those the user closed (tab closed, sign-out) while
+    /// the daemon could not be reached. Such a pane is ended as soon as
+    /// the daemon is reached again; until then it may still be listed,
+    /// and it must never be offered back. For pane lists that were not
+    /// made by [`list_panes`](Self::list_panes).
+    pub fn without_doomed(&self, mut panes: Vec<PaneInfo>) -> Vec<PaneInfo> {
+        let doomed = self.inner.activity.doomed.lock();
+        panes.retain(|info| !doomed.contains(&info.pane));
+        panes
     }
 
     /// Panes shown by a live session of this supervisor.
@@ -559,15 +616,86 @@ impl Supervisor {
     /// to reconnect. A session that ended or gave up no longer counts,
     /// even while its tab is still shown.
     pub fn session_count(&self) -> usize {
-        self.inner.sessions.load(Ordering::SeqCst)
+        self.inner.activity.sessions.load(Ordering::SeqCst)
     }
 
-    /// `callback` runs, on a session thread, each time the last session is
-    /// over. A transport that costs something to keep (an SSH connection)
-    /// uses it to let go; it must check [`session_count`](Self::session_count)
-    /// again, a new session may have been opened meanwhile.
+    /// No session thread runs and no pane is being ended: the connection
+    /// can be released without cutting anything short. A pane closed by
+    /// the user is hung up, killed if it does not exit and then removed;
+    /// that takes a moment after its session is gone and needs the
+    /// connection.
+    pub fn is_idle(&self) -> bool {
+        self.inner.activity.is_idle()
+    }
+
+    /// `callback` runs, on a plain thread (a session thread or one made
+    /// for it), each time the supervisor becomes idle: the last session is
+    /// over and no pane is still being ended. A transport that costs
+    /// something to keep (an SSH connection) uses it to let go; it must
+    /// check [`is_idle`](Self::is_idle) again, a new session may have been
+    /// opened meanwhile, and it may run more than once for one idle
+    /// period.
     pub fn set_on_idle(&self, callback: impl Fn() + Send + Sync + 'static) {
         *self.inner.on_idle.lock() = Some(Arc::new(callback));
+    }
+
+    fn notify_if_idle(&self) {
+        if !self.is_idle() {
+            return;
+        }
+        let on_idle = self.inner.on_idle.lock().clone();
+        if let Some(on_idle) = on_idle {
+            on_idle();
+        }
+    }
+
+    /// End `pane` through `client` in the background: hang up, kill if it
+    /// does not exit, remove. The supervisor is not idle until that is
+    /// over, so the connection is not released under it.
+    fn end_pane(&self, client: Client, pane: Uuid) {
+        let activity = self.inner.activity.clone();
+        activity.terminations.fetch_add(1, Ordering::SeqCst);
+        let supervisor = Arc::downgrade(&self.inner);
+        self.inner.runtime.spawn(async move {
+            match tokio::time::timeout(TERMINATE_LIMIT, terminate_pane(client, pane)).await {
+                Ok(true) => {
+                    activity.doomed.lock().remove(&pane);
+                }
+                // Cut short by a connection loss: a doomed pane is tried
+                // again on the next connection.
+                Ok(false) => {}
+                Err(_) => tracing::warn!(%pane, "ending the pane did not finish in time"),
+            }
+            activity.terminations.fetch_sub(1, Ordering::SeqCst);
+            // The idle callback may block and may drop the last reference
+            // to something that owns a runtime: never on this task.
+            let notified = std::thread::Builder::new()
+                .name("sessiond-idle".into())
+                .spawn(move || {
+                    if let Some(inner) = supervisor.upgrade() {
+                        Supervisor { inner }.notify_if_idle();
+                    }
+                });
+            if let Err(error) = notified {
+                tracing::warn!("idle notification not delivered: {error}");
+            }
+        });
+    }
+
+    /// End a pane no session thread looks after any more. Never blocks:
+    /// uses the shared connection only if it is there and free right now.
+    fn end_unattached_pane(&self, pane: Uuid) {
+        let client = self.inner.connection.try_lock().and_then(|slot| {
+            slot.as_ref()
+                .filter(|sessions| !sessions.is_closed())
+                .map(|sessions| sessions.client().clone())
+        });
+        // Remembered in both cases: a termination that is cut short by a
+        // connection loss is repeated on the next connection.
+        self.inner.activity.doomed.lock().insert(pane);
+        if let Some(client) = client {
+            self.end_pane(client, pane);
+        }
     }
 
     /// Whether the last attempt to reach the daemon found one left by
@@ -632,6 +760,14 @@ impl Supervisor {
             }
         }
         slot.clone_from(&sessions);
+        drop(slot);
+        if let Some(sessions) = &sessions {
+            // Panes closed while the daemon was out of reach.
+            let doomed: Vec<Uuid> = self.inner.activity.doomed.lock().iter().copied().collect();
+            for pane in doomed {
+                self.end_pane(sessions.client().clone(), pane);
+            }
+        }
         Ok(sessions)
     }
 }
@@ -700,12 +836,11 @@ impl Driver {
             }
         }
         self.finish();
-        let inner = &self.supervisor.inner;
-        if inner.sessions.fetch_sub(1, Ordering::SeqCst) == 1 {
-            let on_idle = inner.on_idle.lock().clone();
-            if let Some(on_idle) = on_idle {
-                on_idle();
-            }
+        let activity = &self.supervisor.inner.activity;
+        if activity.sessions.fetch_sub(1, Ordering::SeqCst) == 1 {
+            // Not yet when a pane is still being ended: that termination
+            // notifies when it is over.
+            self.supervisor.notify_if_idle();
         }
     }
 
@@ -856,10 +991,7 @@ impl Driver {
         }
         if state.terminate {
             state.terminate = false;
-            self.supervisor
-                .inner
-                .runtime
-                .spawn(terminate_pane(client.clone(), pane));
+            self.supervisor.end_pane(client.clone(), pane);
         }
         for data in std::mem::take(&mut state.pending) {
             let _ = client.input(pane, &data);
@@ -878,6 +1010,7 @@ impl Driver {
         let (pane, terminate) = {
             let mut state = self.link.state.lock();
             state.bound = None;
+            state.finished = true;
             (state.pane, std::mem::take(&mut state.terminate))
         };
         let Some(pane) = pane else {
@@ -886,8 +1019,16 @@ impl Driver {
         self.supervisor.inner.panes.lock().remove(&pane);
         if terminate {
             // Never start a daemon for this: without one the pane is gone.
-            if let Ok(Some(sessions)) = self.supervisor.connection(false) {
-                sessions.terminate(pane);
+            match self.supervisor.connection(false) {
+                Ok(Some(sessions)) => self.supervisor.end_pane(sessions.client().clone(), pane),
+                Ok(None) => {}
+                // The daemon cannot be reached and may still have the
+                // pane (an unreachable host): end it at the next contact
+                // and never offer it back meanwhile.
+                Err(error) => {
+                    tracing::info!(%pane, "pane will be ended at the next contact: {error}");
+                    self.supervisor.inner.activity.doomed.lock().insert(pane);
+                }
             }
         }
     }
@@ -1015,6 +1156,34 @@ mod tests {
             Step::RetryAfter(_)
         ));
         assert_eq!(machine.on(LinkEvent::PaneGone), ended(Some(3)));
+
+        // Unlimited attempts (a daemon on another host): never gives up
+        // on a pane that exists, and the delay stays at the cap.
+        let mut machine = Reconnect::new(backoff(), UNLIMITED_ATTEMPTS, true);
+        machine.on(LinkEvent::ConnectionLost { synced: true });
+        for _ in 0..200 {
+            assert!(matches!(
+                machine.on(LinkEvent::ConnectFailed {
+                    daemon_absent: false
+                }),
+                Step::RetryAfter(_)
+            ));
+        }
+        assert_eq!(
+            machine.on(LinkEvent::ConnectFailed {
+                daemon_absent: false
+            }),
+            Step::RetryAfter(Duration::from_millis(1_000))
+        );
+        assert_eq!(machine.waiting_phase(), AttachedPhase::Reconnecting);
+        // A pane that was never created still fails at once.
+        let mut machine = Reconnect::new(backoff(), UNLIMITED_ATTEMPTS, false);
+        assert_eq!(
+            machine.on(LinkEvent::ConnectFailed {
+                daemon_absent: false
+            }),
+            unavailable
+        );
 
         // A daemon that refuses the spawn is final even for the machine
         // of an existing pane (defensive: it never spawns).

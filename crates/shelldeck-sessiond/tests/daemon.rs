@@ -1856,6 +1856,17 @@ async fn sdtest_3002_a_daemon_under_another_host_name_is_found() {
     .expect("the running daemon is reached");
     drop(client);
 
+    // The same when the name for this machine does not fit a socket
+    // address any more and the choice would be the last resort outside
+    // the home directory (an update that made the name longer): the
+    // running daemon is not abandoned.
+    let outside = tempfile::tempdir().expect("outside");
+    let last_resort = outside.path().join("shelldeck-uid");
+    assert_eq!(
+        paths::live_run_dir(&root.path, last_resort.clone()),
+        old.path
+    );
+
     // A daemon under the current name always wins.
     let current = dir_for("laptop.lan");
     let second = start(&current, test_config());
@@ -1865,6 +1876,10 @@ async fn sdtest_3002_a_daemon_under_another_host_name_is_found() {
     // With no daemon anywhere the current name is used.
     assert_eq!(daemon.stop(), ServeOutcome::Shutdown);
     assert_eq!(paths::live_run_dir(&root.path, renamed.clone()), renamed);
+    assert_eq!(
+        paths::live_run_dir(&root.path, last_resort.clone()),
+        last_resort
+    );
 }
 
 // SDTEST-3003
@@ -2787,4 +2802,37 @@ async fn sdtest_3030_history_over_budget_is_trimmed_unattached_panes_first() {
     assert!(screen.contains("line-2999") && screen.contains("ALL-DONE"));
     client.input(pane.pane, b"x").expect("input");
     assert_eq!(client.list_panes().await.expect("list").len(), 1);
+}
+
+// SDTEST-3047 (SDUC-574): the daemon binary carries the build marker of
+// its release, which is how a client tells a bundled build of its own
+// release from a stale one before uploading it to a server, and
+// `--version` prints that same line.
+#[test]
+fn sdtest_3047_the_binary_carries_the_build_marker_of_its_release() {
+    let marker = shelldeck_sessiond::BUILD_MARKER;
+    assert_eq!(
+        marker,
+        shelldeck_sessiond::build_marker(env!("CARGO_PKG_VERSION"))
+    );
+    let binary = std::fs::read(env!("CARGO_BIN_EXE_shelldeck-sessiond")).expect("read binary");
+    assert!(
+        binary
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes()),
+        "the build marker is missing from the binary"
+    );
+    let other = shelldeck_sessiond::build_marker("0.0.0-other");
+    assert!(!binary
+        .windows(other.len())
+        .any(|window| window == other.as_bytes()));
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_shelldeck-sessiond"))
+        .arg("--version")
+        .output()
+        .expect("run --version");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("shelldeck-sessiond {}\n", env!("CARGO_PKG_VERSION"))
+    );
 }

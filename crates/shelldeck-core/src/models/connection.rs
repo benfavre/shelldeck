@@ -59,6 +59,21 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// The server and account this entry dials: user, host, port and jump
+    /// host. Two entries with the same value reach the same account on
+    /// the same machine; an entry whose value changed now points
+    /// elsewhere, so anything agreed for the old target (installing a
+    /// program there) no longer applies.
+    pub fn dial_identity(&self) -> String {
+        format!(
+            "{}@{}:{}|{}",
+            self.user,
+            self.hostname,
+            self.port,
+            self.proxy_jump.as_deref().unwrap_or_default()
+        )
+    }
+
     pub fn new_manual(alias: String, hostname: String, user: String) -> Self {
         Self {
             id: Uuid::new_v4(),

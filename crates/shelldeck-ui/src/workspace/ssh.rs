@@ -383,7 +383,7 @@ impl Workspace {
         let daemon_host = daemon_host.map(|host| {
             self.watch_remote_daemon_hosts(cx);
             super::remote_daemon::begin_connect(conn_id);
-            let consent = super::remote_daemon::consent(&self.app_config.general, conn_id);
+            let consent = super::remote_daemon::consent(&self.app_config.general, &connection);
             (host, consent)
         });
 
@@ -1012,11 +1012,20 @@ impl Workspace {
         if ask && super::remote_daemon::first_ask(conn_id) {
             super::remote_daemon::first_notice(conn_id);
             let weak = cx.entity().downgrade();
+            // The server the question is about, as dialed right now: the
+            // answer is recorded for it, whatever the entry says later.
+            let target = self
+                .connections
+                .iter()
+                .find(|conn| conn.id == conn_id)
+                .map(|conn| conn.dial_identity())
+                .unwrap_or_default();
             let answer = |label: std::borrow::Cow<'_, str>, answer: InstallAnswer| {
                 let weak = weak.clone();
+                let target = target.clone();
                 crate::toast::ToastAction::new(label.to_string(), move |cx| {
                     let _ = weak.update(cx, |ws, cx| {
-                        ws.answer_remote_daemon_install(conn_id, answer, cx);
+                        ws.answer_remote_daemon_install(conn_id, &target, answer, cx);
                     });
                 })
             };
@@ -1068,6 +1077,7 @@ impl Workspace {
     fn answer_remote_daemon_install(
         &mut self,
         conn_id: Uuid,
+        target: &str,
         answer: InstallAnswer,
         cx: &mut Context<Self>,
     ) {
@@ -1078,9 +1088,11 @@ impl Workspace {
             // Undecided: asked again in a later run.
             InstallAnswer::Later => return,
         };
+        // The answer is for the server the question was asked about: it
+        // stops counting when the entry is edited to point elsewhere.
         self.app_config
             .general
-            .set_remote_daemon_install(conn_id, recorded);
+            .set_remote_daemon_install(conn_id, target, recorded);
         if let Err(error) = self.app_config.save() {
             tracing::error!("Failed to save the session daemon answer: {error}");
         }
@@ -1103,7 +1115,9 @@ impl Workspace {
             );
             return;
         }
-        let Some(host) = super::remote_daemon::existing_host(conn_id) else {
+        // Only the host the question was about: an entry edited since
+        // dials another server, which nobody agreed to.
+        let Some(host) = super::remote_daemon::existing_host_dialing(conn_id, target) else {
             return;
         };
         self.show_toast(

@@ -31,7 +31,9 @@ use parking_lot::Mutex;
 use shelldeck_sessiond::attached::{AttachError, LocalSessions, SessionsOptions};
 use shelldeck_sessiond::client::ClientError;
 use shelldeck_sessiond::protocol::PaneInfo;
-use shelldeck_sessiond::supervisor::{Connector, Supervisor, SupervisorOptions};
+use shelldeck_sessiond::supervisor::{
+    Connector, Supervisor, SupervisorOptions, UNLIMITED_ATTEMPTS,
+};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -78,7 +80,13 @@ impl Default for RemoteHostOptions {
         Self {
             version: env!("CARGO_PKG_VERSION").to_string(),
             artifact_dirs: Vec::new(),
-            supervisor: SupervisorOptions::default(),
+            supervisor: SupervisorOptions {
+                // A host can be away for any length of time (network
+                // loss, suspended laptop) and nothing else would reattach
+                // a tab that gave up.
+                max_attempts: UNLIMITED_ATTEMPTS,
+                ..SupervisorOptions::default()
+            },
             dial_timeout: Duration::from_secs(45),
             connect: SessiondConnectOptions::default(),
         }
@@ -118,6 +126,11 @@ struct HostInner {
     setup: Mutex<()>,
     ready: AtomicBool,
     lost: AtomicBool,
+    /// An upload to this host was followed by "cannot execute" (a home
+    /// directory mounted `noexec`, an exec that is refused). Nothing is
+    /// uploaded to it again in this run: every new tab would otherwise
+    /// send the whole binary once more before its shell opens.
+    cannot_run: AtomicBool,
     on_event: Mutex<Option<EventFn>>,
 }
 
@@ -287,7 +300,10 @@ impl HostInner {
     /// Let go of the daemon channel and the SSH connection when no session
     /// needs them. `true`: released.
     fn release_if_idle(&self) -> bool {
-        if self.supervisor.session_count() > 0 {
+        // A pane that is still being ended (tab closed, sign-out) needs
+        // the connection until it is gone: releasing now would leave it
+        // running on the host after its first hang-up.
+        if !self.supervisor.is_idle() {
             return false;
         }
         self.ready.store(false, Ordering::SeqCst);
@@ -308,8 +324,29 @@ impl HostInner {
         true
     }
 
+    /// A build for `target` that may be uploaded: an executable for that
+    /// platform, built for this release (a build left by an earlier
+    /// release does not count). Reads the file.
     fn has_artifact(&self, target: &str) -> bool {
-        sessiond_install::find_artifact(&self.options.artifact_dirs, target).is_some()
+        sessiond_install::load_artifact(&self.options.artifact_dirs, target, &self.options.version)
+            .is_ok()
+    }
+
+    /// The rules of `decide`, and no upload (and no offer of one) to a
+    /// host that already showed it cannot run what is uploaded.
+    fn decision(&self, probe: Option<&RemoteProbe>, consent: InstallConsent) -> Decision {
+        let decision = decide(probe, consent, |target| self.has_artifact(target));
+        let would_upload = matches!(
+            decision,
+            Decision::Install { .. } | Decision::Fallback { ask: true, .. }
+        );
+        if would_upload && self.cannot_run.load(Ordering::SeqCst) {
+            return Decision::Fallback {
+                reason: FallbackReason::Unavailable,
+                ask: false,
+            };
+        }
+        decision
     }
 
     fn probe(&self, session: &Arc<SshSession>) -> Option<RemoteProbe> {
@@ -328,8 +365,12 @@ impl HostInner {
     }
 
     fn upload(&self, session: &Arc<SshSession>, target: &str) -> Result<(), InstallFailure> {
-        let artifact = sessiond_install::load_artifact(&self.options.artifact_dirs, target)
-            .map_err(|error| InstallFailure(error.to_string()))?;
+        let artifact = sessiond_install::load_artifact(
+            &self.options.artifact_dirs,
+            target,
+            &self.options.version,
+        )
+        .map_err(|error| InstallFailure(error.to_string()))?;
         let session = session.clone();
         let version = self.options.version.clone();
         let installed = self
@@ -342,14 +383,19 @@ impl HostInner {
                 tracing::info!(%digest, target, "session daemon installed on the remote host");
                 Ok(())
             }
-            Err(error) => Err(InstallFailure(error.to_string())),
+            Err(error) => {
+                if matches!(error, InstallError::CannotExecute) {
+                    self.cannot_run.store(true, Ordering::SeqCst);
+                }
+                Err(InstallFailure(error.to_string()))
+            }
         }
     }
 
     /// The SSH connection for a fallback backend, unless reconnecting
     /// sessions still need it.
     fn hand_over_ssh(&self) -> Option<Arc<SshSession>> {
-        if self.supervisor.session_count() > 0 {
+        if !self.supervisor.is_idle() {
             return None;
         }
         self.ssh.lock().take()
@@ -390,6 +436,7 @@ impl RemoteHost {
             setup: Mutex::new(()),
             ready: AtomicBool::new(false),
             lost: AtomicBool::new(false),
+            cannot_run: AtomicBool::new(false),
             on_event: Mutex::new(None),
         });
         let _ = connector.host.set(Arc::downgrade(&inner));
@@ -445,13 +492,20 @@ impl RemoteHost {
             session: host.hand_over_ssh(),
         };
         let probe = host.probe(&session);
-        match decide(probe.as_ref(), consent, |target| host.has_artifact(target)) {
+        let mut uploaded = false;
+        match host.decision(probe.as_ref(), consent) {
             Decision::Connect => {}
             Decision::Install { target } => {
                 if let Err(error) = host.upload(&session, target) {
                     tracing::warn!("session daemon not installed on the remote host: {error}");
-                    return fallback(FallbackReason::InstallFailed, false);
+                    let reason = if host.cannot_run.load(Ordering::SeqCst) {
+                        FallbackReason::Unavailable
+                    } else {
+                        FallbackReason::InstallFailed
+                    };
+                    return fallback(reason, false);
                 }
+                uploaded = true;
             }
             Decision::Fallback { reason, ask } => return fallback(reason, ask),
         }
@@ -460,11 +514,20 @@ impl RemoteHost {
             Ok(sessions) => sessions,
             Err(error) => {
                 tracing::info!("session daemon not used on the remote host: {error}");
+                if uploaded && matches!(error, SessiondConnectError::BinaryNotExecutable) {
+                    // Uploaded, verified, and the host still says it is
+                    // not executable: uploading again cannot help.
+                    host.cannot_run.store(true, Ordering::SeqCst);
+                }
                 return fallback(connect_fallback_reason(&error), false);
             }
         };
         match sessions.list_panes() {
             Ok(panes) => {
+                // Panes closed while the host was out of reach are ended
+                // when the supervisor takes this connection: never
+                // offered back.
+                let panes = host.supervisor.without_doomed(panes);
                 *host.prepared.lock() = Some(sessions);
                 host.ready.store(true, Ordering::SeqCst);
                 host.lost.store(false, Ordering::SeqCst);
@@ -493,15 +556,11 @@ impl RemoteHost {
             None => Err(InstallFailure(
                 "the remote host did not answer the probe".into(),
             )),
-            Some(probe) => {
-                match decide(Some(&probe), InstallConsent::Allow, |target| {
-                    host.has_artifact(target)
-                }) {
-                    Decision::Connect => Ok(()),
-                    Decision::Install { target } => host.upload(&session, target),
-                    Decision::Fallback { reason, .. } => Err(InstallFailure(format!("{reason:?}"))),
-                }
-            }
+            Some(probe) => match host.decision(Some(&probe), InstallConsent::Allow) {
+                Decision::Connect => Ok(()),
+                Decision::Install { target } => host.upload(&session, target),
+                Decision::Fallback { reason, .. } => Err(InstallFailure(format!("{reason:?}"))),
+            },
         };
         drop(session);
         if !self.is_ready() {

@@ -9,13 +9,13 @@ use shelldeck_sessiond::client::SpawnOptions;
 use shelldeck_sessiond::paths;
 use shelldeck_sessiond::proxy::ProxyFailure;
 use shelldeck_sessiond::supervisor::{
-    Backoff, DaemonTarget, LinkEvent, Notices, PaneTarget, Reconnect, Step, Supervisor,
-    SupervisorOptions,
+    Backoff, Connector, DaemonTarget, LinkEvent, Notices, PaneTarget, Reconnect, Step, Supervisor,
+    SupervisorOptions, UNLIMITED_ATTEMPTS,
 };
 use shelldeck_terminal::attached::AttachedPhase;
 use shelldeck_terminal::session::TerminalSession;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -802,4 +802,321 @@ fn sdtest_3032_a_daemon_of_another_version_is_used_if_compatible_and_left_alone_
     let _cleanup = TerminateOnDrop(pid);
     session.terminate();
     drop(session);
+}
+
+/// A daemon behind a transport that can be away: stands for a daemon on
+/// another host. While it is away the connector cannot tell whether the
+/// daemon still runs, so it answers with an error, never `Ok(None)`.
+struct AwayConnector {
+    dir: PathBuf,
+    /// Connects that still fail before the transport is back.
+    failures_left: AtomicU32,
+    /// Away until told otherwise.
+    away: AtomicBool,
+    failed: AtomicU32,
+}
+
+impl AwayConnector {
+    fn new(dir: &Path) -> Arc<Self> {
+        Arc::new(Self {
+            dir: dir.to_path_buf(),
+            failures_left: AtomicU32::new(0),
+            away: AtomicBool::new(false),
+            failed: AtomicU32::new(0),
+        })
+    }
+}
+
+impl Connector for AwayConnector {
+    fn connect(
+        &self,
+        start: bool,
+        options: &SessionsOptions,
+    ) -> Result<Option<LocalSessions>, AttachError> {
+        let away =
+            self.away.load(Ordering::SeqCst) || self.failures_left.load(Ordering::SeqCst) > 0;
+        if away || !start {
+            if away && start {
+                self.failed.fetch_add(1, Ordering::SeqCst);
+                let _ =
+                    self.failures_left
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                            left.checked_sub(1)
+                        });
+            }
+            return Err(AttachError::Unavailable("the host is away".into()));
+        }
+        LocalSessions::connect(&self.dir, true, Path::new(BIN), options.clone()).map(Some)
+    }
+}
+
+fn away_supervisor(connector: Arc<AwayConnector>, max_attempts: u32) -> Supervisor {
+    Supervisor::with_connector(
+        connector,
+        SupervisorOptions {
+            notices: Notices {
+                unavailable: Some("[unavailable]".into()),
+                ..Notices::default()
+            },
+            backoff: Backoff {
+                start: Duration::from_millis(5),
+                max: Duration::from_millis(20),
+            },
+            max_attempts,
+            ..SupervisorOptions::default()
+        },
+    )
+    .expect("supervisor")
+}
+
+/// A second, independent client of the daemon on `dir`.
+fn observer(dir: &Path) -> LocalSessions {
+    LocalSessions::connect_existing(dir, SessionsOptions::default())
+        .expect("connect")
+        .expect("a daemon runs")
+}
+
+fn pane_listed(observer: &LocalSessions, pane: Uuid) -> bool {
+    observer
+        .list_panes()
+        .expect("list")
+        .iter()
+        .any(|info| info.pane == pane)
+}
+
+// SDTEST-3039 (SDUC-574): a session of a daemon that can be away for any
+// length of time (another host) keeps trying while it is open and
+// reattaches when the daemon is back, far beyond the attempts after which
+// a local session gives up. With a bounded budget the same outage ends
+// the session as unavailable.
+#[test]
+fn sdtest_3039_unlimited_attempts_reattach_after_a_long_outage() {
+    let (_temp, dir) = private_run_dir();
+    let connector = AwayConnector::new(&dir);
+    let supervisor = away_supervisor(connector.clone(), UNLIMITED_ATTEMPTS);
+    let session = supervisor.open(shell(), view("remote")).expect("open");
+    wait_until("the session to go live", || {
+        phase(&session) == AttachedPhase::Live
+    });
+    let _cleanup = TerminateOnDrop(daemon_pid(&dir).expect("daemon pid"));
+    let pane = session.daemon_pane().expect("pane");
+
+    // Forty failed connects in a row: more than three times the local
+    // budget of twelve.
+    connector.failures_left.store(40, Ordering::SeqCst);
+    supervisor.drop_connection();
+    wait_until("the session to wait for the daemon", || {
+        phase(&session) == AttachedPhase::Reconnecting
+    });
+    wait_until("the outage to be over", || {
+        connector.failures_left.load(Ordering::SeqCst) == 0
+    });
+    wait_until("the session to reattach", || {
+        phase(&session) == AttachedPhase::Live
+    });
+    assert!(connector.failed.load(Ordering::SeqCst) >= 40);
+    assert_eq!(session.daemon_pane(), Some(pane), "the same pane");
+    session.write_input(b"echo back_$((6*7))_again\r");
+    wait_until("the reattached pane to answer", || {
+        screen_text(&session).contains("back_42_again")
+    });
+    assert!(!screen_text(&session).contains("[unavailable]"));
+
+    // The bounded budget on the same outage: the session gives up.
+    let bounded = away_supervisor(connector.clone(), 3);
+    let limited = bounded.open(shell(), view("bounded")).expect("open");
+    wait_until("the bounded session to go live", || {
+        phase(&limited) == AttachedPhase::Live
+    });
+    connector.away.store(true, Ordering::SeqCst);
+    bounded.drop_connection();
+    wait_until("the bounded session to give up", || {
+        phase(&limited) == AttachedPhase::Unavailable
+    });
+    // The unlimited one, cut off as well, is still waiting.
+    supervisor.drop_connection();
+    wait_until("the unlimited session to wait", || {
+        phase(&session) == AttachedPhase::Reconnecting
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(phase(&session), AttachedPhase::Reconnecting);
+    assert_eq!(supervisor.session_count(), 1);
+    connector.away.store(false, Ordering::SeqCst);
+    wait_until("the unlimited session to come back", || {
+        phase(&session) == AttachedPhase::Live
+    });
+
+    session.terminate();
+    limited.terminate();
+    drop(session);
+    drop(limited);
+    // The session that gave up has no thread left: its pane is ended at
+    // the next contact of its supervisor with the daemon.
+    bounded.list_panes(true).expect("list");
+    let observer = observer(&dir);
+    wait_until("both panes to be ended", || {
+        observer.list_panes().expect("list").is_empty()
+    });
+}
+
+// SDTEST-3040 (SDUC-574): closing the last tab of a daemon whose
+// connection is released when idle (another host) still ends a pane that
+// ignores the hang-up. The supervisor is not idle, and the idle callback
+// does not run, until the pane was killed and removed.
+#[test]
+fn sdtest_3040_a_pane_being_ended_keeps_the_connection_until_it_is_gone() {
+    let (_temp, dir) = private_run_dir();
+    let supervisor = new_supervisor(&dir, Some(Path::new(BIN)), false);
+    let stubborn = PaneTarget::Spawn(SpawnOptions {
+        group: Uuid::from_u128(3),
+        label: "app".into(),
+        cwd: "/".into(),
+        argv: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "trap '' HUP; echo stubborn_ready; while :; do sleep 1; done".into(),
+        ],
+        env: vec![("TERM".into(), "xterm-256color".into())],
+        ..SpawnOptions::default()
+    });
+    let session = supervisor.open(stubborn, view("stubborn")).expect("open");
+    wait_until("the pane to run", || {
+        screen_text(&session).contains("stubborn_ready")
+    });
+    let _cleanup = TerminateOnDrop(daemon_pid(&dir).expect("daemon pid"));
+    let pane = session.daemon_pane().expect("pane");
+    let observer = observer(&dir);
+    assert!(pane_listed(&observer, pane));
+
+    // What a remote host does when its supervisor is idle: release the
+    // connection. Records whether the pane was still there at that time.
+    let idle_calls = Arc::new(AtomicU32::new(0));
+    let released_early = Arc::new(AtomicBool::new(false));
+    {
+        let (calls, early) = (idle_calls.clone(), released_early.clone());
+        let (releasing, watching) = (supervisor.clone(), observer.clone());
+        supervisor.set_on_idle(move || {
+            if !releasing.is_idle() {
+                return;
+            }
+            if pane_listed(&watching, pane) {
+                early.store(true, Ordering::SeqCst);
+            }
+            calls.fetch_add(1, Ordering::SeqCst);
+            releasing.close_connection();
+        });
+    }
+
+    // The user closes the tab.
+    let closed = Instant::now();
+    session.terminate();
+    drop(session);
+    wait_until("the session thread to end", || {
+        supervisor.session_count() == 0
+    });
+    assert!(!supervisor.is_idle(), "the pane is still being ended");
+    assert!(pane_listed(&observer, pane), "the hang-up is ignored");
+    wait_until("the pane to be killed and removed", || {
+        !pane_listed(&observer, pane)
+    });
+    assert!(
+        closed.elapsed() >= Duration::from_millis(800),
+        "ended by the kill that follows an ignored hang-up, not at once: {:?}",
+        closed.elapsed()
+    );
+    wait_until("the idle callback", || {
+        idle_calls.load(Ordering::SeqCst) >= 1
+    });
+    assert!(supervisor.is_idle());
+    assert!(
+        !released_early.load(Ordering::SeqCst),
+        "the connection was released while the pane was still there"
+    );
+    // Breaks the reference cycle of the callback above.
+    supervisor.set_on_idle(|| {});
+}
+
+// SDTEST-3041 (SDUC-574): a pane closed while its daemon cannot be
+// reached (tab closed or sign-out during an outage) is not offered back
+// and is ended at the next contact, also when its session had already
+// given up.
+#[test]
+fn sdtest_3041_a_pane_closed_during_an_outage_is_ended_at_the_next_contact() {
+    let (_temp, dir) = private_run_dir();
+    let connector = AwayConnector::new(&dir);
+    let supervisor = away_supervisor(connector.clone(), UNLIMITED_ATTEMPTS);
+    let waiting = supervisor.open(shell(), view("waiting")).expect("open");
+    wait_until("the first session to go live", || {
+        phase(&waiting) == AttachedPhase::Live
+    });
+    let _cleanup = TerminateOnDrop(daemon_pid(&dir).expect("daemon pid"));
+    // A second supervisor on the same daemon whose sessions give up.
+    let bounded = away_supervisor(connector.clone(), 2);
+    let gave_up = bounded.open(shell(), view("gave up")).expect("open");
+    wait_until("the second session to go live", || {
+        phase(&gave_up) == AttachedPhase::Live
+    });
+    let kept = supervisor.open(shell(), view("kept")).expect("open");
+    wait_until("the third session to go live", || {
+        phase(&kept) == AttachedPhase::Live
+    });
+    let (first, second, third) = (
+        waiting.daemon_pane().expect("pane"),
+        gave_up.daemon_pane().expect("pane"),
+        kept.daemon_pane().expect("pane"),
+    );
+    let observer = observer(&dir);
+
+    connector.away.store(true, Ordering::SeqCst);
+    supervisor.drop_connection();
+    bounded.drop_connection();
+    wait_until("the first session to wait", || {
+        phase(&waiting) == AttachedPhase::Reconnecting
+    });
+    wait_until("the second session to give up", || {
+        phase(&gave_up) == AttachedPhase::Unavailable
+    });
+    wait_until("the thread of the second session to end", || {
+        bounded.session_count() == 0
+    });
+
+    // Sign-out: every pane is ended, then the sessions are dropped. The
+    // third is only dropped (the app quits): it must survive.
+    waiting.terminate();
+    gave_up.terminate();
+    drop(waiting);
+    drop(gave_up);
+    drop(kept);
+    wait_until("the session threads to end", || {
+        supervisor.session_count() == 0
+    });
+    // Nothing could reach the daemon: the panes still run.
+    assert!(pane_listed(&observer, first) && pane_listed(&observer, second));
+
+    // The daemon is reachable again. The closed panes are not offered
+    // back, even before they are gone, and they are ended.
+    connector.away.store(false, Ordering::SeqCst);
+    let offered = |supervisor: &Supervisor| -> Vec<Uuid> {
+        supervisor
+            .list_panes(true)
+            .expect("list")
+            .expect("a daemon runs")
+            .iter()
+            .map(|info| info.pane)
+            .collect()
+    };
+    let by_first = offered(&supervisor);
+    assert!(!by_first.contains(&first), "closed during the outage");
+    assert!(by_first.contains(&third), "only detached: still offered");
+    assert!(
+        !offered(&bounded).contains(&second),
+        "closed after its session gave up"
+    );
+    wait_until("the closed panes to be ended", || {
+        !pane_listed(&observer, first) && !pane_listed(&observer, second)
+    });
+    assert!(pane_listed(&observer, third));
+    wait_until("the supervisors to be idle", || {
+        supervisor.is_idle() && bounded.is_idle()
+    });
 }

@@ -179,7 +179,8 @@ pub fn artifact_file_name(triple: &str) -> String {
 }
 
 /// The first regular file named after `triple` in `dirs` (the directory of
-/// the app binary, then the app data directory).
+/// the app binary, then the app data directory). Found by name only: see
+/// [`load_artifact`] for what makes it usable.
 pub fn find_artifact(dirs: &[PathBuf], triple: &str) -> Option<PathBuf> {
     let name = artifact_file_name(triple);
     dirs.iter()
@@ -195,6 +196,11 @@ pub enum ArtifactError {
     WrongFormat(String),
     #[error("the bundled session daemon build is larger than the upload limit")]
     TooLarge,
+    /// The file was built for another release of the app (left beside a
+    /// newer app by an update that did not carry a new one). Uploading it
+    /// under this release's name would misname what runs on the server.
+    #[error("the bundled session daemon build is not the build of version {0}")]
+    WrongVersion(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -212,13 +218,45 @@ pub fn artifact_matches(bytes: &[u8], triple: &str) -> bool {
         && bytes.get(18..20) == Some(machine.to_le_bytes().as_slice())
 }
 
-/// Read the bundled build for `triple` from `dirs`.
-pub fn load_artifact(dirs: &[PathBuf], triple: &str) -> Result<Vec<u8>, ArtifactError> {
-    let path = find_artifact(dirs, triple).ok_or_else(|| ArtifactError::Missing(triple.into()))?;
-    read_artifact(&path, triple)
+/// Whether `bytes` is the daemon build of `version`: it carries that
+/// release's build marker (`shelldeck_sessiond::BUILD_MARKER`). The file
+/// name on the server is `shelldeck-sessiond-<version>`, and an installed
+/// file is never replaced, so what is uploaded under that name must be
+/// that release's build and nothing older.
+pub fn artifact_is_version(bytes: &[u8], version: &str) -> bool {
+    let marker = shelldeck_sessiond::build_marker(version);
+    let marker = marker.as_bytes();
+    version_is_valid(version) && bytes.windows(marker.len()).any(|window| window == marker)
 }
 
-fn read_artifact(path: &Path, triple: &str) -> Result<Vec<u8>, ArtifactError> {
+/// Read the bundled build for `triple` and the release `version` from
+/// `dirs`: the first file with the right name that is an executable for
+/// that platform and carries the build marker of `version`. A file that
+/// fails a check is skipped (a later directory may hold a good one); with
+/// none usable, the error is that of the first file found.
+pub fn load_artifact(
+    dirs: &[PathBuf],
+    triple: &str,
+    version: &str,
+) -> Result<Vec<u8>, ArtifactError> {
+    let name = artifact_file_name(triple);
+    let mut first_error = None;
+    for path in dirs.iter().map(|dir| dir.join(&name)) {
+        if !path.is_file() {
+            continue;
+        }
+        match read_artifact(&path, triple, version) {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), "session daemon build not usable: {error}");
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    Err(first_error.unwrap_or_else(|| ArtifactError::Missing(triple.into())))
+}
+
+fn read_artifact(path: &Path, triple: &str, version: &str) -> Result<Vec<u8>, ArtifactError> {
     if std::fs::metadata(path)?.len() > MAX_ARTIFACT_BYTES as u64 {
         return Err(ArtifactError::TooLarge);
     }
@@ -228,6 +266,9 @@ fn read_artifact(path: &Path, triple: &str) -> Result<Vec<u8>, ArtifactError> {
     }
     if !artifact_matches(&bytes, triple) {
         return Err(ArtifactError::WrongFormat(triple.into()));
+    }
+    if !artifact_is_version(&bytes, version) {
+        return Err(ArtifactError::WrongVersion(version.into()));
     }
     Ok(bytes)
 }
@@ -250,6 +291,11 @@ pub enum InstallError {
     /// the upload cannot be verified. Nothing was installed.
     #[error("the remote host has no tool to verify the uploaded session daemon")]
     NoChecksumTool,
+    /// The uploaded file cannot be executed where it was written (a home
+    /// directory mounted `noexec`). Nothing was installed, and uploading
+    /// again cannot help.
+    #[error("the remote host cannot execute files in its home directory")]
+    CannotExecute,
     #[error("installing the session daemon failed on the remote host (status {exit_status:?}): {detail}")]
     Failed {
         exit_status: Option<u32>,
@@ -266,9 +312,10 @@ pub enum InstallError {
 ///
 /// Steps: private umask, `mkdir -p "$HOME/.shelldeck/bin"`, write stdin to
 /// a temporary file there, compare its SHA-256 with `sha256`, `chmod 700`,
+/// check that the file can be executed there (a `noexec` home cannot),
 /// rename over the final name. The temporary file is removed on every
 /// failure. The answer is one line, `SDSD-INSTALL-<nonce> ok <digest>`,
-/// `... mismatch <digest>` or `... nosha`.
+/// `... mismatch <digest>`, `... nosha` or `... noexec`.
 pub fn install_command(version: &str, sha256: &str, nonce: &str) -> Option<String> {
     (version_is_valid(version) && is_lower_hex(sha256, 64) && is_lower_hex(nonce, 32)).then(|| {
         format!(
@@ -287,6 +334,7 @@ fi
 sum=${{sum%% *}}
 if [ "$sum" != "{sha256}" ]; then echo "SDSD-INSTALL-{nonce} mismatch $sum"; exit 3; fi
 chmod 700 "$t"
+if [ ! -x "$t" ]; then echo "SDSD-INSTALL-{nonce} noexec"; exit 5; fi
 mv -f "$t" "$d/shelldeck-sessiond-{version}"
 trap - EXIT
 echo "SDSD-INSTALL-{nonce} ok $sum"
@@ -341,6 +389,7 @@ pub async fn install(
         }
         Some(fields) if fields.first() == Some(&"mismatch") => Err(InstallError::ChecksumMismatch),
         Some(fields) if fields.first() == Some(&"nosha") => Err(InstallError::NoChecksumTool),
+        Some(fields) if fields.first() == Some(&"noexec") => Err(InstallError::CannotExecute),
         _ => Err(InstallError::Failed {
             exit_status: result.exit_code,
             detail: String::from_utf8_lossy(&result.stderr)
@@ -633,14 +682,17 @@ mod tests {
         assert_eq!(target_triple("Linux", "i686"), None);
 
         // An artifact is found by name, first directory first, and must be
-        // an ELF executable of the right machine.
-        let elf = |machine: u16| {
+        // an ELF executable of the right machine, built for this release.
+        let elf_of = |machine: u16, version: &str| {
             let mut bytes = b"\x7fELF\x02\x01\x01\x00".to_vec();
             bytes.resize(18, 0);
             bytes.extend_from_slice(&machine.to_le_bytes());
             bytes.resize(64, 0);
+            bytes.extend_from_slice(shelldeck_sessiond::build_marker(version).as_bytes());
+            bytes.resize(160, 0);
             bytes
         };
+        let elf = |machine: u16| elf_of(machine, "0.20.0");
         assert!(artifact_matches(&elf(62), TARGET_LINUX_X86_64));
         assert!(artifact_matches(&elf(183), TARGET_LINUX_AARCH64));
         assert!(!artifact_matches(&elf(183), TARGET_LINUX_X86_64));
@@ -654,7 +706,7 @@ mod tests {
         let second = tempfile::tempdir().expect("temp dir");
         let dirs = [first.path().to_path_buf(), second.path().to_path_buf()];
         assert!(matches!(
-            load_artifact(&dirs, TARGET_LINUX_X86_64),
+            load_artifact(&dirs, TARGET_LINUX_X86_64, "0.20.0"),
             Err(ArtifactError::Missing(_))
         ));
         let name = artifact_file_name(TARGET_LINUX_X86_64);
@@ -666,13 +718,47 @@ mod tests {
         );
         assert_eq!(find_artifact(&dirs, TARGET_LINUX_AARCH64), None);
         assert_eq!(
-            load_artifact(&dirs, TARGET_LINUX_X86_64).expect("load"),
+            load_artifact(&dirs, TARGET_LINUX_X86_64, "0.20.0").expect("load"),
             elf(62)
         );
+
+        // SDTEST-3044: the build must be the one of this release. A build
+        // of an earlier release left beside a newer app (an update whose
+        // archive carried no remote build) is never uploaded under the
+        // new release's name.
+        assert!(artifact_is_version(&elf(62), "0.20.0"));
+        for other in [
+            "0.20.1", "0.20", "0.20.00", "0.2", "1.0.20.0", "", "0.20.0\n",
+        ] {
+            assert!(!artifact_is_version(&elf(62), other), "{other:?}");
+        }
+        assert!(!artifact_is_version(b"\x7fELF no marker at all", "0.20.0"));
+        // The marker is the one the daemon binary is built with.
+        assert_eq!(
+            shelldeck_sessiond::BUILD_MARKER,
+            shelldeck_sessiond::build_marker(env!("CARGO_PKG_VERSION"))
+        );
+        assert!(matches!(
+            load_artifact(&dirs, TARGET_LINUX_X86_64, "0.21.0"),
+            Err(ArtifactError::WrongVersion(_))
+        ));
+        // A stale build in the first directory does not hide the build
+        // of this release in a later one, and the other way round.
+        std::fs::write(first.path().join(&name), elf_of(62, "0.19.0")).expect("write");
+        assert_eq!(
+            load_artifact(&dirs, TARGET_LINUX_X86_64, "0.20.0").expect("load"),
+            elf(62)
+        );
+        assert_eq!(
+            load_artifact(&dirs, TARGET_LINUX_X86_64, "0.19.0").expect("load"),
+            elf_of(62, "0.19.0")
+        );
+
         // A file with the right name and the wrong content is refused.
+        std::fs::remove_file(second.path().join(&name)).expect("remove");
         std::fs::write(first.path().join(&name), b"not an executable").expect("write");
         assert!(matches!(
-            load_artifact(&dirs, TARGET_LINUX_X86_64),
+            load_artifact(&dirs, TARGET_LINUX_X86_64, "0.20.0"),
             Err(ArtifactError::WrongFormat(_))
         ));
     }

@@ -180,18 +180,27 @@ New code inside `shelldeck-terminal`:
 - Run directory: `~/.shelldeck/run/<machine>/`, created with mode 0700.
   `<machine>` is `m-` and 16 hex digits: the first 8 bytes of a keyed
   SHA-256 of the machine identity (`/etc/machine-id`, else
-  `/var/lib/dbus/machine-id`, else `kern.uuid` on macOS). It does not
-  change with the host name, and two machines that share an NFS home get
-  two directories, so they do not unlink each other's live socket. The
-  identity itself is not stored. Without a usable identity the name is
+  `/var/lib/dbus/machine-id`, else `kern.uuid` on macOS) and the host
+  name. Two machines that share an NFS home get two directories, so they
+  do not unlink each other's live socket; the host name is in the hash
+  because clones of one image have the same identity. The name therefore
+  changes with the host name, which the scan of the next point covers.
+  Neither input is stored. Without a usable identity the name is
   `gethostname` reduced to `[A-Za-z0-9.-]`, at most 64 bytes, as in the
   first prototype.
+- When the socket path would not fit `sun_path` with that name (a long
+  home path), shorter names are tried before the home directory is left:
+  `m-` and 8 hex digits, then the host name. `/tmp/shelldeck-<uid>/` is
+  the last resort only. There another local user can create the directory
+  first; the daemon then refuses it and is unavailable (never taken
+  over).
 - A daemon in another directory is still found: when no socket exists in
   the directory for this machine, the other directories under
   `~/.shelldeck/run/` are tried (at most 32, same checks) and one where a
-  daemon answers is used instead (`paths::live_run_dir`). This covers a
-  daemon started by a release that named the directory after the host
-  name. A socket left by another machine refuses the connection and is
+  daemon answers is used instead (`paths::live_run_dir`), also when the
+  directory for this machine is the `/tmp` last resort. This covers a
+  daemon started under an earlier host name or by a release that named
+  the directory differently. A socket left by another machine refuses the connection and is
   never picked.
 - Socket: `<run dir>/sessiond-v1.sock`. The 0700 directory is what protects
   it during `bind`; the daemon then sets and verifies mode 0600. No `umask`
@@ -896,7 +905,7 @@ bytes or input.
 | Stale socket file | Removed only by the process holding the lock. |
 | Idle exit racing a connect | The daemon takes its socket out of the way and reads the listener once more before leaving: the connection is served, or finds no socket and the client starts a daemon. A start during an exit waits for the lock. For daemons of earlier releases the client still treats a connection that ends before `HelloAck` as "not running". |
 | Daemon out of file descriptors | A pending connection is accepted on a spare descriptor, answered `Error(LimitExceeded)` and closed; other accept errors back off 50 ms. No connection slot is lost. Existing connections and panes are not affected. |
-| Host name changes while the daemon runs | Nothing happens: the run directory is named after the machine identity. A daemon of an earlier release, in a directory named after the host, is found by the scan of section 3. |
+| Host name changes while the daemon runs | The name of the run directory changes with it; the running daemon, in the directory of the earlier name, is found by the scan of section 3 and used. A new directory is only used once no daemon answers anywhere. |
 | Snapshot or history chunk that expands past the decode budget | Refused before allocation; the pane stays on its last screen (snapshot) or loses that history chunk. |
 | Client crash or SSH drop | Attachments dropped, panes keep running, no signal reaches pane children. Reconnect then reattach. |
 | Slow client | Queue cap, `Error(Resync)`, backoff, fresh snapshot (section 5). |
@@ -1075,7 +1084,8 @@ Implemented now, with automated tests on Linux:
   handoff, parser panic isolation (SDTEST-2981..2984); the daemon's own
   descriptor limit with the original restored in pane children, the log
   file, the daemon side of the idle-exit race, a run directory named after
-  the machine identity, the history budget (SDTEST-3025..3030, SDTEST-3001
+  the machine identity (and, since the final review, the host name), the
+  history budget (SDTEST-3025..3030, SDTEST-3001
   extended); a daemon left by another app version is used when it speaks
   the protocol and left alone otherwise (SDTEST-3031, SDTEST-3032,
   SDTEST-3012 and SDTEST-3013 extended); the daemon binary is built by the
@@ -1094,6 +1104,13 @@ Implemented now, with automated tests on Linux:
   [`session-daemon-qa.md`](../testing/session-daemon-qa.md), section
   "Checks in the running application".
 
+- Final review (subsection "Final review" at the end): eleven findings,
+  all confirmed against the code. Nine are fixed with tests, two are
+  fixed in part with the rest stated there (SDTEST-3039..3048, and
+  SDTEST-3002, 3005, 3009, 3014, 3016, 3019, 3021, 3022, 3025 changed).
+  The application was not launched again after these changes: the
+  on-screen checks of the first run were not repeated.
+
 Deferred (details in the subsections below):
 
 - Packaging: the two static remote builds are wired
@@ -1108,7 +1125,10 @@ Deferred (details in the subsections below):
   in-process until the protocol can carry a directory identity (see
   "Workspace-scoped terminals" below).
 - Daemon: quiescent refresh on emulator revision mismatch.
-- Remote: pruning old versioned binaries after an install, an upgrade
+- Remote: pruning old versioned binaries after an install, removing a
+  stale bundled build from the client on update (it is refused, not
+  removed), ending panes at sign-out on hosts that were not connected in
+  this run, an upgrade
   path for a running daemon of an incompatible release (today: fallback),
   latency work (`nodelay`), SSH tabs opened in a directory (they keep
   the plain path), a remote daemon from a Windows client.
@@ -1230,17 +1250,21 @@ Pieces:
   reaches its daemon. `Supervisor::new` wraps the local resolver in one;
   `Supervisor::with_connector` takes any other. `LocalSessions::from_client`
   wraps a client that is already connected. `Supervisor::session_count`,
-  `set_on_idle` (called when the last session thread ends) and
-  `close_connection`.
+  `is_idle`, `set_on_idle` (called when the last session thread has
+  ended and no pane is still being ended) and `close_connection`.
+  `SupervisorOptions::max_attempts = UNLIMITED_ATTEMPTS` for a daemon
+  whose transport can be away for any length of time.
 - `shelldeck-ssh/src/sessiond_install.rs`: `probe` (one exec:
   `present | absent | noexec`, `uname -s`, `uname -m`, found by a nonce
   among rc noise), `install` (binary on stdin of a fixed script: private
   umask, `mkdir -p "$HOME/.shelldeck/bin"`, temporary file there, SHA-256
-  with `sha256sum`, `shasum` or `openssl`, compare, `chmod 700`, rename;
+  with `sha256sum`, `shasum` or `openssl`, compare, `chmod 700`, check that
+  the file can be executed there (answer `noexec` otherwise), rename;
   the temporary file is removed on every failure; the digest printed by
   the host is compared again on the client), `target_triple`,
   `find_artifact` / `load_artifact` (the file must be a 64-bit
-  little-endian ELF for the right machine), and the decision table
+  little-endian ELF for the right machine and carry the build marker of
+  the app's release, `shelldeck_sessiond::BUILD_MARKER`), and the decision table
   `decide(probe, consent, has_artifact)`. Only a checked version, a nonce
   and a hex digest are placed in a script; both scripts run through
   `sh -c`. No `sudo`, nothing outside `$HOME/.shelldeck`.
@@ -1290,7 +1314,12 @@ anything else `ConnectFailed`. Every fallback continues with
 shell.
 
 Consent: `[general.session_daemon_hosts]` in the configuration, connection
-id to `allow` or `never` (SDTEST-3014). A host without an entry is asked
+id to `allow` or `never`, and `[general.session_daemon_host_targets]`,
+connection id to the server the answer was given for
+(`Connection::dial_identity`: user, host, port, jump host). An answer
+counts only while the entry still dials that server; after an edit that
+points it elsewhere it reads as "not asked" (SDTEST-3014, SDTEST-3043).
+A host without an entry is asked
 once per run, by a toast with three buttons (install, later, never for
 this server) that blocks nothing: the tab is already running on the
 fallback backend. "Install" records `allow` and uploads in the background;
@@ -1309,7 +1338,9 @@ not been executed yet (see "Daemon hardening, version skew and packaging").
 
 Panes offered back: the app labels its remote panes `shelldeck-remote`.
 On `DaemonReady` the connecting tab takes the first live pane with that
-label that no session shows, else spawns one; the other such panes become
+label that no session of this process shows and no other client is
+attached to (`PaneInfo.clients == 0`), else spawns one; the other such
+panes become
 tabs, unless other tabs of the same host are still connecting (a restored
 session), in which case each of them takes one (SDTEST-3021). Closing a
 tab or a pane ends the remote pane; quitting the app does not.
@@ -1323,8 +1354,10 @@ Differences from sections 8 and 10, and limits:
 - The consent is per host and permanent until the entry is removed from
   the configuration file (there is no Settings control for it), not "for
   this connection" as section 8 says.
-- A tab closed while the host is unreachable does not end its pane: the
-  pane is offered back at the next connect.
+- A tab closed while the host is unreachable ends its pane at the next
+  contact with that host in the same run, and the pane is not offered
+  back meanwhile (see "Final review"). Across an app restart that is not
+  remembered: the pane is then offered back.
 - A new tab opened while the host is reconnecting goes through `prepare`
   again and may fall back.
 - The supervisor and the host object are Unix only, so a Windows client
@@ -1397,7 +1430,8 @@ Opt-in, off by default, Unix only. What exists:
   `Ended` with a notice; a daemon that can neither be reached nor
   started, with none running, ends it the same way (its panes died with
   it); 12 attempts in a row without the pane's screen end it as
-  `Unavailable`. A new pane whose daemon cannot be started or that the
+  `Unavailable` (local daemon only: sessions of a remote host never give
+  up while they are open, see "Final review"). A new pane whose daemon cannot be started or that the
   daemon refuses is `Unavailable` at once, with the reason on screen. A
   process that exits is `Ended` with its exit code and keeps its final
   screen, without a notice. The view maps the phase of a tab's primary
@@ -1441,11 +1475,14 @@ Opt-in, off by default, Unix only. What exists:
 - Layout restore: `Workspace::restore_session` (called once at startup)
   lists the panes on the background executor (`restorable_daemon_panes`:
   connect only if a daemon already runs, never start one; live panes
-  labelled `shelldeck-local` that this process does not show), then
+  labelled `shelldeck-local` that this process does not show and no
+  other client is attached to), then
   continues on the UI thread with `WorkspaceState::daemon_restore_plan`:
   a saved daemon tab keeps its place, tree and ratios for the panes still
-  alive; a slot whose pane is gone is dropped (its split collapses, a tab
-  with none left disappears); a live pane without a slot comes back as a
+  alive; a slot whose pane is gone is dropped (its split collapses); a tab
+  with none left is planned as an ordinary saved tab, so with no live
+  pane at all "restore tabs on startup" reopens the local tabs as it did
+  before the daemon existed; a live pane without a slot comes back as a
   tab of its own, after the saved ones; a pane saved twice is used once
   and ratios are clamped to the range a divider drag allows.
   `TerminalView::restore_daemon_tab` opens one session per pane with
@@ -1558,7 +1595,7 @@ on the client side only.
 | A connection slot leaked when the writer's descriptor could not be cloned | Fixed: the slot is an RAII guard that follows the connection; a reader panic no longer holds it either. SDTEST-3001. |
 | Accept loop spinning at 100% CPU on `EMFILE` | Fixed: spare descriptor to accept and refuse with `LimitExceeded`, 50 ms backoff on other errors. SDTEST-3001. Later: the daemon raises its own `RLIMIT_NOFILE` (SDTEST-3028), and a connection accepted with no descriptor left for its writer is told `LimitExceeded` too instead of being closed without a word. |
 | Handshake and frame deadlines only checked on a read timeout | Fixed: checked on every turn; an oversize first frame is refused on its length bytes. SDTEST-2978. The frame deadline now restarts whenever a frame completes, so a long paste is not cut. |
-| Run directory keyed on a host name that can change | Fixed: a live daemon in a sibling directory is preferred (`paths::live_run_dir`). SDTEST-3002. Later: the directory is named after the machine identity (SDTEST-3025). |
+| Run directory keyed on a host name that can change | Fixed: a live daemon in a sibling directory is preferred (`paths::live_run_dir`). SDTEST-3002. Later: the directory is named after the machine identity (SDTEST-3025), then after the identity and the host name with shorter forms for long home paths (final review, SDTEST-3045). |
 | Idle-exit race: a reset instead of EOF was not retried; a start during the old daemon's exit did nothing | Fixed on the client: reset, broken pipe and unexpected EOF before `HelloAck` count as "not running", and the start is repeated every 250 ms while the socket is missing. SDTEST-3003. Later, in the daemon: the idle exit reads the listener once more after taking the socket out of the way, the lock is released before the grace period and a start waits for it (SDTEST-3029, SDTEST-2983). |
 
 Side effects to know:
@@ -1719,3 +1756,38 @@ in-process terminal shows after a split, so it was left alone here.
 
 Not exercised in the app: the remote path, a daemon of another protocol
 version, the connecting and reconnecting states as such, packaging.
+
+
+### Final review
+
+A last review of the whole branch reported eleven findings. Each was
+checked against the code; all eleven describe real behaviour. None was
+reproduced in the running application or against a real server: the
+evidence for each fix is the test named in the table, on Linux, with the
+real daemon binary or the in-memory SSH fixture.
+
+| # | Finding | Outcome |
+|---|---|---|
+| 1 | Remote daemon tabs gave up for good after about 43 s of an unreachable host (the local budget of 12 attempts), and nothing reattached them afterwards. | Fixed. `SupervisorOptions::max_attempts = UNLIMITED_ATTEMPTS` for remote hosts (`RemoteHostOptions::default` and the app's host registry): a session of a pane that exists keeps trying at the capped delay (5 s) for as long as its tab is open. The local daemon keeps its budget of 12: there "cannot connect" with a daemon present is a fault, not an outage. SDTEST-3005, SDTEST-3039, SDTEST-3048. |
+| 2 | `replace_session` left `tab.id` at the old session id, so the handed-over first tab of each host was missed by the tab dot, `@terminal` mentions, AI naming, snapshots and `select_tab`. | Fixed. The new session takes the id of the one it replaces, for a tab and for a split (whose layout key is that id). SDTEST-3022 now asserts `tab.id == pane.sessions[i].id`. The dependent features were not exercised one by one. |
+| 3 | Closing the last daemon tab of a host released the SSH connection right after the first hang-up: a pane ignoring `SIGHUP` kept running and was offered back, and a dead pane stayed listed for an hour. | Fixed. A pane being ended counts as activity of the supervisor (`is_idle`); the idle callback, which releases the connection, runs only once the pane was killed and removed, or after 15 s. `RemoteHost` releases and hands its connection over only when idle in that sense. The callback now runs on a plain thread and may run more than once per idle period. SDTEST-3040, SDTEST-3048. |
+| 4 | `ready_plan` offered back panes another ShellDeck was attached to; closing the tab killed them for the other machine. | Fixed. Panes with `clients > 0` are not offered, for remote hosts and for the local daemon (a second instance of the app). Cost: a pane whose previous client has not been noticed as gone yet (a dead TCP connection the server has not timed out) is not offered at that connect; it is at a later one. SDTEST-3021, SDTEST-3042. |
+| 5 | Sign-out only ended panes that were attached at that instant. | Fixed in part. A pane closed (tab, split, sign-out) while it cannot be reached, or after its session thread ended, is remembered by its supervisor: it is left out of every pane list (`Supervisor::list_panes`, `without_doomed`, `RemoteHost::prepare`) and ended on the next connection to that daemon. SDTEST-3041. Not covered: the memory is per process, so after an app restart such a pane is offered back; hosts that were not connected in this run and a local daemon left by another version are not contacted at sign-out. |
+| 6 | A saved daemon tab with no live pane was dropped, so "restore tabs on startup" reopened fewer local tabs than before phase 2, also with the setting off. | Fixed. Such a tab is planned as an ordinary saved tab in its place. With no live pane at all the local tabs are reopened as fresh terminals, as before; with some panes alive they are the local tabs and no fresh shell is added (existing rule). SDTEST-3009. |
+| 7 | The install consent was keyed on the connection id only: an entry edited to another server kept its "allow". | Fixed. The answer is stored with the server it was given for (`[general.session_daemon_host_targets]`) and counts only while the entry dials it. The question toast records the server it asked about, and "Install" uploads only to a host object that still dials it. An answer without a recorded server (written by hand) reads as "not asked". Within one run the question is still shown once per entry: after an edit the new server falls back and is asked at the next start. SDTEST-3014, SDTEST-3043. |
+| 8 | The bundled remote build was found by an unversioned name and uploaded under the app's version name: a build left by an older release could be installed as the new one and never replaced. | Fixed on the client. Every daemon binary carries a build marker line with its version (`BUILD_MARKER`, also what `--version` prints). A bundled file is used only if it carries the marker of the app's version; otherwise it does not count as a build (fallback `NoArtifact`, no question) and a later directory is tried. SDTEST-3044, SDTEST-3047, SDTEST-3024 (real binary). Not done: the updater and the install script still leave a stale build beside the app; it is refused, not removed. |
+| 9 | With "allow", a host whose home cannot execute files got the whole binary again on every connection. | Fixed. The install script checks that the uploaded file is executable where it was written and answers `noexec` (nothing is left); a host that answered so, or that reported "not executable" right after a verified upload, is not uploaded to again in this run and is not asked. One upload per run still happens. SDTEST-3046, with a `chmod` that changes nothing standing in for the mount; a real `noexec` mount was not available. |
+| 10 | The run directory name came from the machine identity only: clones of one image on a shared home resolved to one directory. | Fixed. The host name is part of the hashed name. A daemon running under the earlier name is still found by the sibling scan. Not reproduced on NFS. SDTEST-3025. |
+| 11 | The 18 character name did not fit `sun_path` for home paths where a short host name did; the `/tmp` branch skipped the sibling scan and abandoned a live daemon. | Fixed. Shorter names (8 hex digits, then the host name) are tried before `/tmp`, and the sibling scan also runs when `/tmp` is the choice. The `/tmp` location can still be denied by another local user who creates the directory first; that is now the last resort only. SDTEST-3045, SDTEST-3002. |
+
+Side effects to know:
+
+- The run directory of step 3 (`m-<hash of the identity>`) has a new name.
+  A daemon running there is found by the scan; its directory is not
+  reused once it has ended.
+- `[general.session_daemon_hosts]` entries written by the earlier steps
+  of this branch have no recorded server and read as "not asked".
+- A bundled remote build made before the marker existed is refused.
+- SDTEST-3040 and the closing half of SDTEST-3048 were not run against
+  the code before the fix; that they would fail there is by reading it.
+- `Supervisor::set_on_idle` callbacks must tolerate being called twice.

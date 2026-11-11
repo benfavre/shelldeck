@@ -130,14 +130,31 @@ fn machine_id() -> Option<String> {
 
 /// Name of this machine's run directory under `~/.shelldeck/run/`.
 ///
-/// `m-` and 16 hex digits derived from the machine identity when the
-/// system has one: it does not change with the host name, and two machines
-/// that share a home directory get two names. The identity itself is not
-/// stored (systemd asks applications not to expose `/etc/machine-id`), only
-/// a keyed SHA-256 of it. Without a usable identity (fewer than 8
+/// `m-` and 16 hex digits derived from the machine identity and the host
+/// name when the system has an identity. The identity itself is not
+/// stored (systemd asks applications not to expose `/etc/machine-id`),
+/// only a keyed SHA-256. Without a usable identity (fewer than 8
 /// alphanumeric characters, or the `uninitialized` placeholder of an early
-/// boot) the name is the host name, as before.
+/// boot) the name is the host name, as in the first release.
+///
+/// The host name is part of the hash because the identity alone does not
+/// tell machines apart everywhere: virtual machines cloned from one image
+/// have the same `/etc/machine-id`, and when they also share a home
+/// directory (NFS) one name for both would make each take the other's
+/// socket for a stale one of its own. The price is that the name changes
+/// with the host name; [`live_run_dir`] covers that, a daemon that still
+/// runs in the directory of the earlier name is found and used.
 pub fn run_dir_name(machine_id: Option<&str>, host: &str) -> String {
+    run_dir_names(machine_id, host).swap_remove(0)
+}
+
+/// The names this machine's run directory may have, most preferred first:
+/// the hashed name, the same hash cut to 8 hex digits, and the host name.
+/// The later ones are for a home directory whose path leaves no room for
+/// the full name in a socket address (see [`default_run_dir`]); the host
+/// name is also where the first release put the directory. Without a
+/// usable machine identity: the host name only.
+pub fn run_dir_names(machine_id: Option<&str>, host: &str) -> Vec<String> {
     use sha2::{Digest, Sha256};
     let id = machine_id.map(str::trim).filter(|id| {
         *id != "uninitialized"
@@ -148,35 +165,62 @@ pub fn run_dir_name(machine_id: Option<&str>, host: &str) -> String {
     match id {
         Some(id) => {
             let mut hasher = Sha256::new();
-            hasher.update(b"shelldeck-sessiond run directory v1\0");
+            hasher.update(b"shelldeck-sessiond run directory v2\0");
             hasher.update(id.to_ascii_lowercase().as_bytes());
+            hasher.update(b"\0");
+            hasher.update(host.to_ascii_lowercase().as_bytes());
             let digest = hasher.finalize();
             let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
-            format!("m-{hex}")
+            vec![
+                format!("m-{hex}"),
+                format!("m-{}", &hex[..8]),
+                host.to_string(),
+            ]
         }
-        None => host.to_string(),
+        None => vec![host.to_string()],
     }
 }
 
 /// The per-user run directory: `~/.shelldeck/run/<machine>/` (see
-/// [`run_dir_name`]), or `/tmp/shelldeck-<uid>/` when the socket path would
-/// not fit `sun_path`. `XDG_RUNTIME_DIR` is deliberately not used: logind
-/// removes it when the last login session ends, which is exactly when the
-/// daemon must survive.
+/// [`run_dir_name`]), or `/tmp/shelldeck-<uid>/` when no name fits.
+/// `XDG_RUNTIME_DIR` is deliberately not used: logind removes it when the
+/// last login session ends, which is exactly when the daemon must survive.
 ///
 /// A daemon that is already serving a sibling directory is preferred over
-/// an empty directory for this machine: a daemon started by an earlier
-/// release lives in a directory named after the host name of that moment,
-/// and its panes would otherwise keep running where no client looks. See
-/// [`live_run_dir`].
+/// an empty directory for this machine: a daemon started under an earlier
+/// host name, or by an earlier release, lives in a directory with another
+/// name, and its panes would otherwise keep running where no client
+/// looks. See [`live_run_dir`].
 pub fn default_run_dir() -> Result<PathBuf, PathError> {
     let home = home_dir().ok_or(PathError::NoHome)?;
+    Ok(run_dir_under(
+        &home,
+        machine_id().as_deref(),
+        &host_component(),
+        effective_uid(),
+    ))
+}
+
+/// [`default_run_dir`] for a given home directory, machine and user.
+///
+/// The socket path must fit `sun_path` (107 bytes on Linux). The first
+/// name of [`run_dir_names`] that fits under `home` is used, so a long
+/// home path gets a shorter directory name before the daemon leaves the
+/// home directory at all. Only when none fits is it `/tmp/shelldeck-<uid>`,
+/// which another local user could create first (the daemon then refuses
+/// it and is unavailable, it is never taken over).
+///
+/// Whatever is chosen, a daemon that answers in a sibling directory under
+/// `home` wins: also over the `/tmp` location, so an update that changes
+/// the preferred name never abandons a running daemon.
+pub fn run_dir_under(home: &Path, machine_id: Option<&str>, host: &str, uid: u32) -> PathBuf {
     let root = home.join(".shelldeck").join("run");
-    let dir = root.join(run_dir_name(machine_id().as_deref(), &host_component()));
-    if fits_sun_path(&dir) {
-        return Ok(live_run_dir(&root, dir));
-    }
-    Ok(PathBuf::from(format!("/tmp/shelldeck-{}", effective_uid())))
+    let preferred = run_dir_names(machine_id, host)
+        .into_iter()
+        .map(|name| root.join(name))
+        .find(|dir| fits_sun_path(dir))
+        .unwrap_or_else(|| PathBuf::from(format!("/tmp/shelldeck-{uid}")));
+    live_run_dir(&root, preferred)
 }
 
 /// Most sibling directories looked at by [`live_run_dir`].
@@ -319,32 +363,46 @@ pub fn connect_checked(dir: &Path) -> Result<std::os::unix::net::UnixStream, Pat
 mod tests {
     use super::*;
 
-    // SDTEST-3025 (SDUC-574): the run directory is named after the machine
-    // identity, not the host name, and falls back to the host name only
-    // when the system has no usable identity.
+    // SDTEST-3025 (SDUC-574): the run directory name is derived from the
+    // machine identity and the host name, shows neither, and falls back
+    // to the host name only when the system has no usable identity.
     #[test]
-    fn sdtest_3025_run_directory_name_is_stable_across_host_names() {
+    fn sdtest_3025_run_directory_name_tells_machines_apart() {
         let id = "0123456789abcdef0123456789abcdef";
         let name = run_dir_name(Some(id), "laptop");
-        assert_eq!(name, run_dir_name(Some(id), "laptop.office.example"));
-        assert_eq!(name, run_dir_name(Some(&format!("{id}\n")), "other"));
-        assert_eq!(name, run_dir_name(Some(&id.to_uppercase()), "other"));
+        assert_eq!(name, run_dir_name(Some(&format!("{id}\n")), "laptop"));
+        assert_eq!(name, run_dir_name(Some(&id.to_uppercase()), "LAPTOP"));
         assert_eq!(name.len(), 18);
         assert!(name.starts_with("m-"));
         assert!(name[2..].chars().all(|c| c.is_ascii_hexdigit()));
-        // The identity is not readable from the name.
+        // Neither the identity nor the host name is readable from it.
         assert!(!name.contains(&id[..8]));
+        assert!(!name.contains("laptop"));
         // Another machine on the same home directory: another directory.
         assert_ne!(
             name,
             run_dir_name(Some("fedcba9876543210fedcba9876543210"), "laptop")
         );
+        // Two clones of one image (same identity) that share a home
+        // directory: told apart by their host names.
+        assert_ne!(name, run_dir_name(Some(id), "node2"));
+        assert_ne!(
+            run_dir_name(Some(id), "ab"),
+            run_dir_name(Some(&format!("{id}a")), "b"),
+            "the two inputs are kept apart"
+        );
         // A macOS style hardware UUID is accepted too.
         assert!(
             run_dir_name(Some("8D8AC610-566D-4EF0-9C22-186B2A5ED793"), "mac").starts_with("m-")
         );
+        // The shorter names, for long home paths.
+        let names = run_dir_names(Some(id), "laptop");
+        assert_eq!(names.len(), 3);
+        assert_eq!(names[0], name);
+        assert_eq!(names[1], name[..10]);
+        assert_eq!(names[2], "laptop");
 
-        // No usable identity: the host name, as in the first releases.
+        // No usable identity: the host name, as in the first release.
         for unusable in [
             None,
             Some(""),
@@ -354,6 +412,7 @@ mod tests {
             Some("../../etc/passwd"),
         ] {
             assert_eq!(run_dir_name(unusable, "laptop"), "laptop", "{unusable:?}");
+            assert_eq!(run_dir_names(unusable, "laptop"), vec!["laptop"]);
         }
         let long = "a".repeat(129);
         assert_eq!(run_dir_name(Some(&long), "laptop"), "laptop");
@@ -362,5 +421,53 @@ mod tests {
         // directory (or the /tmp fallback), whatever the identity source.
         let component = run_dir_name(machine_id().as_deref(), &host_component());
         assert!(!component.is_empty() && !component.contains('/'));
+    }
+
+    // SDTEST-3045 (SDUC-574): a home directory whose path leaves no room
+    // for the full name gets a shorter one before the daemon leaves the
+    // home directory, and `/tmp` is the last resort only.
+    #[test]
+    fn sdtest_3045_a_long_home_path_gets_a_shorter_run_directory_name() {
+        let id = Some("0123456789abcdef0123456789abcdef");
+        let names = run_dir_names(id, "pc1");
+        // Budget: home + "/.shelldeck/run/" + name + "/" + socket name.
+        let fixed = "/.shelldeck/run/".len() + 1 + SOCKET_NAME.len();
+        let home_of = |len: usize| PathBuf::from(format!("/{}", "h".repeat(len - 1)));
+        let longest_home = |name: &str| SUN_PATH_MAX - fixed - name.len();
+
+        // A short home: the full name.
+        let home = home_of(20);
+        assert_eq!(
+            run_dir_under(&home, id, "pc1", 1000),
+            home.join(".shelldeck/run").join(&names[0])
+        );
+        // The longest home the full name fits, and one byte more.
+        let home = home_of(longest_home(&names[0]));
+        let dir = run_dir_under(&home, id, "pc1", 1000);
+        assert_eq!(dir, home.join(".shelldeck/run").join(&names[0]));
+        assert_eq!(socket_path(&dir).as_os_str().len(), SUN_PATH_MAX);
+        let home = home_of(longest_home(&names[0]) + 1);
+        assert_eq!(
+            run_dir_under(&home, id, "pc1", 1000),
+            home.join(".shelldeck/run").join(&names[1])
+        );
+        // Too long for the short hash, not for a short host name (where
+        // the first release put the directory).
+        let home = home_of(longest_home(&names[1]) + 1);
+        assert_eq!(
+            run_dir_under(&home, id, "pc1", 1000),
+            home.join(".shelldeck/run/pc1")
+        );
+        // Nothing fits: the last resort.
+        let home = home_of(longest_home("pc1") + 1);
+        assert_eq!(
+            run_dir_under(&home, id, "pc1", 1000),
+            PathBuf::from("/tmp/shelldeck-1000")
+        );
+        // Every result holds a socket path that fits.
+        for len in 2..120 {
+            let dir = run_dir_under(&home_of(len), id, "a-rather-long-host-name.example", 7);
+            assert!(fits_sun_path(&dir), "{}", dir.display());
+        }
     }
 }

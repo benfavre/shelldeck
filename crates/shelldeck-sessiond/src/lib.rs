@@ -29,3 +29,15 @@ pub mod proxy;
 pub mod server;
 #[cfg(unix)]
 pub mod supervisor;
+
+/// Line every build of the daemon binary carries, so a file can be tied
+/// to the release it was built for without running it: a client checks
+/// for [`build_marker`] of its own version before it uploads a bundled
+/// build to a server under that version's name. `--version` prints it
+/// without its first four bytes.
+pub const BUILD_MARKER: &str = concat!("@(#)shelldeck-sessiond ", env!("CARGO_PKG_VERSION"), "\n");
+
+/// The [`BUILD_MARKER`] of the build of `version`.
+pub fn build_marker(version: &str) -> String {
+    format!("@(#)shelldeck-sessiond {version}\n")
+}

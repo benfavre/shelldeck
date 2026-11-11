@@ -165,8 +165,11 @@ impl WorkspaceState {
     ///
     /// - a saved daemon tab keeps its place, its split tree and ratios for
     ///   the panes that are alive; panes that are gone are dropped (the
-    ///   split collapses into its other side) and a tab with none left is
-    ///   dropped;
+    ///   split collapses into its other side);
+    /// - a saved daemon tab with no pane left (the machine was restarted,
+    ///   the setting was turned off, the daemon binary is missing) is
+    ///   planned as an ordinary saved tab, so "restore tabs on startup"
+    ///   reopens it like any other local tab instead of losing it;
     /// - a live pane with no saved slot comes back as a tab of its own,
     ///   after the saved ones;
     /// - a pane saved twice (damaged file) is used once.
@@ -180,15 +183,19 @@ impl WorkspaceState {
                     let tree = saved
                         .tree
                         .retain(&mut |pane| live.contains(&pane) && placed.insert(pane));
-                    let Some(tree) = tree else { continue };
-                    let panes = tree.panes();
-                    RestoredTab::Daemon {
-                        title: Some(tab.title.clone()),
-                        layout: DaemonTabLayout {
-                            focused: saved.focused.filter(|pane| panes.contains(pane)),
-                            named: saved.named,
-                            tree,
-                        },
+                    match tree {
+                        Some(tree) => {
+                            let panes = tree.panes();
+                            RestoredTab::Daemon {
+                                title: Some(tab.title.clone()),
+                                layout: DaemonTabLayout {
+                                    focused: saved.focused.filter(|pane| panes.contains(pane)),
+                                    named: saved.named,
+                                    tree,
+                                },
+                            }
+                        }
+                        None => RestoredTab::Saved(index),
                     }
                 }
                 None => RestoredTab::Saved(index),
@@ -513,23 +520,25 @@ mod tests {
                 RestoredTab::Saved(_) => None,
             })
             .collect();
-        assert_eq!(plan.tabs.len(), 6);
+        assert_eq!(plan.tabs.len(), 7);
         // The inner split lost pane 2 and collapsed; the outer split and
         // its ratio are kept; focus stays on pane 3.
         let build = layouts[0].expect("build");
         assert_eq!(build.tree, split(true, 0.3, leaf(1), leaf(3)));
         assert_eq!(build.focused, Some(pane(3)));
         assert_eq!(plan.tabs[1], RestoredTab::Saved(1));
-        // "gone" is dropped; "logs" is a single pane, focus forgotten.
-        let logs = layouts[2].expect("logs");
+        // "gone" has no pane left: an ordinary saved tab, in its place.
+        // "logs" is a single pane, focus forgotten.
+        assert_eq!(plan.tabs[2], RestoredTab::Saved(2));
+        let logs = layouts[3].expect("logs");
         assert_eq!(logs.tree, leaf(6));
         assert_eq!(logs.focused, None);
-        assert_eq!(plan.active, Some(2), "the active tab moved up one place");
-        assert_eq!(plan.tabs[3], RestoredTab::Saved(4));
+        assert_eq!(plan.active, Some(3), "the active tab kept its place");
+        assert_eq!(plan.tabs[4], RestoredTab::Saved(4));
         // Panes without a slot: one tab each, after the saved ones, in
         // the daemon's order, without a saved title.
         assert_eq!(
-            plan.tabs[4..],
+            plan.tabs[5..],
             [9, 8].map(|n| RestoredTab::Daemon {
                 title: None,
                 layout: DaemonTabLayout {
@@ -540,20 +549,26 @@ mod tests {
             })
         );
 
-        // The active tab did not survive: no tab is forced active.
+        // The active tab lost its panes: it is still the active one, as
+        // an ordinary saved tab.
         let plan = WorkspaceState {
             active_tab: 2,
             ..state.clone()
         }
         .daemon_restore_plan(&live);
-        assert_eq!(plan.active, None);
+        assert_eq!(plan.active, Some(2));
+        assert_eq!(plan.tabs[2], RestoredTab::Saved(2));
 
-        // No daemon pane alive: only the other saved tabs remain.
+        // No daemon pane alive at all (the machine was restarted, the
+        // setting is off, the daemon binary is missing): every saved tab
+        // is an ordinary saved tab, as before the daemon existed, so
+        // "restore tabs on startup" reopens the local ones.
         let plan = state.daemon_restore_plan(&[]);
         assert_eq!(
             plan.tabs,
-            vec![RestoredTab::Saved(1), RestoredTab::Saved(4)]
+            (0..5).map(RestoredTab::Saved).collect::<Vec<_>>()
         );
+        assert_eq!(plan.active, Some(3));
     }
 
     // SDTEST-3031 (SDUC-574): when the daemon cannot say which panes are

@@ -113,8 +113,9 @@ Setup for a development build: build both binaries
 `SHELLDECK_SESSIOND_BIN` at an absolute path. Use a throwaway profile, not
 the installed app. The daemon then uses the real run directory,
 `~/.shelldeck/run/m-<16 hex digits>/` (`sessiond-v1.sock`,
-`sessiond-v1.lock`, `sessiond.log`; named after the machine identity, see
-the section "Daemon hardening, version skew and packaging").
+`sessiond-v1.lock`, `sessiond.log`; named after the machine identity and
+the host name, see the section "Final review fixes"; shorter names are
+used when the home path is long).
 `shelldeck-sessiond list` shows the panes; `kill <pid from the lock file>`
 (SIGTERM) stops the daemon and every pane.
 
@@ -334,7 +335,7 @@ every server falls back.
 
 | What | How |
 |---|---|
-| The per-server answer is stored in `[general.session_daemon_hosts]` as `allow` or `never`, omitted when empty, absent means "not asked" | SDTEST-3014 (`shelldeck-core`) |
+| The per-server answer is stored in `[general.session_daemon_hosts]` as `allow` or `never`, omitted when empty, absent means "not asked"; since the final review it only counts for the server recorded in `[general.session_daemon_host_targets]` | SDTEST-3014 (`shelldeck-core`) |
 | Decision table: an installed binary is used whatever the answer; an upload happens only with a recorded "allow" and a bundled build for the server's platform; each other case names its reason; the question is offered only when an install is possible and nobody answered; connect errors map to their fallback reason; the fallback backend is the choice made with the setting off | SDTEST-3015 (pure) |
 | Only a checked version, nonce and digest can reach a remote script; the probe answer is found among rc noise and only with the right nonce; a local file is an artifact only by name and as an ELF of the right machine | SDTEST-3016 (pure, temporary directories) |
 | Probe and upload against the real `/bin/sh` under a private `HOME`: nothing written by a probe; upload gives the same bytes, mode 0700 in 0700 directories, the remote digest equals the local one, no temporary file left, nothing else in the home; a file without the execute bit is reported and replaced; six fixed `sh -c` commands, no `sudo` | SDTEST-3017 |
@@ -405,8 +406,9 @@ the server placed as `shelldeck-sessiond-x86_64-unknown-linux-musl` (or
       tabs, not five.
 - [ ] Cut the network for a few seconds: the tabs say "connection lost",
       the sidebar shows "connecting", then the screens are back, same
-      shells. Cut it for more than a minute: the tabs end as
-      "unavailable"; connecting again offers the shells back.
+      shells. Cut it for more than a minute: the tabs keep saying
+      "connection lost" (they no longer end as "unavailable") and come
+      back by themselves when the network does.
 - [ ] Server where the binary cannot run (`noexec` home, other
       architecture without a build, forced command): plain or tmux tab
       and one notice with the reason.
@@ -421,8 +423,10 @@ Listed in the design document, section 15, "Remote app integration": the
 server builds are not built or packaged, the split tree of remote tabs is
 not saved, tabs opened in a directory keep the plain path, old remote
 binaries are not pruned, no Settings control to change a recorded answer,
-a tab closed while the server is unreachable leaves its shell running, no
-remote daemon from a Windows client, no latency measurement.
+no remote daemon from a Windows client, no latency measurement. A tab
+closed while the server is unreachable now ends its shell at the next
+contact in the same run (not across an app restart), see "Final review
+fixes".
 
 ## Daemon hardening, version skew and packaging (2026-11-11)
 
@@ -724,3 +728,117 @@ printed its limits and failed once when the `exec` had not happened yet
   screen go to the history (existing behaviour on a row shrink).
 - The language select still showed "Anglais" right after switching to
   English.
+
+## Final review fixes (2026-11-11)
+
+Scope: the last review of the branch, eleven findings (design document,
+section 15, "Final review", one row per finding with its outcome).
+
+**The application was not launched again and no real SSH server was
+used.** Several fixes change behaviour that the run above looked at on
+screen (restore at startup, closing tabs, sign-out; a handed-over SSH
+tab was never seen at all). Those visual checks were not repeated: after
+this step they rest on the automated tests below, and the manual list
+that follows says what to look at.
+
+### What changes for a user
+
+- A daemon tab of an SSH server no longer ends as "unavailable" after
+  about 43 seconds without network. It stays "connection lost" and comes
+  back when the server is reachable, however long that takes, as long as
+  the tab is open.
+- Closing the last tab of a server ends its shell even when the program
+  ignores the hang-up; the server shows as disconnected a moment later
+  (up to about 3 seconds, 15 at most) instead of at once.
+- A tab closed, or a sign-out done, while the server (or the local
+  daemon) cannot be reached: the shell is ended the next time it is
+  reached in the same run and is not offered back.
+- The first tab of a server, once handed over to the daemon, behaves like
+  the others for the tab dot, AI tab names, `@terminal` mentions and tab
+  selection by the assistant.
+- Shells shown by ShellDeck on another machine (same account on the
+  server), or by a second instance of the app, are not taken over.
+- With "restore tabs on startup" and no shell left alive (reboot, setting
+  turned off), the local tabs are reopened as before the setting existed.
+- After a connection entry is edited to another host, user, port or jump
+  host, an earlier "install" or "never" no longer applies: the question
+  is asked again (at the next start of the app).
+- A server whose home cannot run programs gets one upload per run, then
+  only the notice.
+- The run directory has a new name (`m-` and 16 hex digits from the
+  machine identity and the host name; `m-` and 8 digits, or the host
+  name, when the home path is long).
+
+### Verified automatically
+
+| What | Tests |
+|---|---|
+| Reconnect rules with unlimited attempts; a session behind a transport that is away for 40 connects reattaches to the same pane; a budget of 3 gives up on the same outage | SDTEST-3005, SDTEST-3039 (real binary) |
+| A pane ignoring the hang-up, closed as the last session: the idle callback (connection release) runs only after the pane was killed and removed | SDTEST-3040 (real binary) |
+| The same through `RemoteHost` on the SSH fixture, and a host away for 20 failed dials whose tab reattaches | SDTEST-3048 |
+| Panes closed while unreachable (session waiting, session given up) are left out of the pane list and ended at the next contact; a pane that was only detached is still offered | SDTEST-3041 (real binary) |
+| A handed-over tab and its session keep one id; a split is replaced under its key | SDTEST-3022 (GPUI test context) |
+| Panes another client is attached to are not offered, remote and local | SDTEST-3021, SDTEST-3042 |
+| Restore plan: a tab with no live pane is an ordinary saved tab; with no live pane at all every saved tab is | SDTEST-3009 |
+| The install answer counts only for the server it was given for, in the configuration file and as the workspace reads it | SDTEST-3014, SDTEST-3043 |
+| A bundled build must carry the build marker of the app's release; a stale one is `NoArtifact` with nothing sent; the real binary carries its marker and passes | SDTEST-3016, SDTEST-3019, SDTEST-3047, SDTEST-3024 (opt-in, run once with a stripped debug build) |
+| A host that cannot execute the upload: one upload, then probes only, no question | SDTEST-3046 (a `chmod` that changes nothing stands in for a `noexec` mount) |
+| Run directory name from identity and host name; shorter names before `/tmp`; a live daemon wins over the `/tmp` choice | SDTEST-3025, SDTEST-3045, SDTEST-3002 |
+
+### Not verified
+
+- Nothing on screen, and nothing against a real `sshd`, a real `noexec`
+  mount, NFS, cloned machines or a second machine attached to the same
+  server.
+- `finish_restore_session` with the new plan (a saved daemon tab reopened
+  as a fresh local terminal) and the sign-out path
+  (`invalidate_cloud_session`, `end_daemon_panes`) are covered by the
+  pure plan test and the supervisor tests only; the workspace code that
+  calls them was not executed.
+- The features finding 2 listed (tab dot while connecting, mentions, AI
+  naming, snapshot offset, `select_tab` from an AI task) were not run on a
+  handed-over tab; the test checks the one cause, the id.
+- The question toast after an edited entry, and the "Install" button
+  refusing a host that no longer dials the asked server.
+- SDTEST-3040 and the closing half of SDTEST-3048 were written with the
+  fix and not run against the earlier code.
+- macOS and Windows builds.
+
+### Manual checks to add to the lists above
+
+- [ ] Remote daemon tab, network off for two minutes, then on: the tab
+      comes back by itself with its screen; the sidebar goes from
+      "connecting" to connected.
+- [ ] On a server, run `trap '' HUP; sleep 1000` in the only tab and
+      close it: within a few seconds
+      `shelldeck-sessiond-<version> list` on the server shows no pane,
+      and the sidebar shows the server as disconnected.
+- [ ] Network off, close a remote daemon tab (or sign out), network on,
+      connect again: a new shell, not the closed one, and the closed one
+      is gone on the server.
+- [ ] First tab of a server with the daemon: the dot is the pending
+      colour while it connects; rename by AI and an `@terminal` mention
+      of that tab work.
+- [ ] Two machines (or two throwaway profiles) on one server account:
+      the second does not show the shells of the first while the first
+      is connected.
+- [ ] Setting on, three local tabs, quit, stop the daemon
+      (`kill <pid from the lock file>`), start with "restore tabs on
+      startup": three fresh local tabs. Same with the setting turned off
+      in the file while the app is closed.
+- [ ] Answer "Install" for an entry, edit its host name, restart, open
+      a tab: the question is asked again and nothing was uploaded to the
+      new server before the answer.
+
+### Known gaps of this step
+
+- A pane closed while unreachable is forgotten when the app quits before
+  the daemon is reached again: it is then offered back.
+- Sign-out does not contact hosts that were not connected in this run,
+  nor a local daemon left by another version.
+- A stale bundled remote build is refused but stays on disk until an
+  update that carries a new one.
+- A pane whose previous client is not yet known to be gone is not offered
+  back at that connect.
+- `/tmp/shelldeck-<uid>` remains the last resort for very long home
+  paths, with the pre-creation denial described in the design document.

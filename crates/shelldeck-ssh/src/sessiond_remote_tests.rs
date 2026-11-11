@@ -17,7 +17,7 @@ use crate::sessiond_install::{
 };
 use crate::SshError;
 use shelldeck_sessiond::attached::SessionOptions;
-use shelldeck_sessiond::supervisor::{Backoff, PaneTarget, SupervisorOptions};
+use shelldeck_sessiond::supervisor::{Backoff, PaneTarget, SupervisorOptions, UNLIMITED_ATTEMPTS};
 use shelldeck_terminal::attached::AttachedPhase;
 use shelldeck_terminal::session::TerminalSession;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -57,6 +57,8 @@ fn fake_artifact(target: &str, seed: u32) -> Vec<u8> {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         bytes.push((state >> 24) as u8);
     }
+    // Built "for" the version the tests install it as.
+    bytes.extend_from_slice(shelldeck_sessiond::build_marker(VERSION).as_bytes());
     bytes
 }
 
@@ -362,6 +364,8 @@ impl World {
                         start: Duration::from_millis(50),
                         max: Duration::from_millis(400),
                     },
+                    // As the app sets it for a remote host.
+                    max_attempts: UNLIMITED_ATTEMPTS,
                     ..SupervisorOptions::default()
                 },
                 ..RemoteHostOptions::default()
@@ -507,12 +511,29 @@ fn sdtest_3019_without_consent_or_a_usable_binary_the_host_falls_back_untouched(
     assert_eq!(world.dials(), 2, "each fallback gave its connection away");
 
     // Agreed, but the bundled file is not an executable for that host:
-    // refused locally, nothing sent beyond the probe.
+    // it does not count as a build, nothing is sent beyond the probe and
+    // nothing is offered.
     world.put_artifact(b"#!/bin/sh\necho not a daemon\n");
-    let (reason, ask, _) = expect_fallback(host.prepare(InstallConsent::Allow));
-    assert_eq!((reason, ask), (FallbackReason::InstallFailed, false));
-    assert!(!dot_dir.exists());
-    assert_eq!(world.commands().len(), 1, "only the probe");
+    for consent in [InstallConsent::Allow, InstallConsent::Ask] {
+        let (reason, ask, _) = expect_fallback(host.prepare(consent));
+        assert_eq!((reason, ask), (FallbackReason::NoArtifact, false));
+        assert!(!dot_dir.exists());
+        assert_eq!(world.commands().len(), 1, "only the probe");
+    }
+
+    // SDTEST-3044: agreed, and the bundled file is the build of another
+    // release (left beside the app by an update without remote builds):
+    // never uploaded under this release's name, and nothing is offered.
+    let mut stale = fake_artifact(target, 5);
+    stale.truncate(300 * 1024);
+    stale.extend_from_slice(shelldeck_sessiond::build_marker("9.9.8-test").as_bytes());
+    world.put_artifact(&stale);
+    for consent in [InstallConsent::Allow, InstallConsent::Ask] {
+        let (reason, ask, _) = expect_fallback(host.prepare(consent));
+        assert_eq!((reason, ask), (FallbackReason::NoArtifact, false));
+        assert!(!dot_dir.exists());
+        assert_eq!(world.commands().len(), 1, "only the probe");
+    }
 
     // Agreed, no build bundled for the host's platform.
     std::fs::remove_file(world.artifacts.path().join(artifact_file_name(target))).expect("remove");
@@ -588,6 +609,153 @@ fn sdtest_3019_without_consent_or_a_usable_binary_the_host_falls_back_untouched(
     assert!(host.is_ready());
     host.release_if_idle();
     assert!(!host.is_ready());
+}
+
+// SDTEST-3046 (SDUC-574): a host that cannot execute what is uploaded (a
+// home directory mounted `noexec`) gets the binary once, not once per
+// connection. The stand-in for the mount is a `chmod` that changes
+// nothing, so the uploaded file never becomes executable: the install
+// script notices, removes the file and says so, and the host is not
+// uploaded to, nor asked about, again in this run.
+#[test]
+fn sdtest_3046_a_host_that_cannot_execute_the_upload_is_uploaded_to_once() {
+    let mut world = World::new();
+    let tools = temp_dir();
+    for tool in ["sh", "cat", "sha256sum", "mkdir", "mv", "rm", "uname"] {
+        let real = ["/bin", "/usr/bin"]
+            .iter()
+            .map(|dir| Path::new(dir).join(tool))
+            .find(|path| path.exists())
+            .unwrap_or_else(|| panic!("{tool} not found"));
+        std::os::unix::fs::symlink(real, tools.path().join(tool)).expect("symlink");
+    }
+    let fake_chmod = tools.path().join("chmod");
+    std::fs::write(&fake_chmod, "#!/bin/sh\nexit 0\n").expect("write chmod");
+    std::fs::set_permissions(&fake_chmod, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    world.mode.lock().path = Some(tools.path().to_path_buf());
+    let host = world.host();
+    world.put_artifact(&fake_artifact(local_target(), 7));
+
+    // First connection: probe, upload, "cannot execute". Nothing stays on
+    // the host and the fallback names the reason.
+    let (reason, ask, session) = expect_fallback(host.prepare(InstallConsent::Allow));
+    assert_eq!((reason, ask), (FallbackReason::Unavailable, false));
+    assert!(
+        session.is_some(),
+        "the connection goes to the fallback shell"
+    );
+    assert!(bin_entries(world.home.path()).is_empty());
+    let commands = world.commands();
+    assert_eq!(commands.len(), 2, "probe and upload: {commands:?}");
+    assert!(commands[1].contains("SDSD-INSTALL-"), "{commands:?}");
+
+    // Every later connection of this run: one probe, no upload, whatever
+    // the recorded answer, and no question.
+    for consent in [
+        InstallConsent::Allow,
+        InstallConsent::Allow,
+        InstallConsent::Ask,
+    ] {
+        let (reason, ask, _) = expect_fallback(host.prepare(consent));
+        assert_eq!((reason, ask), (FallbackReason::Unavailable, false));
+        let commands = world.commands();
+        assert_eq!(commands.len(), 1, "only the probe: {commands:?}");
+        assert!(commands[0].contains("SDSD-PROBE-"), "{commands:?}");
+    }
+    // The answer given later to an earlier question uploads nothing.
+    host.install()
+        .expect_err("no upload to a host that cannot run it");
+    assert!(!world
+        .commands()
+        .iter()
+        .any(|command| command.contains("SDSD-INSTALL-")));
+    assert!(bin_entries(world.home.path()).is_empty());
+}
+
+// SDTEST-3048 (SDUC-574): two review cases on the remote path.
+//
+// Closing the last tab of a host ends its pane even when the program
+// ignores the hang-up: the SSH connection is kept until the pane was
+// killed and removed, and only then released (`Idle`).
+//
+// A host that stays away much longer than a local daemon would be waited
+// for does not end its tabs: they reattach when it is back.
+#[test]
+fn sdtest_3048_a_closed_remote_pane_is_ended_and_a_long_outage_is_waited_out() {
+    let world = World::new();
+    let host = world.host();
+    world.put_artifact(&fake_artifact(local_target(), 8));
+    let (event_tx, host_events) = std::sync::mpsc::channel();
+    host.set_event_handler(move |event| {
+        let _ = event_tx.send(event);
+    });
+    let ready_panes = |host: &RemoteHost| match host.prepare(InstallConsent::Allow) {
+        Prepared::Ready { panes } => panes,
+        _ => panic!("the daemon should be ready"),
+    };
+    assert!(ready_panes(&host).is_empty());
+
+    let stubborn = PaneTarget::Spawn(SpawnOptions {
+        label: PANE_LABEL.into(),
+        argv: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "trap '' HUP; echo stubborn_ready; while :; do sleep 1; done".into(),
+        ],
+        ..SpawnOptions::default()
+    });
+    let session = host
+        .supervisor()
+        .open(stubborn, view("stubborn"))
+        .expect("open");
+    wait_until("the pane runs", || {
+        screen_text(&session).contains("stubborn_ready")
+    });
+    let pane = session.daemon_pane().expect("pane");
+
+    // The user closes the tab: the last session of the host.
+    session.terminate();
+    drop(session);
+    assert_eq!(host_events.recv_timeout(LIMIT), Ok(HostEvent::Idle));
+    assert!(!host.is_ready(), "released once the pane was gone");
+    // Nothing is left on the host to be offered back.
+    let panes = ready_panes(&host);
+    assert!(
+        !panes.iter().any(|info| info.pane == pane),
+        "the closed pane is still on the host: {panes:?}"
+    );
+
+    // A tab on a host that goes away for 20 failed dials (a local session
+    // gives up after 12).
+    let session = host.supervisor().open(cat(), view("away")).expect("open");
+    wait_until("the pane is live", || {
+        phase(&session) == AttachedPhase::Live
+    });
+    session.write_input(b"before-outage\n");
+    wait_until("the echo", || {
+        screen_text(&session).matches("before-outage").count() == 2
+    });
+    let dials_before = world.dials();
+    world.refuse_dial.store(true, Ordering::SeqCst);
+    world.cut_connections();
+    wait_until("the tab to wait for the host", || {
+        phase(&session) == AttachedPhase::Reconnecting
+    });
+    wait_until("twenty failed dials", || world.dials() >= dials_before + 20);
+    assert_eq!(phase(&session), AttachedPhase::Reconnecting);
+    assert_eq!(host.supervisor().session_count(), 1, "still trying");
+    world.refuse_dial.store(false, Ordering::SeqCst);
+    wait_until("the tab to reattach", || {
+        phase(&session) == AttachedPhase::Live
+    });
+    assert!(screen_text(&session).contains("before-outage"));
+    session.write_input(b"after-outage\n");
+    wait_until("the echo after the outage", || {
+        screen_text(&session).matches("after-outage").count() == 2
+    });
+    session.terminate();
+    drop(session);
+    wait_until("the host to be released", || !host.is_ready());
 }
 
 // SDTEST-3020 (SDUC-574): the whole remote path, as the app drives it.
@@ -753,11 +921,11 @@ fn sdtest_3024_real_binary_is_uploaded_started_and_serves_panes_over_ssh() {
         .expect("SHELLDECK_SESSIOND_BIN names a built shelldeck-sessiond");
     let bytes = std::fs::read(&binary).expect("read the daemon binary");
     let home = temp_dir();
-    // `~/.shelldeck/run/<host>/` must hold the socket path, or the daemon
-    // would fall back to the shared /tmp location of the real user.
+    // `~/.shelldeck/run/<machine>/` must hold the socket path, or the
+    // daemon would fall back to the shared /tmp location of the real user.
     let socket_path_len = home.path().as_os_str().len()
         + "/.shelldeck/run/".len()
-        + uname("-n").len().min(64)
+        + uname("-n").len().clamp(18, 64)
         + 1
         + paths::SOCKET_NAME.len();
     assert!(socket_path_len <= 100, "temporary home path is too long");
@@ -789,7 +957,8 @@ fn sdtest_3024_real_binary_is_uploaded_started_and_serves_panes_over_ssh() {
         runtime.handle().clone(),
         dial,
         RemoteHostOptions {
-            version: VERSION.into(),
+            // The real binary carries the marker of its own release.
+            version: env!("CARGO_PKG_VERSION").into(),
             artifact_dirs: vec![artifacts.path().to_path_buf()],
             ..RemoteHostOptions::default()
         },
@@ -811,7 +980,10 @@ fn sdtest_3024_real_binary_is_uploaded_started_and_serves_panes_over_ssh() {
         _ => panic!("the daemon should be ready"),
     };
     assert!(panes.is_empty());
-    let installed = installed_path(home.path());
+    let installed = home
+        .path()
+        .join(".shelldeck/bin")
+        .join(concat!("shelldeck-sessiond-", env!("CARGO_PKG_VERSION")));
     assert_eq!(
         sha256_hex(&std::fs::read(&installed).expect("installed")),
         sha256_hex(&bytes)

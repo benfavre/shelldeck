@@ -403,7 +403,9 @@ impl LocalSessions {
     /// work happens in the background.
     pub fn terminate(&self, pane: Uuid) {
         let client = self.inner.client.clone();
-        self.inner.runtime.spawn(terminate_pane(client, pane));
+        self.inner.runtime.spawn(async move {
+            terminate_pane(client, pane).await;
+        });
     }
 }
 
@@ -500,24 +502,25 @@ async fn forward_input(
     attached.lock().remove(&pane);
 }
 
-pub(crate) async fn terminate_pane(client: Client, pane: Uuid) {
+/// `true`: the pane is gone from the daemon (or its removal was sent).
+/// `false`: the connection was lost first, or the pane survived `SIGKILL`.
+pub(crate) async fn terminate_pane(client: Client, pane: Uuid) -> bool {
     const POLL: Duration = Duration::from_millis(50);
     const KILL_AFTER: u32 = 20;
     const GIVE_UP_AFTER: u32 = 60;
     if client.kill(pane, SIGNAL_HUP).is_err() {
-        return;
+        return false;
     }
     for step in 1..=GIVE_UP_AFTER {
         tokio::time::sleep(POLL).await;
         let Ok(panes) = client.list_panes().await else {
-            return;
+            return false;
         };
         match panes.iter().find(|info| info.pane == pane) {
-            None => return,
+            None => return true,
             Some(info) if !info.alive => {
                 // On a dead pane `Kill` means "remove".
-                let _ = client.kill(pane, SIGNAL_HUP);
-                return;
+                return client.kill(pane, SIGNAL_HUP).is_ok();
             }
             Some(_) if step == KILL_AFTER => {
                 let _ = client.kill(pane, SIGNAL_KILL);
@@ -526,6 +529,7 @@ pub(crate) async fn terminate_pane(client: Client, pane: Uuid) {
         }
     }
     tracing::warn!(%pane, "pane did not exit after SIGKILL");
+    false
 }
 
 /// How a pane's event stream ended.

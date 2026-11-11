@@ -22,7 +22,7 @@ use shelldeck_core::models::connection::Connection;
 use shelldeck_sessiond::attached::SessionOptions;
 use shelldeck_sessiond::client::SpawnOptions;
 use shelldeck_sessiond::protocol::PaneInfo;
-use shelldeck_sessiond::supervisor::{Notices, PaneTarget, SupervisorOptions};
+use shelldeck_sessiond::supervisor::{Notices, PaneTarget, SupervisorOptions, UNLIMITED_ATTEMPTS};
 use shelldeck_ssh::client::SshClient;
 use shelldeck_ssh::sessiond_host::{Dial, HostEvent, RemoteHost, RemoteHostOptions};
 use shelldeck_ssh::sessiond_install::{FallbackReason, InstallConsent};
@@ -112,13 +112,7 @@ fn artifact_dirs() -> Vec<PathBuf> {
 }
 
 fn dial_target(connection: &Connection) -> String {
-    format!(
-        "{}@{}:{}|{}",
-        connection.user,
-        connection.hostname,
-        connection.port,
-        connection.proxy_jump.as_deref().unwrap_or_default()
-    )
+    connection.dial_identity()
 }
 
 /// The host object of `connection`, created on first use. Nothing is
@@ -151,6 +145,9 @@ pub(super) fn host_for(connection: &Connection) -> Result<RemoteHost, String> {
                     unavailable: notice("terminal.session_daemon.unavailable"),
                     other_version: notice("terminal.session_daemon.other_version"),
                 },
+                // A host may be away for any length of time: its tabs
+                // keep trying while they are open.
+                max_attempts: UNLIMITED_ATTEMPTS,
                 ..SupervisorOptions::default()
             },
             ..RemoteHostOptions::default()
@@ -177,6 +174,17 @@ pub(super) fn existing_host(connection_id: Uuid) -> Option<RemoteHost> {
         .lock()
         .hosts
         .get(&connection_id)
+        .map(|entry| entry.host.clone())
+}
+
+/// The host object of a connection, if one was made in this run and it
+/// dials `target`.
+pub(super) fn existing_host_dialing(connection_id: Uuid, target: &str) -> Option<RemoteHost> {
+    state()
+        .lock()
+        .hosts
+        .get(&connection_id)
+        .filter(|entry| entry.target == target)
         .map(|entry| entry.host.clone())
 }
 
@@ -217,9 +225,11 @@ pub(super) fn first_ask(connection_id: Uuid) -> bool {
     state().lock().asked.insert(connection_id)
 }
 
-/// The recorded answer for a host, as the install rules read it.
-pub(super) fn consent(general: &GeneralConfig, connection_id: Uuid) -> InstallConsent {
-    match general.remote_daemon_install(connection_id) {
+/// The recorded answer for a host, as the install rules read it. An
+/// answer given while the entry dialed another server or account does not
+/// count: the user is asked again.
+pub(super) fn consent(general: &GeneralConfig, connection: &Connection) -> InstallConsent {
+    match general.remote_daemon_install(connection.id, &dial_target(connection)) {
         Some(RemoteDaemonInstall::Allow) => InstallConsent::Allow,
         Some(RemoteDaemonInstall::Never) => InstallConsent::Never,
         None => InstallConsent::Ask,
@@ -236,14 +246,24 @@ pub(super) struct ReadyPlan {
     pub extra_tabs: Vec<Uuid>,
 }
 
-/// `panes`: what the daemon listed. `open`: panes already shown.
+/// `panes`: what the daemon listed. `open`: panes already shown by this
+/// process. A pane another client is attached to is never offered.
 /// `others_connecting`: other tabs of the same host are still connecting
 /// (a restored session with several tabs); each of them takes one pane
 /// when its turn comes, so the rest is only opened by the last one.
 pub(super) fn ready_plan(panes: &[PaneInfo], open: &[Uuid], others_connecting: bool) -> ReadyPlan {
     let mut offered = panes
         .iter()
-        .filter(|info| info.alive && info.label == PANE_LABEL && !open.contains(&info.pane))
+        .filter(|info| {
+            info.alive
+                && info.label == PANE_LABEL
+                && !open.contains(&info.pane)
+                // Shown right now by another client (the app on another
+                // machine, same account on the host): it is theirs.
+                // Taking it would put two users in one shell, and closing
+                // the tab here would end it for them.
+                && info.clients == 0
+        })
         .map(|info| info.pane);
     let tab = offered.next();
     let extra_tabs = if others_connecting {
@@ -324,9 +344,63 @@ pub(super) fn fallback_reason_text(reason: FallbackReason) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ready_plan, ReadyPlan, PANE_LABEL};
+    use super::{consent, ready_plan, ReadyPlan, PANE_LABEL};
+    use shelldeck_core::config::app_config::{AppConfig, RemoteDaemonInstall};
+    use shelldeck_core::models::connection::Connection;
     use shelldeck_sessiond::protocol::PaneInfo;
+    use shelldeck_ssh::sessiond_install::InstallConsent;
     use uuid::Uuid;
+
+    // SDTEST-3043 (SDUC-574): an "install" answer recorded for a
+    // connection entry does not follow the entry to another server. After
+    // the host, the user, the port or the jump host is edited (the entry
+    // keeps its id), the answer reads as "ask": nothing is uploaded to the
+    // new server without a new answer.
+    #[test]
+    fn sdtest_3043_an_edited_connection_is_asked_again() {
+        let mut general = AppConfig::default().general;
+        let mut entry =
+            Connection::new_manual("prod".into(), "prod-a.example".into(), "deploy".into());
+        assert_eq!(consent(&general, &entry), InstallConsent::Ask);
+        general.set_remote_daemon_install(
+            entry.id,
+            &entry.dial_identity(),
+            RemoteDaemonInstall::Allow,
+        );
+        assert_eq!(consent(&general, &entry), InstallConsent::Allow);
+        // Display-only edits keep the answer.
+        entry.alias = "production".into();
+        entry.group = Some("web".into());
+        assert_eq!(consent(&general, &entry), InstallConsent::Allow);
+
+        let edits: [fn(&mut Connection); 4] = [
+            |entry| entry.hostname = "prod-b.example".into(),
+            |entry| entry.user = "root".into(),
+            |entry| entry.port = 2222,
+            |entry| entry.proxy_jump = Some("bastion".into()),
+        ];
+        for edit in edits {
+            let mut edited = entry.clone();
+            edit(&mut edited);
+            assert_eq!(edited.id, entry.id);
+            assert_eq!(
+                consent(&general, &edited),
+                InstallConsent::Ask,
+                "{}",
+                edited.dial_identity()
+            );
+        }
+        // A "never" does not follow the entry either.
+        general.set_remote_daemon_install(
+            entry.id,
+            &entry.dial_identity(),
+            RemoteDaemonInstall::Never,
+        );
+        assert_eq!(consent(&general, &entry), InstallConsent::Never);
+        let mut moved = entry.clone();
+        moved.hostname = "prod-b.example".into();
+        assert_eq!(consent(&general, &moved), InstallConsent::Ask);
+    }
 
     fn pane(label: &str, alive: bool) -> PaneInfo {
         PaneInfo {
@@ -403,6 +477,26 @@ mod tests {
             ReadyPlan {
                 tab: Some(c.pane),
                 extra_tabs: vec![]
+            }
+        );
+        // Panes another client shows right now (the app on another
+        // machine) are left to it: not taken, not offered as tabs.
+        let mut theirs = pane(PANE_LABEL, true);
+        theirs.clients = 1;
+        let mut also_theirs = pane(PANE_LABEL, true);
+        also_theirs.clients = 2;
+        assert_eq!(
+            ready_plan(&[theirs.clone(), also_theirs.clone()], &[], false),
+            ReadyPlan {
+                tab: None,
+                extra_tabs: vec![]
+            }
+        );
+        assert_eq!(
+            ready_plan(&[theirs, a.clone(), also_theirs, b.clone()], &[], false),
+            ReadyPlan {
+                tab: Some(a.pane),
+                extra_tabs: vec![b.pane]
             }
         );
         // Every pane is shown already: a further tab is a new pane.

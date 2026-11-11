@@ -628,8 +628,12 @@ impl Workspace {
     /// dropped. When `auto_connect_on_startup` is enabled, the other saved
     /// tabs are restored in their saved order: local tabs reopen a
     /// default-shell terminal, SSH tabs reconnect via the existing
-    /// `connect_ssh` path if the connection still exists. Failures are
-    /// logged, never fatal.
+    /// `connect_ssh` path if the connection still exists. A saved daemon
+    /// tab none of whose panes is alive counts as such a local tab, so
+    /// with no live pane at all (restart of the machine, setting turned
+    /// off) the local tabs are reopened exactly as without the daemon;
+    /// when some panes are alive, they are the local tabs and no fresh
+    /// shell is added. Failures are logged, never fatal.
     ///
     /// When the daemon was left by another version of the app
     /// (`RestorablePanes::OtherVersion`), its panes cannot be listed or

@@ -984,7 +984,13 @@ impl TerminalView {
     /// tab that turns out to be a session daemon pane). The replaced
     /// session is dropped, not terminated. `false`: no such session (the
     /// tab was closed meanwhile); `session` is dropped.
-    pub(crate) fn replace_session(&mut self, old_id: Uuid, session: TerminalSession) -> bool {
+    ///
+    /// The new session takes the id of the one it replaces. A tab is
+    /// found by the id of its primary session and a split by its key in
+    /// the layout (tab dot, AI naming, mentions, snapshots, `select_tab`):
+    /// with another id the handed-over tab would be missed by all of them.
+    pub(crate) fn replace_session(&mut self, old_id: Uuid, mut session: TerminalSession) -> bool {
+        session.id = old_id;
         session
             .grid
             .lock()
@@ -5801,16 +5807,30 @@ mod tests {
                 terminal.pane.sessions[0].daemon_pane(),
                 Some(Uuid::from_u128(1))
             );
-            assert!(!terminal.has_session(first_id), "the old session is gone");
+            // The tab and its session keep one identity: everything that
+            // finds a tab's session by the tab id still does.
+            assert_eq!(terminal.pane.sessions[0].id, terminal.tabs[0].id);
+            assert!(terminal.has_session(first_id));
+            assert_eq!(
+                terminal
+                    .session_by_id(first_id)
+                    .and_then(|session| session.daemon_pane()),
+                Some(Uuid::from_u128(1))
+            );
             assert_eq!(terminal.pane.active_index, 1, "the active tab did not move");
             assert_eq!(terminal.last_grid_rows, 0, "the new session gets sized");
             assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 0);
+            // Selecting the handed-over tab by its id works.
+            terminal.select_tab(first_id);
+            assert_eq!(terminal.pane.active_index, 0);
+            assert!(terminal.tabs[0].is_active);
+            terminal.select_tab(second_id);
 
             // A session that is no longer shown (tab closed while it was
             // connecting) is not replaced.
-            assert!(!terminal.replace_session(first_id, attached(2)));
+            assert!(!terminal.replace_session(Uuid::from_u128(404), attached(2)));
 
-            // A split pane can be handed over as well.
+            // A split pane can be handed over as well, under its key.
             let split = ssh();
             let split_id = split.id;
             terminal.install_split_pane(split, SplitDirection::Horizontal);
@@ -5819,7 +5839,9 @@ mod tests {
                 .layout
                 .extra
                 .values()
-                .any(|session| session.daemon_pane() == Some(Uuid::from_u128(3))));
+                .any(|session| session.daemon_pane() == Some(Uuid::from_u128(3))
+                    && session.id == split_id));
+            assert!(terminal.has_session(split_id));
 
             // Tabs of an SSH connection are never saved as panes of the
             // local daemon: their panes live on the host.

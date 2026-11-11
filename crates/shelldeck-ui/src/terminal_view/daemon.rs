@@ -46,6 +46,7 @@ mod imp {
     use shelldeck_sessiond::attached::SessionOptions;
     use shelldeck_sessiond::client::SpawnOptions;
     use shelldeck_sessiond::paths;
+    use shelldeck_sessiond::protocol::PaneInfo;
     use shelldeck_sessiond::supervisor::{
         DaemonTarget, Notices, PaneTarget, Supervisor, SupervisorOptions,
     };
@@ -220,6 +221,15 @@ mod imp {
             .map_err(|error| error.to_string())
     }
 
+    /// A live pane of this backend that nothing shows: not this process
+    /// (`open`) and no other client of the daemon (a second instance of
+    /// the app). A pane someone is attached to is theirs: taking it would
+    /// mirror it in two windows, and closing the tab here would end it
+    /// there.
+    pub(super) fn restorable(info: &PaneInfo, open: &[Uuid]) -> bool {
+        info.alive && info.label == PANE_LABEL && info.clients == 0 && !open.contains(&info.pane)
+    }
+
     pub(super) fn restorable_panes() -> RestorablePanes {
         use shelldeck_sessiond::attached::AttachError;
         let supervisor = match supervisor() {
@@ -248,10 +258,46 @@ mod imp {
         RestorablePanes::Live(
             panes
                 .into_iter()
-                .filter(|info| info.alive && info.label == PANE_LABEL && !open.contains(&info.pane))
+                .filter(|info| restorable(info, &open))
                 .map(|info| info.pane)
                 .collect(),
         )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{restorable, PANE_LABEL};
+        use shelldeck_sessiond::protocol::PaneInfo;
+        use uuid::Uuid;
+
+        // SDTEST-3042 (SDUC-574): at startup only live panes of this
+        // backend that nobody shows are offered back. A pane another
+        // client is attached to (a second instance of the app) is left
+        // to it.
+        #[test]
+        fn sdtest_3042_panes_shown_by_another_client_are_not_restored() {
+            let pane = |label: &str, alive: bool, clients: u16| PaneInfo {
+                pane: Uuid::new_v4(),
+                group: Uuid::nil(),
+                label: label.into(),
+                title: String::new(),
+                cwd: "/".into(),
+                rows: 24,
+                cols: 80,
+                created_at: 0,
+                alive,
+                exit_code: 0,
+                clients,
+                offset: 0,
+            };
+            let free = pane(PANE_LABEL, true, 0);
+            assert!(restorable(&free, &[]));
+            assert!(!restorable(&free, &[free.pane]), "shown by this app");
+            assert!(!restorable(&pane(PANE_LABEL, true, 1), &[]), "attached");
+            assert!(!restorable(&pane(PANE_LABEL, true, 3), &[]), "attached");
+            assert!(!restorable(&pane(PANE_LABEL, false, 0), &[]), "dead");
+            assert!(!restorable(&pane("debug-cli", true, 0), &[]), "foreign");
+        }
     }
 }
 

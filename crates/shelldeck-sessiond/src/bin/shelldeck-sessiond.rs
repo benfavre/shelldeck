@@ -132,7 +132,9 @@ debug commands:
             return ExitCode::from(2);
         };
         if command == "--version" {
-            println!("shelldeck-sessiond {}", env!("CARGO_PKG_VERSION"));
+            // Printed from the marker itself, so the marker is part of
+            // every build (see `shelldeck_sessiond::BUILD_MARKER`).
+            print!("{}", &shelldeck_sessiond::BUILD_MARKER[4..]);
             return ExitCode::SUCCESS;
         }
         let args = match parse(argv.collect()) {
