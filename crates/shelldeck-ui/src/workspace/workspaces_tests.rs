@@ -1572,6 +1572,7 @@ mod tests {
                     // Valeur calculée après repli du panneau latéral.
                     sidebar_width: crate::sidebar::RAIL_WIDTH,
                     menu_bar_visible: false,
+                    persistent_sessions: false,
                 },
                 cx,
             );

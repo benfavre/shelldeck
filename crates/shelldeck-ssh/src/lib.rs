@@ -7,6 +7,10 @@ pub mod handler;
 pub mod known_hosts;
 pub mod pool;
 pub mod session;
+pub mod sessiond;
+#[cfg(unix)]
+pub mod sessiond_host;
+pub mod sessiond_install;
 pub mod tmux;
 pub mod tunnel;
 pub mod workspace_helper;

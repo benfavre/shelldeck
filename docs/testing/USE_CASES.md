@@ -3367,6 +3367,24 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-11**: SDUC-574: final review of the session daemon branch, eleven findings, all confirmed and addressed (two of them in part). Remote tabs keep retrying while they are open (`UNLIMITED_ATTEMPTS`); a pane being ended holds the connection until it is gone; panes closed while unreachable are ended at the next contact and not offered back; a handed-over SSH tab keeps one id; panes attached by another client are not taken; a saved daemon tab without live panes is restored as an ordinary tab; the install answer is bound to the server it was given for; a bundled remote build must carry the build marker of the app's release; a host that cannot execute the upload is uploaded to once per run; the run directory name includes the host name and has shorter forms before `/tmp`. SDTEST-3039..3048; SDTEST-3002, 3005, 3009, 3014, 3016, 3019, 3021, 3022 and 3025 changed. The app was not launched again: the visual checks of the earlier run were not repeated.
+
+- **2026-11-11**: SDUC-574: first run of the session daemon in the real application (private headless desktop, throwaway profile; local path only, the remote path was not run). Three defects found and fixed: the refresh loop did not restart after the last tab was closed (SDTEST-3037), a widening resize left the screen short of its row count and the next `clear` panicked the parser, which closed the daemon pane (SDTEST-3038, `EMULATOR_REV` 2), and the Settings description was cut. SDTEST-3028 no longer races the `exec`. Results per check in `session-daemon-qa.md`, section "Checks in the running application".
+
+- **2026-11-11**: SDUC-574: session daemon hardening, version skew and Linux packaging. Daemon: input backpressure with a non-blocking PTY writer, shutdown with lock handoff, idle exit that loses no connection, own descriptor limit raised and the original restored in pane programs (`exec-pane`), run directory named after the machine identity, log file with one rotated generation, history budget. App: a daemon left by another version is used when it speaks the protocol, otherwise left running with its tabs shown as "managed by another version". Packaging: the Linux tar.gz, the install script and the updater carry `shelldeck-sessiond`; the static remote builds are wired but were not built. SDTEST-2981..2984, SDTEST-3025..3036; SDTEST-3001, SDTEST-3012 and SDTEST-3013 extended. The app was not launched and nothing was released: manual checks in `session-daemon-qa.md`.
+
+- **2026-11-11**: SDUC-574: remote (SSH) use of the session daemon behind the same opt-in: probe of the remote binary, upload with SHA-256 verification under a per-host consent (`[general.session_daemon_hosts]`, asked once by a non-blocking toast), one SSH connection per host for all its panes (`shelldeck_ssh::sessiond_host::RemoteHost`, `supervisor::Connector`), panes offered back at the next connect, typed fallback to the tmux attachment or a plain shell with one notice. SDTEST-3014..3024. No real SSH server and no app launch: manual checks pending in `session-daemon-qa.md`; the remote builds are not packaged.
+
+- **2026-11-11**: SDUC-574: local app integration completed behind the opt-in: no daemon call on the UI thread (`supervisor::Supervisor`, sessions start in a "connecting" phase), automatic reattach with backoff after a connection loss and "session ended" for panes that did not survive, native layout saved by pane id in `workspace.json` and rebuilt at startup, Settings toggle, sign-out ends the panes. Workspace-scoped terminals stay in-process (reason in the design document). SDTEST-3004..3013; SDTEST-1718 and SDTEST-2992 extended. The app was not launched: manual checks pending in `session-daemon-qa.md`.
+
+- **2026-11-11**: SDUC-574: review fixes for the session daemon prototype: attach without a size for panes offered back at startup, input accepted while a slow client waits to reattach, a dead pane is removed only by closing its tab and other viewers still get its end, decode budget for snapshots and history, connection slots and accept loop under descriptor exhaustion, handshake deadlines against trickled bytes, daemon found after a host name change, start repeated during the old daemon's exit. SDTEST-2997..3003; SDTEST-2978 and SDTEST-2995 changed.
+
+- **2026-11-11**: SDUC-574: opt-in local use of the session daemon (`general.session_daemon`, default off): `TerminalSession::spawn_attached`, `shelldeck_sessiond::attached::LocalSessions`, local tabs and splits of the main terminal as daemon panes, panes offered back as tabs at startup. SDTEST-2992..2996. Manual checks pending in `session-daemon-qa.md`.
+
+- **2026-11-11**: SDUC-574: session daemon SSH transport (`shelldeck_ssh::sessiond::connect`): exec channel to `shelldeck-sessiond proxy`, typed fallback errors, tunnel end reporting. SDTEST-2985..2991. No app wiring yet.
+
+- **2026-11-11**: SDUC-574: session daemon prototype (`shelldeck-sessiond`): protocol v1, snapshot and restore of the terminal grid, stream boundary tail, attach handoff by byte offset, slow-client resync, history backfill, stdio proxy. SDTEST-2955..2980. No app wiring yet.
+
 - **2026-11-04** — SDUC-565: Settings → Général and the palette set up the Inklura Chrome extension (download, stable folder, computed ID, chrome://extensions, optional Craft bridge). SDTEST-2875–2879.
 
 - **2026-10-31** — SDUC-475/564: reuse unchanged visible row layout/paint with bounded retained views; invalidate on content, source, typography/locale and width changes. Correct native benchmarking to exclude GPUI test-support and per-frame font discovery; record frame phases and input-to-submit separately (SDTEST-2915/2916, AGENTS_PERFORMANCE.md).
@@ -5067,3 +5085,82 @@ The scoped CEF backend remains available through Built-in Chromium.
 Verification separates disposable dummy-password fixtures and native GPUI input
 from actual Google account sync, which needs user sign-in. See
 [`browser-chrome-preview.md`](../browser-chrome-preview.md).
+
+### SDUC-574: Session daemon owns panes and serves them to attached clients
+
+Prototype (crate `shelldeck-sessiond`, design in
+[`session-daemon.md`](../design/session-daemon.md)), opt-in for local
+terminals through `general.session_daemon` (off by default, toggle
+"Persistent terminal sessions" in Settings, General, for dev-capable roles
+on Unix). A per-user daemon owns
+one PTY per pane and keeps the authoritative screen. Clients attach over a
+Unix socket (or through `shelldeck-sessiond proxy` on an SSH exec channel),
+receive a binary snapshot, a ready marker and then the raw byte stream, and
+parse it with their own emulator.
+
+With the same setting, an SSH tab opened without a directory is a pane of
+the daemon on that host when the host has (or, with the user's recorded
+consent for that host, is given) the matching binary in
+`~/.shelldeck/bin`; all panes of a host share one SSH connection, survive
+the app and are offered back at the next connect. Otherwise the tab uses
+the tmux attachment or a plain shell, with one notice.
+
+Observable contract:
+
+- A pane keeps running when every client detaches or disconnects; a later
+  attach reproduces the screen, attributes, cursor and modes exactly.
+- An attach during continuous output loses and duplicates no byte, also when
+  the stream is cut inside an escape sequence or a multi-byte character.
+- Several clients may attach to one pane. Input frames arrive whole, the
+  application gets exactly one reply to a terminal query, a read-only client
+  cannot write, resize or kill, and the last active client owns the size.
+- A client that reads too slowly is dropped and resynced from a fresh
+  snapshot; the pane and the other clients are never throttled.
+- History is backfilled newest first after the snapshot; an applied resize
+  the client cannot reproduce makes it resync instead of diverging.
+- Pane exit is reported after the final output with the exit status; the
+  dead pane stays listed until it is closed. When one client closes it,
+  the others still receive its final output and are told it is gone.
+- An attach may ask for no size: the pane keeps its size and its history
+  width until that client sends one.
+- A client dropped for reading too slowly can still type into the pane
+  (for example Ctrl-C) before it reattaches.
+- Over SSH the daemon is reached through one exec channel without a PTY
+  running a fixed command. A host where the binary is absent, not
+  executable, or where exec is refused reports a typed "unavailable" error
+  so the caller can use the tmux mode; a protocol version mismatch, a proxy
+  refusal and a lost connection are reported as such. Dropping the client
+  releases the remote proxy and leaves the panes running.
+- One daemon per run directory; the directory must be private (0700, owned,
+  not a symlink), the socket is 0600 and the peer uid is checked on both
+  sides. Malformed, oversize, early or stalled frames only close that
+  connection.
+- The tmux mode is unchanged and remains the fallback.
+- With `general.session_daemon` on (Unix), a new local tab or split of the
+  main terminal is a daemon pane: the app starts the daemon when needed,
+  closing the tab or pane ends the shell, quitting the app does not, and
+  signing out ends every pane. The setting applies to new terminals only.
+  Without the daemon binary the tab is an ordinary in-process terminal.
+  Workspace-scoped terminals and SSH tabs are unchanged.
+- Opening such a tab never waits for the daemon: the tab appears at once
+  in a "connecting" state and becomes live when the pane is attached;
+  keys typed meanwhile are delivered then. A daemon that cannot be
+  started is reported inside the tab.
+- When the daemon connection is lost, each terminal says so and reattaches
+  by itself, with growing delays, starting the daemon again when it is
+  gone. A terminal whose pane did not survive says that the session
+  ended; it is never left frozen without a message.
+- At the next start the panes still running come back in their saved
+  layout (tabs, split tree, ratios, active tab, focused pane), each with
+  its screen and at the size it had (never resized to a placeholder). A
+  pane without a saved slot comes back as a tab; a saved slot whose pane
+  is gone is dropped.
+
+Verified by SDTEST-2955..2980, SDTEST-2997..3003 and, for the local opt-in,
+SDTEST-2992..2996, SDTEST-2998 and SDTEST-3004..3013
+(backend, daemon start, reconnect, layout plan and capture; most of the
+GPUI wiring is compile-checked only and the app was never launched, see
+[`session-daemon-qa.md`](./session-daemon-qa.md)). Not done: Settings
+toggle, layout restore, SSH use of the daemon in the app, binary packaging
+and remote delivery.
+

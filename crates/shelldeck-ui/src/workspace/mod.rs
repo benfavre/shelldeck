@@ -148,6 +148,8 @@ mod polling;
 mod presentation;
 pub use presentation::WorkspacePresentation;
 mod agent_project_repair;
+#[cfg(unix)]
+mod remote_daemon;
 mod remote_project;
 mod render;
 mod request_views;
@@ -1164,6 +1166,7 @@ impl Workspace {
                         scrollback_lines: scrollback,
                         sidebar_width: initial_sidebar_width + crate::sidebar::RAIL_WIDTH,
                         menu_bar_visible,
+                        persistent_sessions: config.general.session_daemon,
                     },
                     cx,
                 );

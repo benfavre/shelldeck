@@ -12,6 +12,12 @@
 #   - Linux:   shelldeck-linux-x86_64.tar.gz
 #   - macOS:   shelldeck-macos-aarch64.zip
 #   - Windows: shelldeck-windows-x86_64.zip
+#
+# Linux also builds the session daemon (shelldeck-sessiond), which ships
+# beside the application binary, and its two static builds for SSH servers
+# (scripts/build-sessiond-remote.sh, which needs the musl Rust targets).
+# SHELLDECK_SESSIOND_REMOTE=0 leaves the static builds out: the application
+# then has no program to install on a server and keeps tmux or plain SSH.
 
 set -euo pipefail
 
@@ -79,6 +85,31 @@ cargo build --locked --release -p shelldeck
 # the dedicated helper enables CEF, and provider stdio mode uses that helper.
 cargo build --locked --release -p shelldeck-browser --features runtime
 python3 scripts/bundle-browser-runtime.py --profile release
+
+# The session daemon is a separate small process that owns the terminals of
+# `general.session_daemon`. The application looks for it beside its own
+# executable, so it is built with the same profile and packaged with it.
+# Linux only for now: the macOS bundle and the Windows archive do not carry
+# it (the application then uses in-process terminals).
+if [ "$PLATFORM" = "linux-x86_64" ]; then
+    echo "==> Building the session daemon..."
+    # The binary needs none of the application side of its crate (the
+    # `app` feature, which links shelldeck-core).
+    cargo build --locked --release -p shelldeck-sessiond --no-default-features
+    if [ ! -x target/release/shelldeck-sessiond ]; then
+        echo "ERROR: Expected binary not found: target/release/shelldeck-sessiond" >&2
+        exit 1
+    fi
+    if [ "${SHELLDECK_SESSIOND_REMOTE:-1}" = "0" ]; then
+        echo "==> SHELLDECK_SESSIOND_REMOTE=0: no session daemon builds for SSH servers"
+        # A build left by an earlier run would be packaged under this
+        # release although it was not built from it.
+        rm -f target/release/shelldeck-sessiond-x86_64-unknown-linux-musl \
+            target/release/shelldeck-sessiond-aarch64-unknown-linux-musl
+    else
+        bash "$SCRIPT_DIR/build-sessiond-remote.sh"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Determine binary path

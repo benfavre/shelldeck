@@ -73,12 +73,16 @@ const UI_FONT_FAMILIES: &[&str] = &["Inter", "SF Pro Text", "Segoe UI", "Ubuntu"
 struct GeneralSettingsVisibility {
     reconnect_sessions: bool,
     auto_attach_tmux: bool,
+    /// `general.session_daemon`: a terminal control, and the daemon only
+    /// exists on Unix (elsewhere the setting would do nothing).
+    session_daemon: bool,
 }
 
 fn general_settings_visibility(dev_capable: bool) -> GeneralSettingsVisibility {
     GeneralSettingsVisibility {
         reconnect_sessions: dev_capable,
         auto_attach_tmux: dev_capable,
+        session_daemon: dev_capable && cfg!(unix),
     }
 }
 
@@ -1026,6 +1030,46 @@ impl SettingsView {
                     },
                 ),
             ));
+        }
+        if visibility.session_daemon {
+            // Read when a terminal is created: tabs and panes that are
+            // already open keep the backend they started with.
+            settings = settings.child(Self::render_setting_row(
+                t!("settings.general.session_daemon.label").as_ref(),
+                t!("settings.general.session_daemon.description").as_ref(),
+                Self::bind_toggle(
+                    "general-session-daemon",
+                    self.config.general.session_daemon,
+                    &entity,
+                    |this, value| {
+                        this.config.general.session_daemon = value;
+                    },
+                ),
+            ));
+            // The answers to "install on this server?" are recorded per
+            // SSH connection. Shown only when there is one: forgetting
+            // them makes the question come back at the next connection.
+            let (allowed, refused) = self.config.general.remote_daemon_install_counts();
+            if allowed + refused > 0 {
+                settings = settings.child(Self::render_setting_row(
+                    t!("settings.general.session_daemon_answers.label").as_ref(),
+                    t!(
+                        "settings.general.session_daemon_answers.description",
+                        allowed = allowed,
+                        refused = refused
+                    )
+                    .as_ref(),
+                    Button::new(
+                        "general-session-daemon-answers",
+                        t!("settings.general.session_daemon_answers.button").to_string(),
+                    )
+                    .variant(ButtonVariant::Outline)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.config.general.clear_remote_daemon_installs();
+                        this.save_config(cx);
+                    })),
+                ));
+            }
         }
         settings
             .child(Self::render_setting_row(
@@ -3562,6 +3606,7 @@ mod tests {
             GeneralSettingsVisibility {
                 reconnect_sessions: false,
                 auto_attach_tmux: false,
+                session_daemon: false,
             }
         );
         assert_eq!(
@@ -3569,6 +3614,9 @@ mod tests {
             GeneralSettingsVisibility {
                 reconnect_sessions: true,
                 auto_attach_tmux: true,
+                // The session daemon toggle is offered where the daemon
+                // exists.
+                session_daemon: cfg!(unix),
             }
         );
     }

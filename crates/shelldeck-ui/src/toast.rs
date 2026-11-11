@@ -1,5 +1,7 @@
 use crate::scale::px;
+use adabraka_ui::prelude::{Button, ButtonSize, ButtonVariant};
 use gpui::*;
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::theme::ShellDeckColors;
@@ -34,7 +36,7 @@ impl ToastLevel {
         }
     }
 
-    /// Auto-dismiss duration for each level.
+    /// Auto-dismiss duration for each level, for a short message.
     fn dismiss_duration(&self) -> Duration {
         match self {
             ToastLevel::Info | ToastLevel::Success => Duration::from_secs(3),
@@ -53,12 +55,48 @@ impl ToastLevel {
     }
 }
 
+/// One answer offered by a prompt toast ([`ToastContainer::push_prompt`]).
+#[derive(Clone)]
+pub struct ToastAction {
+    pub label: String,
+    /// Runs when the answer is chosen; the toast is dismissed first.
+    pub on_choose: Rc<dyn Fn(&mut App)>,
+}
+
+impl ToastAction {
+    pub fn new(label: impl Into<String>, on_choose: impl Fn(&mut App) + 'static) -> Self {
+        Self {
+            label: label.into(),
+            on_choose: Rc::new(on_choose),
+        }
+    }
+}
+
+/// Characters a short notice may have before it earns more time.
+const SHORT_TOAST_CHARS: usize = 60;
+/// Reading time added per character beyond that.
+const TOAST_MILLIS_PER_CHAR: u64 = 40;
+/// No notice stays longer than this by itself.
+const MAX_TOAST_DURATION: Duration = Duration::from_secs(12);
+
+/// How long a toast of `chars` characters stays before it dismisses
+/// itself: the duration of its level, plus reading time for a long text.
+/// A notice of two or three lines (why a terminal fell back to plain SSH,
+/// why an install failed) was gone before it could be read at the fixed
+/// three seconds.
+fn dismiss_after(level: ToastLevel, chars: usize) -> Duration {
+    let extra = chars.saturating_sub(SHORT_TOAST_CHARS) as u64 * TOAST_MILLIS_PER_CHAR;
+    (level.dismiss_duration() + Duration::from_millis(extra)).min(MAX_TOAST_DURATION)
+}
+
 /// A single toast notification.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Toast {
     id: usize,
     message: String,
     level: ToastLevel,
+    /// Answers of a prompt toast. Empty for a plain notification.
+    actions: Vec<ToastAction>,
 }
 
 /// Maximum number of toasts visible at once.
@@ -99,16 +137,18 @@ impl ToastContainer {
     pub fn push(&mut self, message: String, level: ToastLevel, cx: &mut Context<Self>) {
         let id = self.next_id;
         self.next_id += 1;
+        let chars = message.chars().count();
 
-        self.toasts.push(Toast { id, message, level });
-
-        // Enforce the maximum visible count by dropping the oldest
-        while self.toasts.len() > MAX_VISIBLE_TOASTS {
-            self.toasts.remove(0);
-        }
+        self.toasts.push(Toast {
+            id,
+            message,
+            level,
+            actions: Vec::new(),
+        });
+        self.enforce_visible_limit();
 
         // Spawn an auto-dismiss timer
-        let duration = level.dismiss_duration();
+        let duration = dismiss_after(level, chars);
         let task = cx.spawn(
             async move |this: WeakEntity<ToastContainer>, cx: &mut AsyncApp| {
                 cx.background_executor().timer(duration).await;
@@ -120,6 +160,44 @@ impl ToastContainer {
         self._dismiss_tasks.push(task);
 
         cx.notify();
+    }
+
+    /// Push a question that never blocks the app: a toast with one button
+    /// per answer. It stays until an answer is chosen or it is closed
+    /// (closing it chooses nothing), and it is never pushed out by newer
+    /// notifications. Returns its id.
+    pub fn push_prompt(
+        &mut self,
+        message: String,
+        actions: Vec<ToastAction>,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.toasts.push(Toast {
+            id,
+            message,
+            level: ToastLevel::Info,
+            actions,
+        });
+        self.enforce_visible_limit();
+        cx.notify();
+        id
+    }
+
+    /// Drop the oldest plain notifications beyond the visible limit.
+    /// Prompts wait for their answer and are kept.
+    fn enforce_visible_limit(&mut self) {
+        while self.toasts.len() > MAX_VISIBLE_TOASTS {
+            let Some(oldest) = self
+                .toasts
+                .iter()
+                .position(|toast| toast.actions.is_empty())
+            else {
+                break;
+            };
+            self.toasts.remove(oldest);
+        }
     }
 
     /// Dismiss (remove) a toast by its id.
@@ -153,6 +231,39 @@ impl ToastContainer {
                 line.to_string().into()
             };
             message_body = message_body.child(div().max_w(px(MSG_MAX_W)).child(display));
+        }
+        if !toast.actions.is_empty() {
+            // Answers of a prompt, wrapped inside the message column.
+            let mut answers = div()
+                .max_w(px(MSG_MAX_W))
+                .pt(px(8.0))
+                .flex()
+                .flex_wrap()
+                .gap(px(6.0));
+            for (index, action) in toast.actions.iter().enumerate() {
+                let on_choose = action.on_choose.clone();
+                let container = weak.clone();
+                answers = answers.child(
+                    Button::new(
+                        ElementId::Name(format!("toast-{id}-answer-{index}").into()),
+                        action.label.clone(),
+                    )
+                    .variant(if index == 0 {
+                        ButtonVariant::Secondary
+                    } else {
+                        ButtonVariant::Outline
+                    })
+                    .size(ButtonSize::Sm)
+                    .on_click(move |_, _window, cx| {
+                        cx.stop_propagation();
+                        if let Some(container) = container.upgrade() {
+                            container.update(cx, |this, cx| this.dismiss(id, cx));
+                        }
+                        on_choose(cx);
+                    }),
+                );
+            }
+            message_body = message_body.child(answers);
         }
 
         div()
@@ -243,5 +354,97 @@ impl Render for ToastContainer {
         }
 
         stack
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ToastAction, ToastContainer, ToastLevel, MAX_VISIBLE_TOASTS};
+    use gpui::{AppContext as _, TestAppContext};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    // SDTEST-3056 (SDUC-574): a toast stays long enough to be read. A
+    // short one keeps the duration of its level; a long one (why a
+    // terminal fell back, why an install failed) gets reading time for
+    // what exceeds a short sentence, up to a cap.
+    #[test]
+    fn sdtest_3056_a_long_notice_stays_longer_than_a_short_one() {
+        use super::dismiss_after;
+        use std::time::Duration;
+
+        let secs = |level, chars| dismiss_after(level, chars).as_secs_f32();
+        assert_eq!(secs(ToastLevel::Info, 0), 3.0);
+        assert_eq!(secs(ToastLevel::Success, 60), 3.0);
+        assert_eq!(secs(ToastLevel::Error, 40), 5.0);
+        // The fallback notice of the session daemon, about 170 characters.
+        let fallback = secs(ToastLevel::Info, 170);
+        assert!((7.0..8.0).contains(&fallback), "{fallback}");
+        assert!(secs(ToastLevel::Error, 170) > fallback);
+        assert_eq!(
+            dismiss_after(ToastLevel::Info, 100_000),
+            Duration::from_secs(12)
+        );
+    }
+
+    // SDTEST-3023 (SDUC-574): a question shown as a toast waits for its
+    // answer: newer notifications never push it out, and closing it
+    // chooses nothing.
+    #[test]
+    fn sdtest_3023_a_prompt_toast_waits_for_its_answer() {
+        let mut app = TestAppContext::single();
+        let toasts = app.update(|cx| cx.new(|_| ToastContainer::new()));
+        let chosen = Rc::new(Cell::new(0u32));
+        let answer = |value: u32| {
+            let chosen = chosen.clone();
+            ToastAction::new(format!("answer {value}"), move |_| chosen.set(value))
+        };
+        let prompt = toasts.update(&mut app, |toasts, cx| {
+            let prompt = toasts.push_prompt("install?".into(), vec![answer(1), answer(2)], cx);
+            for index in 0..MAX_VISIBLE_TOASTS + 3 {
+                toasts.push(format!("notification {index}"), ToastLevel::Info, cx);
+            }
+            prompt
+        });
+        toasts.update(&mut app, |toasts, _| {
+            assert_eq!(toasts.toasts.len(), MAX_VISIBLE_TOASTS);
+            let kept = toasts
+                .toasts
+                .iter()
+                .find(|toast| toast.id == prompt)
+                .expect("the prompt is still shown");
+            assert_eq!(kept.actions.len(), 2);
+            // The newest plain notifications are the ones kept beside it.
+            assert_eq!(
+                toasts.toasts.last().map(|toast| toast.message.as_str()),
+                Some(format!("notification {}", MAX_VISIBLE_TOASTS + 2).as_str())
+            );
+        });
+        // Closing the prompt runs no answer.
+        toasts.update(&mut app, |toasts, cx| toasts.dismiss(prompt, cx));
+        assert_eq!(chosen.get(), 0);
+
+        // Several prompts beyond the limit are all kept.
+        toasts.update(&mut app, |toasts, cx| {
+            for _ in 0..MAX_VISIBLE_TOASTS + 2 {
+                toasts.push_prompt("install?".into(), vec![answer(3)], cx);
+            }
+            assert_eq!(
+                toasts
+                    .toasts
+                    .iter()
+                    .filter(|toast| !toast.actions.is_empty())
+                    .count(),
+                MAX_VISIBLE_TOASTS + 2
+            );
+        });
+        // Choosing an answer runs exactly that handler.
+        let handler = toasts.update(&mut app, |toasts, _| {
+            toasts.toasts.last().expect("prompt").actions[0]
+                .on_choose
+                .clone()
+        });
+        app.update(|cx| handler(cx));
+        assert_eq!(chosen.get(), 3);
     }
 }

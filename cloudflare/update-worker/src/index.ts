@@ -209,6 +209,27 @@ else
       mv "$BROWSER_SOURCE" "$INSTALL_DIR/browser/$VERSION"
     fi
   fi
+  # The session daemon and its static builds for SSH servers sit beside the
+  # application binary. Older published releases do not carry them. A daemon
+  # that is running keeps its own file: the new one is renamed over the name.
+  for SESSIOND in shelldeck-sessiond shelldeck-sessiond-x86_64-unknown-linux-musl shelldeck-sessiond-aarch64-unknown-linux-musl; do
+    if [ -f "$WORK_DIR/$SESSIOND" ] && [ ! -L "$WORK_DIR/$SESSIOND" ]; then
+      cp "$WORK_DIR/$SESSIOND" "$INSTALL_DIR/$SESSIOND.new"
+      chmod 755 "$INSTALL_DIR/$SESSIOND.new"
+      mv -f "$INSTALL_DIR/$SESSIOND.new" "$INSTALL_DIR/$SESSIOND"
+    else
+      # A build for SSH servers left by an older release is never uploaded
+      # by this one (wrong version marker): delete it. The local daemon
+      # stays when a release ships none.
+      case "$SESSIOND" in
+        *-unknown-linux-musl)
+          if [ -f "$INSTALL_DIR/$SESSIOND" ] && [ ! -L "$INSTALL_DIR/$SESSIOND" ]; then
+            rm -f -- "\${INSTALL_DIR:?}/\${SESSIOND:?}"
+          fi
+          ;;
+      esac
+    fi
+  done
   cp "$BINARY" "$INSTALL_DIR/shelldeck.new"
   chmod +x "$INSTALL_DIR/shelldeck.new"
   mv -f "$INSTALL_DIR/shelldeck.new" "$INSTALL_DIR/shelldeck"

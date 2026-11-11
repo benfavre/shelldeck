@@ -80,6 +80,8 @@ jobs:
           python3 scripts/test-agents-packaging.py
           python3 scripts/test-macos-branding.py
           python3 scripts/test-browser-packaging.py
+          python3 scripts/test-sessiond-packaging.py
+          bash -n scripts/build-sessiond-remote.sh
           bash -n packaging/linux/build-appimage.sh
           bash -n packaging/windows/build-nsis.sh
           desktop-file-validate packaging/linux/shelldeck.desktop
@@ -121,6 +123,8 @@ jobs:
         with:
           toolchain: nightly-2026-03-06
           components: rustfmt, clippy
+          # For the static session daemon builds checked below.
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
 
       # Public Actions caches must never retain private Automonique Git sources.
       - name: Cache cargo
@@ -172,6 +176,18 @@ jobs:
         run: |
           python3 scripts/test-agent-frame-benchmark.py
           cargo check --locked -p shelldeck --features agent-preview --bin agent-console-preview
+
+      # The builds that the application uploads to SSH servers: the daemon
+      # without the `app` feature, linked statically for both architectures
+      # (the script checks each result), then the x86_64 one uploaded,
+      # started and used through the SSH fixture (SDTEST-3024).
+      - name: Build and exercise the static session daemon
+        run: |
+          bash scripts/build-sessiond-remote.sh
+          SHELLDECK_SESSIOND_BIN="$PWD/target/release/shelldeck-sessiond-x86_64-unknown-linux-musl" \
+            cargo test --locked -p shelldeck-ssh sdtest_3024 -- --ignored
+          cargo clippy --locked -p shelldeck-sessiond -p shelldeck-terminal \
+            --no-default-features --no-deps -- -D warnings
 
       - name: cargo clippy
         # `--no-deps` skips lints from vendored path deps under `patches/`
@@ -241,6 +257,26 @@ jobs:
       # every supported OS before any native PTY or process side effect.
       - name: Test terminal cwd authority boundary
         run: cargo test -p shelldeck-terminal --lib missing_cwd_is_rejected_at_the_pty_boundary
+
+      # The session daemon has macOS branches that no Linux run reaches: the
+      # kern.uuid lookup that names the run directory, getpeereid, the
+      # 104-byte socket path. Its tests start real daemons and real PTYs on
+      # private temporary directories.
+      - name: Test the session daemon on macOS
+        if: runner.os == 'macOS'
+        run: cargo test --locked -p shelldeck-sessiond
+
+      # Windows has no daemon: the binary is a stub that says so, and the
+      # application keeps in-process terminals.
+      - name: Check the session daemon stub on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --locked -p shelldeck-sessiond --no-default-features
+          if target/debug/shelldeck-sessiond.exe --version; then
+            echo "the Windows stub must refuse to run" >&2
+            exit 1
+          fi
 
       - name: Test portable-pty Unix cwd authority regression
         if: runner.os != 'Windows'

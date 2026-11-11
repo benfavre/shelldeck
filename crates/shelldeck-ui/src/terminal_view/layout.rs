@@ -1,4 +1,6 @@
 use super::*;
+use shelldeck_core::config::workspace_state::DaemonPaneNode;
+use shelldeck_terminal::attached::AttachedPhase;
 
 /// A single tab in the terminal tab bar
 #[derive(Debug, Clone)]
@@ -338,6 +340,229 @@ impl TabLayout {
             &mut dividers,
         );
         (leaves, dividers)
+    }
+}
+
+/// Describe a native pane tree by daemon pane id, for the saved session.
+/// `pane_of` gives the daemon pane behind a leaf, or `None` for a leaf
+/// that must not be saved (not a daemon pane, or one that has ended): that
+/// leaf is left out and its split collapses into the other side. `None`
+/// when no leaf remains.
+pub(super) fn daemon_tree_of(
+    node: &PaneNode,
+    pane_of: &impl Fn(PaneId) -> Option<Uuid>,
+) -> Option<DaemonPaneNode> {
+    match node {
+        PaneNode::Leaf(id) => pane_of(*id).map(|pane| DaemonPaneNode::Pane { pane }),
+        PaneNode::Split {
+            direction,
+            ratio,
+            a,
+            b,
+        } => DaemonPaneNode::split(
+            matches!(direction, SplitDirection::Horizontal),
+            *ratio,
+            daemon_tree_of(a, pane_of),
+            daemon_tree_of(b, pane_of),
+        ),
+    }
+}
+
+/// Rebuild a native pane tree from a saved one. `leaf_of` maps each daemon
+/// pane to the leaf that now shows it; a pane without a leaf is left out,
+/// like a pane that is gone. `None` when no leaf remains.
+pub(super) fn pane_tree_from_daemon(
+    node: &DaemonPaneNode,
+    leaf_of: &HashMap<Uuid, PaneId>,
+) -> Option<PaneNode> {
+    match node {
+        DaemonPaneNode::Pane { pane } => leaf_of.get(pane).map(|id| PaneNode::Leaf(*id)),
+        DaemonPaneNode::Split {
+            horizontal,
+            ratio,
+            first,
+            second,
+        } => {
+            let a = pane_tree_from_daemon(first, leaf_of);
+            let b = pane_tree_from_daemon(second, leaf_of);
+            match (a, b) {
+                (Some(a), Some(b)) => Some(PaneNode::Split {
+                    direction: if *horizontal {
+                        SplitDirection::Horizontal
+                    } else {
+                        SplitDirection::Vertical
+                    },
+                    ratio: if ratio.is_finite() {
+                        ratio.clamp(0.15, 0.85)
+                    } else {
+                        0.5
+                    },
+                    a: Box::new(a),
+                    b: Box::new(b),
+                }),
+                (Some(only), None) | (None, Some(only)) => Some(only),
+                (None, None) => None,
+            }
+        }
+    }
+}
+
+/// Tab state shown for a daemon-attached session. A pane that was lost
+/// (with its daemon, or closed elsewhere) or never reachable is an error,
+/// so the tab does not look alive; a process that exited is an exit.
+pub(super) fn attached_tab_state(
+    phase: &AttachedPhase,
+    ended: &str,
+    unavailable: &str,
+    other_version: &str,
+) -> SessionState {
+    match phase {
+        AttachedPhase::Connecting | AttachedPhase::Live | AttachedPhase::Reconnecting => {
+            SessionState::Running
+        }
+        AttachedPhase::Ended {
+            exit_code: Some(code),
+        } => SessionState::Exited(*code),
+        AttachedPhase::Ended { exit_code: None } => SessionState::Error(ended.to_string()),
+        AttachedPhase::Unavailable => SessionState::Error(unavailable.to_string()),
+        // Not shown as running: this app cannot reach the pane. Not shown
+        // as ended either: it keeps running under the other version.
+        AttachedPhase::OtherVersion => SessionState::Error(other_version.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod daemon_layout_tests {
+    // No glob import: `super::*` carries gpui's `test` attribute.
+    use super::{
+        attached_tab_state, daemon_tree_of, pane_tree_from_daemon, PaneId, PaneNode, SplitDirection,
+    };
+    use shelldeck_terminal::attached::AttachedPhase;
+    use shelldeck_terminal::session::SessionState;
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    fn pane(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn describe(node: &PaneNode) -> String {
+        match node {
+            PaneNode::Leaf(PaneId::Primary) => "P".into(),
+            PaneNode::Leaf(PaneId::Extra(id)) => format!("E{}", id.as_u128()),
+            PaneNode::Split {
+                direction,
+                ratio,
+                a,
+                b,
+            } => format!(
+                "{}({} {ratio} {})",
+                match direction {
+                    SplitDirection::Horizontal => "H",
+                    SplitDirection::Vertical => "V",
+                },
+                describe(a),
+                describe(b)
+            ),
+        }
+    }
+
+    // SDTEST-3011 (SDUC-574): the native split tree is saved by daemon
+    // pane id and rebuilt with other leaf ids: same shape, directions and
+    // ratios; leaves that are not live daemon panes are left out.
+    #[test]
+    fn sdtest_3011_native_layout_maps_to_daemon_panes_and_back() {
+        // P | (E1 / (E2 | E3))
+        let tree = PaneNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.3,
+            a: Box::new(PaneNode::Leaf(PaneId::Primary)),
+            b: Box::new(PaneNode::Split {
+                direction: SplitDirection::Vertical,
+                ratio: 0.6,
+                a: Box::new(PaneNode::Leaf(PaneId::Extra(pane(1)))),
+                b: Box::new(PaneNode::Split {
+                    direction: SplitDirection::Horizontal,
+                    ratio: 0.25,
+                    a: Box::new(PaneNode::Leaf(PaneId::Extra(pane(2)))),
+                    b: Box::new(PaneNode::Leaf(PaneId::Extra(pane(3)))),
+                }),
+            }),
+        };
+        // Daemon pane ids 10, 11, 12, 13 behind the four leaves.
+        let all = |id: PaneId| match id {
+            PaneId::Primary => Some(pane(10)),
+            PaneId::Extra(id) => Some(pane(id.as_u128() + 10)),
+        };
+        let saved = daemon_tree_of(&tree, &all).expect("saved");
+        assert_eq!(saved.panes(), [10, 11, 12, 13].map(pane));
+
+        // After a restart the leaves have new ids, and the leftmost pane
+        // is the primary one.
+        let leaves: HashMap<Uuid, PaneId> = [
+            (pane(10), PaneId::Primary),
+            (pane(11), PaneId::Extra(pane(21))),
+            (pane(12), PaneId::Extra(pane(22))),
+            (pane(13), PaneId::Extra(pane(23))),
+        ]
+        .into();
+        let rebuilt = pane_tree_from_daemon(&saved, &leaves).expect("rebuilt");
+        assert_eq!(describe(&rebuilt), "H(P 0.3 V(E21 0.6 H(E22 0.25 E23)))");
+
+        // The primary leaf is an in-process terminal and E2 has ended:
+        // neither is saved, and their splits collapse.
+        let some = |id: PaneId| match id {
+            PaneId::Primary => None,
+            PaneId::Extra(id) if id == pane(2) => None,
+            PaneId::Extra(id) => Some(pane(id.as_u128() + 10)),
+        };
+        let saved = daemon_tree_of(&tree, &some).expect("saved");
+        assert_eq!(saved.panes(), [11, 13].map(pane));
+        let leaves: HashMap<Uuid, PaneId> = [
+            (pane(11), PaneId::Primary),
+            (pane(13), PaneId::Extra(pane(23))),
+        ]
+        .into();
+        let rebuilt = pane_tree_from_daemon(&saved, &leaves).expect("rebuilt");
+        assert_eq!(describe(&rebuilt), "V(P 0.6 E23)");
+
+        // A pane whose session could not be opened is left out too.
+        let leaves: HashMap<Uuid, PaneId> = [(pane(13), PaneId::Primary)].into();
+        let rebuilt = pane_tree_from_daemon(&saved, &leaves).expect("rebuilt");
+        assert_eq!(describe(&rebuilt), "P");
+        assert!(pane_tree_from_daemon(&saved, &HashMap::new()).is_none());
+        assert!(daemon_tree_of(&tree, &|_| None).is_none());
+    }
+
+    // SDTEST-3012 (SDUC-574): what the tab shows for each phase of a
+    // daemon pane: waiting phases stay "running", an exit keeps its code,
+    // a lost or unreachable pane is an error and never looks alive.
+    #[test]
+    fn sdtest_3012_tab_state_follows_the_daemon_pane_phase() {
+        let state = |phase| attached_tab_state(&phase, "ended", "unavailable", "other version");
+        for phase in [
+            AttachedPhase::Connecting,
+            AttachedPhase::Live,
+            AttachedPhase::Reconnecting,
+        ] {
+            assert_eq!(state(phase), SessionState::Running);
+        }
+        assert_eq!(
+            state(AttachedPhase::Ended { exit_code: Some(3) }),
+            SessionState::Exited(3)
+        );
+        assert_eq!(
+            state(AttachedPhase::Ended { exit_code: None }),
+            SessionState::Error("ended".into())
+        );
+        assert_eq!(
+            state(AttachedPhase::Unavailable),
+            SessionState::Error("unavailable".into())
+        );
+        assert_eq!(
+            state(AttachedPhase::OtherVersion),
+            SessionState::Error("other version".into())
+        );
     }
 }
 

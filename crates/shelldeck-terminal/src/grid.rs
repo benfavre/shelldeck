@@ -4,6 +4,9 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthChar;
 
+mod snapshot;
+pub use snapshot::{HistoryChunk, SnapshotError, MAX_SNAPSHOT_DIMENSION, SNAPSHOT_FORMAT};
+
 // ---------------------------------------------------------------------------
 // Ring Buffer
 // ---------------------------------------------------------------------------
@@ -463,6 +466,9 @@ pub struct TerminalGrid {
     /// Selection anchors add this monotonic base so output cannot retarget a
     /// selection to whichever text later occupies the same display row.
     selection_history_base: usize,
+    /// Bumped whenever the history is cleared (ED 3, RIS), so a session
+    /// daemon backfill that spans the clear can stop.
+    history_epoch: u64,
     max_scrollback: usize,
     scroll_offset: usize,
     scroll_top: usize,
@@ -567,6 +573,7 @@ impl TerminalGrid {
             scrollback: RingBuffer::new(max_scrollback),
             scrollback_line_flags: RingBuffer::new(max_scrollback),
             selection_history_base: 0,
+            history_epoch: 0,
             max_scrollback,
             scroll_offset: 0,
             scroll_top: 0,
@@ -1010,6 +1017,7 @@ impl TerminalGrid {
                     .saturating_add(self.scrollback.len());
                 self.scrollback.clear();
                 self.scrollback_line_flags.clear();
+                self.history_epoch = self.history_epoch.wrapping_add(1);
                 self.scroll_offset = 0;
             }
             _ => {}
@@ -1415,6 +1423,15 @@ impl TerminalGrid {
             self.cells.truncate(new_rows);
         }
 
+        // Merging soft-wrapped lines (`reflow_on_grow`) removes rows. The
+        // screen must still hold `new_rows` rows: everything else indexes
+        // `cells` by `0..rows`, so a short screen panics at the next erase
+        // or scroll (a terminal started narrow and then widened, then
+        // `clear`). The freed rows are blank rows at the bottom.
+        while self.cells.len() < new_rows {
+            self.cells.push(vec![Cell::default(); new_cols]);
+        }
+
         // Ensure line_flags matches cells length.
         self.line_flags
             .resize(self.cells.len(), LineFlags::default());
@@ -1714,7 +1731,9 @@ impl TerminalGrid {
         // makes existing command-completion observers miss subsequent events.
         let response_tx = self.response_tx.take();
         let prompt_mark_sequence = self.prompt_mark_sequence;
+        let history_epoch = self.history_epoch.wrapping_add(1);
         *self = Self::with_scrollback(rows, cols, max_scrollback);
+        self.history_epoch = history_epoch;
         self.response_tx = response_tx;
         self.prompt_mark_sequence = prompt_mark_sequence;
     }
@@ -2844,6 +2863,35 @@ mod tests {
         g.resize(4, 10);
         // After growing, the wrapped continuation merges back into one line.
         assert_eq!(&row_text(&g, 0)[..6], "abcdef");
+    }
+
+    // SDTEST-3038 (SDUC-574): widening a terminal merges soft-wrapped
+    // lines; the screen keeps its row count afterwards. Found in the
+    // running app: a pane started at 45 columns, widened to 136, then
+    // `clear` panicked the parser and the session daemon closed the pane.
+    #[test]
+    fn sdtest_3038_widening_keeps_the_row_count_after_merging_wrapped_lines() {
+        let mut g = TerminalGrid::new(4, 4);
+        write_str(&mut g, "abcdefghij");
+        assert!(g.line_flags[1].soft_wrapped && g.line_flags[2].soft_wrapped);
+        g.resize(4, 12);
+        assert_eq!(&row_text(&g, 0)[..10], "abcdefghij");
+        assert_eq!(g.cells.len(), 4, "the screen still has four rows");
+        assert_eq!(g.line_flags.len(), 4);
+        assert!(g.cells.iter().all(|row| row.len() == 12));
+        assert_eq!(g.cursor.row, 0);
+        // Every whole-screen operation indexes `0..rows`.
+        g.erase_display(2);
+        g.cursor_to(3, 0);
+        g.write_char('z');
+        assert_eq!(g.cells[3][0].c, 'z');
+
+        // Same with a row count that shrinks in the same resize.
+        let mut g = TerminalGrid::new(4, 4);
+        write_str(&mut g, "abcdefghij");
+        g.resize(3, 12);
+        assert_eq!(g.cells.len(), 3);
+        g.erase_display(2);
     }
 
     // ---- index / reverse_index ----

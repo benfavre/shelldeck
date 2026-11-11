@@ -1,0 +1,36 @@
+[package]
+name = "shelldeck-sessiond"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ShellDeck session daemon: owns PTYs, one per pane, and serves them to clients"
+
+[features]
+default = ["app"]
+# The client side used by the application ([`attached`], [`supervisor`]),
+# which hands panes out as `TerminalSession` and therefore links
+# `shelldeck-core`. The daemon binary does not need it: release builds of
+# the binary, and the static builds for SSH servers, pass
+# `--no-default-features`.
+app = ["shelldeck-terminal/app"]
+
+[[test]]
+name = "attached"
+required-features = ["app"]
+
+[dependencies]
+shelldeck-terminal = { path = "../shelldeck-terminal", default-features = false }
+vte = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

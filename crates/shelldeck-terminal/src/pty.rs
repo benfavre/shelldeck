@@ -14,8 +14,39 @@ pub(crate) fn resolve_shell(explicit: Option<&str>) -> String {
         cfg!(windows),
         std::env::var("SHELL").ok().as_deref(),
         std::env::var("COMSPEC").ok().as_deref(),
-        cfg!(windows) && shelldeck_core::util::executable_on_path("powershell"),
+        cfg!(windows) && powershell_on_path(),
     )
+}
+
+/// Whether PowerShell can be started by name (asked on Windows only).
+#[cfg(feature = "app")]
+fn powershell_on_path() -> bool {
+    shelldeck_core::util::executable_on_path("powershell")
+}
+
+/// Without the `app` feature (the session daemon, which is Unix only and
+/// never resolves a shell itself) there is no `PATH` lookup: Windows then
+/// falls back to `%COMSPEC%`.
+#[cfg(not(feature = "app"))]
+fn powershell_on_path() -> bool {
+    false
+}
+
+/// Home directory of the current user.
+#[cfg(feature = "app")]
+fn home_dir() -> Option<std::path::PathBuf> {
+    shelldeck_core::util::home_dir()
+}
+
+/// Home directory of the current user, from the environment only: the
+/// build without `shelldeck-core` has no platform lookup behind it.
+#[cfg(not(feature = "app"))]
+fn home_dir() -> Option<std::path::PathBuf> {
+    ["HOME", "USERPROFILE"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from)
 }
 
 /// Pure part of [`resolve_shell`], parameterized so both platform branches
@@ -118,9 +149,17 @@ impl ChildReaper {
         Ok(status.exit_code())
     }
 
-    #[cfg(test)]
     fn process_id(&self) -> Option<u32> {
         self.child.as_ref().and_then(|child| child.process_id())
+    }
+
+    fn try_wait(&mut self) -> crate::Result<Option<portable_pty::ExitStatus>> {
+        match self.child.as_mut() {
+            Some(child) => child
+                .try_wait()
+                .map_err(|e| crate::TerminalError::Pty(e.to_string())),
+            None => Err(crate::TerminalError::Pty("PTY child already reaped".into())),
+        }
     }
 }
 
@@ -228,6 +267,25 @@ impl PtyMaster {
             })
             .map_err(|e| crate::TerminalError::Resize(e.to_string()))
     }
+
+    /// Process id of the child, which is also its process group and session
+    /// id (the PTY spawn makes it a session leader).
+    pub fn process_id(&self) -> Option<u32> {
+        self._child.process_id()
+    }
+
+    /// Reap the child without blocking: `Ok(Some(status))` once it has
+    /// exited. The session daemon defines pane exit by this, not by PTY EOF
+    /// (a background job can keep the slave side open).
+    pub fn try_wait(&mut self) -> crate::Result<Option<portable_pty::ExitStatus>> {
+        self._child.try_wait()
+    }
+
+    /// File descriptor of the master side, for readiness polling.
+    #[cfg(unix)]
+    pub fn as_raw_fd(&self) -> Option<std::os::unix::io::RawFd> {
+        self.master.as_raw_fd()
+    }
 }
 
 impl LocalPty {
@@ -238,8 +296,7 @@ impl LocalPty {
         rows: u16,
         cols: u16,
     ) -> crate::Result<(Self, Box<dyn Read + Send>)> {
-        let home =
-            shelldeck_core::util::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let home = home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         Self::spawn_at(shell, rows, cols, &home)
     }
 
@@ -257,6 +314,58 @@ impl LocalPty {
             )));
         }
 
+        let mut cmd = CommandBuilder::new(resolve_shell(shell));
+        // The caller resolved this working directory from its authority
+        // boundary; the PTY boundary independently enforces availability.
+        cmd.cwd(cwd);
+
+        // Set TERM so applications know what terminal features are available.
+        cmd.env("TERM", "xterm-256color");
+
+        Self::spawn_builder(cmd, rows, cols)
+    }
+
+    /// Spawn an explicit command for the session daemon (`Spawn` frame).
+    ///
+    /// `argv` is executed directly, never through a shell. An empty `argv`
+    /// starts the user's login shell as a login shell (`argv[0]` prefixed
+    /// with `-`). `env` is applied on top of the process environment; `TERM`
+    /// defaults to `xterm-256color`. `cwd` must be an existing directory:
+    /// there is no fallback to another one.
+    pub fn spawn_command(
+        argv: &[String],
+        env: &[(String, String)],
+        cwd: &std::path::Path,
+        rows: u16,
+        cols: u16,
+    ) -> crate::Result<(Self, Box<dyn Read + Send>)> {
+        if !cwd.is_dir() {
+            return Err(crate::TerminalError::Pty(format!(
+                "working directory `{}` is unavailable",
+                cwd.display()
+            )));
+        }
+        let mut cmd = match argv.split_first() {
+            None => CommandBuilder::new_default_prog(),
+            Some((program, args)) => {
+                let mut cmd = CommandBuilder::new(program);
+                cmd.args(args);
+                cmd
+            }
+        };
+        cmd.cwd(cwd);
+        cmd.env("TERM", "xterm-256color");
+        for (name, value) in env {
+            cmd.env(name, value);
+        }
+        Self::spawn_builder(cmd, rows, cols)
+    }
+
+    fn spawn_builder(
+        cmd: CommandBuilder,
+        rows: u16,
+        cols: u16,
+    ) -> crate::Result<(Self, Box<dyn Read + Send>)> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -266,16 +375,6 @@ impl LocalPty {
                 pixel_height: 0,
             })
             .map_err(|e| crate::TerminalError::Pty(e.to_string()))?;
-
-        let shell_path = resolve_shell(shell);
-
-        let mut cmd = CommandBuilder::new(&shell_path);
-        // The caller resolved this working directory from its authority
-        // boundary; the PTY boundary independently enforces availability.
-        cmd.cwd(cwd);
-
-        // Set TERM so applications know what terminal features are available.
-        cmd.env("TERM", "xterm-256color");
 
         let child = pair
             .slave

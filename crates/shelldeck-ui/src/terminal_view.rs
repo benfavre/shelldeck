@@ -24,6 +24,7 @@ use crate::t;
 use crate::theme::ShellDeckColors;
 
 mod block_drawing;
+mod daemon;
 mod empty_state;
 pub(crate) use empty_state::trace_layout_for_preview;
 mod layout;
@@ -203,6 +204,15 @@ enum LocalCwdScope {
     },
 }
 
+pub(crate) use daemon::RestorablePanes;
+
+/// Session daemon panes that no session shows yet (app restart), or the
+/// fact that the daemon belongs to another version of the app.
+/// Blocking: call it from a background thread, never the GPUI thread.
+pub(crate) fn restorable_daemon_panes() -> RestorablePanes {
+    daemon::restorable_panes()
+}
+
 pub(crate) struct PreparedLocalTerminal {
     session: TerminalSession,
     authority: AuthorizedLocalRoot,
@@ -221,6 +231,9 @@ pub struct TerminalView {
     default_shell: Option<String>,
     /// Portée de checkout exigée par chaque nouveau PTY local.
     default_cwd: LocalCwdScope,
+    /// `general.session_daemon`: new unscoped local tabs and splits run in
+    /// panes owned by the session daemon instead of an in-process PTY.
+    persistent_sessions: bool,
     empty_state_width: f32,
     pub focus_handle: FocusHandle,
     _refresh_task: Option<gpui::Task<()>>,
@@ -385,6 +398,7 @@ impl TerminalView {
             font_family: "JetBrains Mono".to_string(),
             default_shell: None,
             default_cwd: LocalCwdScope::Unscoped,
+            persistent_sessions: false,
             empty_state_width: 0.0,
             focus_handle: cx.focus_handle(),
             _refresh_task: None,
@@ -497,6 +511,152 @@ impl TerminalView {
         self.default_shell = shell.filter(|s| !s.trim().is_empty());
     }
 
+    /// Opt-in session daemon backend (`general.session_daemon`). Applies to
+    /// *new* unscoped local terminals; running sessions keep their backend.
+    pub fn set_persistent_sessions(&mut self, enabled: bool) {
+        self.persistent_sessions = enabled;
+    }
+
+    /// Whether new unscoped local terminals of this view are session
+    /// daemon panes, and so whether panes may be offered back to it.
+    pub fn restores_daemon_panes(&self) -> bool {
+        self.persistent_sessions && matches!(self.default_cwd, LocalCwdScope::Unscoped)
+    }
+
+    /// Rebuild one tab around session daemon panes that an earlier run of
+    /// the app left running: the saved split tree and ratios, one session
+    /// per pane. Returns the id of the new tab, which becomes the active
+    /// one.
+    ///
+    /// Nothing here waits for the daemon: each session is created in its
+    /// "connecting" phase and attaches on its own thread, keeping the
+    /// pane's size until the view has been laid out. A pane that turns out
+    /// to be gone is reported inside its session.
+    pub fn restore_daemon_tab(
+        &mut self,
+        title: Option<&str>,
+        saved: &shelldeck_core::config::workspace_state::DaemonTabLayout,
+        cx: &mut Context<Self>,
+    ) -> Option<Uuid> {
+        if !self.restores_daemon_panes() {
+            return None;
+        }
+        let (rows, cols) = self.grid_size();
+        let session_title = title.unwrap_or("Terminal");
+        let mut sessions = HashMap::new();
+        for pane in saved.tree.panes() {
+            match daemon::attach(pane, session_title, rows, cols, self.configured_scrollback) {
+                Ok(session) => {
+                    sessions.insert(pane, session);
+                }
+                Err(error) => tracing::warn!(%pane, "pane not restored: {error}"),
+            }
+        }
+        // The leftmost pane takes the tab's primary slot.
+        let order: Vec<Uuid> = saved
+            .tree
+            .panes()
+            .into_iter()
+            .filter(|pane| sessions.contains_key(pane))
+            .collect();
+        let primary = sessions.remove(order.first()?)?;
+        let tab_id = primary.id;
+        self.add_session(primary);
+        let mut leaves = HashMap::from([(order[0], PaneId::Primary)]);
+        for pane in &order[1..] {
+            let Some(session) = sessions.remove(pane) else {
+                continue;
+            };
+            session
+                .grid
+                .lock()
+                .set_max_scrollback(self.configured_scrollback);
+            session.set_output_notifier(self.output_tx.clone());
+            let id = Uuid::new_v4();
+            self.layout.extra.insert(id, session);
+            leaves.insert(*pane, PaneId::Extra(id));
+        }
+        if let Some(tree) = layout::pane_tree_from_daemon(&saved.tree, &leaves) {
+            self.layout.tree = tree;
+        }
+        self.layout.focused = saved
+            .focused
+            .and_then(|pane| leaves.get(&pane).copied())
+            .unwrap_or(PaneId::Primary);
+        if let (Some(title), Some(tab)) = (title, self.tabs.iter_mut().find(|t| t.id == tab_id)) {
+            tab.title = title.to_string();
+            tab.named = saved.named;
+        }
+        self.ensure_refresh_running(cx);
+        Some(tab_id)
+    }
+
+    /// Select a restored tab and give keyboard focus back to the pane that
+    /// had it (selecting a tab focuses its primary pane otherwise).
+    pub fn activate_restored_tab(&mut self, tab_id: Uuid, focused_pane: Option<Uuid>) {
+        if !self.tabs.iter().any(|tab| tab.id == tab_id) {
+            return;
+        }
+        self.select_tab(tab_id);
+        let Some(pane) = focused_pane else { return };
+        let leaf = self.layout.leaves().into_iter().find(|leaf| {
+            self.session_for(*leaf)
+                .is_some_and(|session| session.daemon_pane() == Some(pane))
+        });
+        if let Some(leaf) = leaf {
+            self.layout.focused = leaf;
+        }
+    }
+
+    /// For each tab, in tab order, its layout by session daemon pane id,
+    /// or `None` when its primary pane is not a daemon pane. Leaves that
+    /// are not live daemon panes (in-process, ended, not spawned yet) are
+    /// left out. Read-only.
+    pub fn daemon_tab_layouts(
+        &self,
+    ) -> Vec<Option<shelldeck_core::config::workspace_state::DaemonTabLayout>> {
+        fn live_pane(session: &TerminalSession) -> Option<Uuid> {
+            use shelldeck_terminal::attached::AttachedPhase;
+            let status = session.attached_status()?;
+            match status.phase() {
+                AttachedPhase::Ended { .. } | AttachedPhase::Unavailable => None,
+                // `OtherVersion` included: the pane runs under a daemon
+                // this app cannot speak to, and its place in the layout
+                // is kept for the version that can.
+                _ => status.pane(),
+            }
+        }
+        let single = TabLayout::single();
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                // A tab of an SSH connection shows panes of that host's
+                // daemon: they are offered back when the host is
+                // connected again, never attached to the local daemon.
+                if tab.connection_id.is_some() {
+                    return None;
+                }
+                let primary = self.pane.sessions.get(index)?;
+                live_pane(primary)?;
+                let layout = if index == self.pane.active_index {
+                    &self.layout
+                } else {
+                    self.stored_layouts.get(&tab.id).unwrap_or(&single)
+                };
+                let pane_of = |id: PaneId| match id {
+                    PaneId::Primary => live_pane(primary),
+                    PaneId::Extra(id) => layout.extra.get(&id).and_then(live_pane),
+                };
+                Some(shelldeck_core::config::workspace_state::DaemonTabLayout {
+                    tree: layout::daemon_tree_of(&layout.tree, &pane_of)?,
+                    focused: pane_of(layout.focused),
+                    named: tab.named,
+                })
+            })
+            .collect()
+    }
+
     /// Set the canonical checkout root for every future local tab, split, or
     /// CLI-created terminal owned by this view.
     pub(crate) fn set_default_cwd(&mut self, cwd: &std::path::Path) -> Result<(), String> {
@@ -563,6 +723,24 @@ impl TerminalView {
     ) -> shelldeck_terminal::Result<TerminalSession> {
         let (authority_cwd, canonical_cwd, authority) = match &self.default_cwd {
             LocalCwdScope::Unscoped => {
+                if self.persistent_sessions {
+                    // Returns at once: the session connects on its own
+                    // thread and shows a notice meanwhile. Workspace-scoped
+                    // terminals stay in-process: their directory authority
+                    // is a held descriptor the daemon cannot honour
+                    // (design doc, section 15).
+                    match daemon::spawn(
+                        self.default_shell.as_deref(),
+                        rows,
+                        cols,
+                        self.configured_scrollback,
+                    ) {
+                        Ok(session) => return Ok(session),
+                        Err(error) => tracing::warn!(
+                            "Session daemon unavailable, using an in-process terminal: {error}"
+                        ),
+                    }
+                }
                 return TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols);
             }
             LocalCwdScope::Required {
@@ -783,6 +961,60 @@ impl TerminalView {
         self.needs_focus = true;
     }
 
+    /// Scrollback rows configured for the sessions of this view.
+    pub(crate) fn configured_scrollback(&self) -> usize {
+        self.configured_scrollback
+    }
+
+    /// Whether a session with this id is shown, in any tab or split.
+    pub(crate) fn has_session(&self, session_id: Uuid) -> bool {
+        let extras = std::iter::once(&self.layout)
+            .chain(self.stored_layouts.values())
+            .flat_map(|layout| layout.extra.values());
+        self.pane
+            .sessions
+            .iter()
+            .chain(extras)
+            .any(|session| session.id == session_id)
+    }
+
+    /// Put `session` in the place of the session `old_id` (a tab's primary
+    /// pane or a split), keeping the tab, its title and the layout. Used
+    /// when the backend of a tab is only known after it was opened (an SSH
+    /// tab that turns out to be a session daemon pane). The replaced
+    /// session is dropped, not terminated. `false`: no such session (the
+    /// tab was closed meanwhile); `session` is dropped.
+    ///
+    /// The new session takes the id of the one it replaces. A tab is
+    /// found by the id of its primary session and a split by its key in
+    /// the layout (tab dot, AI naming, mentions, snapshots, `select_tab`):
+    /// with another id the handed-over tab would be missed by all of them.
+    pub(crate) fn replace_session(&mut self, old_id: Uuid, mut session: TerminalSession) -> bool {
+        session.id = old_id;
+        session
+            .grid
+            .lock()
+            .set_max_scrollback(self.configured_scrollback);
+        session.set_output_notifier(self.output_tx.clone());
+        let extras = std::iter::once(&mut self.layout)
+            .chain(self.stored_layouts.values_mut())
+            .flat_map(|layout| layout.extra.values_mut());
+        let Some(slot) = self
+            .pane
+            .sessions
+            .iter_mut()
+            .chain(extras)
+            .find(|slot| slot.id == old_id)
+        else {
+            return false;
+        };
+        *slot = session;
+        // Size the new session on the next render.
+        self.last_grid_rows = 0;
+        self.last_grid_cols = 0;
+        true
+    }
+
     pub fn close_tab(&mut self, id: Uuid) {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
             if self.ai_running_command == Some(id) {
@@ -790,6 +1022,20 @@ impl TerminalView {
             }
             // Drop the tab's entire pane layout (all its split sessions).
             let was_active = pos == self.pane.active_index;
+            // A session daemon pane outlives its dropped session: closing
+            // the tab is what ends it (no-op for PTY and SSH sessions).
+            self.pane.sessions[pos].terminate();
+            let closing_layout = if was_active {
+                Some(&self.layout)
+            } else {
+                self.stored_layouts.get(&id)
+            };
+            for session in closing_layout
+                .into_iter()
+                .flat_map(|layout| layout.extra.values())
+            {
+                session.terminate();
+            }
             if was_active {
                 self.layout = TabLayout::single();
             } else {
@@ -1168,6 +1414,20 @@ impl TerminalView {
             "selection": selection,
             "visible_output": output,
         })
+    }
+
+    /// End every session daemon pane shown by this view (sign-out). Unlike
+    /// [`close_all_sessions`](Self::close_all_sessions), which only
+    /// detaches so the panes survive an app quit, this stops their
+    /// processes: nothing may be offered back to the next account. No-op
+    /// for PTY and SSH sessions; returns at once.
+    pub fn end_daemon_panes(&self) {
+        let extras = std::iter::once(&self.layout)
+            .chain(self.stored_layouts.values())
+            .flat_map(|layout| layout.extra.values());
+        for session in self.pane.sessions.iter().chain(extras) {
+            session.terminate();
+        }
     }
 
     /// Close all terminal sessions for graceful shutdown.
@@ -1639,8 +1899,25 @@ impl TerminalView {
         if self._refresh_task.is_some() {
             return;
         }
-        let Some(mut rx) = self.output_rx.take() else {
-            return;
+        let mut rx = match self.output_rx.take() {
+            Some(rx) => rx,
+            None => {
+                // The previous loop was stopped (the last tab was closed)
+                // and its receiver went with it. Without a new channel no
+                // loop would ever run again and the next terminals would
+                // repaint only on input events: output of a running
+                // command, and everything a session daemon pane prints,
+                // would stay invisible until a key press or a mouse move.
+                let (output_tx, output_rx) = mpsc::unbounded_channel::<()>();
+                self.output_tx = output_tx;
+                let extras = std::iter::once(&self.layout)
+                    .chain(self.stored_layouts.values())
+                    .flat_map(|layout| layout.extra.values());
+                for session in self.pane.sessions.iter().chain(extras) {
+                    session.set_output_notifier(self.output_tx.clone());
+                }
+                output_rx
+            }
         };
         self._refresh_task = Some(cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -1676,6 +1953,27 @@ impl TerminalView {
                             }
                             if g.synchronized_output() {
                                 any_sync = true;
+                            }
+                        }
+                        // Session daemon panes: the tab follows the phase
+                        // its session reports (ended, lost, unavailable).
+                        for (index, s) in this.pane.sessions.iter_mut().enumerate() {
+                            let Some(phase) = s.attached_status().map(|status| status.phase())
+                            else {
+                                continue;
+                            };
+                            let state = layout::attached_tab_state(
+                                &phase,
+                                &t!("terminal.session_daemon.ended"),
+                                &t!("terminal.session_daemon.unavailable"),
+                                &t!("terminal.session_daemon.other_version_tab"),
+                            );
+                            if s.state != state {
+                                s.state = state.clone();
+                                if let Some(tab) = this.tabs.get_mut(index) {
+                                    tab.state = state;
+                                }
+                                any_dirty = true;
                             }
                         }
                         // Follow the title each program sets (OSC 0 / OSC 2).
@@ -1822,7 +2120,19 @@ impl TerminalView {
         for tab in &self.tabs {
             let tab_id = tab.id;
             let is_active = tab.is_active;
+            // A session daemon pane that is not attached yet (or again)
+            // is neither running nor ended: show it as pending.
+            let pending = self.session_by_id(tab_id).is_some_and(|session| {
+                session.attached_status().is_some_and(|status| {
+                    matches!(
+                        status.phase(),
+                        shelldeck_terminal::attached::AttachedPhase::Connecting
+                            | shelldeck_terminal::attached::AttachedPhase::Reconnecting
+                    )
+                })
+            });
             let state_color = match &tab.state {
+                SessionState::Running if pending => ShellDeckColors::warning(),
                 SessionState::Running => ShellDeckColors::success(),
                 SessionState::Exited(0) => ShellDeckColors::text_muted(),
                 SessionState::Exited(_) => ShellDeckColors::warning(),
@@ -4819,7 +5129,9 @@ impl TerminalView {
         match self.layout.focused {
             PaneId::Extra(id) => {
                 self.layout.remove_leaf(PaneId::Extra(id));
-                self.layout.extra.remove(&id);
+                if let Some(session) = self.layout.extra.remove(&id) {
+                    session.terminate();
+                }
             }
             PaneId::Primary => {
                 // Promote the first extra pane into the primary slot.
@@ -4836,7 +5148,8 @@ impl TerminalView {
                             tab.title = session.title.clone();
                             tab.state = session.state.clone();
                         }
-                        self.pane.sessions[idx] = session;
+                        let closed = std::mem::replace(&mut self.pane.sessions[idx], session);
+                        closed.terminate();
                     }
                 }
                 // The primary leaf now shows the promoted session; drop the
@@ -5409,6 +5722,250 @@ mod tests {
             terminal.apply_workspace_snapshot(&captured);
             assert_eq!(terminal.capture_workspace_snapshot(), captured);
             terminal.close_all_sessions();
+        });
+    }
+
+    // SDTEST-3037 (SDUC-574): closing the last tab stops the refresh loop;
+    // the next terminal must start a new one. Found in the running app:
+    // without it a terminal opened after the last tab was closed repainted
+    // only on input events, so a session daemon pane looked frozen.
+    #[test]
+    fn sdtest_3037_the_refresh_loop_restarts_after_the_last_tab_was_closed() {
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            terminal.spawn_local_terminal(cx);
+            assert!(terminal._refresh_task.is_some());
+            let first = terminal.tabs[0].id;
+            terminal.close_tab(first);
+            assert_eq!(terminal.tab_count(), 0);
+            assert!(
+                terminal._refresh_task.is_none(),
+                "no loop without a terminal"
+            );
+
+            terminal.spawn_local_terminal(cx);
+            assert_eq!(terminal.tab_count(), 1);
+            assert!(
+                terminal._refresh_task.is_some(),
+                "a terminal opened after the last tab was closed needs a refresh loop"
+            );
+            // Sessions are wired to a channel the new loop listens on.
+            assert!(!terminal.output_tx.is_closed());
+            terminal.close_all_sessions();
+        });
+    }
+
+    // SDTEST-3022 (SDUC-574): an SSH tab whose host turns out to run the
+    // session daemon is handed over to a daemon pane in place: same tab,
+    // same position, the old session dropped and never terminated. Such a
+    // tab is not saved as a local daemon layout.
+    #[test]
+    fn sdtest_3022_an_ssh_tab_is_handed_over_to_a_daemon_pane_in_place() {
+        use super::SplitDirection;
+        use shelldeck_terminal::attached::AttachedPhase;
+        use shelldeck_terminal::session::TerminalSession;
+        use uuid::Uuid;
+
+        static ENDED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn attached(pane: u128) -> TerminalSession {
+            let (mut session, feed, _input) =
+                TerminalSession::spawn_attached("host".into(), 24, 80, 100, 1).unwrap();
+            session.set_terminate_fn(Box::new(|| {
+                ENDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }));
+            feed.status().set_pane(Uuid::from_u128(pane));
+            feed.status().set_phase(AttachedPhase::Live);
+            session
+        }
+        fn ssh() -> TerminalSession {
+            TerminalSession::spawn_ssh("host".into(), 24, 80).unwrap().0
+        }
+
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, _| {
+            terminal.set_persistent_sessions(true);
+            let connection = Uuid::from_u128(77);
+            let first = ssh();
+            let first_id = first.id;
+            terminal.add_session_with_connection(first, Some(connection));
+            let second = ssh();
+            let second_id = second.id;
+            terminal.add_session_with_connection(second, Some(connection));
+            terminal.last_grid_rows = 24;
+            terminal.last_grid_cols = 80;
+            assert!(terminal.has_session(first_id) && terminal.has_session(second_id));
+
+            // The background tab is handed over: its place, id and
+            // connection stay, the session behind it is the daemon pane.
+            assert!(terminal.replace_session(first_id, attached(1)));
+            assert_eq!(terminal.tabs.len(), 2);
+            assert_eq!(terminal.tabs[0].id, first_id);
+            assert_eq!(terminal.tabs[0].connection_id, Some(connection));
+            assert_eq!(
+                terminal.pane.sessions[0].daemon_pane(),
+                Some(Uuid::from_u128(1))
+            );
+            // The tab and its session keep one identity: everything that
+            // finds a tab's session by the tab id still does.
+            assert_eq!(terminal.pane.sessions[0].id, terminal.tabs[0].id);
+            assert!(terminal.has_session(first_id));
+            assert_eq!(
+                terminal
+                    .session_by_id(first_id)
+                    .and_then(|session| session.daemon_pane()),
+                Some(Uuid::from_u128(1))
+            );
+            assert_eq!(terminal.pane.active_index, 1, "the active tab did not move");
+            assert_eq!(terminal.last_grid_rows, 0, "the new session gets sized");
+            assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 0);
+            // Selecting the handed-over tab by its id works.
+            terminal.select_tab(first_id);
+            assert_eq!(terminal.pane.active_index, 0);
+            assert!(terminal.tabs[0].is_active);
+            terminal.select_tab(second_id);
+
+            // A session that is no longer shown (tab closed while it was
+            // connecting) is not replaced.
+            assert!(!terminal.replace_session(Uuid::from_u128(404), attached(2)));
+
+            // A split pane can be handed over as well, under its key.
+            let split = ssh();
+            let split_id = split.id;
+            terminal.install_split_pane(split, SplitDirection::Horizontal);
+            assert!(terminal.replace_session(split_id, attached(3)));
+            assert!(terminal
+                .layout
+                .extra
+                .values()
+                .any(|session| session.daemon_pane() == Some(Uuid::from_u128(3))
+                    && session.id == split_id));
+            assert!(terminal.has_session(split_id));
+
+            // Tabs of an SSH connection are never saved as panes of the
+            // local daemon: their panes live on the host.
+            assert_eq!(terminal.daemon_tab_layouts(), vec![None, None]);
+            assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 0);
+        });
+    }
+
+    // SDTEST-3013 (SDUC-574): the layout saved for session daemon tabs
+    // names daemon panes, tab by tab, and leaves out what cannot come
+    // back; a restored tab gets its focused pane back when activated. The
+    // sessions are attached sessions without a daemon behind them.
+    #[test]
+    fn sdtest_3013_daemon_tabs_are_saved_by_pane_id_and_refocused() {
+        use super::SplitDirection;
+        use shelldeck_core::config::workspace_state::{DaemonPaneNode, DaemonTabLayout};
+        use shelldeck_terminal::attached::AttachedPhase;
+        use shelldeck_terminal::session::TerminalSession;
+        use uuid::Uuid;
+
+        // An attached session as the supervisor hands it out. `pane`: the
+        // daemon pane, when it is known already.
+        static ENDED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn attached(pane: Option<u128>, phase: AttachedPhase) -> TerminalSession {
+            let (mut session, feed, _input) =
+                TerminalSession::spawn_attached("Terminal".into(), 24, 80, 100, 1).unwrap();
+            session.set_terminate_fn(Box::new(|| {
+                ENDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }));
+            if let Some(pane) = pane {
+                feed.status().set_pane(Uuid::from_u128(pane));
+            }
+            feed.status().set_phase(phase);
+            session
+        }
+        let leaf = |pane: u128| DaemonPaneNode::Pane {
+            pane: Uuid::from_u128(pane),
+        };
+
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, _| {
+            terminal.set_persistent_sessions(true);
+            assert!(terminal.restores_daemon_panes());
+
+            // Tab A: pane 1 | (pane 2 / an ended pane), focus on pane 2.
+            terminal.add_session(attached(Some(1), AttachedPhase::Live));
+            let tab_a = terminal.tabs[0].id;
+            terminal.install_split_pane(
+                attached(Some(2), AttachedPhase::Reconnecting),
+                SplitDirection::Horizontal,
+            );
+            let pane_two = terminal.layout.focused;
+            terminal.install_split_pane(
+                attached(Some(3), AttachedPhase::Ended { exit_code: Some(0) }),
+                SplitDirection::Vertical,
+            );
+            terminal.focus_pane(pane_two);
+            let PaneNode::Split { ratio, .. } = &mut terminal.layout.tree else {
+                panic!("split tree");
+            };
+            *ratio = 0.3;
+            // Tab B: still connecting, its pane does not exist yet.
+            terminal.add_session(attached(None, AttachedPhase::Connecting));
+            // Tab C: one pane.
+            terminal.add_session(attached(Some(5), AttachedPhase::Live));
+            // Tab D: its pane runs under a daemon of another version of
+            // the app. This app cannot show it, and keeps its place.
+            terminal.add_session(attached(Some(6), AttachedPhase::OtherVersion));
+
+            let saved = terminal.daemon_tab_layouts();
+            assert_eq!(
+                saved,
+                vec![
+                    Some(DaemonTabLayout {
+                        tree: DaemonPaneNode::Split {
+                            horizontal: true,
+                            ratio: 0.3,
+                            first: Box::new(leaf(1)),
+                            second: Box::new(leaf(2)),
+                        },
+                        focused: Some(Uuid::from_u128(2)),
+                        named: false,
+                    }),
+                    None,
+                    Some(DaemonTabLayout {
+                        tree: leaf(5),
+                        focused: Some(Uuid::from_u128(5)),
+                        named: false,
+                    }),
+                    Some(DaemonTabLayout {
+                        tree: leaf(6),
+                        focused: Some(Uuid::from_u128(6)),
+                        named: false,
+                    }),
+                ]
+            );
+
+            // Selecting a tab focuses its primary pane; a restored tab
+            // gets the saved pane back.
+            terminal.activate_restored_tab(tab_a, Some(Uuid::from_u128(2)));
+            assert_eq!(terminal.tabs[terminal.pane.active_index].id, tab_a);
+            assert_eq!(terminal.layout.focused, pane_two);
+            assert_eq!(
+                terminal.active_session().and_then(|s| s.daemon_pane()),
+                Some(Uuid::from_u128(2))
+            );
+            // A pane that is not in the tab leaves the focus alone.
+            terminal.activate_restored_tab(tab_a, Some(Uuid::from_u128(77)));
+            assert_eq!(terminal.layout.focused, pane_two);
+
+            // Sign-out ends every pane, in every tab and split; a plain
+            // close (app quit) ends none.
+            terminal.end_daemon_panes();
+            assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 6);
+
+            // A workspace-scoped view never takes daemon panes.
+            terminal.default_cwd = LocalCwdScope::Required {
+                intended: "/nonexistent".into(),
+                authority: None,
+            };
+            assert!(!terminal.restores_daemon_panes());
+            terminal.close_all_sessions();
+            assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 6);
         });
     }
 

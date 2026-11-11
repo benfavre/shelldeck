@@ -518,7 +518,17 @@ impl Workspace {
     pub(super) fn invalidate_cloud_session(&mut self, cx: &mut Context<Self>) {
         self.manage_requests.change_session();
         self.clear_inklura_notifications();
+        // Session daemon panes outlive their sessions by design (app quit).
+        // A sign-out is not a quit: end them, or the next launch would
+        // offer the old account's shells back.
+        self.terminal
+            .update(cx, |terminal, _| terminal.end_daemon_panes());
         self.stop_authenticated_runtime(cx);
+        // The servers that are not connected right now may still run
+        // shells of this account: they are ended at the next contact,
+        // whoever is signed in then, instead of being offered back.
+        #[cfg(unix)]
+        super::remote_daemon::mark_signed_out(&self.connections, &self.app_config.general);
         // Overwrite the persisted workspace after closing sessions. Otherwise
         // a later launch/account could restore terminals from the old session.
         self.save_workspace_state(cx);
