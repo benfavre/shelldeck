@@ -139,6 +139,11 @@ pub fn env_name_allowed(name: &str) -> bool {
             | "TERM_PROGRAM"
             | "TERM_PROGRAM_VERSION"
             | "SSH_AUTH_SOCK"
+            // What the pane's SSH connection was when it was spawned, for
+            // prompts and rc files that ask "am I over SSH". Given by the
+            // client per pane: the daemon's own copies are scrubbed.
+            | "SSH_CONNECTION"
+            | "SSH_CLIENT"
             | "DISPLAY"
             | "WAYLAND_DISPLAY"
             | "XAUTHORITY"
@@ -1429,7 +1434,14 @@ mod tests {
     #[test]
     fn sdtest_2969_spawn_rejects_disallowed_env_and_out_of_range_fields() {
         assert_eq!(spawn_body(|_| {}), Ok(ClientFrame::Spawn(sample_spawn())));
+        for name in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_AUTH_SOCK", "LC_ALL"] {
+            assert!(
+                spawn_body(|s| s.env.push((name.into(), "v".into()))).is_ok(),
+                "{name}"
+            );
+        }
         for name in [
+            "SSH_TTY",
             "PATH",
             "LD_PRELOAD",
             "LC_",

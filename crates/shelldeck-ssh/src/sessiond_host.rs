@@ -131,6 +131,8 @@ struct HostInner {
     /// uploaded to it again in this run: every new tab would otherwise
     /// send the whole binary once more before its shell opens.
     cannot_run: AtomicBool,
+    /// `SSH_CONNECTION` of the connection the last probe ran on.
+    ssh_connection: Mutex<Option<String>>,
     on_event: Mutex<Option<EventFn>>,
 }
 
@@ -355,7 +357,10 @@ impl HostInner {
         match self.block(Duration::from_secs(20), async move {
             sessiond_install::probe(&session, &version).await
         }) {
-            Some(Ok(probe)) => Some(probe),
+            Some(Ok(probe)) => {
+                self.ssh_connection.lock().clone_from(&probe.ssh_connection);
+                Some(probe)
+            }
             Some(Err(error)) => {
                 tracing::info!("session daemon probe failed: {error}");
                 None
@@ -486,6 +491,7 @@ impl RemoteHost {
             ready: AtomicBool::new(false),
             lost: AtomicBool::new(false),
             cannot_run: AtomicBool::new(false),
+            ssh_connection: Mutex::new(None),
             on_event: Mutex::new(None),
         });
         let _ = connector.host.set(Arc::downgrade(&inner));
@@ -515,6 +521,23 @@ impl RemoteHost {
     /// Never blocks.
     pub fn is_ready(&self) -> bool {
         self.inner.ready.load(Ordering::SeqCst)
+    }
+
+    /// `SSH_CONNECTION` and `SSH_CLIENT` for a pane spawned now: those of
+    /// the SSH connection the host was last probed on. A pane keeps the
+    /// values it was spawned with, as a shell under tmux does; they say
+    /// "this shell was reached over SSH, from there", not which
+    /// connection shows it at the moment. Empty when the host gave none.
+    pub fn pane_ssh_environment(&self) -> Vec<(String, String)> {
+        let Some(connection) = self.inner.ssh_connection.lock().clone() else {
+            return Vec::new();
+        };
+        let mut environment = Vec::new();
+        if let Some(client) = sessiond_install::ssh_client_of(&connection) {
+            environment.push(("SSH_CLIENT".to_string(), client));
+        }
+        environment.push(("SSH_CONNECTION".to_string(), connection));
+        environment
     }
 
     /// First contact for one connection: dial, probe, install when

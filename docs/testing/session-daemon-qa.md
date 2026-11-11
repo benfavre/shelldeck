@@ -1142,3 +1142,32 @@ One dial per retry round was not repeated on a real server (it needs an
 outage with several panes): SDTEST-3055 only. `~/.shelldeck` was removed
 from rbx1 again; activ-2 was not written to.
 
+## Crash safety, SSH variables, and a note on the rbx1 account (2026-11-11)
+
+Application and static build of the commit "the session file survives a
+crash, remote panes get their SSH variables". Server: the container
+again (see the note below for why not rbx1).
+
+| Check | Result |
+|---|---|
+| A new daemon pane on the server, its shell read from `/proc/<pid>/environ` | Pass. `SSH_CONNECTION=172.17.0.1 41732 172.17.0.2 22`, `SSH_CLIENT=172.17.0.1 41732 22`, `TERM=xterm-256color`; no `SSH_TTY`, no `SSH_AUTH_SOCK` |
+| Two remote tabs, a local tab with a split and a command in each pane; network detached; one remote tab closed; thirteen seconds later, with no quit, the session file | Pass. It lists the SSH tab and the local tab with its layout, and the closed pane under `daemon_cleanup` |
+| `kill -9` of the application, network back, start | Pass. The local tab is rebuilt with its split on the two panes that kept running. On the server both remote shells still run at that point |
+| Connect to the server | Pass. One pane attached; the one closed during the outage is gone from the server |
+| Sign out, quit | Pass. No local pane left |
+
+Not checked: a crash within the ten seconds after a change (the file is
+then one step behind), the autosave with the setting off (by reading
+the code: it never starts).
+
+### The account used on rbx1
+
+`bextdev` on rbx1, used for the real-server run above, is the build
+sandbox of the ACTIV delivery pipeline (Monique), not a spare account.
+Checked afterwards on the server: 45 pipeline units ran in that account
+during the test window and none failed, the Automonique services were
+running, nothing of ShellDeck was left in the account or in the journal,
+and the two failed session scopes listed for that user date from 31
+October. The run did not disturb the pipeline, but a ShellDeck test has
+no business in that account: use another one on rbx1 next time.
+

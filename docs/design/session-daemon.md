@@ -379,7 +379,9 @@ and scrollback bytes in total; an `Attach` that would exceed the latter gets
   to another directory.
 - `env`: allowlist of names. Accepted: `TERM`, `COLORTERM`, `LANG`,
   `LC_*`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `SSH_AUTH_SOCK`,
-  `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY` and `SHELLDECK_*`. Any other
+  `SSH_CONNECTION`, `SSH_CLIENT` (since "Crash safety and the pane's SSH
+  variables", section 15), `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY` and
+  `SHELLDECK_*`. Any other
   name fails the frame. Everything else comes from the daemon's scrubbed
   environment (section 3). `TERM` defaults to `xterm-256color`. The local
   app passes its own display and agent variables; a remote client has none
@@ -1983,8 +1985,9 @@ entry dialed at the time:
 
 Limits, on purpose or not:
 
-- The session file is written at shutdown and at sign-out. After a crash
-  the panes closed during an outage in that run are offered back again.
+- The session file was written at shutdown and at sign-out only, so a
+  crash lost the list. Since "Crash safety and the pane's SSH
+  variables" it is also written while the application runs.
 - An entry edited to dial another server drops the work recorded for the
   old one: it cannot be reached through that entry any more.
 - A server whose install was never allowed is not marked at sign-out
@@ -2019,9 +2022,9 @@ servers. Three things the run made visible, none changed:
   `SSH_TTY`) treat a daemon pane as a local login. Agent forwarding is
   not affected: the application's SSH client does not forward an agent
   in plain tabs either (the connection option is stored and not used).
-  Still open, as a design decision: give each pane the `SSH_CONNECTION`
-  and `SSH_CLIENT` of the connection that spawned it. The proxy knows
-  them and today only copies bytes; the client does not know them.
+  Done since (see "Crash safety and the pane's SSH variables"): each
+  pane gets the `SSH_CONNECTION` and `SSH_CLIENT` of the connection that
+  spawned it.
 - The daemon stays in the logind session of the SSH login that started
   it (one open session per account while it runs).
 - After a sign-out the daemon could stay up to an hour with nothing
@@ -2071,4 +2074,46 @@ user's systemd instance, and the user instance ends with the last
 session unless lingering is enabled, which would end the panes with it.
 A tmux server makes the same choice. With the first fix above the
 session is released one minute after the last shell is closed.
+
+### Crash safety and the pane's SSH variables
+
+Two more changes after the real servers.
+
+The session file is written while the application runs. With the daemon
+the shells outlive a crash of the application, but the file that says
+how they were arranged, and which panes are still to be ended on SSH
+servers, was written at shutdown and at sign-out only: after a crash,
+what had been opened since the last clean quit came back without its
+splits, and a tab closed during an outage was offered back. While the
+setting is on, the application now compares what is open with the file
+every ten seconds and writes it when it differs (`ensure_workspace_autosave`,
+started by the first change of the tab set, stopped at shutdown so that
+the closing of the sessions is never recorded as "no tab"). Without the
+setting nothing changes. Checked in the application: two remote tabs, a
+local tab with a split, the network cut, one remote tab closed, then
+`kill -9` thirteen seconds later. The file held the tabs, the local
+layout and the pane to end; after a restart the split was rebuilt on its
+two running panes, and at the next connection the closed pane was ended
+and only the other one offered.
+
+A remote pane gets the SSH variables of its connection. The daemon
+scrubs `SSH_*` from its own environment (section 3), so a pane's shell
+had none, and prompts or rc files that show the host name or behave
+differently "when over SSH" took it for a local login. The probe, which
+runs on the same SSH connection as the daemon channel, now also reports
+`$SSH_CONNECTION`; it is accepted only in the form sshd writes (two
+addresses, two ports) and remembered by the host object. A pane spawned
+on that host gets it, and the `SSH_CLIENT` that follows from it, through
+the `Spawn` environment, whose allowlist gained the two names. The
+daemon's own scrub is unchanged: the values are per pane, from the
+client, as section 4 wants. A pane keeps the values it was spawned with;
+after a reconnect they describe the connection that created the pane,
+not the one that shows it, as for a shell under tmux. `SSH_TTY` and an
+agent socket are still not set (neither would be true). Checked on a
+real sshd: the pane's shell has `SSH_CONNECTION=172.17.0.1 41732
+172.17.0.2 22` and the matching `SSH_CLIENT`. SDTEST-3016 (the probe
+line), SDTEST-2969 (the allowlist).
+
+Version note: a daemon built before this change refuses a `Spawn` that
+carries the two names. No such daemon was ever released.
 

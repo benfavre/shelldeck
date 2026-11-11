@@ -84,6 +84,10 @@ pub struct RemoteProbe {
     pub os: String,
     /// `uname -m`, for example `x86_64`.
     pub arch: String,
+    /// `$SSH_CONNECTION` of the connection the probe ran on ("client
+    /// address, client port, server address, server port"), when the host
+    /// gave one in that form. For the panes spawned over that connection.
+    pub ssh_connection: Option<String>,
 }
 
 impl RemoteProbe {
@@ -113,7 +117,8 @@ pub fn probe_command(version: &str, nonce: &str) -> Option<String> {
         format!(
             "b=\"$HOME/.shelldeck/bin/shelldeck-sessiond-{version}\"; s=absent; \
              if [ -f \"$b\" ]; then if [ -x \"$b\" ]; then s=present; else s=noexec; fi; fi; \
-             printf 'SDSD-PROBE-{nonce} %s %s %s\\n' \"$s\" \"$(uname -s)\" \"$(uname -m)\""
+             printf 'SDSD-PROBE-{nonce} %s %s %s\\n' \"$s\" \"$(uname -s)\" \"$(uname -m)\"; \
+             printf 'SDSD-CONN-{nonce} %s\\n' \"${{SSH_CONNECTION:-}}\""
         )
     })
 }
@@ -145,7 +150,41 @@ fn parse_probe(stdout: &[u8], nonce: &str) -> Option<RemoteProbe> {
         binary,
         os,
         arch,
+        ssh_connection: parse_ssh_connection(&text, nonce),
     })
+}
+
+/// The `SDSD-CONN-<nonce>` line of a probe answer: an `SSH_CONNECTION`
+/// value of exactly four fields, two addresses and two ports. Anything
+/// else (no line, an empty value, a host that prints something odd) is no
+/// value: the panes then have no `SSH_CONNECTION`, as before.
+fn parse_ssh_connection(text: &str, nonce: &str) -> Option<String> {
+    let prefix = format!("SDSD-CONN-{nonce} ");
+    let value = text
+        .lines()
+        .find_map(|line| line.trim_end_matches('\r').strip_prefix(&prefix))?;
+    let fields: Vec<&str> = value.split(' ').collect();
+    let address = |field: &str| {
+        !field.is_empty()
+            && field.len() <= 64
+            && field
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b':' | b'%'))
+    };
+    let port = |field: &str| field.parse::<u16>().is_ok_and(|port| port != 0);
+    (fields.len() == 4
+        && address(fields[0])
+        && port(fields[1])
+        && address(fields[2])
+        && port(fields[3]))
+    .then(|| value.to_string())
+}
+
+/// The `SSH_CLIENT` that goes with an `SSH_CONNECTION`: client address,
+/// client port, server port.
+pub fn ssh_client_of(ssh_connection: &str) -> Option<String> {
+    let fields: Vec<&str> = ssh_connection.split(' ').collect();
+    (fields.len() == 4).then(|| format!("{} {} {}", fields[0], fields[1], fields[3]))
 }
 
 /// One exec on `session`: is the binary of `version` installed, and what
@@ -543,6 +582,7 @@ mod tests {
             binary,
             os: os.into(),
             arch: arch.into(),
+            ssh_connection: None,
         }
     }
 
@@ -686,6 +726,48 @@ mod tests {
         );
         let other = "f".repeat(32);
         assert_eq!(parse_probe(answer.as_bytes(), &other), None);
+
+        // The connection the probe ran on, when the host gives one in
+        // the form sshd uses; `SSH_CLIENT` follows from it.
+        let with = |conn: &str| {
+            let answer =
+                format!("SDSD-PROBE-{nonce} present Linux x86_64\nSDSD-CONN-{nonce} {conn}\r\n");
+            parse_probe(answer.as_bytes(), nonce)
+                .expect("the probe line is valid")
+                .ssh_connection
+        };
+        for good in [
+            "203.0.113.7 52114 198.51.100.9 22",
+            "2001:db8::7 52114 2001:db8::9 2222",
+            "fe80::1%eth0 40000 fe80::2%eth0 22",
+        ] {
+            assert_eq!(with(good).as_deref(), Some(good));
+        }
+        assert_eq!(
+            ssh_client_of("203.0.113.7 52114 198.51.100.9 22").as_deref(),
+            Some("203.0.113.7 52114 22")
+        );
+        for bad in [
+            "",
+            "203.0.113.7 52114 198.51.100.9",
+            "203.0.113.7 52114 198.51.100.9 22 extra",
+            "203.0.113.7 0 198.51.100.9 22",
+            "203.0.113.7 99999 198.51.100.9 22",
+            "$(id) 52114 198.51.100.9 22",
+            "a;b 52114 198.51.100.9 22",
+        ] {
+            assert_eq!(with(bad), None, "{bad:?}");
+        }
+        // A line with another nonce is not this probe's.
+        let foreign = format!(
+            "SDSD-PROBE-{nonce} present Linux x86_64\nSDSD-CONN-{other} 203.0.113.7 1 198.51.100.9 22\n"
+        );
+        assert_eq!(
+            parse_probe(foreign.as_bytes(), nonce)
+                .expect("valid")
+                .ssh_connection,
+            None
+        );
         for bad in [
             format!("SDSD-PROBE-{nonce} maybe Linux x86_64\n"),
             format!("SDSD-PROBE-{nonce} present Linux\n"),

@@ -464,13 +464,18 @@ pub(super) fn open_new(
     cols: u16,
     scrollback: usize,
 ) -> Result<TerminalSession, String> {
+    // The shell is started by the daemon, not by sshd: without these it
+    // has no `SSH_CONNECTION`, and prompts or rc files that show the host
+    // name or change behaviour "when over SSH" take it for a local login.
+    let mut env = vec![("TERM".to_string(), "xterm-256color".to_string())];
+    env.extend(host.pane_ssh_environment());
     host.supervisor()
         .open(
             PaneTarget::Spawn(SpawnOptions {
                 label: PANE_LABEL.into(),
                 // Empty argv and cwd: the account's login shell in its
                 // home directory.
-                env: vec![("TERM".to_string(), "xterm-256color".to_string())],
+                env,
                 ..SpawnOptions::default()
             }),
             SessionOptions {

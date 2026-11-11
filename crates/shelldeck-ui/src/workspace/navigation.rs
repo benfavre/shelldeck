@@ -1,5 +1,27 @@
 use super::*;
 
+/// State of the session file autosave (`Workspace::ensure_workspace_autosave`).
+/// One workspace per process.
+mod workspace_autosave {
+    use parking_lot::Mutex;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    /// How often the open tabs are compared with the file.
+    pub(super) const PERIOD: Duration = Duration::from_secs(10);
+    pub(super) static STARTED: AtomicBool = AtomicBool::new(false);
+    /// Set at shutdown: the file then holds the tabs as they were.
+    pub(super) static STOPPED: AtomicBool = AtomicBool::new(false);
+    /// What the file holds, as far as this process knows.
+    pub(super) static LAST_SAVED: Mutex<Option<String>> = Mutex::new(None);
+
+    /// Whether `current` has to be written: it differs from what was
+    /// written last, or nothing was written yet by this process.
+    pub(super) fn changed(last: Option<&str>, current: &str) -> bool {
+        last != Some(current)
+    }
+}
+
 impl Workspace {
     /// Réapplique tout le contexte mutable qui appartient à la fenêtre, et
     /// non au workspace retenu. L'entité PTY reste identique; seuls ses
@@ -61,6 +83,66 @@ impl Workspace {
     /// the next launch (when `auto_connect_on_startup` is enabled). Saved
     /// unconditionally and best-effort: failures are logged, never fatal.
     pub(super) fn save_workspace_state(&self, cx: &Context<Self>) {
+        let state = self.capture_workspace_state(cx);
+        *workspace_autosave::LAST_SAVED.lock() = serde_json::to_string(&state).ok();
+        if let Err(e) = state.save() {
+            tracing::warn!("Failed to save workspace state: {}", e);
+        }
+    }
+
+    /// With the session daemon, the shells outlive a crash of the
+    /// application but the session file used to be written at shutdown
+    /// and at sign-out only: after a crash, tabs opened since the last
+    /// clean quit came back without their splits, and the list of panes
+    /// still to end on SSH servers was lost. While the setting is on, the
+    /// file is written again a few seconds after it stopped matching
+    /// what is open. Started once, by the first change of the tab set.
+    pub(super) fn ensure_workspace_autosave(&self, cx: &mut Context<Self>) {
+        use std::sync::atomic::Ordering;
+        if !self.app_config.general.session_daemon
+            || workspace_autosave::STARTED.swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+            cx.background_executor()
+                .timer(workspace_autosave::PERIOD)
+                .await;
+            if this
+                .update(cx, |workspace, cx| workspace.autosave_workspace_state(cx))
+                .is_err()
+            {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn autosave_workspace_state(&self, cx: &Context<Self>) {
+        use std::sync::atomic::Ordering;
+        if !self.app_config.general.session_daemon
+            || workspace_autosave::STOPPED.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        let state = self.capture_workspace_state(cx);
+        let Ok(text) = serde_json::to_string(&state) else {
+            return;
+        };
+        let mut last = workspace_autosave::LAST_SAVED.lock();
+        if !workspace_autosave::changed(last.as_deref(), &text) {
+            return;
+        }
+        match state.save() {
+            Ok(()) => *last = Some(text),
+            Err(e) => tracing::warn!("Failed to autosave workspace state: {}", e),
+        }
+    }
+
+    fn capture_workspace_state(
+        &self,
+        cx: &Context<Self>,
+    ) -> shelldeck_core::config::WorkspaceState {
         use shelldeck_core::config::workspace_state::{TabState, TabType};
         use shelldeck_core::config::WorkspaceState;
 
@@ -100,7 +182,7 @@ impl Workspace {
             })
             .collect();
 
-        let state = WorkspaceState {
+        WorkspaceState {
             tabs,
             active_tab,
             sidebar_visible: self.sidebar_visible,
@@ -110,10 +192,6 @@ impl Workspace {
             daemon_cleanup: super::remote_daemon::cleanup_to_save(),
             #[cfg(not(unix))]
             daemon_cleanup: Vec::new(),
-        };
-
-        if let Err(e) = state.save() {
-            tracing::warn!("Failed to save workspace state: {}", e);
         }
     }
 
@@ -123,6 +201,9 @@ impl Workspace {
         // Persist open tabs before tearing sessions down so there is something
         // to restore next launch. Best-effort; never blocks shutdown.
         self.save_workspace_state(cx);
+        // Nothing after this point may write the file again: the sessions
+        // are about to be closed, and an autosave would record no tab.
+        workspace_autosave::STOPPED.store(true, std::sync::atomic::Ordering::SeqCst);
         self.agent_console.update(cx, |view, cx| {
             if let Err(error) = view.flush_library(cx) {
                 tracing::warn!(%error,"Unable to save agent library on shutdown");
@@ -551,6 +632,7 @@ impl Workspace {
     }
 
     pub(super) fn sync_terminal_tab_count(&self, cx: &mut Context<Self>) {
+        self.ensure_workspace_autosave(cx);
         let count = self.terminal.read(cx).tabs.len();
         self.sidebar.update(cx, |sidebar, _| {
             sidebar.set_terminal_tab_count(count);
