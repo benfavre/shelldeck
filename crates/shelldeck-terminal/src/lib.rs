@@ -1,3 +1,4 @@
+#[cfg(feature = "app")]
 pub mod attached;
 pub mod boundary;
 pub mod colors;
@@ -5,6 +6,7 @@ pub mod error;
 pub mod grid;
 pub mod parser;
 pub mod pty;
+#[cfg(feature = "app")]
 pub mod session;
 pub mod url;
 

@@ -4,8 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["app"]
+# Everything the application needs on top of the emulator: `TerminalSession`
+# and the `shelldeck-core` dependency it brings (configuration, keyring,
+# HTTP). The session daemon builds without it, so the static binary that is
+# uploaded to SSH servers links only the parser, the grid and the PTY
+# (docs/design/session-daemon.md, section 2).
+app = ["dep:shelldeck-core"]
+
 [dependencies]
-shelldeck-core = { path = "../shelldeck-core" }
+shelldeck-core = { path = "../shelldeck-core", optional = true }
 portable-pty = { workspace = true }
 vte = { workspace = true }
 tokio = { workspace = true }

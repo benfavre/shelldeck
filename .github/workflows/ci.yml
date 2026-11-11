@@ -123,6 +123,8 @@ jobs:
         with:
           toolchain: nightly-2026-03-06
           components: rustfmt, clippy
+          # For the static session daemon builds checked below.
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
 
       # Public Actions caches must never retain private Automonique Git sources.
       - name: Cache cargo
@@ -174,6 +176,18 @@ jobs:
         run: |
           python3 scripts/test-agent-frame-benchmark.py
           cargo check --locked -p shelldeck --features agent-preview --bin agent-console-preview
+
+      # The builds that the application uploads to SSH servers: the daemon
+      # without the `app` feature, linked statically for both architectures
+      # (the script checks each result), then the x86_64 one uploaded,
+      # started and used through the SSH fixture (SDTEST-3024).
+      - name: Build and exercise the static session daemon
+        run: |
+          bash scripts/build-sessiond-remote.sh
+          SHELLDECK_SESSIOND_BIN="$PWD/target/release/shelldeck-sessiond-x86_64-unknown-linux-musl" \
+            cargo test --locked -p shelldeck-ssh sdtest_3024 -- --ignored
+          cargo clippy --locked -p shelldeck-sessiond -p shelldeck-terminal \
+            --no-default-features --no-deps -- -D warnings
 
       - name: cargo clippy
         # `--no-deps` skips lints from vendored path deps under `patches/`

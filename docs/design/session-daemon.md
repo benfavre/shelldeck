@@ -59,13 +59,17 @@ It depends on `shelldeck-terminal` for the parser and grid, used headless:
 `TerminalGrid::with_scrollback` + `TerminalProcessor::process_bytes` with a
 `vte::Parser` per pane, and `LocalPty::spawn_at` + `into_parts()` for the PTY.
 
-`shelldeck-terminal` currently depends on `shelldeck-core` (reqwest, keyring,
-notify and more) for three small items: `util::home_dir`,
-`util::executable_on_path` and `tmux::TmuxAction`. The prototype accepts that
-link. Before any remote binary is shipped, `shelldeck-terminal` gets a default
-feature `app` that owns the `shelldeck-core` dependency and `TerminalSession`;
-the daemon builds with `default-features = false` and `pty.rs` uses local
-helpers. This is a hard prerequisite for phase 3 (small static binary).
+`shelldeck-terminal` depends on `shelldeck-core` (reqwest, keyring, notify
+and more) for three small items: `util::home_dir`,
+`util::executable_on_path` and `tmux::TmuxAction`. That dependency sits
+behind a default feature `app` of `shelldeck-terminal`, which also owns
+`TerminalSession` and the `attached` module; without it `pty.rs` uses local
+helpers. `shelldeck-sessiond` has an `app` feature of its own (default on)
+for its client side (`attached`, `supervisor`), and depends on the terminal
+crate with `default-features = false`. The daemon binary is built with
+`--no-default-features`: 98 crates instead of 324, no C code, which is what
+makes the small static binary of phase 3 possible (section 15, "Static
+remote builds").
 
 New code inside `shelldeck-terminal`:
 
@@ -1111,16 +1115,22 @@ Implemented now, with automated tests on Linux:
   The application was not launched again after these changes: the
   on-screen checks of the first run were not repeated.
 
+- Static remote builds (subsection "Static remote builds" at the end):
+  the terminal crate and the daemon crate have an `app` feature, the
+  daemon binary is built without it, and
+  `scripts/build-sessiond-remote.sh` produces the two static musl builds
+  with the linker of the Rust toolchain. Both were built and checked
+  (static, version marker); the `x86_64` one was run, and uploaded,
+  started and used through the SSH fixture (SDTEST-3024). The `aarch64`
+  one was never executed. `scripts/build-release.sh` builds them by
+  default on Linux, and the release and CI workflows install the targets;
+  neither workflow has run with these changes, and no real SSH server was
+  used.
+
 Deferred (details in the subsections below):
 
-- Packaging: the two static remote builds are wired
-  (`scripts/build-sessiond-remote.sh`, opt-in) but were never built: the
-  musl targets are not installed on the machine this was written on, and
-  the repository has no established musl build. Until they are built and
-  shipped, a release build falls back on every SSH host with "no program
-  for this kind of server" unless the binary was installed by hand. The
-  AppImage, the macOS bundle and the Windows archive do not carry the
-  daemon. Saving the split tree of remote tabs.
+- Packaging: the AppImage, the macOS bundle and the Windows archive do
+  not carry the daemon. Saving the split tree of remote tabs.
   Workspace-scoped terminals are not deferred but excluded: they stay
   in-process until the protocol can carry a directory identity (see
   "Workspace-scoped terminals" below).
@@ -1189,7 +1199,8 @@ Not implemented yet (beyond the phase 1 exclusions of section 14):
   pane's queue is full as well (1 MiB by default): a smaller paste into a
   program that never reads simply stays queued.
 
-Known cost: `shelldeck-sessiond` links `shelldeck-core` through
+Known cost, removed since for the daemon binary (see "Static remote
+builds"): `shelldeck-sessiond` links `shelldeck-core` through
 `shelldeck-terminal` (accepted for the prototype, section 2).
 
 ### Remote transport (as implemented in phase 3, step 1)
@@ -1331,10 +1342,10 @@ it is shown; otherwise one toast names the reason and the backend in use.
 Artifacts: `shelldeck-sessiond-x86_64-unknown-linux-musl` and
 `shelldeck-sessiond-aarch64-unknown-linux-musl`, looked up in
 `SHELLDECK_SESSIOND_ARTIFACT_DIR` (development), next to the app binary,
-then in `sessiond/` of the app data directory. They are produced by the
-opt-in `scripts/build-sessiond-remote.sh` and, when present, carried by
-the Linux archive, the install script and the updater; that script has
-not been executed yet (see "Daemon hardening, version skew and packaging").
+then in `sessiond/` of the app data directory. They are produced by
+`scripts/build-sessiond-remote.sh`, which `scripts/build-release.sh` runs
+on Linux, and, when present, carried by the Linux archive, the install
+script and the updater (see "Static remote builds").
 
 Panes offered back: the app labels its remote panes `shelldeck-remote`.
 On `DaemonReady` the connecting tab takes the first live pane with that
@@ -1710,7 +1721,9 @@ Packaging:
   targets, builds with `crt-static`, checks the ELF machine and that the
   result has no interpreter, and writes
   `target/release/shelldeck-sessiond-<triple>`. It is opt-in
-  (`SHELLDECK_SESSIOND_REMOTE=1`) and was never executed. An open risk:
+  (`SHELLDECK_SESSIOND_REMOTE=1`) and was never executed (both changed
+  since, and the risk below was real: see "Static remote builds"). An
+  open risk:
   the crate links `shelldeck-core` through `shelldeck-terminal`, and with
   it crates that expect system libraries at link time (D-Bus through the
   keyring); the glibc build drops them as unused, a static musl link may
@@ -1791,3 +1804,67 @@ Side effects to know:
 - SDTEST-3040 and the closing half of SDTEST-3048 were not run against
   the code before the fix; that they would fail there is by reading it.
 - `Supervisor::set_on_idle` callbacks must tolerate being called twice.
+
+### Static remote builds
+
+Step after the final review: the two builds that the application uploads
+to SSH servers exist. Linux `x86_64` development machine only; no release
+was built, nothing was published, no real SSH server was used.
+
+The open risk of the packaging step was real. With `shelldeck-core` in
+its tree the daemon needs D-Bus (`libdbus-sys`, through the keyring) and
+`ring` (C and assembly) at link time, and neither links statically for
+musl without a C toolchain and libraries for that target. So the split
+announced in section 2 was done first:
+
+- `shelldeck-terminal`: feature `app`, on by default, owns the
+  `shelldeck-core` dependency, `session` (`TerminalSession`) and
+  `attached`. Without it, `pty.rs` reads the home directory from `HOME`
+  or `USERPROFILE` only and never looks for PowerShell on `PATH`
+  (`LocalPty::spawn` and `resolve_shell`, which the daemon does not
+  call: it uses `spawn_command` with the argv of the `Spawn` frame).
+- `shelldeck-sessiond`: feature `app`, on by default, owns the modules
+  `attached` and `supervisor` and turns on `shelldeck-terminal/app`. The
+  crate depends on the terminal crate with `default-features = false`.
+  `tests/attached.rs` requires the feature.
+- The application crates are unchanged: they use both crates with
+  default features, so the application build is the same as before.
+- The daemon binary is built with `--no-default-features`: by
+  `scripts/build-release.sh` for the copy that ships beside the
+  application, and by `scripts/build-sessiond-remote.sh` for the static
+  ones. Its dependency tree goes from 324 crates to 98, all Rust, and
+  every one of them is already in the tree of the `x86_64` Linux
+  application (so already covered by `deny.toml`, which is unchanged).
+
+The static builds:
+
+- Linker: `rust-lld`, which ships inside the pinned toolchain. With no C
+  code in the tree, neither `musl-gcc` nor a cross compiler is needed,
+  for either architecture; the Rust musl targets bring their own C
+  runtime objects and libc. `CARGO_TARGET_<TRIPLE>_LINKER` still
+  overrides it.
+- `scripts/build-sessiond-remote.sh` requires the two Rust targets and
+  `readelf`, and checks each result: ELF for the right machine, no
+  program interpreter, no `NEEDED` entry, the build marker of the
+  workspace version (what `artifact_is_version` looks for before an
+  upload), and on an `x86_64` Linux host `--version` of the `x86_64`
+  build.
+- Result at this revision: `x86_64` 1.9 MB (static PIE), `aarch64`
+  1.7 MB (static). The upload limit is 64 MiB.
+- `scripts/build-release.sh` now runs that script by default on Linux;
+  `SHELLDECK_SESSIOND_REMOTE=0` leaves the static builds out and removes
+  ones left by an earlier run, so that a stale file is not packaged.
+- `release.yml` installs the two musl targets on the Linux runner. The
+  `check` job of `ci.yml` installs them too, runs the script, runs
+  SDTEST-3024 with the `x86_64` static build and runs Clippy on the two
+  crates without their default features.
+
+Not done, not verified:
+
+- The `aarch64` build was never executed: there is no such machine and
+  no emulator here. It was only inspected (machine type, static, marker).
+- `scripts/build-release.sh` was not run end to end, and neither
+  workflow has run with these changes.
+- No upload to a real server (section 8 flow against `sshd`).
+- The static builds are not signed and are not listed in the release
+  checksums on their own: they travel inside the signed Linux archive.

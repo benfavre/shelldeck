@@ -15,11 +15,15 @@
 //! - [`supervisor`]: what the app uses on top of it: sessions that are
 //!   returned at once, connect and attach on their own thread, and
 //!   reattach after the daemon connection is lost. Unix only.
+//!
+//! [`attached`] and [`supervisor`] need the `app` feature (on by default),
+//! which links `shelldeck-core` through the terminal crate. The daemon
+//! binary is built without it.
 
 pub mod client;
 pub mod protocol;
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "app"))]
 pub mod attached;
 #[cfg(unix)]
 pub mod paths;
@@ -27,7 +31,7 @@ pub mod paths;
 pub mod proxy;
 #[cfg(unix)]
 pub mod server;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "app"))]
 pub mod supervisor;
 
 /// Line every build of the daemon binary carries, so a file can be tied

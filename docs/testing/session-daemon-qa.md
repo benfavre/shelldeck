@@ -363,7 +363,8 @@ shelldeck-ui --lib -- --test-threads=1` (disposable XDG roots);
   banners and rc files of real accounts, a non-POSIX login shell (the
   scripts run through `sh -c`), a `noexec` home, a forced command.
 - The static musl builds: none was built; the uploaded binary of
-  SDTEST-3024 is a stripped glibc build for this machine.
+  SDTEST-3024 is a stripped glibc build for this machine. (Since built
+  and used for SDTEST-3024: section "Static remote builds" at the end.)
 - `workspace/ssh.rs`: `run_ssh_daemon_or_shell`, the `DaemonReady` and
   `DaemonFallback` handlers, the fast path for a host that is already
   connected, the split path, the connection status after `Idle`,
@@ -521,6 +522,7 @@ Not covered by any automated test, compiled and read only:
   deployment.
 - `scripts/build-sessiond-remote.sh` beyond its checks: no musl target is
   installed here, so no static build was ever produced or uploaded.
+  (Since done: section "Static remote builds" at the end.)
 - macOS: the `kern.uuid` lookup, `exec-pane` and the descriptor limit
   code are not compiled here (no target installed). Windows: not checked.
 
@@ -597,11 +599,13 @@ Packaging (needs a release build, which was not made):
       reverse (a rollback): the app starts in both cases.
 - [ ] AppImage: the setting falls back to ordinary terminals and nothing
       is left running after quit.
-- [ ] `SHELLDECK_SESSIOND_REMOTE=1 bash scripts/build-release.sh` on a
-      machine with the musl targets and linkers: both static builds are
-      produced and pass the script's checks, or the link fails (then see
-      the open risk in the design document); with them in place, the
-      first connect to a Linux server offers the install.
+- [ ] `bash scripts/build-release.sh` on a machine with the musl
+      targets (the static builds are now on by default and need no extra
+      linker): the archive carries both static builds. The script that
+      builds them was run on its own, see "Static remote builds"; the
+      whole release script was not.
+- [ ] With the static builds in place, the first connect to a Linux
+      server offers the install.
 
 ### Known gaps of this step
 
@@ -842,3 +846,60 @@ that follows says what to look at.
   back at that connect.
 - `/tmp/shelldeck-<uid>` remains the last resort for very long home
   paths, with the pre-creation denial described in the design document.
+
+## Static remote builds (2026-11-11)
+
+Scope: the two static builds of the daemon that the application uploads
+to SSH servers, and the feature split that makes them linkable (design
+document, section 15, "Static remote builds"). Development machine:
+Linux `x86_64`, pinned toolchain, musl targets added with `rustup`.
+
+### What changes for a user
+
+Nothing yet in a released build. From the first release built with these
+scripts, the Linux archive carries the two server builds, so the install
+question can appear on a Linux server (`x86_64` or `aarch64`) when
+`general.session_daemon` is on, instead of the fallback notice "no
+program for this kind of server".
+
+### Verified
+
+| Check | How |
+|---|---|
+| The first attempt confirmed the open risk: with default features the daemon's tree holds `libdbus-sys` and `ring` for the musl target | `cargo tree -p shelldeck-sessiond --target x86_64-unknown-linux-musl -i libdbus-sys` (and `-i ring`) |
+| Without the `app` feature the tree is 98 crates, none with C code, all already in the application's Linux tree | `cargo tree -p shelldeck-sessiond --no-default-features --target x86_64-unknown-linux-musl`, compared with `cargo tree --workspace --target x86_64-unknown-linux-gnu` |
+| Both static builds are produced by the real script with `rust-lld` and pass its checks (machine, no interpreter, no `NEEDED`, build marker, `--version` for `x86_64`) | `bash scripts/build-sessiond-remote.sh` |
+| `x86_64`: 1 912 784 bytes, `static-pie linked`, `ldd` answers "statically linked"; `aarch64`: 1 739 984 bytes, `statically linked` | `file`, `ldd`, `readelf -lW`, `readelf -dW` |
+| The `x86_64` static build is accepted as the bundled build, uploaded by the real install script, started by the real proxy command under a private `HOME`, and serves a pane that survives and is reattached | SDTEST-3024 with `SHELLDECK_SESSIOND_BIN=target/release/shelldeck-sessiond-x86_64-unknown-linux-musl` |
+| The two crates build without warnings with and without the feature | `cargo clippy --locked -p shelldeck-sessiond -p shelldeck-terminal --no-default-features --no-deps -- -D warnings`, and the workspace Clippy |
+| Packaging contract unchanged | `python3 scripts/test-sessiond-packaging.py` (3 tests) |
+
+Suites run for this step, all green: `cargo test --locked -p
+shelldeck-sessiond -p shelldeck-terminal` (42 and 113 tests), `-p
+shelldeck-ssh -- --test-threads=1` (85, 4 ignored as before) plus the
+opt-in SDTEST-3024 with the static `x86_64` build, `python3
+scripts/test-sessiond-packaging.py`, `cargo fmt --all -- --check`, `cargo
+clippy --locked --workspace --no-deps -- -D warnings`. Not run again for
+this step, because no code of theirs changed: `shelldeck-core`,
+`shelldeck-update` and `shelldeck-ui`.
+
+### Not verified
+
+- The `aarch64` build was never executed (no such machine, no emulator
+  here). Only its headers and its marker were read.
+- `scripts/build-release.sh` end to end, `release.yml` and the new step
+  of `ci.yml`: not run. The `targets` list of the toolchain action and
+  the availability of `rust-lld` on the runners are as documented, not
+  observed.
+- An upload to a real server, of either build.
+- A server with a kernel older than what the Rust musl targets support,
+  or a home directory mounted `noexec` (the application reports the
+  latter; never seen for real).
+
+### Manual checks still needed
+
+- [ ] On an `aarch64` Linux server:
+      `~/.shelldeck/bin/shelldeck-sessiond-<version> --version` after the
+      install, then a tab and a split.
+- [ ] After the first CI run of the branch: the step "Build and exercise
+      the static session daemon" is green.

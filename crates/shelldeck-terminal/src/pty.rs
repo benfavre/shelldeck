@@ -14,8 +14,39 @@ pub(crate) fn resolve_shell(explicit: Option<&str>) -> String {
         cfg!(windows),
         std::env::var("SHELL").ok().as_deref(),
         std::env::var("COMSPEC").ok().as_deref(),
-        cfg!(windows) && shelldeck_core::util::executable_on_path("powershell"),
+        cfg!(windows) && powershell_on_path(),
     )
+}
+
+/// Whether PowerShell can be started by name (asked on Windows only).
+#[cfg(feature = "app")]
+fn powershell_on_path() -> bool {
+    shelldeck_core::util::executable_on_path("powershell")
+}
+
+/// Without the `app` feature (the session daemon, which is Unix only and
+/// never resolves a shell itself) there is no `PATH` lookup: Windows then
+/// falls back to `%COMSPEC%`.
+#[cfg(not(feature = "app"))]
+fn powershell_on_path() -> bool {
+    false
+}
+
+/// Home directory of the current user.
+#[cfg(feature = "app")]
+fn home_dir() -> Option<std::path::PathBuf> {
+    shelldeck_core::util::home_dir()
+}
+
+/// Home directory of the current user, from the environment only: the
+/// build without `shelldeck-core` has no platform lookup behind it.
+#[cfg(not(feature = "app"))]
+fn home_dir() -> Option<std::path::PathBuf> {
+    ["HOME", "USERPROFILE"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from)
 }
 
 /// Pure part of [`resolve_shell`], parameterized so both platform branches
@@ -265,8 +296,7 @@ impl LocalPty {
         rows: u16,
         cols: u16,
     ) -> crate::Result<(Self, Box<dyn Read + Send>)> {
-        let home =
-            shelldeck_core::util::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let home = home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         Self::spawn_at(shell, rows, cols, &home)
     }
 
