@@ -962,7 +962,7 @@ Server state was read over a second `ssh` and with `docker exec`.
   (`InstallFailureKind`) and the application has a sentence for each
   cause in both languages; the English detail goes to the log
   (SDTEST-3050, SDTEST-3046 extended). Checked again on screen with the
-  rebuilt application (commit `a789ed4`): on the `noexec` account the
+  rebuilt application (the code of commit `8a49155`): on the `noexec` account the
   toast reads "le serveur n'autorise pas l'exécution de programmes
   depuis le dossier personnel", and the log has the English line.
 
