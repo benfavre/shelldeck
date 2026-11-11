@@ -1171,3 +1171,48 @@ and the two failed session scopes listed for that user date from 31
 October. The run did not disturb the pipeline, but a ShellDeck test has
 no business in that account: use another one on rbx1 next time.
 
+
+## Daemon files that are missing (2026-11-11)
+
+After the 0.21.0 release: the AppImage and the macOS bundle carry the
+daemon, an install without it fetches it, and Settings says what the
+state is (design doc, section 15, "Daemon files that are missing").
+Private headless desktop and throwaway profile as before, debug build of
+the branch.
+
+### The application run as if from an AppImage
+
+No image yet at this point: the debug binary was started with the
+environment an AppImage runtime gives (`APPDIR` set to the directory of
+the binary, `APPIMAGE`, `ARGV0`, `OWD`, `PATH` and `LD_LIBRARY_PATH`
+starting with a directory inside it), setting on.
+
+| Check | Result |
+|---|---|
+| Start, open a terminal | Pass. The daemon is copied to `sessiond/shelldeck-sessiond` in the configuration directory and runs from there (`/proc/<pid>/exe`), not from beside the binary |
+| Environment of the daemon (`/proc/<pid>/environ`) | Pass. `PATH=/usr/bin:/bin`; no `LD_LIBRARY_PATH`, `APPDIR`, `APPIMAGE`, `ARGV0` or `OWD` |
+| The same from inside the terminal (`echo $PATH $LD_LIBRARY_PATH $APPDIR $ARGV0`) | Pass. No entry of the image in `PATH`, the three others empty |
+| Quit, start again | Pass. The daemon kept running from the copy; the terminal came back with its content |
+
+### An install without the daemon
+
+The daemon moved away from beside the binary, nothing in the
+configuration directory, the application built with the release's
+update verification key so that it can fetch. The live update server
+was asked; its manifest (0.21.0) has no entry for the daemon files yet,
+so this is the refusal path, end to end.
+
+| Check | Result |
+|---|---|
+| Start with the setting on | Pass. One request to the update server, answered "not published"; a warning toast says persistent sessions could not be installed because this release does not publish the component, and that terminals remain ordinary ones. Nothing was written to the configuration directory |
+| Settings, General | Pass. A line "Persistent sessions component" under the toggle: not installed, with the same reason, and how to retry |
+| Setting off, then on | Pass. The line reads "being downloaded" while the request runs; an information toast announces the download, then the warning toast gives the reason; the line goes back to "not installed" |
+
+### Not verified
+
+- A fetch that succeeds against the live server: no release publishes
+  the daemon archive yet. The manifest check and the installation of the
+  archive are covered by SDTEST-3057 and SDTEST-3058; the first release
+  with the archive has to be checked from an install without the daemon.
+- macOS: the bundle is built and signed by the release workflow, the
+  application was not run there.
