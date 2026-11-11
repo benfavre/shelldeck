@@ -112,6 +112,9 @@ class BrowserPackaging(unittest.TestCase):
         main = app / "Contents/MacOS/shelldeck"
         main.parent.mkdir(parents=True)
         main.write_bytes(b"signed application fixture")
+        daemon = app / "Contents/MacOS/shelldeck-sessiond"
+        daemon.write_bytes(b"signed session daemon fixture")
+        daemon.chmod(0o755)
         icon = app / "Contents/Resources/shelldeck.icns"
         icon.parent.mkdir(parents=True)
         shutil.copyfile(REPOSITORY / "packaging/icons/shelldeck.icns", icon)

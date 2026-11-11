@@ -71,6 +71,10 @@ class SessiondPackaging(unittest.TestCase):
     def archive(self):
         return self.root / "dist/shelldeck-linux-x86_64.tar.gz"
 
+    @property
+    def daemon_archive(self):
+        return self.root / "dist/shelldeck-sessiond-linux-x86_64.tar.gz"
+
     # SDTEST-3034 (SDUC-574): the Linux archive carries the session daemon
     # beside the application binary, and the static builds for SSH servers
     # when they were built. An archive without the daemon is not produced.
@@ -79,6 +83,7 @@ class SessiondPackaging(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Missing session daemon", result.stderr)
         self.assertFalse(self.archive.exists())
+        self.assertFalse(self.daemon_archive.exists())
 
         self.put(DAEMON, ELF + b" daemon fixture")
         result = self.package()
@@ -92,6 +97,8 @@ class SessiondPackaging(unittest.TestCase):
             self.assertTrue(archive.getmember(DAEMON).mode & 0o100)
             self.assertEqual(archive.extractfile(DAEMON).read(), ELF + b" daemon fixture")
             self.assertFalse(any("musl" in name for name in names))
+        with tarfile.open(self.daemon_archive) as archive:
+            self.assertEqual(archive.getnames(), [DAEMON])
 
         # The static builds ship when present; nothing else with that prefix.
         self.put(REMOTE_X86, ELF + b" x86 fixture")
@@ -104,6 +111,15 @@ class SessiondPackaging(unittest.TestCase):
             shipped = sorted(name for name in archive.getnames() if name.startswith(DAEMON))
             self.assertEqual(shipped, [DAEMON, REMOTE_ARM, REMOTE_X86])
             self.assertEqual(archive.extractfile(REMOTE_ARM).read(), ELF + b" arm fixture")
+        # The same files, and only them, as the small archive an install
+        # without the daemon fetches (SDTEST-3058 installs it).
+        with tarfile.open(self.daemon_archive) as archive:
+            self.assertEqual(sorted(archive.getnames()), [DAEMON, REMOTE_ARM, REMOTE_X86])
+            for name in archive.getnames():
+                self.assertTrue(archive.getmember(name).isfile())
+                self.assertTrue(archive.getmember(name).mode & 0o100)
+            self.assertEqual(archive.extractfile(DAEMON).read(), ELF + b" daemon fixture")
+            self.assertEqual(archive.extractfile(REMOTE_X86).read(), ELF + b" x86 fixture")
 
         # A file with the right name and the wrong content, or a symlink,
         # stops the packaging.

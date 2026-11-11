@@ -48,6 +48,11 @@ case "$PLATFORM" in
             exit 1
         fi
         PAYLOAD=(shelldeck shelldeck-sessiond "browser/$VERSION")
+        # The daemon files again, as a small archive of their own: an
+        # install whose updater predates the daemon (it replaces the
+        # application binary only) fetches them from it
+        # (crates/shelldeck-update/src/sessiond.rs).
+        SESSIOND_PAYLOAD=(shelldeck-sessiond)
         # Static builds for SSH servers, when they were built
         # (scripts/build-sessiond-remote.sh). Only these two names ship.
         for TRIPLE in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
@@ -59,15 +64,25 @@ case "$PLATFORM" in
                     exit 1
                 fi
                 PAYLOAD+=("$REMOTE")
+                SESSIOND_PAYLOAD+=("$REMOTE")
             fi
         done
+        rm -f dist/shelldeck-sessiond-linux-x86_64.tar.gz
         tar -czf dist/shelldeck-linux-x86_64.tar.gz -C target/release "${PAYLOAD[@]}"
+        tar -czf dist/shelldeck-sessiond-linux-x86_64.tar.gz -C target/release \
+            "${SESSIOND_PAYLOAD[@]}"
         ARCHIVE="dist/shelldeck-linux-x86_64.tar.gz"
         ;;
     macos-aarch64)
         test -d "dist/Inklura Desktop.app"
         if [ ! -s "dist/Inklura Desktop.app/Contents/Resources/shelldeck.icns" ]; then
             echo "ERROR: macOS bundle icon is missing; refusing to publish the archive" >&2
+            exit 1
+        fi
+        # The session daemon sits beside the application binary
+        # (packaging/macos/build-dmg.sh).
+        if [ ! -x "dist/Inklura Desktop.app/Contents/MacOS/shelldeck-sessiond" ]; then
+            echo "ERROR: macOS bundle has no session daemon; refusing to publish the archive" >&2
             exit 1
         fi
         test -x "dist/Inklura Desktop.app/Contents/Frameworks/browser/ShellDeck Browser.app/Contents/MacOS/shelldeck-browser"

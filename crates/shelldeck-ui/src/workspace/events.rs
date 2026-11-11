@@ -475,8 +475,15 @@ impl Workspace {
                 {
                     super::remote_daemon::forget_questions();
                 }
+                // Turned on just now: the daemon of this machine is
+                // fetched when this copy of the app came without it.
+                let session_daemon_turned_on =
+                    !self.app_config.general.session_daemon && config.general.session_daemon;
                 // Merge settings-owned slices only — see `.agents/session-state.md`.
                 self.app_config.general = config.general.clone();
+                if session_daemon_turned_on {
+                    self.ensure_session_daemon_files(true, cx);
+                }
                 self.app_config.terminal = config.terminal.clone();
                 self.app_config.editor = config.editor.clone();
                 self.app_config.tray = config.tray.clone();

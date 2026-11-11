@@ -63,12 +63,25 @@ mkdir -p "$APPDIR/usr/bin/browser" "$APPDIR/usr/share/applications" \
     "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp "$BINARY" "$APPDIR/usr/bin/shelldeck"
 chmod +x "$APPDIR/usr/bin/shelldeck"
-# The session daemon (shelldeck-sessiond) is deliberately not copied into
-# the AppImage. It outlives the application, and the image is a FUSE mount
-# that goes away when the application exits: a daemon started from it would
-# lose its own executable. Without the binary beside it the application uses
-# in-process terminals (docs/design/session-daemon.md, section 15,
-# "Packaging"). The tar.gz install and its updater carry the daemon.
+# The session daemon and its static builds for SSH servers sit beside the
+# application binary, as in the tar.gz. The daemon outlives the application
+# and the image is a mount that goes away when the application exits, so the
+# application never runs it from here: it copies it to its per-user
+# directory and starts it from there (crates/shelldeck-ui/src/sessiond_files.rs).
+SESSIOND_SOURCE="$(dirname "$BINARY")"
+if [ ! -x "$SESSIOND_SOURCE/shelldeck-sessiond" ]; then
+    echo "ERROR: Missing session daemon: $SESSIOND_SOURCE/shelldeck-sessiond" >&2
+    exit 1
+fi
+cp "$SESSIOND_SOURCE/shelldeck-sessiond" "$APPDIR/usr/bin/shelldeck-sessiond"
+chmod 755 "$APPDIR/usr/bin/shelldeck-sessiond"
+for TRIPLE in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+    if [ -f "$SESSIOND_SOURCE/shelldeck-sessiond-$TRIPLE" ] \
+        && [ ! -L "$SESSIOND_SOURCE/shelldeck-sessiond-$TRIPLE" ]; then
+        cp "$SESSIOND_SOURCE/shelldeck-sessiond-$TRIPLE" "$APPDIR/usr/bin/"
+        chmod 755 "$APPDIR/usr/bin/shelldeck-sessiond-$TRIPLE"
+    fi
+done
 cp -a "$BROWSER_SOURCE" "$APPDIR/usr/bin/browser/$VERSION"
 # Staging uses a private 0700 temporary directory. SquashFS normalizes ownership
 # to root, so published runtime directories/data must remain readable/executable

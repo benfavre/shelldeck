@@ -232,6 +232,16 @@ debug commands:
             .map(|(name, _)| name)
             .filter(|name| name.to_string_lossy().starts_with("SHELLDECK_"))
             .collect();
+        // Before `APPDIR` itself goes: nothing of an AppImage mount stays
+        // in what the terminals inherit.
+        for (name, value) in
+            paths::appimage_env_changes(std::env::vars_os(), std::env::var_os("APPDIR").as_deref())
+        {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
         for name in NAMES.iter().map(std::ffi::OsString::from).chain(prefixed) {
             std::env::remove_var(name);
         }

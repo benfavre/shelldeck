@@ -42,6 +42,7 @@ class AgentsPackaging(unittest.TestCase):
         stale.mkdir()
         (stale / "must-not-ship.txt").write_text("stale runtime")
         self.executable(self.root / "target/release/shelldeck", "#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+        self.executable(self.root / "target/release/shelldeck-sessiond", "session daemon fixture")
         self.executable(self.root / ".build-tools/linuxdeploy-x86_64.AppImage",
                         """#!/bin/sh
 printf '%s\\n' "$@" > "$SHELLDECK_TEST_DEPLOY_LOG"
@@ -100,6 +101,30 @@ fi
         parser.optionxform = str
         parser.read(path)
         return parser
+
+    # SDTEST-3064 (SDUC-574): the AppImage carries the session daemon and the
+    # static builds for SSH servers beside the application binary, and is
+    # not built without the daemon.
+    def test_sdtest_3064_appimage_carries_the_session_daemon(self):
+        release = self.root / "target/release"
+        remote = "shelldeck-sessiond-x86_64-unknown-linux-musl"
+        self.executable(release / remote, "static build fixture")
+        # Not a shipped name, and a link under a shipped one: neither goes in.
+        self.executable(release / "shelldeck-sessiond-riscv64-unknown-linux-musl", "not shipped")
+        (release / "shelldeck-sessiond-aarch64-unknown-linux-musl").symlink_to(remote)
+        result = self.package()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        packaged = self.root / "dist/ShellDeck.AppDir/usr/bin"
+        shipped = sorted(path.name for path in packaged.glob("shelldeck-sessiond*"))
+        self.assertEqual(shipped, ["shelldeck-sessiond", remote])
+        self.assertEqual((packaged / "shelldeck-sessiond").read_text(), "session daemon fixture")
+        for name in shipped:
+            self.assertEqual((packaged / name).stat().st_mode & 0o777, 0o755)
+
+        (release / "shelldeck-sessiond").unlink()
+        result = self.package()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Missing session daemon", result.stderr)
 
     # SDTEST-2630 — SDUC-558, SDUC-557: the production AppDir keeps its versioned
     # browser and Agents action; AppRun forwards --agents and spaced args intact.

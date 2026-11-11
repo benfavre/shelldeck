@@ -1046,6 +1046,34 @@ impl SettingsView {
                     },
                 ),
             ));
+            // What this copy of the app has of the daemon, when that is
+            // not simply "installed": the setting does nothing without it.
+            let files_note = match crate::sessiond_files::status() {
+                crate::sessiond_files::Status::Ready => None,
+                crate::sessiond_files::Status::Missing => {
+                    Some(t!("settings.general.session_daemon_files.missing").to_string())
+                }
+                crate::sessiond_files::Status::Fetching => {
+                    Some(t!("settings.general.session_daemon_files.fetching").to_string())
+                }
+                crate::sessiond_files::Status::FetchFailed(kind) => Some(
+                    t!(
+                        "settings.general.session_daemon_files.failed",
+                        reason = crate::sessiond_files::fetch_failure_text(&kind).as_str()
+                    )
+                    .to_string(),
+                ),
+                crate::sessiond_files::Status::Unavailable => {
+                    Some(t!("settings.general.session_daemon_files.unavailable").to_string())
+                }
+            };
+            if let Some(note) = files_note {
+                settings = settings.child(Self::render_setting_row(
+                    t!("settings.general.session_daemon_files.label").as_ref(),
+                    note.as_str(),
+                    div(),
+                ));
+            }
             // The answers to "install on this server?" are recorded per
             // SSH connection. Shown only when there is one: forgetting
             // them makes the question come back at the next connection.

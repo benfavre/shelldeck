@@ -109,26 +109,12 @@ mod imp {
             .map_err(Clone::clone)
     }
 
-    /// The daemon binary: `SHELLDECK_SESSIOND_BIN` (development), else
-    /// `shelldeck-sessiond` next to the app executable. Always an absolute
-    /// path to an existing file, never a `PATH` lookup.
+    /// The daemon binary (`crate::sessiond_files`): beside the app
+    /// executable, copied out of an AppImage or a macOS bundle, or fetched
+    /// to the per-user directory. Always an absolute path to an existing
+    /// file, never a `PATH` lookup.
     fn daemon_binary() -> Result<PathBuf, String> {
-        if let Some(path) = std::env::var_os("SHELLDECK_SESSIOND_BIN").map(PathBuf::from) {
-            if path.is_absolute() && path.is_file() {
-                return Ok(path);
-            }
-            return Err("SHELLDECK_SESSIOND_BIN is not an absolute path to a file".into());
-        }
-        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        let path = exe
-            .parent()
-            .ok_or("the app executable has no directory")?
-            .join("shelldeck-sessiond");
-        if path.is_file() {
-            Ok(path)
-        } else {
-            Err(format!("{} is not installed", path.display()))
-        }
+        crate::sessiond_files::local_daemon()
     }
 
     fn pane_env() -> Vec<(String, String)> {

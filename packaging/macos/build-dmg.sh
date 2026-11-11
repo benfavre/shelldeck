@@ -24,6 +24,15 @@ if [ ! -f "$BINARY" ]; then
     exit 1
 fi
 
+# The session daemon ships beside the application binary; a bundle without
+# it is not built.
+SESSIOND="$(dirname "$BINARY")/shelldeck-sessiond"
+if [ ! -x "$SESSIOND" ]; then
+    echo "ERROR: Session daemon not found at $SESSIOND" >&2
+    echo "Build with: cargo build --release -p shelldeck-sessiond --no-default-features" >&2
+    exit 1
+fi
+
 # A missing icon is a release error; never ship an unbranded .app.
 ICON_SRC="$PROJECT_ROOT/packaging/icons/shelldeck.icns"
 if [ ! -s "$ICON_SRC" ]; then
@@ -53,6 +62,13 @@ mkdir -p "$APP_DIR/Contents/Resources"
 # Copy binary
 cp "$BINARY" "$APP_DIR/Contents/MacOS/shelldeck"
 chmod +x "$APP_DIR/Contents/MacOS/shelldeck"
+
+# The session daemon sits beside the application binary. It outlives the
+# application, so the application copies it to its per-user directory and
+# starts it from there, never from the bundle
+# (crates/shelldeck-ui/src/sessiond_files.rs).
+cp "$SESSIOND" "$APP_DIR/Contents/MacOS/shelldeck-sessiond"
+chmod 755 "$APP_DIR/Contents/MacOS/shelldeck-sessiond"
 
 # The CEF runtime is a separate app with its own subprocess helpers and
 # framework. Preserve framework symlinks and sign it before the outer GPUI app.
@@ -175,6 +191,11 @@ for role in "" " (Alerts)" " (GPU)" " (Plugin)" " (Renderer)"; do
     codesign --verify --strict "$HELPER"
 done
 codesign "${SIGN_ARGS[@]}" --options runtime "$BUNDLED_BROWSER"
+# Signed on its own, with its own identifier: the copy the application makes
+# of it runs outside the bundle and must stay valid there.
+codesign "${SIGN_ARGS[@]}" --options runtime \
+    --identifier com.shelldeck.app.sessiond "$APP_DIR/Contents/MacOS/shelldeck-sessiond"
+codesign --verify --strict "$APP_DIR/Contents/MacOS/shelldeck-sessiond"
 codesign "${SIGN_ARGS[@]}" --options runtime "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 

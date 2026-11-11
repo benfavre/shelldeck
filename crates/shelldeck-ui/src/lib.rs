@@ -40,6 +40,7 @@ pub mod scale;
 pub mod script_editor;
 pub mod script_form;
 pub mod server_sync_view;
+pub(crate) mod sessiond_files;
 pub mod settings;
 pub mod share_view;
 pub mod shortcut_reference;
