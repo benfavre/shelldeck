@@ -1182,7 +1182,7 @@ the branch.
 
 ### The application run as if from an AppImage
 
-No image yet at this point: the debug binary was started with the
+Before a real image existed: the debug binary was started with the
 environment an AppImage runtime gives (`APPDIR` set to the directory of
 the binary, `APPIMAGE`, `ARGV0`, `OWD`, `PATH` and `LD_LIBRARY_PATH`
 starting with a directory inside it), setting on.
@@ -1193,6 +1193,24 @@ starting with a directory inside it), setting on.
 | Environment of the daemon (`/proc/<pid>/environ`) | Pass. `PATH=/usr/bin:/bin`; no `LD_LIBRARY_PATH`, `APPDIR`, `APPIMAGE`, `ARGV0` or `OWD` |
 | The same from inside the terminal (`echo $PATH $LD_LIBRARY_PATH $APPDIR $ARGV0`) | Pass. No entry of the image in `PATH`, the three others empty |
 | Quit, start again | Pass. The daemon kept running from the copy; the terminal came back with its content |
+
+### The AppImage built by the release workflow
+
+`ShellDeck-x86_64.AppImage` of a release dry run of the branch (a real
+image, mounted through FUSE), fresh throwaway profile, setting on.
+
+| Check | Result |
+|---|---|
+| Start | Pass. No notice about the daemon files |
+| Open a terminal | Pass. The daemon runs from `sessiond/shelldeck-sessiond` in the configuration directory; its environment has `PATH=/usr/bin:/bin` and nothing of the image; none of its mapped files is in the mount |
+| `echo $PATH $LD_LIBRARY_PATH $APPDIR $APPIMAGE` in the terminal | Pass. No entry of the image, the three others empty |
+| Quit | Pass. The image is unmounted, the application is gone, the daemon still runs |
+| Start again | Pass. The terminal is back with what was typed before the quit |
+
+The same dry run produced `shelldeck-sessiond-linux-x86_64.tar.gz`
+(2.4 MB): the daemon and the two builds for SSH servers, nothing else.
+The daemon and the `x86_64` static build print their version when run,
+and all three carry the release marker.
 
 ### An install without the daemon
 
