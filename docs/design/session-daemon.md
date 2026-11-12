@@ -1154,7 +1154,12 @@ Deferred (details in the subsections below):
 
 - Packaging: the Windows archive does not carry the daemon (Unix code).
   The AppImage and the macOS bundle carry it since "Daemon files that
-  are missing" (last subsection). Saving the split tree of remote tabs.
+  are missing" (last subsection). The split tree of remote tabs is
+  saved and restored since 0.21.3 (`TabState::remote`, SDTEST-3068,
+  SDTEST-3069): a reconnecting SSH tab takes back the panes of its saved
+  tree that are still on the host, as splits, and keeps them from the
+  other tabs of that host meanwhile; not yet checked against a real
+  `sshd`.
   Workspace-scoped terminals are not deferred but excluded: they stay
   in-process until the protocol can carry a directory identity (see
   "Workspace-scoped terminals" below).

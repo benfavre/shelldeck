@@ -158,12 +158,20 @@ impl Workspace {
             Vec::new()
         };
         daemon_layouts.resize(sessions.len(), None);
+        // SSH tabs made of panes of their host's daemon: their splits, by
+        // pane id on that host, for the next connection.
+        let mut remote_layouts = if self.app_config.general.session_daemon {
+            terminal.remote_tab_layouts()
+        } else {
+            Vec::new()
+        };
+        remote_layouts.resize(sessions.len(), None);
 
         let tabs: Vec<TabState> = sessions
             .into_iter()
-            .zip(daemon_layouts)
+            .zip(daemon_layouts.into_iter().zip(remote_layouts))
             .enumerate()
-            .map(|(i, ((title, connection_id), daemon))| {
+            .map(|(i, ((title, connection_id), (daemon, remote)))| {
                 let tab_type = if connection_id.is_some() {
                     TabType::Ssh
                 } else {
@@ -178,6 +186,7 @@ impl Workspace {
                     // terminal session does not track, so leave this unset.
                     shell: None,
                     daemon: daemon.filter(|_| connection_id.is_none()),
+                    remote: remote.filter(|_| connection_id.is_some()),
                 }
             })
             .collect();
@@ -803,7 +812,15 @@ impl Workspace {
                                 self.connections.iter().find(|c| c.id == conn_id).cloned()
                             });
                             match connection {
-                                Some(conn) => self.connect_ssh(conn, cx),
+                                // Its splits come back once the host's
+                                // daemon answers with the panes still there.
+                                Some(conn) => self.connect_ssh_restoring(
+                                    conn,
+                                    tab.remote
+                                        .clone()
+                                        .filter(|_| self.app_config.general.session_daemon),
+                                    cx,
+                                ),
                                 None => tracing::warn!(
                                     "Skipping SSH tab restore: connection {:?} no longer exists",
                                     tab.connection_id

@@ -50,6 +50,13 @@ pub struct TabState {
     /// id, so the tab can be rebuilt around panes that are still running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon: Option<DaemonTabLayout>,
+    /// For SSH tabs made of panes of the host's session daemon: the native
+    /// layout, keyed by pane id on that host. When the connection is made
+    /// again, the tab is rebuilt with its splits around the panes still
+    /// running there instead of each pane coming back as a tab of its
+    /// own. Never matched against the local daemon (`daemon`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<DaemonTabLayout>,
 }
 
 /// Native layout of one tab whose panes belong to the session daemon.
@@ -349,6 +356,7 @@ mod tests {
                     connection_id: None,
                     shell: Some("/bin/bash".to_string()),
                     daemon: None,
+                    remote: None,
                 },
                 TabState {
                     id: "tab-2".to_string(),
@@ -357,6 +365,21 @@ mod tests {
                     connection_id: Some(conn_id),
                     shell: None,
                     daemon: None,
+                    // The split tree of the host's daemon panes.
+                    remote: Some(DaemonTabLayout {
+                        tree: DaemonPaneNode::Split {
+                            horizontal: false,
+                            ratio: 0.4,
+                            first: Box::new(DaemonPaneNode::Pane {
+                                pane: Uuid::from_u128(7),
+                            }),
+                            second: Box::new(DaemonPaneNode::Pane {
+                                pane: Uuid::from_u128(8),
+                            }),
+                        },
+                        focused: Some(Uuid::from_u128(8)),
+                        named: true,
+                    }),
                 },
             ],
             active_tab: 1,
@@ -375,6 +398,27 @@ mod tests {
         assert_eq!(loaded.tabs[0].shell.as_deref(), Some("/bin/bash"));
         assert!(matches!(loaded.tabs[1].tab_type, TabType::Ssh));
         assert_eq!(loaded.tabs[1].connection_id, Some(conn_id));
+        assert_eq!(loaded.tabs[1].remote, state.tabs[1].remote);
+        assert_eq!(loaded.tabs[0].remote, None);
+        // A host's panes are never planned as panes of the local daemon.
+        assert!(loaded.saved_daemon_panes().is_empty());
+        assert_eq!(
+            loaded.daemon_restore_plan(&[Uuid::from_u128(7)]).tabs,
+            vec![
+                RestoredTab::Saved(0),
+                RestoredTab::Saved(1),
+                RestoredTab::Daemon {
+                    title: None,
+                    layout: DaemonTabLayout {
+                        tree: DaemonPaneNode::Pane {
+                            pane: Uuid::from_u128(7)
+                        },
+                        focused: None,
+                        named: false,
+                    },
+                },
+            ]
+        );
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
@@ -449,6 +493,7 @@ mod tests {
                 focused: focused.map(pane),
                 named: false,
             }),
+            remote: None,
         }
     }
 
@@ -460,6 +505,7 @@ mod tests {
             connection_id: None,
             shell: None,
             daemon: None,
+            remote: None,
         }
     }
 

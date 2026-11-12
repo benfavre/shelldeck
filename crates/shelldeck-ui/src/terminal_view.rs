@@ -568,27 +568,11 @@ impl TerminalView {
         let primary = sessions.remove(order.first()?)?;
         let tab_id = primary.id;
         self.add_session(primary);
-        let mut leaves = HashMap::from([(order[0], PaneId::Primary)]);
-        for pane in &order[1..] {
-            let Some(session) = sessions.remove(pane) else {
-                continue;
-            };
-            session
-                .grid
-                .lock()
-                .set_max_scrollback(self.configured_scrollback);
-            session.set_output_notifier(self.output_tx.clone());
-            let id = Uuid::new_v4();
-            self.layout.extra.insert(id, session);
-            leaves.insert(*pane, PaneId::Extra(id));
-        }
-        if let Some(tree) = layout::pane_tree_from_daemon(&saved.tree, &leaves) {
-            self.layout.tree = tree;
-        }
-        self.layout.focused = saved
-            .focused
-            .and_then(|pane| leaves.get(&pane).copied())
-            .unwrap_or(PaneId::Primary);
+        let extras = order[1..]
+            .iter()
+            .filter_map(|pane| sessions.remove(pane).map(|session| (*pane, session)))
+            .collect();
+        self.install_daemon_splits(tab_id, order[0], extras, saved);
         if let (Some(title), Some(tab)) = (title, self.tabs.iter_mut().find(|t| t.id == tab_id)) {
             tab.title = title.to_string();
             tab.named = saved.named;
@@ -614,12 +598,79 @@ impl TerminalView {
         }
     }
 
+    /// Give the tab `tab_id`, whose primary session shows the daemon pane
+    /// `primary_pane`, the splits of `saved`: one split pane per entry of
+    /// `extras` (daemon pane id, session), placed and sized as saved, and
+    /// the saved focus. Panes of the tree without a session are dropped
+    /// (their split collapses). Used for tabs rebuilt around local daemon
+    /// panes at startup and for SSH tabs rebuilt around the panes left on
+    /// their host. Returns `false` when there is no such tab.
+    pub(crate) fn install_daemon_splits(
+        &mut self,
+        tab_id: Uuid,
+        primary_pane: Uuid,
+        extras: Vec<(Uuid, TerminalSession)>,
+        saved: &shelldeck_core::config::workspace_state::DaemonTabLayout,
+    ) -> bool {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
+            return false;
+        };
+        let scrollback = self.configured_scrollback;
+        let notifier = self.output_tx.clone();
+        let layout = if index == self.pane.active_index {
+            &mut self.layout
+        } else {
+            self.stored_layouts
+                .entry(tab_id)
+                .or_insert_with(TabLayout::single)
+        };
+        let mut leaves = HashMap::from([(primary_pane, PaneId::Primary)]);
+        for (pane, session) in extras {
+            session.grid.lock().set_max_scrollback(scrollback);
+            session.set_output_notifier(notifier.clone());
+            let id = Uuid::new_v4();
+            layout.extra.insert(id, session);
+            leaves.insert(pane, PaneId::Extra(id));
+        }
+        if let Some(tree) = layout::pane_tree_from_daemon(&saved.tree, &leaves) {
+            layout.tree = tree;
+        }
+        layout.focused = saved
+            .focused
+            .and_then(|pane| leaves.get(&pane).copied())
+            .unwrap_or(PaneId::Primary);
+        if let Some(tab) = self.tabs.get_mut(index) {
+            tab.named = tab.named || saved.named;
+        }
+        true
+    }
+
+    /// For each tab, in tab order, its layout by pane id of its SSH
+    /// host's session daemon, or `None` for a local tab or an SSH tab
+    /// whose primary pane is not a daemon pane (tmux, plain shell). Saved
+    /// so the tab comes back with its splits when the host is connected
+    /// again. Read-only.
+    pub fn remote_tab_layouts(
+        &self,
+    ) -> Vec<Option<shelldeck_core::config::workspace_state::DaemonTabLayout>> {
+        self.tab_layouts_by_pane(true)
+    }
+
     /// For each tab, in tab order, its layout by session daemon pane id,
     /// or `None` when its primary pane is not a daemon pane. Leaves that
     /// are not live daemon panes (in-process, ended, not spawned yet) are
     /// left out. Read-only.
     pub fn daemon_tab_layouts(
         &self,
+    ) -> Vec<Option<shelldeck_core::config::workspace_state::DaemonTabLayout>> {
+        self.tab_layouts_by_pane(false)
+    }
+
+    /// `remote`: the SSH tabs (panes of their host's daemon), else the
+    /// local ones (panes of this machine's daemon).
+    fn tab_layouts_by_pane(
+        &self,
+        remote: bool,
     ) -> Vec<Option<shelldeck_core::config::workspace_state::DaemonTabLayout>> {
         fn live_pane(session: &TerminalSession) -> Option<Uuid> {
             use shelldeck_terminal::attached::AttachedPhase;
@@ -638,9 +689,9 @@ impl TerminalView {
             .enumerate()
             .map(|(index, tab)| {
                 // A tab of an SSH connection shows panes of that host's
-                // daemon: they are offered back when the host is
-                // connected again, never attached to the local daemon.
-                if tab.connection_id.is_some() {
+                // daemon: they are matched against that host when it is
+                // connected again, never against the local daemon.
+                if tab.connection_id.is_some() != remote {
                     return None;
                 }
                 let primary = self.pane.sessions.get(index)?;
@@ -5866,6 +5917,109 @@ mod tests {
             // local daemon: their panes live on the host.
             assert_eq!(terminal.daemon_tab_layouts(), vec![None, None]);
             assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 0);
+        });
+    }
+
+    // SDTEST-3069 (SDUC-574): SSH tabs made of panes of their host's
+    // daemon save their split tree by pane id (local tabs never appear
+    // there), and a tab handed over to such a pane gets its saved splits
+    // back, whether it is the active tab or not.
+    #[test]
+    fn sdtest_3069_ssh_daemon_tabs_save_and_get_back_their_splits() {
+        use shelldeck_core::config::workspace_state::{DaemonPaneNode, DaemonTabLayout};
+        use shelldeck_terminal::attached::AttachedPhase;
+        use shelldeck_terminal::session::TerminalSession;
+        use uuid::Uuid;
+
+        fn attached(pane: u128) -> TerminalSession {
+            let (session, feed, _input) =
+                TerminalSession::spawn_attached("host".into(), 24, 80, 100, 1).unwrap();
+            feed.status().set_pane(Uuid::from_u128(pane));
+            feed.status().set_phase(AttachedPhase::Live);
+            session
+        }
+        fn ssh() -> TerminalSession {
+            TerminalSession::spawn_ssh("host".into(), 24, 80).unwrap().0
+        }
+        let leaf = |pane: u128| DaemonPaneNode::Pane {
+            pane: Uuid::from_u128(pane),
+        };
+        let saved = DaemonTabLayout {
+            tree: DaemonPaneNode::Split {
+                horizontal: false,
+                ratio: 0.4,
+                first: Box::new(leaf(1)),
+                second: Box::new(leaf(2)),
+            },
+            focused: Some(Uuid::from_u128(2)),
+            named: true,
+        };
+
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, _| {
+            terminal.set_persistent_sessions(true);
+            let connection = Uuid::from_u128(77);
+            // Tab 1: SSH, still connecting (a plain SSH session).
+            let first = ssh();
+            let first_id = first.id;
+            terminal.add_session_with_connection(first, Some(connection));
+            // Tab 2: SSH, same host, the active one.
+            let second = ssh();
+            let second_id = second.id;
+            terminal.add_session_with_connection(second, Some(connection));
+            // Tab 3: a local daemon pane.
+            terminal.add_session(attached(9));
+            terminal.select_tab(second_id);
+            assert_eq!(terminal.remote_tab_layouts(), vec![None, None, None]);
+
+            // The host answers for the inactive tab: it is handed over and
+            // gets its splits back in its stored layout.
+            assert!(terminal.replace_session(first_id, attached(1)));
+            assert!(terminal.install_daemon_splits(
+                first_id,
+                Uuid::from_u128(1),
+                vec![(Uuid::from_u128(2), attached(2))],
+                &saved,
+            ));
+            // And for the active tab, with one pane of its tree left.
+            assert!(terminal.replace_session(second_id, attached(3)));
+            assert_eq!(terminal.tabs[terminal.pane.active_index].id, second_id);
+            assert!(terminal.layout.extra.is_empty());
+
+            assert_eq!(
+                terminal.remote_tab_layouts(),
+                vec![
+                    Some(saved.clone()),
+                    Some(DaemonTabLayout {
+                        tree: leaf(3),
+                        focused: Some(Uuid::from_u128(3)),
+                        named: false,
+                    }),
+                    None,
+                ]
+            );
+            assert_eq!(
+                terminal.daemon_tab_layouts()[..2],
+                [None, None],
+                "panes of a host are never saved as local daemon panes"
+            );
+            assert!(terminal.tabs[0].named);
+
+            // The restored tab shows both panes, and gets its focus back.
+            terminal.activate_restored_tab(first_id, saved.focused);
+            assert_eq!(terminal.layout.extra.len(), 1);
+            assert_eq!(
+                terminal.active_session().and_then(|s| s.daemon_pane()),
+                Some(Uuid::from_u128(2))
+            );
+            // No such tab: nothing happens.
+            assert!(!terminal.install_daemon_splits(
+                Uuid::from_u128(404),
+                Uuid::from_u128(1),
+                Vec::new(),
+                &saved,
+            ));
         });
     }
 

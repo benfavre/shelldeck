@@ -18,7 +18,7 @@
 use crate::t;
 use parking_lot::Mutex;
 use shelldeck_core::config::app_config::{GeneralConfig, RemoteDaemonInstall};
-use shelldeck_core::config::workspace_state::DaemonCleanup;
+use shelldeck_core::config::workspace_state::{DaemonCleanup, DaemonTabLayout};
 use shelldeck_core::config::WorkspaceState;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_sessiond::attached::SessionOptions;
@@ -72,6 +72,10 @@ struct State {
     retired: Vec<RemoteHost>,
     /// Tabs of a host that are still connecting.
     pending: HashMap<Uuid, usize>,
+    /// Saved split trees of reconnecting tabs, by the session id of the
+    /// tab, with the connection they belong to. Their panes are kept for
+    /// them: no other tab of the host takes them meanwhile.
+    layouts: HashMap<Uuid, (Uuid, DaemonTabLayout)>,
     noticed: HashSet<Uuid>,
     asked: HashSet<Uuid>,
     events_tx: mpsc::UnboundedSender<(Uuid, HostEvent)>,
@@ -87,6 +91,7 @@ fn state() -> &'static Mutex<State> {
             hosts: HashMap::new(),
             retired: Vec::new(),
             pending: HashMap::new(),
+            layouts: HashMap::new(),
             noticed: HashSet::new(),
             asked: HashSet::new(),
             events_tx,
@@ -353,10 +358,44 @@ pub(super) fn begin_connect(connection_id: Uuid) {
     *state().lock().pending.entry(connection_id).or_default() += 1;
 }
 
+/// The tab of `session_id`, connecting to `connection_id`, had this split
+/// tree over the host's panes in an earlier run.
+pub(super) fn expect_layout(connection_id: Uuid, session_id: Uuid, layout: DaemonTabLayout) {
+    state()
+        .lock()
+        .layouts
+        .insert(session_id, (connection_id, layout));
+}
+
+/// The saved split tree of the tab of `session_id`, taken once.
+pub(super) fn take_layout(session_id: Uuid) -> Option<DaemonTabLayout> {
+    state()
+        .lock()
+        .layouts
+        .remove(&session_id)
+        .map(|(_, layout)| layout)
+}
+
+/// Panes kept for other tabs of `connection_id` that are still
+/// reconnecting with a saved split tree.
+pub(super) fn reserved_panes(connection_id: Uuid) -> Vec<Uuid> {
+    state()
+        .lock()
+        .layouts
+        .values()
+        .filter(|(conn, _)| *conn == connection_id)
+        .flat_map(|(_, layout)| layout.tree.panes())
+        .collect()
+}
+
 /// A tab of this host stopped connecting (ready, fallback or failure).
-/// Returns how many are still connecting.
-pub(super) fn end_connect(connection_id: Uuid) -> usize {
+/// Returns how many are still connecting. `session_id`: the tab, whose
+/// saved split tree (if any) no longer keeps panes.
+pub(super) fn end_connect(connection_id: Uuid, session_id: Option<Uuid>) -> usize {
     let mut state = state().lock();
+    if let Some(session_id) = session_id {
+        state.layouts.remove(&session_id);
+    }
     let left = state
         .pending
         .get(&connection_id)
@@ -399,12 +438,16 @@ pub(super) fn consent(general: &GeneralConfig, connection: &Connection) -> Insta
 
 /// What a tab that just reached the daemon shows, and which other panes
 /// come back as tabs of their own.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct ReadyPlan {
     /// The pane the connecting tab attaches to; `None`: spawn a new one.
     pub tab: Option<Uuid>,
     /// Panes offered back as further tabs.
     pub extra_tabs: Vec<Uuid>,
+    /// The tab's saved split tree over the panes still there, when it had
+    /// more than one of them: `tab` is its first pane and the others come
+    /// back as splits of the tab, not as tabs.
+    pub splits: Option<DaemonTabLayout>,
 }
 
 /// `panes`: what the daemon listed. `open`: panes already shown by this
@@ -412,8 +455,22 @@ pub(super) struct ReadyPlan {
 /// `others_connecting`: other tabs of the same host are still connecting
 /// (a restored session with several tabs); each of them takes one pane
 /// when its turn comes, so the rest is only opened by the last one.
+#[cfg(test)]
 pub(super) fn ready_plan(panes: &[PaneInfo], open: &[Uuid], others_connecting: bool) -> ReadyPlan {
-    let mut offered = panes
+    ready_plan_with(panes, open, &[], None, others_connecting)
+}
+
+/// [`ready_plan`] for a tab that may have a saved split tree (`saved`),
+/// while other reconnecting tabs of the host keep the panes of their own
+/// trees (`reserved`): those are neither taken nor offered as tabs here.
+pub(super) fn ready_plan_with(
+    panes: &[PaneInfo],
+    open: &[Uuid],
+    reserved: &[Uuid],
+    saved: Option<&DaemonTabLayout>,
+    others_connecting: bool,
+) -> ReadyPlan {
+    let offerable: Vec<Uuid> = panes
         .iter()
         .filter(|info| {
             info.alive
@@ -425,14 +482,42 @@ pub(super) fn ready_plan(panes: &[PaneInfo], open: &[Uuid], others_connecting: b
                 // the tab here would end it for them.
                 && info.clients == 0
         })
-        .map(|info| info.pane);
-    let tab = offered.next();
+        .map(|info| info.pane)
+        .collect();
+    // The saved tree, cut down to the panes that can still be shown.
+    let mut placed = HashSet::new();
+    let tree = saved.and_then(|saved| {
+        let tree = saved
+            .tree
+            .retain(&mut |pane| offerable.contains(&pane) && placed.insert(pane))?;
+        let panes = tree.panes();
+        Some(DaemonTabLayout {
+            focused: saved.focused.filter(|pane| panes.contains(pane)),
+            named: saved.named,
+            tree,
+        })
+    });
+    let mut free = offerable
+        .iter()
+        .copied()
+        .filter(|pane| !reserved.contains(pane) && !placed.contains(pane));
+    let (tab, splits) = match tree {
+        Some(layout) => {
+            let panes = layout.tree.panes();
+            (panes.first().copied(), (panes.len() > 1).then_some(layout))
+        }
+        None => (free.next(), None),
+    };
     let extra_tabs = if others_connecting {
         Vec::new()
     } else {
-        offered.collect()
+        free.filter(|pane| Some(*pane) != tab).collect()
     };
-    ReadyPlan { tab, extra_tabs }
+    ReadyPlan {
+        tab,
+        extra_tabs,
+        splits,
+    }
 }
 
 /// A session on a new pane of the host's daemon. Returns at once.
@@ -537,8 +622,12 @@ fn fallback_reason_key(reason: FallbackReason) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{consent, ready_plan, ReadyPlan, PANE_LABEL};
+    use super::{
+        begin_connect, consent, end_connect, expect_layout, ready_plan, ready_plan_with,
+        reserved_panes, take_layout, ReadyPlan, PANE_LABEL,
+    };
     use shelldeck_core::config::app_config::{AppConfig, RemoteDaemonInstall};
+    use shelldeck_core::config::workspace_state::DaemonTabLayout;
     use shelldeck_core::models::connection::Connection;
     use shelldeck_sessiond::protocol::PaneInfo;
     use shelldeck_ssh::sessiond_install::InstallConsent;
@@ -799,9 +888,125 @@ mod tests {
             ReadyPlan {
                 tab: None,
                 extra_tabs: Vec::new(),
+                splits: None,
             },
             "nothing of the previous account is offered"
         );
+    }
+
+    // SDTEST-3068 (SDUC-574): an SSH tab reconnecting with a saved split
+    // tree takes the panes of its tree that are still there, as splits;
+    // panes kept for other reconnecting tabs are neither taken nor offered
+    // as tabs; a tree with nothing left falls back to the plain plan.
+    #[test]
+    fn sdtest_3068_a_saved_split_tree_takes_its_panes_back() {
+        use shelldeck_core::config::workspace_state::DaemonPaneNode;
+        let leaf = |pane: Uuid| DaemonPaneNode::Pane { pane };
+        let split = |first, second| DaemonPaneNode::Split {
+            horizontal: true,
+            ratio: 0.3,
+            first: Box::new(first),
+            second: Box::new(second),
+        };
+        let (a, b, c, d) = (
+            pane(PANE_LABEL, true),
+            pane(PANE_LABEL, true),
+            pane(PANE_LABEL, true),
+            pane(PANE_LABEL, true),
+        );
+        let gone = Uuid::new_v4();
+        let mut theirs = pane(PANE_LABEL, true);
+        theirs.clients = 1;
+        let listed = [a.clone(), b.clone(), c.clone(), d.clone(), theirs.clone()];
+
+        // Saved: b | (a / gone / theirs), focus on a. The pane that is gone
+        // and the one another client shows drop out; the rest keeps its
+        // shape, the leftmost pane is the tab's own.
+        let saved = DaemonTabLayout {
+            tree: split(
+                leaf(b.pane),
+                split(leaf(a.pane), split(leaf(gone), leaf(theirs.pane))),
+            ),
+            focused: Some(a.pane),
+            named: true,
+        };
+        // `c` is kept for another tab still reconnecting.
+        let plan = ready_plan_with(&listed, &[], &[c.pane], Some(&saved), false);
+        assert_eq!(
+            plan,
+            ReadyPlan {
+                tab: Some(b.pane),
+                extra_tabs: vec![d.pane],
+                splits: Some(DaemonTabLayout {
+                    tree: split(leaf(b.pane), leaf(a.pane)),
+                    focused: Some(a.pane),
+                    named: true,
+                }),
+            }
+        );
+        // Other tabs still connecting: no further tab is opened yet.
+        assert_eq!(
+            ready_plan_with(&listed, &[], &[c.pane], Some(&saved), true).extra_tabs,
+            Vec::<Uuid>::new()
+        );
+        // One pane of the tree left: the tab takes it, without splits.
+        assert_eq!(
+            ready_plan_with(&listed, &[b.pane], &[], Some(&saved), false),
+            ReadyPlan {
+                tab: Some(a.pane),
+                extra_tabs: vec![c.pane, d.pane],
+                splits: None,
+            }
+        );
+        // Nothing of the tree left: the first pane that is not kept for
+        // another tab, as without a saved tree.
+        assert_eq!(
+            ready_plan_with(&listed, &[a.pane, b.pane], &[c.pane], Some(&saved), false),
+            ReadyPlan {
+                tab: Some(d.pane),
+                extra_tabs: vec![],
+                splits: None,
+            }
+        );
+        // A tab without a tree never takes a pane kept for another one.
+        assert_eq!(
+            ready_plan_with(&listed, &[], &[a.pane, b.pane], None, true),
+            ReadyPlan {
+                tab: Some(c.pane),
+                extra_tabs: vec![],
+                splits: None,
+            }
+        );
+
+        // The bookkeeping: a tree keeps its panes until it is taken or its
+        // tab stops connecting.
+        let conn = Uuid::new_v4();
+        let (tab_one, tab_two) = (Uuid::new_v4(), Uuid::new_v4());
+        begin_connect(conn);
+        begin_connect(conn);
+        expect_layout(conn, tab_one, saved.clone());
+        expect_layout(
+            conn,
+            tab_two,
+            DaemonTabLayout {
+                tree: leaf(c.pane),
+                focused: None,
+                named: false,
+            },
+        );
+        let mut kept = reserved_panes(conn);
+        kept.sort();
+        let mut expected = vec![a.pane, b.pane, c.pane, gone, theirs.pane];
+        expected.sort();
+        assert_eq!(kept, expected);
+        assert!(reserved_panes(Uuid::new_v4()).is_empty());
+        assert_eq!(take_layout(tab_one), Some(saved));
+        assert_eq!(take_layout(tab_one), None);
+        assert_eq!(end_connect(conn, Some(tab_one)), 1);
+        assert_eq!(reserved_panes(conn), vec![c.pane]);
+        // A fallback or a failure ends the connect: nothing is kept.
+        assert_eq!(end_connect(conn, Some(tab_two)), 0);
+        assert!(reserved_panes(conn).is_empty());
     }
 
     fn pane(label: &str, alive: bool) -> PaneInfo {
@@ -845,7 +1050,8 @@ mod tests {
             ready_plan(&[dead.clone(), foreign.clone()], &[], false),
             ReadyPlan {
                 tab: None,
-                extra_tabs: vec![]
+                extra_tabs: vec![],
+                splits: None,
             }
         );
         // One tab connecting, three panes left by an earlier run: the tab
@@ -855,7 +1061,8 @@ mod tests {
             ready_plan(&listed, &[], false),
             ReadyPlan {
                 tab: Some(a.pane),
-                extra_tabs: vec![b.pane, c.pane]
+                extra_tabs: vec![b.pane, c.pane],
+                splits: None,
             }
         );
         // Three restored tabs connecting at once: each takes one pane and
@@ -864,21 +1071,24 @@ mod tests {
             ready_plan(&listed, &[], true),
             ReadyPlan {
                 tab: Some(a.pane),
-                extra_tabs: vec![]
+                extra_tabs: vec![],
+                splits: None,
             }
         );
         assert_eq!(
             ready_plan(&listed, &[a.pane], true),
             ReadyPlan {
                 tab: Some(b.pane),
-                extra_tabs: vec![]
+                extra_tabs: vec![],
+                splits: None,
             }
         );
         assert_eq!(
             ready_plan(&listed, &[a.pane, b.pane], false),
             ReadyPlan {
                 tab: Some(c.pane),
-                extra_tabs: vec![]
+                extra_tabs: vec![],
+                splits: None,
             }
         );
         // Panes another client shows right now (the app on another
@@ -891,14 +1101,16 @@ mod tests {
             ready_plan(&[theirs.clone(), also_theirs.clone()], &[], false),
             ReadyPlan {
                 tab: None,
-                extra_tabs: vec![]
+                extra_tabs: vec![],
+                splits: None,
             }
         );
         assert_eq!(
             ready_plan(&[theirs, a.clone(), also_theirs, b.clone()], &[], false),
             ReadyPlan {
                 tab: Some(a.pane),
-                extra_tabs: vec![b.pane]
+                extra_tabs: vec![b.pane],
+                splits: None,
             }
         );
         // Every pane is shown already: a further tab is a new pane.
@@ -906,7 +1118,8 @@ mod tests {
             ready_plan(&listed, &[a.pane, b.pane, c.pane], false),
             ReadyPlan {
                 tab: None,
-                extra_tabs: vec![]
+                extra_tabs: vec![],
+                splits: None,
             }
         );
     }
