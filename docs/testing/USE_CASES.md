@@ -5275,7 +5275,15 @@ none.
   agent replies). The view on screen carries no dot. The tooltip says which.
 
 Verified by SDTEST-3093..3096 (protocol, records, bytes to grid) and
-SDTEST-3097..3099 (tab attention, split tabs, switcher). Not done: the status
+SDTEST-3097..3099 (tab attention, split tabs, switcher). The painting was
+checked in a native walkthrough on 2026-11-12 (private headless desktop,
+local `/bin/sh` tab, scripts printing the reports): blue dot while working;
+amber dot on the Terminal segment, with its tooltip, while a program
+reported `blocked` and Agents was in front; larger amber tab dot and the
+tooltip "demo · Attend votre accord · Apply?" back in the Terminal view, with
+the segment dot gone; blue segment dot for `done` reported while the Editor
+was in front, gone after the tab had been in front. Not checked there: SSH
+and session daemon tabs, split panes, `error`, the Agents segment. Not done: the status
 is not part of the session daemon snapshot, so a pane reattached after a
 restart has no status until its program reports again; no OS notification is
 sent; the rail of the full application carries no dot.
@@ -5303,7 +5311,12 @@ value removes the shortcut). The table is read at startup. Reference:
 
 Verified by SDTEST-3100 (built-in keys and ids are distinct on both
 platforms), SDTEST-3101 and SDTEST-3102 (the table: change, removal, no-op,
-unknown, invalid, conflicts, swap), SDTEST-3103 (file format). Not done: no
+unknown, invalid, conflicts, swap), SDTEST-3103 (file format). Checked in
+the native walkthrough of 2026-11-12 with `next_view = "ctrl-alt-v"`,
+`toggle_sidebar = ""`, `quit = "ctrl-t"` and an unknown action: the two
+notices at startup, Ctrl+Alt+V switching view, "Vue suivante Ctrl+Alt+V" and
+a sidebar entry without keys in the View menu, the sidebar row gone from the
+shortcut list of the terminal welcome screen. Not checked: macOS. Not done: no
 editor in Settings, no reload without restart, and the keys of the Agents
 composer, the file editor and the embedded browser are not in the table.
 
