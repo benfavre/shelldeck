@@ -141,7 +141,8 @@ lucide_assets!(
 );
 
 /// Embed Simple Icons SVGs at `icons/simple/{name}.svg` (brand / tech marks).
-/// Sourced from https://github.com/LitoMore/simple-icons-cdn — GPUI tints via
+/// Sourced from https://github.com/LitoMore/simple-icons-cdn (DeepSeek, which
+/// Simple Icons lacks, from lobehub/lobe-icons, MIT) — GPUI tints via
 /// `text_color` like Lucide.
 macro_rules! simple_assets {
     ($($name:literal),* $(,)?) => {
@@ -168,6 +169,7 @@ simple_assets!(
     "anthropic",
     "bun",
     "claudecode",
+    "deepseek",
     "docker",
     "dockercompose",
     "gnubash",

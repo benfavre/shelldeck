@@ -643,16 +643,18 @@ impl AgentConsoleView {
         parent: Entity<Self>,
         cx: &mut Context<Self>,
     ) -> Entity<Select<AgentProvider>> {
-        let options = vec![
-            SelectOption::new(AgentProvider::Claude, "Claude Code")
-                .with_icon("icons/simple/claudecode.svg"),
-            SelectOption::new(AgentProvider::Codex, "Codex").with_icon("icons/simple/openai.svg"),
-            SelectOption::new(AgentProvider::Automonique, "Automonique ACP")
-                .with_icon("icons/lucide/bot.svg"),
-            SelectOption::new(AgentProvider::Jcode, "Jcode").with_icon("icons/lucide/sparkles.svg"),
-            SelectOption::new(AgentProvider::DeepSeek, "DeepSeek")
-                .with_icon("icons/lucide/bot.svg"),
-        ];
+        let options = [
+            AgentProvider::Claude,
+            AgentProvider::Codex,
+            AgentProvider::Automonique,
+            AgentProvider::Jcode,
+            AgentProvider::DeepSeek,
+        ]
+        .into_iter()
+        .map(|provider| {
+            SelectOption::new(provider, provider.display_name()).with_icon(provider_icon(provider))
+        })
+        .collect::<Vec<_>>();
         let selected_index = options.iter().position(|option| option.value == selected);
         cx.new(move |select_cx| {
             Select::new(select_cx)
@@ -2176,8 +2178,8 @@ impl Render for AgentConsoleView {
                         })),
                 )
             })
-            .child(lucide_icon(
-                provider_icon(context.provider),
+            .child(crate::icons::agent_provider_icon(
+                context.provider,
                 14.0,
                 ShellDeckColors::text_muted(),
             ))
@@ -2798,14 +2800,10 @@ fn session_name(prompt: &str) -> String {
     }
 }
 
-fn provider_icon(provider: AgentProvider) -> &'static str {
-    match provider {
-        AgentProvider::Claude => "bot",
-        AgentProvider::Codex => "terminal",
-        AgentProvider::Automonique => "bot",
-        AgentProvider::Jcode => "sparkles",
-        AgentProvider::DeepSeek => "bot",
-    }
+/// The agent's identity mark (brand logo where there is one), as an icon
+/// asset path: the same marks as the session list and the settings.
+fn provider_icon(provider: AgentProvider) -> SharedString {
+    crate::icons::agent_provider_path(provider)
 }
 
 fn target_label(target: &AgentTarget) -> String {

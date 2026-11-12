@@ -53,19 +53,90 @@ impl AgentModelDiscoveryUi {
     }
 }
 
+/// Claude Code models offered by the picker. The aliases follow the latest
+/// model of each family (`claude --model fable|opus|sonnet|haiku`); the
+/// pinned identifiers keep a run on one version. Every entry takes Claude
+/// Code's `--effort` levels. No entry is the default: Automatic leaves the
+/// choice to the CLI's own configuration.
+fn claude_catalog() -> CodexModelCatalog {
+    use shelldeck_core::agent_codex::model_discovery::{
+        CodexDiscoveredModel, CodexReasoningOption,
+    };
+    let efforts: Vec<CodexReasoningOption> = AgentReasoningEffort::CLAUDE
+        .iter()
+        .map(|effort| CodexReasoningOption {
+            effort: effort.as_str().to_string(),
+            description: String::new(),
+        })
+        .collect();
+    let entry = |model: &str, name: &str, description: String| CodexDiscoveredModel {
+        id: model.to_string(),
+        model: model.to_string(),
+        display_name: name.to_string(),
+        description,
+        is_default: false,
+        default_reasoning_effort: None,
+        supported_reasoning_efforts: efforts.clone(),
+        input_modalities: vec!["text".to_string()],
+    };
+    let pinned =
+        |model: &str, name: &str| entry(model, name, t!("agents.model.claude.pinned").to_string());
+    CodexModelCatalog {
+        models: vec![
+            entry(
+                "fable",
+                "Fable",
+                t!("agents.model.claude.fable").to_string(),
+            ),
+            entry("opus", "Opus", t!("agents.model.claude.opus").to_string()),
+            entry(
+                "sonnet",
+                "Sonnet",
+                t!("agents.model.claude.sonnet").to_string(),
+            ),
+            entry(
+                "haiku",
+                "Haiku",
+                t!("agents.model.claude.haiku").to_string(),
+            ),
+            pinned("claude-fable-5-2", "Fable 5.2"),
+            pinned("claude-opus-5-5", "Opus 5.5"),
+            pinned("claude-sonnet-5-5", "Sonnet 5.5"),
+            pinned("claude-haiku-5-5", "Haiku 5.5"),
+        ],
+        truncated: false,
+    }
+}
+
+/// A pinned Claude identifier, listed under its own heading after the aliases.
+fn is_pinned_claude_model(model: &str) -> bool {
+    model.starts_with("claude-")
+}
+
 impl AgentConsoleView {
+    /// The models the picker can offer for `context`: Claude's fixed list,
+    /// the catalog discovered from the local Codex for this project, or
+    /// nothing (custom identifier only).
+    fn model_catalog(&self, context: &AgentExecutionContext) -> Option<CodexModelCatalog> {
+        match context.provider {
+            AgentProvider::Claude => Some(claude_catalog()),
+            AgentProvider::Codex
+                if context.target == AgentTarget::Local
+                    && self.model_discovery.scope.as_deref() == Some(context.workdir.as_str()) =>
+            {
+                self.model_discovery.catalog.clone()
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn validate_discovered_model_input(
         &self,
         context: &AgentExecutionContext,
         options: &shelldeck_core::agent_runtime::AgentInputOptions,
     ) -> Result<(), String> {
-        if context.provider != AgentProvider::Codex
-            || context.target != AgentTarget::Local
-            || self.model_discovery.scope.as_deref() != Some(context.workdir.as_str())
-        {
-            return Ok(());
-        }
-        let Some(model) = self.model_discovery.catalog.as_ref().and_then(|catalog| {
+        let catalog = self.model_catalog(context);
+        let Some(model) = catalog.as_ref().and_then(|catalog| {
             selected_catalog_model(
                 &catalog.models,
                 context.model.as_deref().unwrap_or_default(),
@@ -158,12 +229,9 @@ impl AgentConsoleView {
     pub(super) fn render_model_popover(&self, cx: &mut Context<Self>) -> AnyElement {
         let configured = self.model_state.read(cx).content().trim().to_string();
         let context = self.displayed_context(cx);
-        let catalog = (context.provider == AgentProvider::Codex
-            && context.target == AgentTarget::Local
-            && self.model_discovery.scope.as_deref() == Some(context.workdir.as_str()))
-        .then_some(self.model_discovery.catalog.as_ref())
-        .flatten();
+        let catalog = self.model_catalog(&context);
         let display = catalog
+            .as_ref()
             .and_then(|catalog| selected_catalog_model(&catalog.models, &configured))
             .map(|model| model.display_name.clone())
             .unwrap_or_else(|| {
@@ -242,9 +310,8 @@ impl AgentConsoleView {
                         let scope_matches = local_codex
                             && view.model_discovery.scope.as_deref()
                                 == Some(context.workdir.as_str());
-                        let catalog = scope_matches
-                            .then(|| view.model_discovery.catalog.clone())
-                            .flatten();
+                        let catalog = view.model_catalog(&context);
+                        let claude = context.provider == AgentProvider::Claude;
                         let loading = scope_matches && view.model_discovery.loading;
                         let error = scope_matches
                             .then(|| view.model_discovery.error.clone())
@@ -381,48 +448,55 @@ impl AgentConsoleView {
                                 );
                                 let query = search.read(cx).content().trim().to_lowercase();
                                 let mut matches = 0;
+                                let mut pinned_heading = false;
+                                let mut rows = div().flex().flex_col().gap(px(2.0));
                                 for (index, model) in catalog.models.iter().enumerate() {
                                     if !model_matches_search(model, &query) {
                                         continue;
                                     }
                                     matches += 1;
+                                    if claude
+                                        && !pinned_heading
+                                        && is_pinned_claude_model(&model.model)
+                                    {
+                                        pinned_heading = true;
+                                        rows = rows.child(
+                                            div()
+                                                .pt(px(4.0))
+                                                .text_size(px(11.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(ShellDeckColors::text_muted())
+                                                .child(
+                                                    t!("agents.model.claude.pinned_heading")
+                                                        .to_string(),
+                                                ),
+                                        );
+                                    }
                                     let model = model.clone();
                                     let select_parent = observed.clone();
                                     let selection_context = context.clone();
                                     let selected = model.model == configured;
-                                    let tooltip = format!("{}\n{}", model.model, model.description);
-                                    content = content.child(
-                                        Button::new(
-                                            ("agent-model-choice", index),
-                                            compact_model_name(&model.display_name, 34),
-                                        )
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Sm)
-                                        .w_full()
-                                        .justify_start()
-                                        .selected(selected)
-                                        .disabled(locked)
-                                        .icon(IconSource::from(if selected {
-                                            "check"
-                                        } else {
-                                            "sparkles"
-                                        }))
-                                        .tooltip(tooltip)
-                                        .on_click(
-                                            move |_, _, cx| {
-                                                select_parent.update(cx, |view, cx| {
-                                                    view.choose_discovered_model(
-                                                        session_id,
-                                                        &selection_context,
-                                                        model.model.clone(),
-                                                        Some(&model),
-                                                        cx,
-                                                    );
-                                                });
-                                            },
-                                        ),
-                                    );
+                                    let shown = model.clone();
+                                    rows = rows.child(model_row(
+                                        index,
+                                        &shown,
+                                        context.provider,
+                                        selected,
+                                        locked,
+                                        move |cx| {
+                                            select_parent.update(cx, |view, cx| {
+                                                view.choose_discovered_model(
+                                                    session_id,
+                                                    &selection_context,
+                                                    model.model.clone(),
+                                                    Some(&model),
+                                                    cx,
+                                                );
+                                            });
+                                        },
+                                    ));
                                 }
+                                content = content.child(rows);
                                 if matches == 0 {
                                     content = content.child(
                                         div()
@@ -451,20 +525,24 @@ impl AgentConsoleView {
                                     format!("{} ({effort})", t!("agents.model.effort_auto"))
                                 })
                                 .unwrap_or_else(|| reasoning_label(None));
-                            let efforts =
+                            let efforts: Vec<Option<AgentReasoningEffort>> = if claude {
+                                std::iter::once(None)
+                                    .chain(AgentReasoningEffort::CLAUDE.iter().copied().map(Some))
+                                    .collect()
+                            } else {
                                 available_reasoning_efforts(selected_model, current_effort)
-                                    .into_iter()
-                                    .map(|effort| {
-                                        (
-                                            effort,
-                                            if effort.is_none() {
-                                                automatic.clone()
-                                            } else {
-                                                reasoning_label(effort)
-                                            },
-                                        )
-                                    });
-                            if selected_model.is_none() {
+                            };
+                            let efforts = efforts.into_iter().map(|effort| {
+                                (
+                                    effort,
+                                    if effort.is_none() {
+                                        automatic.clone()
+                                    } else {
+                                        reasoning_label(effort)
+                                    },
+                                )
+                            });
+                            if selected_model.is_none() && !claude {
                                 content = content.child(
                                     div()
                                         .text_size(px(11.0))
@@ -539,18 +617,17 @@ impl AgentConsoleView {
                                                 return;
                                             }
                                             let context = view.displayed_context(cx);
-                                            let supported = (context.provider
-                                                == AgentProvider::Codex
-                                                && context.target == AgentTarget::Local
-                                                && view.model_discovery.scope.as_deref()
-                                                    == Some(context.workdir.as_str()))
-                                            .then_some(view.model_discovery.catalog.as_ref())
-                                            .flatten()
-                                            .and_then(|catalog| {
-                                                selected_catalog_model(
-                                                    &catalog.models,
-                                                    value.trim(),
-                                                )
+                                            let catalog = view.model_catalog(&context);
+                                            // Claude's levels do not depend on the model.
+                                            let supported = catalog.as_ref().and_then(|catalog| {
+                                                if context.provider == AgentProvider::Claude {
+                                                    catalog.models.first()
+                                                } else {
+                                                    selected_catalog_model(
+                                                        &catalog.models,
+                                                        value.trim(),
+                                                    )
+                                                }
                                             });
                                             if let Some(id) = session_id {
                                                 if view.composer_ui.effort.get(&id).is_some_and(
@@ -584,6 +661,91 @@ impl AgentConsoleView {
                 })
             })
             .into_any_element()
+    }
+}
+
+/// One model of the picker: the provider's mark (a check when selected), the
+/// name with a "default" badge when the catalog says so, the identifier, and
+/// the description on a second line.
+fn model_row(
+    index: usize,
+    model: &shelldeck_core::agent_codex::model_discovery::CodexDiscoveredModel,
+    provider: AgentProvider,
+    selected: bool,
+    locked: bool,
+    on_choose: impl Fn(&mut App) + 'static,
+) -> impl IntoElement {
+    let icon = if selected {
+        crate::icons::lucide_icon("check", 14.0, ShellDeckColors::primary()).into_any_element()
+    } else {
+        crate::icons::agent_provider_icon(provider, 14.0, ShellDeckColors::text_muted())
+    };
+    let mut name = div().flex().items_center().gap(px(6.0)).min_w_0().child(
+        div()
+            .truncate()
+            .text_size(px(12.0))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(ShellDeckColors::text_primary())
+            .child(compact_model_name(&model.display_name, 34)),
+    );
+    if model.is_default {
+        name = name.child(
+            div()
+                .flex_shrink_0()
+                .px(px(5.0))
+                .rounded(px(5.0))
+                .bg(ShellDeckColors::primary().opacity(0.14))
+                .text_size(px(10.0))
+                .text_color(ShellDeckColors::primary())
+                .child(t!("agents.model.default_badge").to_string()),
+        );
+    }
+    // The identifier, unless it only repeats the name ("Fable" / "fable").
+    if !model.display_name.eq_ignore_ascii_case(&model.model) {
+        name = name.child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(10.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(model.model.clone()),
+        );
+    }
+    let mut text = div()
+        .flex()
+        .flex_col()
+        .gap(px(1.0))
+        .flex_1()
+        .min_w_0()
+        .child(name);
+    if !model.description.trim().is_empty() {
+        text = text.child(
+            div()
+                .text_size(px(11.0))
+                .line_clamp(2)
+                .text_color(ShellDeckColors::text_muted())
+                .child(model.description.clone()),
+        );
+    }
+    let mut row = div()
+        .id(("agent-model-choice", index))
+        .flex()
+        .items_start()
+        .gap(px(8.0))
+        .w_full()
+        .px(px(8.0))
+        .py(px(6.0))
+        .rounded(px(6.0))
+        .child(div().pt(px(1.0)).child(icon))
+        .child(text);
+    if selected {
+        row = row.bg(ShellDeckColors::primary().opacity(0.10));
+    }
+    if locked {
+        row.opacity(0.5)
+    } else {
+        row.cursor_pointer()
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            .on_click(move |_, _, cx| on_choose(cx))
     }
 }
 
@@ -659,6 +821,45 @@ mod tests {
         CodexDiscoveredModel, CodexReasoningOption,
     };
     use std::prelude::v1::test;
+
+    // SDTEST-3078: Claude's picker list. The four aliases the CLI documents
+    // come first, then the pinned versions under their heading; every entry
+    // accepts exactly Claude Code's effort levels and passes input
+    // validation with them; nothing claims to be the default (Automatic is).
+    #[test]
+    fn sdtest_3078_claude_catalog_offers_aliases_then_pinned_versions() {
+        let catalog = claude_catalog();
+        let ids: Vec<&str> = catalog.models.iter().map(|m| m.model.as_str()).collect();
+        assert_eq!(&ids[..4], &["fable", "opus", "sonnet", "haiku"]);
+        assert!(ids[..4].iter().all(|id| !is_pinned_claude_model(id)));
+        assert!(ids[4..].iter().all(|id| is_pinned_claude_model(id)));
+        assert!(ids.contains(&"claude-opus-5-5"));
+        assert!(!catalog.truncated);
+        for model in &catalog.models {
+            assert!(!model.is_default, "{}", model.model);
+            assert!(!model.description.is_empty(), "{}", model.model);
+            let efforts: Vec<_> = model
+                .supported_reasoning_efforts
+                .iter()
+                .filter_map(|option| option.executable_effort())
+                .collect();
+            assert_eq!(efforts, AgentReasoningEffort::CLAUDE.to_vec());
+            let ok = shelldeck_core::agent_runtime::AgentInputOptions {
+                reasoning_effort: Some(AgentReasoningEffort::Max),
+                ..Default::default()
+            };
+            assert!(model.validate_input(&ok).is_ok());
+            let refused = shelldeck_core::agent_runtime::AgentInputOptions {
+                reasoning_effort: Some(AgentReasoningEffort::Minimal),
+                ..Default::default()
+            };
+            assert!(model.validate_input(&refused).is_err());
+        }
+        assert_eq!(
+            selected_catalog_model(&catalog.models, "sonnet").map(|m| m.display_name.as_str()),
+            Some("Sonnet")
+        );
+    }
 
     // SDTEST-2826 / SDUC-564
     #[test]

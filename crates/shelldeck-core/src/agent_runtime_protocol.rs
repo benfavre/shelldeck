@@ -50,9 +50,11 @@ impl AgentProvider {
             live_steering: false,
         };
         match self {
+            // Claude Code takes `--effort low|medium|high|xhigh|max`.
             Self::Claude => AgentProviderCapabilities {
                 plans: true,
                 usage: true,
+                reasoning_effort: true,
                 ..cli
             },
             Self::Codex => AgentProviderCapabilities {
@@ -278,6 +280,9 @@ pub enum AgentReasoningEffort {
     Ultra,
 }
 impl AgentReasoningEffort {
+    /// The levels Claude Code's `--effort` accepts.
+    pub const CLAUDE: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::Xhigh, Self::Max];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Minimal => "minimal",
@@ -339,10 +344,20 @@ impl AgentCommandSpec {
         }
         let mut extra = Vec::new();
         if let Some(effort) = options.reasoning_effort {
-            extra.extend([
-                "-c".to_string(),
-                format!("model_reasoning_effort=\"{}\"", effort.as_str()),
-            ]);
+            if request.provider == AgentProvider::Claude {
+                if !AgentReasoningEffort::CLAUDE.contains(&effort) {
+                    return Err(ShellDeckError::Config(format!(
+                        "Claude Code has no \"{}\" effort level",
+                        effort.as_str()
+                    )));
+                }
+                extra.extend(["--effort".to_string(), effort.as_str().to_string()]);
+            } else {
+                extra.extend([
+                    "-c".to_string(),
+                    format!("model_reasoning_effort=\"{}\"", effort.as_str()),
+                ]);
+            }
         }
         for path in &options.image_paths {
             let path = path
@@ -572,6 +587,46 @@ mod tests {
         .select(&request)
         .is_none());
         assert!(receiver.try_recv().is_err());
+    }
+
+    // SDTEST-3077: Claude runs carry the chosen effort as `--effort`, right
+    // after `-p` (so the warm process's stream-json switch still follows
+    // `-p`); levels Claude Code does not have are refused, not mapped.
+    #[test]
+    fn sdtest_3077_claude_effort_is_passed_as_effort_flag() {
+        let request = AgentRunRequest::new(
+            AgentProvider::Claude,
+            AgentTarget::Local,
+            AgentAccessMode::ReadOnly,
+            "/work",
+            Some("opus".into()),
+            "inspect",
+        );
+        assert!(AgentProvider::Claude.capabilities().reasoning_effort);
+        for effort in AgentReasoningEffort::CLAUDE {
+            let options = AgentInputOptions {
+                reasoning_effort: Some(effort),
+                ..Default::default()
+            };
+            let spec = AgentCommandSpec::for_request_with_options(&request, &options).unwrap();
+            assert_eq!(&spec.args[..3], &["-p", "--effort", effort.as_str()]);
+            assert!(!spec
+                .args
+                .iter()
+                .any(|arg| arg.contains("model_reasoning_effort")));
+            assert!(spec.args.windows(2).any(|pair| pair == ["--model", "opus"]));
+        }
+        for effort in [AgentReasoningEffort::Minimal, AgentReasoningEffort::Ultra] {
+            let options = AgentInputOptions {
+                reasoning_effort: Some(effort),
+                ..Default::default()
+            };
+            assert!(AgentCommandSpec::for_request_with_options(&request, &options).is_err());
+        }
+        let plain =
+            AgentCommandSpec::for_request_with_options(&request, &AgentInputOptions::default())
+                .unwrap();
+        assert!(!plain.args.iter().any(|arg| arg == "--effort"));
     }
 
     // SDTEST-2234 — SDUC-551
