@@ -7,7 +7,7 @@ use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::monique::{
     MoniqueAgentAccount, MoniqueAgentAccounts, MoniqueAgentAuthAction, MoniqueAgentLoginSession,
-    MoniqueChatAction, MoniqueChatHistory, MoniqueChatMessage, MoniqueChatResponse,
+    MoniqueChatAction, MoniqueChatHistory, MoniqueChatMessage, MoniqueChatResponse, MoniqueProcess,
     MoniqueProcesses, MoniqueStatus,
 };
 use std::collections::BTreeMap;
@@ -20,10 +20,37 @@ use crate::theme::ShellDeckColors;
 pub enum MoniqueViewEvent {
     Refresh,
     Send(String),
-    ResolveAction { action_id: String, approved: bool },
+    ResolveAction {
+        action_id: String,
+        approved: bool,
+    },
     NewChat,
     AgentAction(MoniqueAgentAuthAction),
     OpenAuthorization(String),
+    /// Open the request a job works on (an `https` Manage or issue page).
+    OpenJobLink(String),
+}
+
+/// How many jobs the list shows, and how many output lines an expanded job.
+const JOB_ROWS: usize = 30;
+const JOB_OUTPUT_LINES: usize = 40;
+
+/// When a job last moved: `updated_at`, else its latest output line (epoch
+/// ms, 0 when unknown).
+fn job_moved_at_ms(job: &MoniqueProcess) -> f64 {
+    job.updated_at
+        .as_deref()
+        .or(job.created_at.as_deref())
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .map(|at| at.timestamp_millis() as f64)
+        .or_else(|| {
+            job.output
+                .iter()
+                .map(|line| line.at_ms)
+                .max()
+                .map(|ms| ms as f64)
+        })
+        .unwrap_or(0.0)
 }
 
 impl EventEmitter<MoniqueViewEvent> for MoniqueView {}
@@ -43,6 +70,10 @@ pub struct MoniqueView {
     account_loading: bool,
     error: Option<String>,
     scroll: ScrollHandle,
+    /// The job list shows only jobs still in progress.
+    jobs_active_only: bool,
+    /// The job whose output is unfolded.
+    expanded_job: Option<String>,
 }
 
 impl MoniqueView {
@@ -62,6 +93,16 @@ impl MoniqueView {
             account_loading: false,
             error: None,
             scroll: ScrollHandle::new(),
+            jobs_active_only: true,
+            expanded_job: None,
+        }
+    }
+
+    /// Unfold the output of `job_id` (from the status bar or a notice).
+    pub fn focus_job(&mut self, job_id: Option<String>) {
+        if let Some(id) = job_id {
+            self.jobs_active_only = false;
+            self.expanded_job = Some(id);
         }
     }
 
@@ -95,6 +136,11 @@ impl MoniqueView {
         self.pending_actions = history.pending_actions;
         self.loading = false;
         self.error = None;
+    }
+
+    /// Jobs only (the background poll behind the status bar).
+    pub fn set_processes(&mut self, processes: MoniqueProcesses) {
+        self.processes = Some(processes);
     }
 
     pub fn apply_response(&mut self, response: MoniqueChatResponse) {
@@ -322,6 +368,273 @@ impl MoniqueView {
                     .unwrap_or(0)
                     .to_string(),
             ))
+    }
+
+    fn job_status_color(job: &MoniqueProcess) -> Hsla {
+        if job.is_failed() {
+            ShellDeckColors::error()
+        } else if job.is_finished() {
+            ShellDeckColors::success()
+        } else if job.status == "running" {
+            ShellDeckColors::primary()
+        } else {
+            ShellDeckColors::warning()
+        }
+    }
+
+    fn job_status_label(job: &MoniqueProcess) -> String {
+        match job.status.as_str() {
+            "running" => t!("monique.jobs.status.running").to_string(),
+            "queued" => t!("monique.jobs.status.queued").to_string(),
+            "completed" | "succeeded" | "done" => t!("monique.jobs.status.completed").to_string(),
+            "failed" | "error" => t!("monique.jobs.status.failed").to_string(),
+            "cancelled" | "canceled" => t!("monique.jobs.status.cancelled").to_string(),
+            "" => t!("monique.jobs.status.unknown").to_string(),
+            other => other.replace('_', " "),
+        }
+    }
+
+    fn render_job(
+        &self,
+        index: usize,
+        job: &MoniqueProcess,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let color = Self::job_status_color(job);
+        let expanded = self.expanded_job.as_deref() == Some(job.id.as_str());
+        let moved = crate::i18n::rel_time(job_moved_at_ms(job));
+        let mut meta = vec![job.provider.clone(), job.runtime.clone()];
+        meta.retain(|part| !part.is_empty());
+        if !moved.is_empty() {
+            meta.push(moved);
+        }
+        let job_id = job.id.clone();
+        let mut header = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .px(px(6.0))
+                    .py(px(1.0))
+                    .rounded(px(6.0))
+                    .bg(color.opacity(0.14))
+                    .child(div().size(px(6.0)).rounded_full().bg(color))
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(color)
+                            .child(Self::job_status_label(job)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(job.label()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(meta.join(" · ")),
+            );
+        if let Some(link) = job.link().map(str::to_string) {
+            header = header.child(
+                div()
+                    .id(("monique-job-link", index))
+                    .flex_shrink_0()
+                    .px(px(6.0))
+                    .py(px(1.0))
+                    .rounded(px(6.0))
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::primary())
+                    .cursor_pointer()
+                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    .child(t!("monique.jobs.open").to_string())
+                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        cx.emit(MoniqueViewEvent::OpenJobLink(link.clone()));
+                    })),
+            );
+        }
+        let mut row = div()
+            .id(("monique-job", index))
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .px(px(10.0))
+            .py(px(7.0))
+            .rounded(px(7.0))
+            .cursor_pointer()
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.expanded_job = if this.expanded_job.as_deref() == Some(job_id.as_str()) {
+                    None
+                } else {
+                    Some(job_id.clone())
+                };
+                cx.notify();
+            }))
+            .child(header);
+        if expanded {
+            row = row.bg(ShellDeckColors::bg_surface());
+            let start = job.output.len().saturating_sub(JOB_OUTPUT_LINES);
+            let mut log = div()
+                .id(("monique-job-output", index))
+                .max_h(px(200.0))
+                .overflow_y_scroll()
+                .mt(px(4.0))
+                .p(px(8.0))
+                .rounded(px(6.0))
+                .bg(ShellDeckColors::bg_primary())
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .font_family("JetBrains Mono")
+                .text_size(px(11.0));
+            if job.output.is_empty() {
+                log = log.child(
+                    div()
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("monique.jobs.no_output").to_string()),
+                );
+            }
+            for line in &job.output[start..] {
+                let color = if line.kind == "error" || line.kind == "stderr" {
+                    ShellDeckColors::error()
+                } else {
+                    ShellDeckColors::text_primary()
+                };
+                let mut text = line.text.trim_end().to_string();
+                if line.truncated {
+                    text.push_str(" …");
+                }
+                log = log.child(div().text_color(color).child(text));
+            }
+            row = row.child(log);
+        } else if let Some(last) = job.last_output() {
+            row = row.child(
+                div()
+                    .pl(px(2.0))
+                    .truncate()
+                    .font_family("JetBrains Mono")
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(last.to_string()),
+            );
+        }
+        row
+    }
+
+    /// Monique's jobs: in progress first, each with its state, what it works
+    /// on, when it last moved and its latest output; a click unfolds the
+    /// output log.
+    fn render_jobs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let empty = MoniqueProcesses::default();
+        let snapshot = self.processes.as_ref().unwrap_or(&empty);
+        let active = snapshot.active_count();
+        let total = snapshot.jobs.len();
+        let chip = |id: &'static str, label: String, selected: bool, active_only: bool| {
+            div()
+                .id(id)
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(if selected {
+                    ShellDeckColors::primary().opacity(0.4)
+                } else {
+                    ShellDeckColors::border()
+                })
+                .bg(if selected {
+                    ShellDeckColors::primary().opacity(0.12)
+                } else {
+                    ShellDeckColors::bg_primary()
+                })
+                .text_size(px(11.0))
+                .text_color(ShellDeckColors::text_primary())
+                .cursor_pointer()
+                .child(label)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.jobs_active_only = active_only;
+                    cx.notify();
+                }))
+        };
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(t!("monique.jobs.title").to_string()),
+            )
+            .child(chip(
+                "monique-jobs-active",
+                t!("monique.jobs.filter_active", count = active).to_string(),
+                self.jobs_active_only,
+                true,
+            ))
+            .child(chip(
+                "monique-jobs-all",
+                t!("monique.jobs.filter_all", count = total).to_string(),
+                !self.jobs_active_only,
+                false,
+            ));
+        let jobs = snapshot.ordered_jobs(self.jobs_active_only);
+        let mut list = div()
+            .id("monique-jobs-list")
+            .max_h(px(280.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(2.0));
+        if jobs.is_empty() {
+            list = list.child(
+                div()
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(if self.jobs_active_only {
+                        t!("monique.jobs.none_active").to_string()
+                    } else {
+                        t!("monique.jobs.none").to_string()
+                    }),
+            );
+        }
+        for (index, job) in jobs.into_iter().take(JOB_ROWS).enumerate() {
+            list = list.child(self.render_job(index, job, cx));
+        }
+        div()
+            .mx(px(14.0))
+            .mt(px(12.0))
+            .p(px(10.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_sidebar())
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(header)
+            .child(list)
     }
 
     fn start_agent_login(&mut self, provider: &str, cx: &mut Context<Self>) {
@@ -898,6 +1211,7 @@ impl Render for MoniqueView {
             .bg(ShellDeckColors::bg_primary())
             .child(self.render_header(cx))
             .child(self.render_metrics())
+            .child(self.render_jobs(cx))
             .child(self.render_agent_accounts(cx))
             .child(self.render_conversation(cx))
             .child(self.render_composer(cx));

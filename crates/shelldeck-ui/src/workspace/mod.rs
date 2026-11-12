@@ -639,6 +639,9 @@ pub struct Workspace {
     monique_status: Option<MoniqueStatus>,
     monique_processes: Option<MoniqueProcesses>,
     _monique_poll_task: Option<gpui::Task<()>>,
+    /// Light job poll behind the Dev status-bar indicator (the console has
+    /// its own, faster one).
+    _monique_activity_task: Option<gpui::Task<()>>,
     _monique_auth_poll_task: Option<gpui::Task<()>>,
     /// User-mode "Ask Monique" composer buffer + focus.
     monique_ask_input: String,
@@ -1492,6 +1495,7 @@ impl Workspace {
                     StatusBarEvent::ScriptsClicked => {
                         this.activate_dev_section(SidebarSection::Scripts, cx);
                     }
+                    StatusBarEvent::MoniqueClicked => this.open_monique_console(cx),
                 },
             );
 
@@ -1656,6 +1660,7 @@ impl Workspace {
             monique_status: None,
             monique_processes: None,
             _monique_poll_task: None,
+            _monique_activity_task: None,
             _monique_auth_poll_task: None,
             monique_ask_input: String::new(),
             monique_ask_focus: cx.focus_handle(),

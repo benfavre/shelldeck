@@ -32,6 +32,8 @@ impl Workspace {
             support.set_monique_available(support_show);
             cx.notify();
         });
+        // The endpoint can arrive after the mode (with the site directory).
+        self.sync_monique_activity_poll(cx);
     }
 
     pub(super) fn sync_monique_poll(&mut self, cx: &mut Context<Self>) {
@@ -132,7 +134,7 @@ impl Workspace {
             let _ = this.update(cx, |workspace, cx| match result {
                 Ok((status, processes, history, accounts)) => {
                     workspace.monique_status = Some(status.clone());
-                    workspace.monique_processes = Some(processes.clone());
+                    workspace.apply_monique_processes(processes.clone(), cx);
                     workspace.monique_view.update(cx, |view, cx| {
                         view.set_snapshot(status, processes, history);
                         view.set_agent_accounts(accounts, cx);
@@ -144,6 +146,119 @@ impl Workspace {
                     view.set_error(crate::i18n::api_error_message(&error));
                     cx.notify();
                 }),
+            });
+        })
+        .detach();
+    }
+
+    /// A new job snapshot: kept for the views, shown by the Dev status-bar
+    /// indicator, and every job seen in progress that has now finished is
+    /// announced once (in Dev only, where jobs are followed).
+    pub(super) fn apply_monique_processes(
+        &mut self,
+        processes: shelldeck_core::config::monique::MoniqueProcesses,
+        cx: &mut Context<Self>,
+    ) {
+        if self.effective_mode() == AppMode::Dev {
+            if let Some(before) = &self.monique_processes {
+                let notices: Vec<(String, bool)> = processes
+                    .newly_finished(before)
+                    .into_iter()
+                    .map(|job| (job.label(), job.is_failed()))
+                    .collect();
+                for (label, failed) in notices {
+                    if failed {
+                        self.show_toast(
+                            t!("toast.monique.job_failed", job = label.as_str()).to_string(),
+                            ToastLevel::Error,
+                            cx,
+                        );
+                    } else {
+                        self.show_toast(
+                            t!("toast.monique.job_finished", job = label.as_str()).to_string(),
+                            ToastLevel::Success,
+                            cx,
+                        );
+                    }
+                }
+            }
+        }
+        let activity = crate::status_bar::MoniqueActivity {
+            active: processes.active_count(),
+            running: processes
+                .jobs
+                .iter()
+                .filter(|job| job.status == "running")
+                .count(),
+        };
+        let show = self.has_monique() && self.effective_mode() == AppMode::Dev;
+        self.status_bar.update(cx, |bar, cx| {
+            bar.set_monique_activity(show.then_some(activity));
+            cx.notify();
+        });
+        self.monique_processes = Some(processes);
+    }
+
+    /// Start or stop the light job poll behind the Dev status-bar
+    /// indicator (every 30 s, jobs only).
+    pub(super) fn sync_monique_activity_poll(&mut self, cx: &mut Context<Self>) {
+        if !self.should_poll(super::polling::PolledSurface::MoniqueActivity) {
+            self._monique_activity_task = None;
+            if self.effective_mode() != AppMode::Dev || !self.has_monique() {
+                self.status_bar.update(cx, |bar, cx| {
+                    bar.set_monique_activity(None);
+                    cx.notify();
+                });
+            }
+            return;
+        }
+        if self._monique_activity_task.is_some() {
+            return;
+        }
+        self.refresh_monique_activity(cx);
+        self._monique_activity_task = Some(cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(30))
+                .await;
+            let keep = this
+                .update(cx, |workspace, cx| {
+                    if workspace.should_poll(super::polling::PolledSurface::MoniqueActivity) {
+                        workspace.refresh_monique_activity(cx);
+                        true
+                    } else {
+                        workspace._monique_activity_task = None;
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            if !keep {
+                break;
+            }
+        }));
+    }
+
+    fn refresh_monique_activity(&mut self, cx: &mut Context<Self>) {
+        let Some(config) = self.effective_monique_config() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { monique_client::processes(&config) })
+                .await;
+            let _ = this.update(cx, |workspace, cx| match result {
+                Ok(processes) => {
+                    workspace.apply_monique_processes(processes.clone(), cx);
+                    workspace.monique_view.update(cx, |view, cx| {
+                        view.set_processes(processes);
+                        cx.notify();
+                    });
+                }
+                // Background indicator: a failure only hides it; the console
+                // reports errors when it is opened.
+                Err(error) => {
+                    tracing::debug!("monique activity poll failed: {error}");
+                }
             });
         })
         .detach();
@@ -188,6 +303,15 @@ impl Workspace {
             } => self.resolve_monique_action(action_id, approved, cx),
             MoniqueViewEvent::NewChat => self.new_monique_chat(cx),
             MoniqueViewEvent::AgentAction(action) => self.mutate_monique_accounts(action, cx),
+            MoniqueViewEvent::OpenJobLink(url) if url.starts_with("https://") => {
+                if let Err(error) = shelldeck_core::config::cloud_account::open_in_browser(&url) {
+                    self.monique_view.update(cx, |view, cx| {
+                        view.set_error(crate::i18n::api_error_message(&error));
+                        cx.notify();
+                    });
+                }
+            }
+            MoniqueViewEvent::OpenJobLink(_) => {}
             MoniqueViewEvent::OpenAuthorization(url) => {
                 if let Err(error) = shelldeck_core::config::cloud_account::open_in_browser(&url) {
                     self.monique_view.update(cx, |view, cx| {
