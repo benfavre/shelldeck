@@ -521,6 +521,11 @@ impl Workspace {
                     self.ensure_session_daemon_files(true, cx);
                 }
                 self.app_config.terminal = config.terminal.clone();
+                if self.app_config.voice != config.voice {
+                    self.app_config.voice = config.voice.clone();
+                    let has_key = self.voice_key_known(cx);
+                    self.push_voice_to_agents(has_key, cx);
+                }
                 self.app_config.editor = config.editor.clone();
                 self.app_config.tray = config.tray.clone();
                 self.app_config.companion = config.companion.clone();
@@ -636,6 +641,9 @@ impl Workspace {
             SettingsEvent::AiTestRequested(config) => {
                 self.test_ai_connection(config.clone(), cx);
             }
+            SettingsEvent::VoiceKeyStored(key) => self.store_voice_key(key.clone(), cx),
+            SettingsEvent::VoiceKeyDeleted => self.delete_voice_key(cx),
+            SettingsEvent::VoiceCheckRequested => self.check_voice_key(cx),
             SettingsEvent::InkluraExtensionInstallRequested => {
                 self.install_inklura_extension(cx);
             }

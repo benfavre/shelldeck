@@ -7,6 +7,7 @@ pub mod cloud_account;
 pub mod cloud_sync;
 pub mod deep_link;
 pub mod desktop_pdf;
+pub mod elevenlabs;
 pub mod inklura_extension;
 pub mod issues;
 pub mod keychain;

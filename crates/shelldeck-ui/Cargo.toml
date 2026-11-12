@@ -13,6 +13,8 @@ shelldeck-terminal = { path = "../shelldeck-terminal" }
 shelldeck-update = { path = "../shelldeck-update" }
 gpui = { workspace = true }
 adabraka-ui = { workspace = true }
+cpal = { workspace = true }
+rodio = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
