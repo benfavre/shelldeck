@@ -316,6 +316,64 @@ impl GeneralConfig {
         self.session_daemon_hosts.clear();
         self.session_daemon_host_targets.clear();
     }
+
+    /// Every recorded answer, for the Settings rows that show and change
+    /// them one server at a time, ordered by server.
+    pub fn remote_daemon_install_entries(&self) -> Vec<RemoteDaemonAnswer> {
+        let mut entries: Vec<RemoteDaemonAnswer> = self
+            .session_daemon_hosts
+            .iter()
+            .map(|(key, answer)| RemoteDaemonAnswer {
+                key: key.clone(),
+                target: self.session_daemon_host_targets.get(key).cloned(),
+                answer: *answer,
+            })
+            .collect();
+        entries.sort_by(|a, b| a.target.cmp(&b.target).then_with(|| a.key.cmp(&b.key)));
+        entries
+    }
+
+    /// Forget the answer recorded under `key` (a connection id): that
+    /// server is asked again at its next connection. Nothing is removed
+    /// from the server.
+    pub fn forget_remote_daemon_install(&mut self, key: &str) {
+        self.session_daemon_hosts.remove(key);
+        self.session_daemon_host_targets.remove(key);
+    }
+
+    /// Change the answer recorded under `key`, for the server it was given
+    /// for. A key without a recorded answer stays unanswered: consent is
+    /// only recorded together with the server it applies to.
+    pub fn change_remote_daemon_install(&mut self, key: &str, answer: RemoteDaemonInstall) {
+        if let Some(recorded) = self.session_daemon_hosts.get_mut(key) {
+            *recorded = answer;
+        }
+    }
+}
+
+/// One recorded answer to "install the session daemon on this server?".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteDaemonAnswer {
+    /// Key in `[general.session_daemon_hosts]`: the SSH connection id.
+    pub key: String,
+    /// The server the answer was given for (`Connection::dial_identity`),
+    /// `None` for an answer from before targets were recorded (it reads
+    /// as "not asked").
+    pub target: Option<String>,
+    pub answer: RemoteDaemonInstall,
+}
+
+impl RemoteDaemonAnswer {
+    /// The server as people read it: `user@host:port`, followed by the
+    /// jump host when there is one.
+    pub fn server_label(&self) -> Option<String> {
+        let target = self.target.as_deref()?;
+        Some(match target.split_once('|') {
+            Some((server, "")) => server.to_string(),
+            Some((server, jump)) => format!("{server} \u{2192} {jump}"),
+            None => target.to_string(),
+        })
+    }
 }
 
 /// System-tray preferences. Per-category opt-in on the OS notifications
@@ -612,6 +670,70 @@ mod tests {
     // SDTEST-3014 (SDUC-574): the per-host answer to "install the session
     // daemon there?" is a file contract: it decides whether a binary may
     // be uploaded to a server.
+    // SDTEST-3070 (SDUC-574): recorded install answers are listed one
+    // server at a time, and one of them can be changed or forgotten
+    // without touching the others. A changed answer keeps the server it
+    // was given for; an unrecorded key cannot be turned into consent.
+    #[test]
+    fn sdtest_3070_install_answers_are_changed_one_server_at_a_time() {
+        let mut general = AppConfig::default().general;
+        let (one, two, three) = (
+            uuid::Uuid::from_u128(1),
+            uuid::Uuid::from_u128(2),
+            uuid::Uuid::from_u128(3),
+        );
+        general.set_remote_daemon_install(one, "deploy@b.example:22|", RemoteDaemonInstall::Allow);
+        general.set_remote_daemon_install(
+            two,
+            "root@a.example:2222|bastion",
+            RemoteDaemonInstall::Never,
+        );
+        // An answer from before targets were recorded.
+        general
+            .session_daemon_hosts
+            .insert(three.to_string(), RemoteDaemonInstall::Allow);
+
+        let entries = general.remote_daemon_install_entries();
+        let labels: Vec<_> = entries.iter().map(|e| e.server_label()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                None,
+                Some("deploy@b.example:22".to_string()),
+                Some("root@a.example:2222 \u{2192} bastion".to_string()),
+            ]
+        );
+        assert_eq!(entries[1].key, one.to_string());
+        assert_eq!(entries[2].answer, RemoteDaemonInstall::Never);
+
+        general.change_remote_daemon_install(&two.to_string(), RemoteDaemonInstall::Allow);
+        assert_eq!(
+            general.remote_daemon_install(two, "root@a.example:2222|bastion"),
+            Some(RemoteDaemonInstall::Allow)
+        );
+        // Still not for another server.
+        assert_eq!(
+            general.remote_daemon_install(two, "root@c.example:22|"),
+            None
+        );
+        // A key nobody answered for stays unanswered.
+        let stranger = uuid::Uuid::from_u128(9);
+        general.change_remote_daemon_install(&stranger.to_string(), RemoteDaemonInstall::Allow);
+        assert!(!general
+            .session_daemon_hosts
+            .contains_key(&stranger.to_string()));
+
+        general.forget_remote_daemon_install(&one.to_string());
+        assert_eq!(
+            general.remote_daemon_install(one, "deploy@b.example:22|"),
+            None
+        );
+        assert!(!general
+            .session_daemon_host_targets
+            .contains_key(&one.to_string()));
+        assert_eq!(general.remote_daemon_install_counts(), (2, 0));
+    }
+
     #[test]
     fn sdtest_3014_remote_daemon_install_answers_round_trip_and_default_to_unasked() {
         let path = temp_path("config.toml");

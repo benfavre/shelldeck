@@ -1158,8 +1158,8 @@ Deferred (details in the subsections below):
   saved and restored since 0.21.3 (`TabState::remote`, SDTEST-3068,
   SDTEST-3069): a reconnecting SSH tab takes back the panes of its saved
   tree that are still on the host, as splits, and keeps them from the
-  other tabs of that host meanwhile; not yet checked against a real
-  `sshd`.
+  other tabs of that host meanwhile; checked against a real `sshd` on
+  2026-11-12.
   Workspace-scoped terminals are not deferred but excluded: they stay
   in-process until the protocol can carry a directory identity (see
   "Workspace-scoped terminals" below).
@@ -1395,13 +1395,15 @@ tab or a pane ends the remote pane; quitting the app does not.
 
 Differences from sections 8 and 10, and limits:
 
-- The split tree of a remote tab is not saved: after a restart its panes
-  come back as tabs.
+- The split tree of a remote tab is saved and restored since 0.21.3
+  (`TabState::remote`; checked against a real `sshd` on 2026-11-12, see
+  the QA doc).
 - An SSH tab opened in a directory (`workdir`) keeps the plain path.
 - Old `shelldeck-sessiond-*` files are not pruned after an install (done
   since: "Real sshd run, pruning and install failures").
 - The consent is per host and permanent until the entry is removed from
-  the configuration file (a Settings row can only forget all answers, see "Real sshd run, pruning and install failures"), not "for
+  the configuration file or changed in Settings (one row per server with
+  Allow/Refuse and Forget, plus "Forget all", SDTEST-3070, SDTEST-3071), not "for
   this connection" as section 8 says.
 - A tab closed while the host is unreachable ends its pane at the next
   contact with that host in the same run, and the pane is not offered
