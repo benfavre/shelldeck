@@ -3367,6 +3367,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-12**: Added SDUC-579: terminal session list grouped by machine, headers on split panes with their actions, maximize a pane. SDUC-575 amended (the sidebar button and shortcut now act in the Terminal view), SDUC-577 amended (24 actions, `maximize_pane`). The tab context menu is drawn again. SDTEST-3108..3110.
+
 - **2026-11-12**: Added SDUC-578: pane commands of `shelldeck-sessiond` for scripts and agents (`ls`, `run`, `send`, `read`, `wait`). SDTEST-3104..3107.
 
 - **2026-11-12**: Added SDUC-577: application shortcuts can be changed or removed in a `[keybindings]` table of the configuration file; every label follows. SDTEST-3100..3103.
@@ -5209,9 +5211,9 @@ and no menu row: Agents, Terminal and Editor.
   startup: 105 columns beside a blank strip in a 1200 px window, now 136
   (142 in the focused view).
 - The sidebar button of the title bar and `Ctrl+B` act on the sidebar panel
-  of the full application and on the session navigator of Agents. The focused
-  Terminal and Editor views have neither: the button is not shown and the
-  shortcut does nothing there.
+  of the full application, on the session navigator of Agents and on the
+  session list of Terminal (SDUC-579). The focused Editor view has none: the
+  button is not shown and the shortcut does nothing there.
 - Terminals, agent conversations and open files are not restarted by a switch.
 - The saved app mode (User, Support, Dev) is not changed by a focused view and
   is what the full application returns to. Signed out, a requested view waits
@@ -5295,8 +5297,8 @@ The user can change or remove an application shortcut by adding a
 value removes the shortcut). The table is read at startup. Reference:
 [`keybindings.md`](../keybindings.md).
 
-- 23 actions can be changed (palette, views, sidebar, tabs, splits, copy and
-  paste, search, zoom, quit...). An action that is not listed keeps its
+- 24 actions can be changed (palette, views, sidebar, tabs, splits, maximize
+  a pane, copy and paste, search, zoom, quit...). An action that is not listed keeps its
   built-in keys; a removed one stays reachable from menus and the palette.
 - Menus, the command palette, tooltips, the terminal toolbar, the status bar
   and the shortcut lists show the keys in effect. A removed shortcut shows no
@@ -5355,3 +5357,49 @@ own id; `send` does not refuse a program blocked on a permission question; a
 status reached before `wait --until` started is not known (the daemon keeps
 no status); a running application does not show a pane started here until it
 restarts. Windows has no daemon.
+
+### SDUC-579: Terminal session list, pane headers and maximizing a pane
+
+Managing several terminals, with or without splits (after the Rex terminal:
+panes with their own header and actions, sessions listed by machine).
+
+- **Session list.** In the Terminal view, the sidebar button of the title bar
+  and `Ctrl+B` show the terminals as a list at the left, grouped by machine:
+  this machine first, then each connection under its name, in the order its
+  first terminal was opened. Each row has the status dot of the tab (SDUC-576)
+  with its tooltip, the title, a marker when the tab is split and a close
+  button; the active terminal is highlighted; a "+" opens a terminal. A click
+  selects, a right click opens the tab menu at the row.
+- The list replaces the tab strip while it is shown: the terminals are listed
+  once. The choice is saved (`[terminal] session_list`) and applies to the
+  full application and to the focused Terminal view. Without any terminal the
+  welcome screen is shown alone.
+- **Pane headers.** In a split tab, each pane has a header with a status dot
+  and the title its program set. The header of the active pane is tinted and
+  underlined in the accent colour, which is how the active pane is told
+  apart, and carries four buttons: split side by side, split top and bottom,
+  maximize or restore, close the pane. Clicking a header makes its pane the
+  active one. A tab that is not split has no header.
+- **Maximize.** The header button, `Ctrl+Shift+Enter` (`maximize_pane` in
+  `[keybindings]`) or the Terminal menu show the active pane alone over the
+  whole tab; the same brings the split back as it was. The other panes keep
+  running and are not resized. Splitting or closing a pane ends the
+  maximized state.
+- The grid of each pane is sized for what is drawn: under its header, right
+  of the list, without the row of the hidden tab strip. No row is cut and no
+  blank strip is left.
+- The tab menu (new, duplicate, close, close to the left or right) is drawn
+  again: it was placed outside the window and never appeared.
+
+Verified by SDTEST-3108 (grouping), SDTEST-3109 (maximized layout, header
+geometry) and SDTEST-3110 (content origin and rows above the panes). Checked
+in a native walkthrough on 2026-11-12 (private headless desktop, local
+`/bin/sh` terminals): three panes with headers and `tput lines` matching the
+rows drawn (15); maximize and restore with the content kept (32 rows
+maximized); the list with three terminals, their dots (plain, working,
+blocked), the split marker and 114 columns beside it in a 1200 px window; the
+list in the full application beside the rail; the preference kept across a
+restart; the tab menu from a tab and from a list row. Not checked: connection
+(SSH) groups, which need a server; session daemon tabs; macOS and Windows.
+Not done: the list cannot be resized or reordered; a pane's context menu is
+still clipped at the edge of its pane.

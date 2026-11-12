@@ -1086,6 +1086,10 @@ impl Workspace {
         });
 
         let terminal = cx.new(TerminalView::new);
+        let session_list = config.terminal.session_list;
+        terminal.update(cx, |terminal, _| {
+            terminal.set_session_list_visible(session_list);
+        });
         let workspace_catalog = shelldeck_core::config::workspace_catalog::ProjectCatalog::load()
             .map_err(|error| error.to_string());
         let workspace_hub = cx.new(|cx| {

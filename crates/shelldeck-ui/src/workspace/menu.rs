@@ -134,7 +134,7 @@ impl Workspace {
         use crate::menu_bar::MenuCommand as Cmd;
         use crate::terminal_view::{
             ClearTerminal, CopySelection, PasteClipboard, SplitHorizontal, SplitVertical,
-            ToggleSearch, ZoomIn, ZoomOut, ZoomReset,
+            TogglePaneZoom, ToggleSearch, ZoomIn, ZoomOut, ZoomReset,
         };
 
         // A stale menu click must not outlive logout. The menu specification
@@ -179,6 +179,7 @@ impl Workspace {
             Cmd::ClearTerminal => window.dispatch_action(Box::new(ClearTerminal), cx),
             Cmd::SplitHorizontal => window.dispatch_action(Box::new(SplitHorizontal), cx),
             Cmd::SplitVertical => window.dispatch_action(Box::new(SplitVertical), cx),
+            Cmd::MaximizePane => window.dispatch_action(Box::new(TogglePaneZoom), cx),
             Cmd::TerminalZoomIn => window.dispatch_action(Box::new(ZoomIn), cx),
             Cmd::TerminalZoomOut => window.dispatch_action(Box::new(ZoomOut), cx),
             Cmd::TerminalZoomReset => window.dispatch_action(Box::new(ZoomReset), cx),

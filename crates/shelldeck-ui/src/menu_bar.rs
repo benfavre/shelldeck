@@ -71,6 +71,7 @@ pub enum MenuCommand {
     ClearTerminal,
     SplitHorizontal,
     SplitVertical,
+    MaximizePane,
     // — Compte / Aide —
     SignIn,
     SignOut,
@@ -589,6 +590,12 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.terminal.split_vertical").to_string(),
                     MenuCommand::SplitVertical,
                 ),
+                MenuEntry::command(
+                    "term-maximize-pane",
+                    t!("terminal.pane.maximize").to_string(),
+                    MenuCommand::MaximizePane,
+                )
+                .shortcut(BindableAction::MaximizePane),
                 MenuEntry::Separator,
                 MenuEntry::command(
                     "term-clear",

@@ -37,7 +37,7 @@ use block_drawing::paint_block_char;
 use layout::{PaneId, PaneNode, PaneRect, StatusTone, TabLayout};
 pub use layout::{SplitDirection, TerminalPane, TerminalTab};
 use palette::{brighten_for_bold, dim_color, TerminalPalette};
-use shelldeck_terminal::program_status::ProgramHeadline;
+use shelldeck_terminal::program_status::{ProgramHeadline, ProgramState};
 
 const CLAUDE_CLI_COMMAND: &str = "claude --dangerously-skip-permissions";
 const CODEX_CLI_COMMAND: &str = "codex --sandbox workspace-write --ask-for-approval on-request";
@@ -78,6 +78,7 @@ actions!(
         ZoomOut,
         ZoomReset,
         ToggleSplitFocus,
+        TogglePaneZoom,
     ]
 );
 
@@ -144,12 +145,28 @@ const STATUS_BAR_HEIGHT: f32 = 28.0;
 /// Width of the sidebar resize handle.
 const SIDEBAR_HANDLE_WIDTH: f32 = 4.0;
 
-/// Window-space x where the terminal view starts.
-fn content_left(sidebar_width: f32, full_width: bool) -> f32 {
-    if full_width {
+/// Width of the session list, before UI scaling.
+const SESSION_LIST_WIDTH: f32 = 232.0;
+
+/// Window-space x where the terminal content (tab strip, toolbar, panes)
+/// starts: right of the application sidebar, when one is drawn, and of the
+/// view's own session list, when it is shown.
+fn content_left(sidebar_width: f32, full_width: bool, session_list_width: f32) -> f32 {
+    let sidebar = if full_width {
         0.0
     } else {
         sidebar_width + SIDEBAR_HANDLE_WIDTH
+    };
+    sidebar + session_list_width
+}
+
+/// Height of the rows above the panes, before UI scaling: the toolbar, and
+/// the tab strip unless the session list replaces it.
+fn chrome_rows_height(session_list: bool) -> f32 {
+    if session_list {
+        TOOLBAR_HEIGHT
+    } else {
+        TAB_BAR_HEIGHT + TOOLBAR_HEIGHT
     }
 }
 /// Width of the split-pane divider bar.
@@ -310,6 +327,11 @@ pub struct TerminalView {
     /// The focused Terminal presentation renders no sidebar beside the view:
     /// the content then starts at the window's left edge.
     full_width: bool,
+    /// The user wants the session list instead of the tab strip.
+    session_list_visible: bool,
+    /// Width the session list takes this frame, in pixels: 0 when it is not
+    /// drawn. Set at the start of each render, read by the geometry.
+    session_list_width: f32,
     /// Whether the workspace is currently showing the application menu row
     /// above the content area (updated dynamically from the workspace).
     menu_bar_visible: bool,
@@ -455,6 +477,8 @@ impl TerminalView {
             grid_y_offset: GRID_TOP_OFFSET,
             sidebar_width: 260.0,
             full_width: false,
+            session_list_visible: false,
+            session_list_width: 0.0,
             menu_bar_visible: true,
             split_dragging: false,
             active_divider: None,
@@ -514,6 +538,36 @@ impl TerminalView {
         self.full_width = full_width;
     }
 
+    /// Show the terminals as a list grouped by machine, in place of the tab
+    /// strip (never both: one navigation at a time).
+    pub fn set_session_list_visible(&mut self, visible: bool) {
+        if self.session_list_visible != visible {
+            self.session_list_visible = visible;
+            // The panes change size: resize them at the next render.
+            self.last_grid_rows = 0;
+            self.last_grid_cols = 0;
+        }
+    }
+
+    pub fn session_list_visible(&self) -> bool {
+        self.session_list_visible
+    }
+
+    /// The session list is drawn: asked for, and there are terminals to list.
+    fn session_list_shown(&self) -> bool {
+        self.session_list_visible && !self.pane.sessions.is_empty()
+    }
+
+    /// Show the focused pane of a split tab alone, or bring the split back.
+    pub fn toggle_pane_zoom(&mut self) {
+        if !self.layout.is_split() {
+            return;
+        }
+        self.layout.zoomed = !self.layout.zoomed;
+        self.last_grid_rows = 0;
+        self.last_grid_cols = 0;
+    }
+
     pub fn full_width(&self) -> bool {
         self.full_width
     }
@@ -571,7 +625,7 @@ impl TerminalView {
     /// Window-space x of the view's left edge: just right of the sidebar and
     /// its resize handle, or the window edge when no sidebar is drawn.
     fn content_left(&self) -> f32 {
-        content_left(self.sidebar_width, self.full_width)
+        content_left(self.sidebar_width, self.full_width, self.session_list_width)
     }
 
     /// Menu visibility is retained with the settings snapshot; the menus now
@@ -1092,6 +1146,8 @@ impl TerminalView {
             named: false,
             status: None,
             status_seen: false,
+            // A connection tab opens under the connection's name.
+            host: connection_id.map(|_| session.title.clone()),
         };
 
         // Deactivate other tabs
@@ -1885,10 +1941,21 @@ impl TerminalView {
         (window.rem_size().to_f64() as f32 / crate::scale::REM_BASE).clamp(0.6, 2.0)
     }
 
-    /// Combined tab-bar + toolbar height in absolute pixels at the current UI
-    /// scale. This is the terminal grid's top offset within the content area.
-    fn chrome_top_offset(window: &Window) -> f32 {
-        (TAB_BAR_HEIGHT + TOOLBAR_HEIGHT) * Self::ui_scale(window)
+    /// Height of the rows above the panes (tab strip, toolbar) in absolute
+    /// pixels at the current UI scale. This is the terminal grid's top
+    /// offset within the content area.
+    fn chrome_top_offset(&self, window: &Window) -> f32 {
+        chrome_rows_height(self.session_list_shown()) * Self::ui_scale(window)
+    }
+
+    /// Height of a pane header in absolute pixels: 0 in a tab that is not
+    /// split, where the tab already names the only pane.
+    fn pane_header_height(&self, window: &Window) -> f32 {
+        if self.layout.is_split() {
+            layout::PANE_HEADER_HEIGHT * Self::ui_scale(window)
+        } else {
+            0.0
+        }
     }
 
     /// Terminal cell size in pixels (width, height) at the effective font size.
@@ -1902,11 +1969,11 @@ impl TerminalView {
     fn content_area(&self, window: &Window) -> PaneRect {
         let viewport = window.viewport_size();
         let x = self.content_left();
-        let y = Self::chrome_top_offset(window);
+        let y = self.chrome_top_offset(window);
         let w = (viewport.width.to_f64() as f32 - x - SIDEBAR_HANDLE_WIDTH).max(1.0);
         let h = (viewport.height.to_f64() as f32
             - TITLEBAR_HEIGHT * Self::ui_scale(window)
-            - Self::chrome_top_offset(window)
+            - self.chrome_top_offset(window)
             - STATUS_BAR_HEIGHT)
             .max(1.0);
         PaneRect { x, y, w, h }
@@ -1923,17 +1990,18 @@ impl TerminalView {
     /// Recompute every pane's grid size and resize its session to match.
     fn resize_if_needed(&mut self, window: &Window) {
         let area = self.content_area(window);
+        let header = self.pane_header_height(window);
         let (leaves, _) = self.layout.compute(area, SPLIT_DIVIDER_SIZE);
 
         // Track the focused pane's size for spawn defaults / `grid_size()`.
         if let Some((_, rect)) = leaves.iter().find(|(id, _)| *id == self.layout.focused) {
-            let (rows, cols) = self.rect_to_grid(*rect);
+            let (rows, cols) = self.rect_to_grid(layout::grid_rect(*rect, header));
             self.last_grid_rows = rows;
             self.last_grid_cols = cols;
         }
 
         for (id, rect) in leaves {
-            let (rows, cols) = self.rect_to_grid(rect);
+            let (rows, cols) = self.rect_to_grid(layout::grid_rect(rect, header));
             if let Some(session) = self.session_for(id) {
                 session.resize(rows, cols);
             }
@@ -2257,6 +2325,467 @@ impl TerminalView {
         }
     }
 
+    /// A session daemon pane that is not attached yet (or again) is neither
+    /// running nor ended.
+    fn tab_pending(&self, tab_id: Uuid) -> bool {
+        self.session_by_id(tab_id).is_some_and(|session| {
+            session.attached_status().is_some_and(|status| {
+                matches!(
+                    status.phase(),
+                    shelldeck_terminal::attached::AttachedPhase::Connecting
+                        | shelldeck_terminal::attached::AttachedPhase::Reconnecting
+                )
+            })
+        })
+    }
+
+    /// Colour and size (before UI scaling) of a tab's dot. A running session
+    /// shows what its program reports (OSC 7501); a report that asks for the
+    /// user also makes the dot larger.
+    fn tab_dot(tab: &TerminalTab, pending: bool) -> (Hsla, f32) {
+        let tone = tab.status_tone();
+        let color = match &tab.state {
+            SessionState::Running if pending => ShellDeckColors::warning(),
+            SessionState::Running => match tone {
+                StatusTone::NeedsYou => ShellDeckColors::warning(),
+                StatusTone::Failed => ShellDeckColors::error(),
+                StatusTone::Working | StatusTone::Finished => ShellDeckColors::primary(),
+                StatusTone::Plain => ShellDeckColors::success(),
+            },
+            SessionState::Exited(0) => ShellDeckColors::text_muted(),
+            SessionState::Exited(_) => ShellDeckColors::warning(),
+            SessionState::Error(_) => ShellDeckColors::error(),
+        };
+        let size = match tone {
+            StatusTone::NeedsYou | StatusTone::Failed | StatusTone::Finished => 8.0,
+            StatusTone::Working | StatusTone::Plain => 6.0,
+        };
+        (color, size)
+    }
+
+    /// The terminals as a list grouped by machine: what the tab strip shows,
+    /// with room for names and for many sessions. It replaces the strip
+    /// while it is shown.
+    fn render_session_list(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let scale = Self::ui_scale(window);
+        let s = |v: f32| px(v * scale);
+
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .flex_shrink_0()
+            // The toolbar's height: their bottom borders form one line.
+            .h(s(TOOLBAR_HEIGHT))
+            .pl(s(12.0))
+            .pr(s(6.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                div()
+                    .text_size(s(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("terminal.sessions.title").to_string()),
+            )
+            .child(
+                div()
+                    .id("session-list-new")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(s(26.0))
+                    .h(s(26.0))
+                    .rounded(s(6.0))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                    .child(
+                        svg()
+                            .path("icons/lucide/plus.svg")
+                            .size(s(14.0))
+                            .text_color(ShellDeckColors::text_muted()),
+                    )
+                    .on_click(cx.listener(|this, _event: &ClickEvent, window, cx| {
+                        this.spawn_local_terminal(cx);
+                        this.focus_handle.focus(window);
+                        cx.emit(TerminalEvent::NewTabRequested);
+                        cx.notify();
+                    })),
+            );
+
+        let mut rows = div()
+            .id("terminal-session-rows")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .py(s(4.0));
+
+        for group in layout::session_groups(&self.tabs) {
+            let (icon, name) = match (&group.connection_id, &group.host) {
+                (None, _) => (
+                    "icons/lucide/terminal.svg",
+                    t!("terminal.sessions.this_machine").to_string(),
+                ),
+                (Some(_), Some(host)) => ("icons/lucide/server.svg", host.clone()),
+                (Some(_), None) => (
+                    "icons/lucide/server.svg",
+                    t!("terminal.sessions.remote").to_string(),
+                ),
+            };
+            rows = rows.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(s(6.0))
+                    .h(s(26.0))
+                    .px(s(12.0))
+                    .mt(s(4.0))
+                    .overflow_hidden()
+                    .child(
+                        svg()
+                            .path(icon)
+                            .size(s(12.0))
+                            .flex_shrink_0()
+                            .text_color(ShellDeckColors::text_muted()),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(s(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(name),
+                    ),
+            );
+
+            for index in group.tabs {
+                let Some(tab) = self.tabs.get(index) else {
+                    continue;
+                };
+                let tab_id = tab.id;
+                let (dot_color, dot_size) = Self::tab_dot(tab, self.tab_pending(tab_id));
+                let split = if tab.is_active {
+                    self.layout.is_split()
+                } else {
+                    self.stored_layouts
+                        .get(&tab_id)
+                        .is_some_and(|layout| layout.is_split())
+                };
+                let mut row = div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "session-row-{tab_id}"
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(s(8.0))
+                    .h(s(28.0))
+                    .mx(s(6.0))
+                    .pl(s(10.0))
+                    .pr(s(4.0))
+                    .rounded(s(6.0))
+                    .cursor_pointer()
+                    .overflow_hidden()
+                    .on_click(cx.listener(move |this, _event: &ClickEvent, window, cx| {
+                        this.select_tab(tab_id);
+                        this.needs_focus = true;
+                        this.focus_handle.focus(window);
+                        cx.emit(TerminalEvent::TabSelected(tab_id));
+                        cx.notify();
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                            this.context_menu = None;
+                            this.tab_context_menu = Some(TabMenuState {
+                                position: event.position,
+                                tab_id,
+                            });
+                            cx.notify();
+                        }),
+                    );
+                row = if tab.is_active {
+                    row.bg(ShellDeckColors::primary().opacity(0.14))
+                        .text_color(ShellDeckColors::text_primary())
+                } else {
+                    row.text_color(ShellDeckColors::text_muted())
+                        .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                };
+                // The dot keeps one slot whatever its size, so titles align.
+                row = row.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .flex_shrink_0()
+                        .w(s(8.0))
+                        .child(
+                            div()
+                                .w(s(dot_size))
+                                .h(s(dot_size))
+                                .rounded_full()
+                                .bg(dot_color),
+                        ),
+                );
+                row = row.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(s(12.0))
+                        .child(tab.display_title().to_string()),
+                );
+                if split {
+                    row = row.child(
+                        svg()
+                            .path("icons/lucide/columns-2.svg")
+                            .size(s(12.0))
+                            .flex_shrink_0()
+                            .text_color(ShellDeckColors::text_muted()),
+                    );
+                }
+                row = row.child(
+                    div()
+                        .id(ElementId::from(SharedString::from(format!(
+                            "session-close-{tab_id}"
+                        ))))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .flex_shrink_0()
+                        .w(s(20.0))
+                        .h(s(20.0))
+                        .rounded(s(4.0))
+                        .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                        .child(
+                            svg()
+                                .path("icons/lucide/x.svg")
+                                .size(s(11.0))
+                                .text_color(ShellDeckColors::text_muted()),
+                        )
+                        .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                            cx.stop_propagation();
+                            this.close_tab(tab_id);
+                            cx.emit(TerminalEvent::TabClosed(tab_id));
+                            cx.notify();
+                        })),
+                );
+                if let Some(status) = &tab.status {
+                    let label: SharedString = layout::status_tooltip(status).into();
+                    row = row.tooltip(move |_, cx| {
+                        cx.new(|_| TerminalToolbarTooltip {
+                            label: label.clone(),
+                        })
+                        .into()
+                    });
+                }
+                rows = rows.child(row);
+            }
+        }
+
+        div()
+            .id("terminal-session-list")
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .w(px(self.session_list_width))
+            .h_full()
+            .bg(ShellDeckColors::bg_sidebar())
+            .border_r_1()
+            .border_color(ShellDeckColors::border())
+            .overflow_hidden()
+            .child(header)
+            .child(rows)
+    }
+
+    /// The header of one pane of a split tab: what runs there, and on the
+    /// focused pane what can be done with it. Its colour is how the focused
+    /// pane is told apart.
+    fn render_pane_header(
+        &self,
+        id: PaneId,
+        focused: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let scale = Self::ui_scale(window);
+        let s = |v: f32| px(v * scale);
+        let (title, dot) = match self.session_for(id) {
+            Some(session) => {
+                let grid = session.grid.lock();
+                let program = grid.title.trim();
+                let title = if program.is_empty() {
+                    session.title.clone()
+                } else {
+                    program.to_string()
+                };
+                let dot = match grid.program_status.headline().map(|h| h.state) {
+                    Some(ProgramState::Blocked) => ShellDeckColors::warning(),
+                    Some(ProgramState::Error) => ShellDeckColors::error(),
+                    Some(ProgramState::Working) => ShellDeckColors::primary(),
+                    Some(ProgramState::Done | ProgramState::Idle) | None => {
+                        ShellDeckColors::text_muted().opacity(0.6)
+                    }
+                };
+                (title, dot)
+            }
+            None => (String::new(), ShellDeckColors::text_muted()),
+        };
+        let focus = self.focus_handle.clone();
+        let mut header = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "pane-header-{id:?}"
+            ))))
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .gap(s(6.0))
+            .w_full()
+            .h(px(self.pane_header_height(window)))
+            .pl(s(8.0))
+            .pr(s(4.0))
+            .border_b_1()
+            .overflow_hidden()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    this.focus_pane(id);
+                    this.needs_focus = true;
+                    focus.focus(window);
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(s(6.0))
+                    .h(s(6.0))
+                    .rounded_full()
+                    .flex_shrink_0()
+                    .bg(dot),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(s(11.0))
+                    .child(title),
+            );
+        header = if focused {
+            header
+                .bg(ShellDeckColors::primary().opacity(0.14))
+                .border_color(ShellDeckColors::primary())
+                .text_color(ShellDeckColors::text_primary())
+        } else {
+            header
+                .bg(ShellDeckColors::bg_sidebar())
+                .border_color(ShellDeckColors::border())
+                .text_color(ShellDeckColors::text_muted())
+                .cursor_pointer()
+        };
+        if !focused {
+            return header;
+        }
+
+        let zoomed = self.layout.is_zoomed();
+        let button = |name: &'static str, icon: &'static str, label: String| {
+            let label: SharedString = label.into();
+            div()
+                .id(name)
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .w(s(20.0))
+                .h(s(20.0))
+                .rounded(s(4.0))
+                .cursor_pointer()
+                .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| TerminalToolbarTooltip {
+                        label: label.clone(),
+                    })
+                    .into()
+                })
+                .child(
+                    svg()
+                        .path(icon)
+                        .size(s(12.0))
+                        .text_color(ShellDeckColors::text_primary()),
+                )
+        };
+        let with_keys = |label: String, action: BindableAction| match shortcut_label(action) {
+            Some(keys) => format!("{label} ({keys})"),
+            None => label,
+        };
+        header
+            .child(
+                button(
+                    "pane-split-right",
+                    "icons/lucide/columns-2.svg",
+                    with_keys(
+                        t!("terminal.toolbar.split_h").to_string(),
+                        BindableAction::SplitHorizontal,
+                    ),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.split_horizontal(cx);
+                    cx.notify();
+                })),
+            )
+            .child(
+                button(
+                    "pane-split-down",
+                    "icons/lucide/rows-2.svg",
+                    with_keys(
+                        t!("terminal.toolbar.split_v").to_string(),
+                        BindableAction::SplitVertical,
+                    ),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.split_vertical(cx);
+                    cx.notify();
+                })),
+            )
+            .child(
+                button(
+                    "pane-zoom",
+                    if zoomed {
+                        "icons/lucide/minimize-2.svg"
+                    } else {
+                        "icons/lucide/maximize-2.svg"
+                    },
+                    with_keys(
+                        if zoomed {
+                            t!("terminal.pane.restore").to_string()
+                        } else {
+                            t!("terminal.pane.maximize").to_string()
+                        },
+                        BindableAction::MaximizePane,
+                    ),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.toggle_pane_zoom();
+                    cx.notify();
+                })),
+            )
+            .child(
+                button(
+                    "pane-close",
+                    "icons/lucide/x.svg",
+                    t!("terminal.toolbar.close_split").to_string(),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.close_split();
+                    cx.notify();
+                })),
+            )
+    }
+
     fn render_tab_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Everything in the tab bar scales with the UI size. We render in
         // absolute pixels multiplied by `scale` (rather than rems) so the
@@ -2288,36 +2817,8 @@ impl TerminalView {
         for tab in &self.tabs {
             let tab_id = tab.id;
             let is_active = tab.is_active;
-            // A session daemon pane that is not attached yet (or again)
-            // is neither running nor ended: show it as pending.
-            let pending = self.session_by_id(tab_id).is_some_and(|session| {
-                session.attached_status().is_some_and(|status| {
-                    matches!(
-                        status.phase(),
-                        shelldeck_terminal::attached::AttachedPhase::Connecting
-                            | shelldeck_terminal::attached::AttachedPhase::Reconnecting
-                    )
-                })
-            });
-            // A running session shows what its program reports (OSC 7501);
-            // a report that asks for the user also makes the dot larger.
-            let tone = tab.status_tone();
-            let state_color = match &tab.state {
-                SessionState::Running if pending => ShellDeckColors::warning(),
-                SessionState::Running => match tone {
-                    StatusTone::NeedsYou => ShellDeckColors::warning(),
-                    StatusTone::Failed => ShellDeckColors::error(),
-                    StatusTone::Working | StatusTone::Finished => ShellDeckColors::primary(),
-                    StatusTone::Plain => ShellDeckColors::success(),
-                },
-                SessionState::Exited(0) => ShellDeckColors::text_muted(),
-                SessionState::Exited(_) => ShellDeckColors::warning(),
-                SessionState::Error(_) => ShellDeckColors::error(),
-            };
-            let dot_size = match tone {
-                StatusTone::NeedsYou | StatusTone::Failed | StatusTone::Finished => 8.0,
-                StatusTone::Working | StatusTone::Plain => 6.0,
-            };
+            let pending = self.tab_pending(tab_id);
+            let (state_color, dot_size) = Self::tab_dot(tab, pending);
             let status_tooltip: Option<SharedString> = tab
                 .status
                 .as_ref()
@@ -3930,6 +4431,17 @@ impl TerminalView {
             })
             .on_action({
                 let h = cx.entity().downgrade();
+                move |_: &TogglePaneZoom, _window: &mut Window, cx: &mut App| {
+                    if let Some(view) = h.upgrade() {
+                        view.update(cx, |this, cx| {
+                            this.toggle_pane_zoom();
+                            cx.notify();
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let h = cx.entity().downgrade();
                 move |_: &ZoomIn, _window: &mut Window, cx: &mut App| {
                     if let Some(view) = h.upgrade() {
                         view.update(cx, |this, cx| {
@@ -4936,7 +5448,15 @@ impl TerminalView {
         // Convert the window-relative click x into terminal-view-local x
         // (the view starts just right of the sidebar). The menu drops down
         // just below the tab bar.
-        let left = state.position.x - px(self.content_left());
+        let scale = Self::ui_scale(window);
+        let left = (state.position.x - px(self.content_left())).max(px(0.0));
+        // Opened from the session list there is no tab strip to hang from:
+        // the menu opens at the height of the row, in view coordinates.
+        let top = if self.session_list_shown() {
+            (state.position.y - px(TITLEBAR_HEIGHT * scale)).max(px(0.0))
+        } else {
+            px(TAB_BAR_HEIGHT * scale)
+        };
 
         // Enabled menu item.
         let item = |id: &str, label: &str| {
@@ -4971,7 +5491,7 @@ impl TerminalView {
             .id("tab-context-menu")
             .absolute()
             .left(left)
-            .top(px(TAB_BAR_HEIGHT * Self::ui_scale(window)))
+            .top(top)
             .min_w(px(190.0))
             .bg(ShellDeckColors::bg_surface())
             .border_1()
@@ -5067,7 +5587,16 @@ impl TerminalView {
                 }),
             );
 
-        div().child(backdrop).child(menu)
+        // The layer covers the view it is added to. Left in the flow, it was
+        // an empty box under the panes: the menu and its backdrop, placed
+        // from that box, fell outside the window.
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(backdrop)
+            .child(menu)
     }
 
     /// Render a read-only grid for the unfocused split pane.
@@ -5250,6 +5779,7 @@ impl TerminalView {
         self.layout.extra.insert(new_id, session);
         self.layout.split_leaf(target, direction, new_id);
         self.layout.focused = PaneId::Extra(new_id);
+        self.layout.zoomed = false;
         // Force a resize pass to size the new pane on next render.
         self.last_grid_rows = 0;
         self.last_grid_cols = 0;
@@ -5335,6 +5865,7 @@ impl TerminalView {
             }
         }
         self.layout.focused = PaneId::Primary;
+        self.layout.zoomed = false;
         self.last_grid_rows = 0;
         self.last_grid_cols = 0;
     }
@@ -5594,6 +6125,12 @@ impl Render for TerminalView {
         if window.is_window_active() {
             self.mark_active_tab_seen(cx);
         }
+        // Fixed for the frame before any geometry is computed from it.
+        self.session_list_width = if self.session_list_shown() {
+            SESSION_LIST_WIDTH * Self::ui_scale(window)
+        } else {
+            0.0
+        };
         let mut container = div().relative().flex().flex_col().size_full();
 
         if self.pane.sessions.is_empty() {
@@ -5658,9 +6195,11 @@ impl Render for TerminalView {
 
             self.resize_if_needed(window);
 
-            container = container
-                .child(self.render_tab_bar(window, cx))
-                .child(self.render_toolbar(window, cx));
+            // The session list is the tab strip in another shape: never both.
+            if !self.session_list_shown() {
+                container = container.child(self.render_tab_bar(window, cx));
+            }
+            container = container.child(self.render_toolbar(window, cx));
 
             // Ensure glyph cache is ready
             self.ensure_glyph_cache(window);
@@ -5680,8 +6219,9 @@ impl Render for TerminalView {
                 .find(|(id, _)| *id == self.layout.focused)
                 .map(|(_, r)| *r)
                 .unwrap_or(area);
+            let header_height = self.pane_header_height(window);
             self.grid_x_offset = focused_rect.x;
-            self.grid_y_offset = focused_rect.y;
+            self.grid_y_offset = focused_rect.y + header_height;
 
             // Clear dirty flags on every visible pane this frame, noting whether
             // the focused pane changed (so URL detection can be skipped on
@@ -5699,7 +6239,8 @@ impl Render for TerminalView {
                 }
             }
 
-            let multi = leaves.len() > 1;
+            // A maximized pane is alone on screen and still part of a split.
+            let split = self.layout.is_split();
             let mut pane_layer = div()
                 .id("pane-layer")
                 .relative()
@@ -5718,24 +6259,28 @@ impl Render for TerminalView {
                 let local_y = rect.y - area.y;
                 let is_focused = id == self.layout.focused;
 
-                let mut wrapper = div()
+                let mut pane = div()
                     .absolute()
                     .left(px(local_x))
                     .top(px(local_y))
                     .w(px(rect.w))
                     .h(px(rect.h))
+                    .flex()
+                    .flex_col()
                     .overflow_hidden();
 
-                // A focused-pane accent border is only drawn when split, so the
-                // single-pane layout stays pixel-identical to the unsplit grid
-                // (no 2px top border shifting the grid vs. the click offset).
-                if multi {
-                    wrapper = wrapper.border_t_2().border_color(if is_focused {
-                        ShellDeckColors::primary()
-                    } else {
-                        transparent_black()
-                    });
+                // A header only when split, so the single-pane layout stays
+                // pixel-identical to the unsplit grid. The grid below it is
+                // sized from `layout::grid_rect` with the same height.
+                if split {
+                    pane = pane.child(self.render_pane_header(id, is_focused, window, cx));
                 }
+                let mut wrapper = div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .w_full()
+                    .overflow_hidden();
 
                 if is_focused {
                     // Recompute URL underlines only when the focused content
@@ -5775,7 +6320,7 @@ impl Render for TerminalView {
                     ));
                 }
 
-                pane_layer = pane_layer.child(wrapper);
+                pane_layer = pane_layer.child(pane.child(wrapper));
             }
 
             // Draggable dividers (each carries the path to its split node).
@@ -5855,7 +6400,15 @@ impl Render for TerminalView {
             }
         }
 
-        container
+        if !self.session_list_shown() {
+            return container;
+        }
+        div()
+            .flex()
+            .flex_row()
+            .size_full()
+            .child(self.render_session_list(window, cx))
+            .child(container.flex_1().min_w(px(0.0)))
     }
 }
 
@@ -5871,12 +6424,29 @@ mod tests {
     fn sdtest_3092_full_width_terminal_starts_at_the_window_edge() {
         // Beside the sidebar: right of the rail, the panel and the handle.
         assert_eq!(
-            super::content_left(308.0, false),
+            super::content_left(308.0, false, 0.0),
             308.0 + super::SIDEBAR_HANDLE_WIDTH
         );
         // Focused Terminal view: no sidebar is drawn. Reserving its width
         // would shift every pane, tab menu and column count by the rail.
-        assert_eq!(super::content_left(308.0, true), 0.0);
+        assert_eq!(super::content_left(308.0, true, 0.0), 0.0);
+    }
+
+    // SDTEST-3110 / SDUC-579. The session list takes its width from the
+    // content and the tab strip's row from the chrome: the panes are sized
+    // for what is drawn, in the full app and in the focused Terminal view.
+    #[test]
+    fn sdtest_3110_the_session_list_moves_the_content_and_replaces_the_tab_strip() {
+        assert_eq!(super::content_left(48.0, true, 232.0), 232.0);
+        assert_eq!(
+            super::content_left(48.0, false, 232.0),
+            48.0 + super::SIDEBAR_HANDLE_WIDTH + 232.0
+        );
+        assert_eq!(
+            super::chrome_rows_height(false),
+            super::TAB_BAR_HEIGHT + super::TOOLBAR_HEIGHT
+        );
+        assert_eq!(super::chrome_rows_height(true), super::TOOLBAR_HEIGHT);
     }
 
     // SDTEST-1333 / SDTEST-1334 retired 2026-08-06: command_available now

@@ -54,12 +54,13 @@ pub enum BindableAction {
     Quit,
     SplitHorizontal,
     SplitVertical,
+    MaximizePane,
     Copy,
     Paste,
 }
 
 impl BindableAction {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::QuickConnect,
         Self::AiAssistant,
         Self::NewTerminal,
@@ -81,6 +82,7 @@ impl BindableAction {
         Self::Quit,
         Self::SplitHorizontal,
         Self::SplitVertical,
+        Self::MaximizePane,
         Self::Copy,
         Self::Paste,
     ];
@@ -110,6 +112,7 @@ impl BindableAction {
             Self::Quit => "quit",
             Self::SplitHorizontal => "split_horizontal",
             Self::SplitVertical => "split_vertical",
+            Self::MaximizePane => "maximize_pane",
             Self::Copy => "copy",
             Self::Paste => "paste",
         }
@@ -147,6 +150,7 @@ impl BindableAction {
             Self::SplitHorizontal => OTHER_SPLIT_BINDING,
             Self::SplitVertical if macos => "cmd-shift-d",
             Self::SplitVertical => "ctrl-shift-alt-d",
+            Self::MaximizePane => "secondary-shift-enter",
             Self::Copy if macos => MACOS_COPY_BINDING,
             Self::Copy => OTHER_COPY_BINDING,
             Self::Paste if macos => MACOS_PASTE_BINDING,

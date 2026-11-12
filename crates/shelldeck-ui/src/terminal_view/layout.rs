@@ -25,6 +25,65 @@ pub struct TerminalTab {
     pub status: Option<ProgramHeadline>,
     /// The user has had this tab in front since `status` last changed.
     pub status_seen: bool,
+    /// The machine of a connection tab, as the tab was named when it opened
+    /// (the connection's name). `None` for a local terminal.
+    pub host: Option<String>,
+}
+
+/// The terminals of one machine in the session list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionGroup {
+    /// `None` is this machine; otherwise the connection.
+    pub connection_id: Option<Uuid>,
+    /// The machine's name. `None` for this machine, or when no tab of the
+    /// connection recorded one.
+    pub host: Option<String>,
+    /// Indices into the tab list, in tab order.
+    pub tabs: Vec<usize>,
+}
+
+/// Group the tabs by machine for the session list: this machine first, then
+/// each connection in the order its first tab was opened. Tab order is kept
+/// inside a group, so the list never reorders what the user arranged.
+pub fn session_groups(tabs: &[TerminalTab]) -> Vec<SessionGroup> {
+    let mut groups: Vec<SessionGroup> = Vec::new();
+    for (index, tab) in tabs.iter().enumerate() {
+        match groups
+            .iter_mut()
+            .find(|group| group.connection_id == tab.connection_id)
+        {
+            Some(group) => {
+                group.tabs.push(index);
+                if group.host.is_none() {
+                    group.host.clone_from(&tab.host);
+                }
+            }
+            None => groups.push(SessionGroup {
+                connection_id: tab.connection_id,
+                host: tab.host.clone(),
+                tabs: vec![index],
+            }),
+        }
+    }
+    // Stable: only the local group moves, to the front.
+    groups.sort_by_key(|group| group.connection_id.is_some());
+    groups
+}
+
+/// Height of the header drawn above each pane of a split tab, before UI
+/// scaling.
+pub(super) const PANE_HEADER_HEIGHT: f32 = 24.0;
+
+/// The part of a pane's rectangle left to its grid under a header of
+/// `header` pixels. The grid is sized from this, so the last rows are never
+/// drawn under the bottom edge.
+pub(super) fn grid_rect(rect: PaneRect, header: f32) -> PaneRect {
+    let header = header.clamp(0.0, rect.h);
+    PaneRect {
+        y: rect.y + header,
+        h: rect.h - header,
+        ..rect
+    }
 }
 
 /// How the tab dot shows a reported status.
@@ -187,6 +246,9 @@ pub(super) struct TabLayout {
     pub(super) tree: PaneNode,
     pub(super) focused: PaneId,
     pub(super) extra: HashMap<Uuid, TerminalSession>,
+    /// The focused pane is shown alone, over the whole tab. The other panes
+    /// keep running and keep their place in the tree. Never saved.
+    pub(super) zoomed: bool,
 }
 
 impl TabLayout {
@@ -196,7 +258,13 @@ impl TabLayout {
             tree: PaneNode::Leaf(PaneId::Primary),
             focused: PaneId::Primary,
             extra: HashMap::new(),
+            zoomed: false,
         }
+    }
+
+    /// Whether the focused pane currently covers the whole tab.
+    pub(super) fn is_zoomed(&self) -> bool {
+        self.zoomed && self.is_split()
     }
 
     /// Whether this tab is currently split into more than one pane.
@@ -425,6 +493,11 @@ impl TabLayout {
                 },
             }
         }
+        // A maximized pane takes the whole area; nothing else is laid out,
+        // so hidden panes are neither painted nor resized.
+        if self.is_zoomed() {
+            return (vec![(self.focused, area)], Vec::new());
+        }
         let mut leaves = Vec::new();
         let mut dividers = Vec::new();
         let mut path = Vec::new();
@@ -532,7 +605,8 @@ pub(super) fn attached_tab_state(
 mod daemon_layout_tests {
     // No glob import: `super::*` carries gpui's `test` attribute.
     use super::{
-        attached_tab_state, daemon_tree_of, pane_tree_from_daemon, PaneId, PaneNode, SplitDirection,
+        attached_tab_state, daemon_tree_of, grid_rect, pane_tree_from_daemon, PaneId, PaneNode,
+        PaneRect, SplitDirection, TabLayout, PANE_HEADER_HEIGHT,
     };
     use shelldeck_terminal::attached::AttachedPhase;
     use shelldeck_terminal::session::SessionState;
@@ -562,6 +636,66 @@ mod daemon_layout_tests {
                 describe(b)
             ),
         }
+    }
+
+    // SDTEST-3109 / SDUC-579. A maximized pane is laid out alone over the
+    // whole tab: no divider, no other pane, so nothing hidden is painted or
+    // resized; the tree is untouched and comes back as it was. Maximizing
+    // follows the focus, and means nothing in a tab that is not split.
+    #[test]
+    fn sdtest_3109_a_maximized_pane_is_laid_out_alone_and_the_tree_is_kept() {
+        let area = PaneRect {
+            x: 100.0,
+            y: 50.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        let mut layout = TabLayout::single();
+        layout.zoomed = true;
+        assert!(!layout.is_zoomed(), "a single pane cannot be maximized");
+        layout.zoomed = false;
+
+        layout.split_leaf(PaneId::Primary, SplitDirection::Horizontal, pane(1));
+        layout.split_leaf(PaneId::Extra(pane(1)), SplitDirection::Vertical, pane(2));
+        let (split_leaves, split_dividers) = layout.compute(area, 6.0);
+        assert_eq!((split_leaves.len(), split_dividers.len()), (3, 2));
+
+        layout.focused = PaneId::Extra(pane(2));
+        layout.zoomed = true;
+        let (leaves, dividers) = layout.compute(area, 6.0);
+        assert!(dividers.is_empty());
+        assert_eq!(leaves.len(), 1);
+        let (id, rect) = leaves[0];
+        assert_eq!(id, PaneId::Extra(pane(2)));
+        assert_eq!(
+            (rect.x, rect.y, rect.w, rect.h),
+            (100.0, 50.0, 800.0, 600.0)
+        );
+
+        // Focus moves: the newly focused pane is the one shown.
+        layout.focused = PaneId::Primary;
+        assert_eq!(layout.compute(area, 6.0).0[0].0, PaneId::Primary);
+
+        layout.zoomed = false;
+        let (restored, _) = layout.compute(area, 6.0);
+        let rects = |leaves: &[(PaneId, PaneRect)]| -> Vec<(PaneId, [f32; 4])> {
+            leaves
+                .iter()
+                .map(|(id, r)| (*id, [r.x, r.y, r.w, r.h]))
+                .collect()
+        };
+        assert_eq!(rects(&restored), rects(&split_leaves));
+
+        // The header takes its height from the top of a pane, never more
+        // than the pane has.
+        let grid = grid_rect(area, PANE_HEADER_HEIGHT);
+        assert_eq!(
+            (grid.y, grid.h),
+            (50.0 + PANE_HEADER_HEIGHT, 600.0 - PANE_HEADER_HEIGHT)
+        );
+        assert_eq!((grid.x, grid.w), (area.x, area.w));
+        let tiny = grid_rect(PaneRect { h: 10.0, ..area }, PANE_HEADER_HEIGHT);
+        assert_eq!((tiny.y, tiny.h), (60.0, 0.0));
     }
 
     // SDTEST-3011 (SDUC-574): the native split tree is saved by daemon
@@ -682,7 +816,45 @@ mod title_tests {
             named,
             status: None,
             status_seen: false,
+            host: None,
         }
+    }
+
+    // SDTEST-3108 / SDUC-579. The session list groups terminals by machine:
+    // this machine first, connections in the order they were first opened,
+    // tab order kept inside each group.
+    #[test]
+    fn sdtest_3108_the_session_list_groups_terminals_by_machine_in_tab_order() {
+        let on = |connection: Option<u128>, host: Option<&str>| {
+            let mut tab = tab("", false);
+            tab.connection_id = connection.map(Uuid::from_u128);
+            tab.host = host.map(str::to_string);
+            tab
+        };
+        let tabs = [
+            on(Some(2), Some("staging")),
+            on(None, None),
+            on(Some(1), None),
+            on(Some(2), Some("staging")),
+            on(None, None),
+            on(Some(1), Some("production")),
+        ];
+        let groups = super::session_groups(&tabs);
+        let summary: Vec<(Option<&str>, &[usize])> = groups
+            .iter()
+            .map(|group| (group.host.as_deref(), group.tabs.as_slice()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (None, &[1, 4][..]),
+                (Some("staging"), &[0, 3][..]),
+                // The name comes from whichever tab of the connection has one.
+                (Some("production"), &[2, 5][..]),
+            ]
+        );
+        assert!(groups[0].connection_id.is_none());
+        assert!(super::session_groups(&[]).is_empty());
     }
 
     fn headline(state: ProgramState) -> ProgramHeadline {

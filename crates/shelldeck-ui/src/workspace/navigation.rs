@@ -528,10 +528,13 @@ impl Workspace {
     }
 
     pub(super) fn contextual_sidebar_visible(&self, cx: &App) -> bool {
-        if self.active_view == ActiveView::Agents && !self.settings_open {
-            self.agent_console.read(cx).navigator_visible()
-        } else {
-            self.sidebar_visible
+        if self.settings_open {
+            return self.sidebar_visible;
+        }
+        match self.active_view {
+            ActiveView::Agents => self.agent_console.read(cx).navigator_visible(),
+            ActiveView::Terminal => self.terminal.read(cx).session_list_visible(),
+            _ => self.sidebar_visible,
         }
     }
 
@@ -547,6 +550,22 @@ impl Workspace {
         if self.active_view == ActiveView::Agents {
             self.agent_console
                 .update(cx, |view, cx| view.toggle_navigator(cx));
+            cx.notify();
+            return;
+        }
+        // The terminals have their own list, in the full app and in the
+        // focused view alike; the Terminals activity has no sidebar panel.
+        if self.active_view == ActiveView::Terminal {
+            let visible = !self.terminal.read(cx).session_list_visible();
+            self.terminal.update(cx, |terminal, cx| {
+                terminal.set_session_list_visible(visible);
+                cx.notify();
+            });
+            self.app_config.terminal.session_list = visible;
+            if let Err(error) = self.app_config.save() {
+                tracing::error!("Failed to save the session list preference: {error}");
+            }
+            self.sync_settings_config(cx);
             cx.notify();
             return;
         }

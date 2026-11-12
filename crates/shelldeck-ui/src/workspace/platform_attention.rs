@@ -1454,7 +1454,12 @@ mod tests {
                 shelldeck_core::config::app_config::UiLanguage::En;
             workspace.rebuild_menu_bar(620.0, cx);
             assert_eq!(workspace.menu_bar_rebuilds, baseline + 2);
-            workspace.sidebar_visible = !workspace.sidebar_visible;
+            // In the Terminal view the sidebar entry reflects the session
+            // list (SDUC-579), not the panel of the application sidebar.
+            workspace.terminal.update(cx, |terminal, _| {
+                let shown = terminal.session_list_visible();
+                terminal.set_session_list_visible(!shown);
+            });
             workspace.rebuild_menu_bar(620.0, cx);
             assert_eq!(workspace.menu_bar_rebuilds, baseline + 3);
             workspace.app_config.cloud_sync.mode = AppMode::Support;
