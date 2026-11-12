@@ -656,7 +656,9 @@ While a pane's queue is full the daemon stops reading from the connection
 whose `Input` hit the cap, so a large paste is flow-controlled end to end
 instead of dropped; that client's other panes wait with it. If the PTY then
 accepts no byte for 10 s, the daemon discards that pane's queued input,
-sends `Error(Busy)` for the pane and resumes reading. The client library
+sends `Error(Busy)` for the pane and resumes reading. The app counts it on
+the session (`AttachedStatus::note_dropped_input`) and shows a warning toast
+once per batch (SDTEST-3067); the session stays live. The client library
 queues outbound frames off the UI thread, capped at 16 MiB; beyond that the
 paste fails visibly.
 
@@ -1152,7 +1154,12 @@ Deferred (details in the subsections below):
 
 - Packaging: the Windows archive does not carry the daemon (Unix code).
   The AppImage and the macOS bundle carry it since "Daemon files that
-  are missing" (last subsection). Saving the split tree of remote tabs.
+  are missing" (last subsection). The split tree of remote tabs is
+  saved and restored since 0.21.3 (`TabState::remote`, SDTEST-3068,
+  SDTEST-3069): a reconnecting SSH tab takes back the panes of its saved
+  tree that are still on the host, as splits, and keeps them from the
+  other tabs of that host meanwhile; not yet checked against a real
+  `sshd`.
   Workspace-scoped terminals are not deferred but excluded: they stay
   in-process until the protocol can carry a directory identity (see
   "Workspace-scoped terminals" below).

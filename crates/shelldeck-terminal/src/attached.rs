@@ -17,6 +17,7 @@
 use crate::grid::{SnapshotError, TerminalGrid};
 use crate::parser::TerminalProcessor;
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -53,12 +54,17 @@ pub enum AttachedPhase {
 #[derive(Debug)]
 pub struct AttachedStatus {
     inner: Mutex<(AttachedPhase, Option<Uuid>)>,
+    /// Input chunks the daemon refused with `Busy` (the pane stopped
+    /// reading its input, for example during a large paste) and that the
+    /// view has not reported yet.
+    dropped_input: AtomicU32,
 }
 
 impl AttachedStatus {
     pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new((AttachedPhase::Connecting, None)),
+            dropped_input: AtomicU32::new(0),
         }
     }
 
@@ -77,6 +83,18 @@ impl AttachedStatus {
 
     pub fn set_pane(&self, pane: Uuid) {
         self.inner.lock().1 = Some(pane);
+    }
+
+    /// The daemon refused one input chunk (`Busy`): it was not delivered
+    /// to the pane.
+    pub fn note_dropped_input(&self) {
+        self.dropped_input.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Input chunks refused since the last call, so the view can tell the
+    /// user once per batch instead of once per chunk.
+    pub fn take_dropped_input(&self) -> u32 {
+        self.dropped_input.swap(0, Ordering::Relaxed)
     }
 }
 

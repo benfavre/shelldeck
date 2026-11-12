@@ -341,12 +341,36 @@ impl Workspace {
         self.connect_ssh_at(connection, None, cx);
     }
 
+    /// Reconnect a saved SSH tab. `remote`: the split tree it had over
+    /// panes of the host's session daemon, rebuilt around the panes still
+    /// running there when the daemon answers.
+    pub(super) fn connect_ssh_restoring(
+        &mut self,
+        connection: Connection,
+        remote: Option<shelldeck_core::config::workspace_state::DaemonTabLayout>,
+        cx: &mut Context<Self>,
+    ) {
+        self.connect_ssh_inner(connection, None, remote, cx);
+    }
+
     pub(super) fn connect_ssh_at(
         &mut self,
         connection: Connection,
         workdir: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.connect_ssh_inner(connection, workdir, None, cx);
+    }
+
+    fn connect_ssh_inner(
+        &mut self,
+        connection: Connection,
+        workdir: Option<String>,
+        remote: Option<shelldeck_core::config::workspace_state::DaemonTabLayout>,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(not(unix))]
+        let _ = &remote;
         if !self.enter_dev_mode(cx) {
             return;
         }
@@ -394,12 +418,18 @@ impl Workspace {
                     tracing::error!("Failed to create SSH session: {}", e);
                     #[cfg(unix)]
                     if daemon_host.is_some() {
-                        super::remote_daemon::end_connect(conn_id);
+                        super::remote_daemon::end_connect(conn_id, None);
                     }
                     return;
                 }
             };
         let session_id = session.id;
+        // A restored tab keeps the panes of its saved split tree on the
+        // host until its daemon answers.
+        #[cfg(unix)]
+        if let (Some(_), Some(layout)) = (daemon_host.as_ref(), remote) {
+            super::remote_daemon::expect_layout(conn_id, session_id, layout);
+        }
 
         let (tmux_tx, tmux_rx) = tokio::sync::mpsc::unbounded_channel();
         if attach_tmux {
@@ -454,7 +484,7 @@ impl Workspace {
             tracing::error!("Failed to spawn SSH thread: {}", e);
             #[cfg(unix)]
             if daemon_connect {
-                super::remote_daemon::end_connect(conn_id);
+                super::remote_daemon::end_connect(conn_id, Some(session_id));
             }
             self.set_connection_status(
                 conn_id,
@@ -506,13 +536,13 @@ impl Workspace {
                             // The connection goes on: `Connected` or
                             // `ConnectFailed` follows.
                             daemon_connecting = false;
-                            super::remote_daemon::end_connect(conn_id);
+                            super::remote_daemon::end_connect(conn_id, Some(session_id));
                             ws.remote_daemon_fallback(conn_id, &title, reason, ask, cx);
                         }
                         SshLifecycleEvent::ConnectFailed(msg) => {
                             #[cfg(unix)]
                             if std::mem::take(&mut daemon_connecting) {
-                                super::remote_daemon::end_connect(conn_id);
+                                super::remote_daemon::end_connect(conn_id, Some(session_id));
                             }
                             ws.set_connection_status(
                                 conn_id,
@@ -915,7 +945,9 @@ impl Workspace {
         panes: Vec<shelldeck_sessiond::protocol::PaneInfo>,
         cx: &mut Context<Self>,
     ) {
-        let others_connecting = super::remote_daemon::end_connect(conn_id) > 0;
+        // Taken before `end_connect`, which would drop it.
+        let saved = super::remote_daemon::take_layout(session_id);
+        let others_connecting = super::remote_daemon::end_connect(conn_id, Some(session_id)) > 0;
         let Some(host) = super::remote_daemon::existing_host(conn_id) else {
             return;
         };
@@ -949,9 +981,11 @@ impl Workspace {
             }
             panes = kept;
         }
-        let plan = super::remote_daemon::ready_plan(
+        let plan = super::remote_daemon::ready_plan_with(
             &panes,
             &host.supervisor().open_panes(),
+            &super::remote_daemon::reserved_panes(conn_id),
+            saved.as_ref(),
             others_connecting,
         );
         let (rows, cols) = self.terminal.read(cx).grid_size();
@@ -978,8 +1012,34 @@ impl Workspace {
             }
         };
         let mut restored = usize::from(plan.tab.is_some());
+        // The tab's other panes come back as its splits, as saved.
+        let splits = plan.splits.as_ref().and_then(|layout| {
+            let primary = plan.tab?;
+            let extras: Vec<_> = layout
+                .tree
+                .panes()
+                .into_iter()
+                .filter(|pane| *pane != primary)
+                .filter_map(|pane| {
+                    match super::remote_daemon::open_existing(
+                        &host, pane, title, rows, cols, scrollback,
+                    ) {
+                        Ok(session) => Some((pane, session)),
+                        Err(error) => {
+                            tracing::warn!(%pane, "remote split not restored: {error}");
+                            None
+                        }
+                    }
+                })
+                .collect();
+            Some((primary, extras, layout))
+        });
         self.terminal.update(cx, |terminal, cx| {
             terminal.replace_session(session_id, session);
+            if let Some((primary, extras, layout)) = splits {
+                restored += extras.len();
+                terminal.install_daemon_splits(session_id, primary, extras, layout);
+            }
             for pane in &plan.extra_tabs {
                 match super::remote_daemon::open_existing(
                     &host, *pane, title, rows, cols, scrollback,

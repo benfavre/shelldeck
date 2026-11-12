@@ -250,6 +250,13 @@ impl Workspace {
                     tracing::error!("Split requested for unknown connection {}", connection_id);
                 }
             }
+            TerminalEvent::InputDropped { count } => {
+                self.show_toast(
+                    t!("toast.terminal.input_dropped", count = count).to_string(),
+                    ToastLevel::Warning,
+                    cx,
+                );
+            }
             TerminalEvent::TmuxUnavailable => {
                 self.show_toast(
                     t!("toast.ssh.tmux_unavailable").to_string(),
