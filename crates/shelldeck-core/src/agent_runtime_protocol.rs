@@ -594,11 +594,14 @@ mod tests {
     // `-p`); levels Claude Code does not have are refused, not mapped.
     #[test]
     fn sdtest_3077_claude_effort_is_passed_as_effort_flag() {
+        // A local workdir must be absolute on this platform ("/work" is
+        // not on Windows).
+        let workdir = std::env::temp_dir().to_string_lossy().into_owned();
         let request = AgentRunRequest::new(
             AgentProvider::Claude,
             AgentTarget::Local,
             AgentAccessMode::ReadOnly,
-            "/work",
+            workdir,
             Some("opus".into()),
             "inspect",
         );
