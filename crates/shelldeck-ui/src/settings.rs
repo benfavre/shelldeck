@@ -23,7 +23,7 @@ use shelldeck_core::config::app_config::{AppConfig, CompanionConfig, ThemePrefer
 use shelldeck_core::config::themes::TerminalTheme;
 
 use crate::theme::{palette_for, ShellDeckColors};
-use crate::workspace::CloudSyncNow;
+use crate::workspace::{CheckForUpdates, CloudSyncNow};
 
 mod inklura_extension;
 pub use inklura_extension::InkluraExtensionPanel;
@@ -2715,6 +2715,22 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .child(t!("settings.about.license").to_string()),
                     ),
+            )
+            .child(
+                div()
+                    .id("about-check-for-updates")
+                    .mt(px(10.0))
+                    .px(px(12.0))
+                    .py(px(5.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ShellDeckColors::primary().opacity(0.1)))
+                    .child(t!("settings.about.check_for_updates").to_string())
+                    .on_click(|_, _window, cx| cx.dispatch_action(&CheckForUpdates)),
             );
 
         // Content card

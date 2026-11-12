@@ -9,9 +9,10 @@ use shelldeck_ui::shortcut_reference::{
 
 // Re-export workspace actions for keybinding registration
 pub use shelldeck_ui::workspace::{
-    CloseTab, CloudSyncNow, ConnectBextCloud, NewRequest, NewTerminal, NextTab, OpenAiAssistant,
-    OpenBextCloud, OpenFileEditorView, OpenFleet, OpenMoniqueConsole, OpenQuickConnect,
-    OpenSettings, OpenSupportRequests, PrevTab, Quit, SwitchSite, ToggleMenuBar, ToggleSidebar,
+    CheckForUpdates, CloseTab, CloudSyncNow, ConnectBextCloud, NewRequest, NewTerminal, NextTab,
+    OpenAiAssistant, OpenBextCloud, OpenFileEditorView, OpenFleet, OpenMoniqueConsole,
+    OpenQuickConnect, OpenSettings, OpenSupportRequests, PrevTab, Quit, SwitchSite, ToggleMenuBar,
+    ToggleSidebar,
 };
 
 // Re-export terminal view actions

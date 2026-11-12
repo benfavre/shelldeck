@@ -2512,6 +2512,14 @@ fn main() -> Result<()> {
                 });
                 cx.on_action({
                     let w = w.clone();
+                    move |_: &CheckForUpdates, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.check_for_updates_now(cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
                     move |_: &SwitchSite, cx| {
                         if let Some(ws) = w.upgrade() {
                             ws.update(cx, |ws, cx| ws.open_site_switcher(cx));

@@ -74,6 +74,7 @@ pub enum MenuCommand {
     SignOut,
     OpenAiAssistant,
     Documentation,
+    CheckForUpdates,
     About,
 }
 
@@ -616,6 +617,14 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
         .icon("circle-help"),
     );
     if ctx.signed_in {
+        help.push(
+            MenuEntry::command(
+                "help-check-updates",
+                t!("menu.help.check_for_updates").to_string(),
+                MenuCommand::CheckForUpdates,
+            )
+            .icon("download"),
+        );
         help.push(
             MenuEntry::command(
                 "help-about",

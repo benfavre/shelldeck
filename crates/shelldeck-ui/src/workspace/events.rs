@@ -448,7 +448,19 @@ impl Workspace {
 
                 cx.notify();
             }
+            AutoUpdateEvent::ManualCheckResult(message) => {
+                self.toasts.update(cx, |toasts, cx| {
+                    toasts.push(message.clone(), ToastLevel::Info, cx);
+                });
+                cx.notify();
+            }
         }
+    }
+
+    /// User-requested update check (menu, palette, About tab). Runs even when
+    /// automatic updates are off and always answers with a toast.
+    pub fn check_for_updates_now(&mut self, cx: &mut Context<Self>) {
+        self.auto_updater.update(cx, |u, cx| u.check_now(cx));
     }
 
     pub(super) fn handle_settings_event(&mut self, event: &SettingsEvent, cx: &mut Context<Self>) {
