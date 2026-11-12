@@ -133,6 +133,7 @@ mod fleet;
 mod inklura_extension;
 mod inklura_notifications;
 pub(crate) mod platform_attention;
+mod voice;
 pub use platform_attention::PlatformAttentionNotification;
 mod forwards;
 mod manage_requests;

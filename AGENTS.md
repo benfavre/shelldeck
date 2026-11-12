@@ -92,7 +92,7 @@ cargo run --example hello_world
 - **Rust nightly** (specified in rust-toolchain.toml)
 - **OpenSSL dev** (`libssl-dev` on Ubuntu, `openssl-devel` on Fedora)
 - **pkg-config**
-- On Linux: `libxkbcommon-dev`, `libwayland-dev` (for GPUI)
+- On Linux: `libxkbcommon-dev`, `libwayland-dev` (for GPUI), `libasound2-dev` (microphone and speech playback)
 - Optional on Linux/X11 (runtime, not build): `xrandr` and `xprop` — the
   desktop companion uses them for multi-monitor bounds and `_NET_WORKAREA`
   window placement; without them it logs a warning and falls back to GPUI
@@ -181,6 +181,10 @@ if condition {
 ### Monique / Automonique
 
 `shelldeck-core::config::monique` is the native client for Monique's authenticated Automonique dashboard API. `MoniqueConfig{url,user,pass}` comes from a complete local `[monique]` override or `SitesPayload.monique` (Manage delivers it only to super-admin tokens). The client reads `/api/status`, `/api/processes` (jobs: the console's « Tâches » list with per-job output, and a Dev status-bar indicator « Monique N » fed by a 30 s jobs-only poll, `PolledSurface::MoniqueActivity`, which also toasts each job seen in progress that finishes or fails), and `/api/chat/history`, sends conversation turns through `/api/chat`, starts a durable conversation through `/api/chat/new`, and resolves returned Manage actions only through an explicit `/api/chat/action` approve/reject decision. Basic credentials never follow redirects. `MoniqueView` is the Dev console under `ActiveView::MoniqueConsole`; `Workspace::{effective_monique_config,refresh_monique,sync_monique_poll}` owns background I/O and polls only while the console is visible. There is no alternate bot client or runtime fallback.
+
+### Voice for agents (ElevenLabs, the user's own key)
+
+Settings → IA → « Voix (ElevenLabs) » takes the user's ElevenLabs key; it lives only in the OS keychain (`keychain::*_ai_api_key("elevenlabs")`), never in `AppConfig`, a view or logs. `[voice]` in `shelldeck.toml` holds the choices (dictation, read_replies, voice, models, base URL). `shelldeck-core::config::elevenlabs` is the client: `GET /v1/user` (key check), `/v1/voices`, `/v1/models`, `POST /v1/speech-to-text` (Scribe, one WAV per push-to-talk utterance) and `POST /v1/text-to-speech/{voice}/stream?output_format=pcm_24000` (raw PCM, no decoder). `shelldeck-ui::voice` owns audio on dedicated threads (`cpal` input `Recorder` → mono 16 kHz, `rodio` `Speaker`), and `agent_console_view/voice.rs` adds the composer microphone and reads the last agent reply aloud when a run completes. `VoiceKeyStatus::has_key` is false for a keychain error (`Unavailable`), so no mic shows when nothing can work. macOS: `NSMicrophoneUsageDescription` in the bundle and `packaging/macos/app.entitlements.plist` (`device.audio-input`, hardened runtime). Linux builds need `libasound2-dev`. Monique's own voice calls use one installation key on the server (no per-user key, no shared API), so the desktop key is independent.
 
 ### Shared platform client
 

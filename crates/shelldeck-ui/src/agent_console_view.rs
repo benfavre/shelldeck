@@ -90,6 +90,7 @@ mod remote_sessions;
 mod ssh_sessions;
 #[path = "agent_console_view/transcript.rs"]
 mod transcript;
+mod voice;
 use live_input::PendingLiveInput;
 pub use native_history::NativeHistoryRequest;
 #[path = "agent_console_view/review.rs"]
@@ -363,6 +364,8 @@ pub struct AgentConsoleView {
     workdir_state: Entity<InputState>,
     model_state: Entity<InputState>,
     model_discovery: model::AgentModelDiscoveryUi,
+    /// Speaking to agents (ElevenLabs, the user's own key).
+    voice: voice::AgentVoiceUi,
     navigator_search: Entity<InputState>,
     navigator_pane: Entity<panes::NavigatorPane>,
     timeline_pane: Entity<panes::TimelinePane>,
@@ -570,6 +573,7 @@ impl AgentConsoleView {
             workdir_state: input_state(cx, default_workdir),
             model_state: input_state(cx, String::new()),
             model_discovery: model::AgentModelDiscoveryUi::new(),
+            voice: voice::AgentVoiceUi::new(),
             navigator_search: input_state(cx, String::new()),
             navigator_pane,
             timeline_pane,
@@ -1233,6 +1237,9 @@ impl AgentConsoleView {
         }
         self.finish_review_run(session_id, cx);
         self.schedule_library_save(cx);
+        if status == AgentSessionStatus::Completed {
+            self.read_reply_aloud(session_id, cx);
+        }
         self.drain_queued(session_id, cx);
         cx.notify();
     }

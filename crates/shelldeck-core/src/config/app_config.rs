@@ -52,6 +52,11 @@ pub struct AppConfig {
     /// written before the AI Dock continue to parse unchanged.
     #[serde(default)]
     pub companion: CompanionConfig,
+    /// `[voice]`: speaking to agents with the user's own ElevenLabs key
+    /// (dictation in the composer, replies read aloud). The key itself is
+    /// in the OS keychain, never here.
+    #[serde(default)]
+    pub voice: crate::config::elevenlabs::VoiceConfig,
     /// Connection ids shown in the sidebar and system-tray quick-access
     /// sections. Order is user-defined and preserved across sessions.
     #[serde(default)]

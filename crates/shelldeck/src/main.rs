@@ -125,6 +125,10 @@ lucide_assets!(
     "shield-check",
     "sparkles",
     "square",
+    // Voice for agents (lucide-static 1.72.0, ISC).
+    "mic",
+    "volume-2",
+    "volume-x",
     "sticky-note",
     "table",
     "tag",

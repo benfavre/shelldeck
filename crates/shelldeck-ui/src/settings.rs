@@ -27,6 +27,8 @@ use crate::workspace::{CheckForUpdates, CloudSyncNow};
 
 mod inklura_extension;
 pub use inklura_extension::InkluraExtensionPanel;
+mod voice;
+pub use voice::VoiceKeyStatus;
 
 /// Shared modal host keeps the live settings entity and its own scroll layout.
 pub fn settings_dialog(
@@ -305,6 +307,12 @@ pub enum SettingsEvent {
     },
     /// Run a real minimal completion through the selected backend.
     AiTestRequested(AppConfig),
+    /// Store the user's ElevenLabs key in the keychain, then check it.
+    VoiceKeyStored(String),
+    /// Remove the ElevenLabs key from the keychain.
+    VoiceKeyDeleted,
+    /// Check the stored key against ElevenLabs and list its voices.
+    VoiceCheckRequested,
     /// Download/refresh the Inklura Chrome extension, then open Chrome.
     InkluraExtensionInstallRequested,
     /// Open `chrome://extensions` (the folder path is already copied).
@@ -439,6 +447,11 @@ pub struct SettingsView {
     ai_backend_select: Entity<Select<AiBackend>>,
     ai_model_state: Entity<InputState>,
     ai_api_key_state: Entity<InputState>,
+    /// ElevenLabs key entry (cleared once saved; the key lives in the
+    /// keychain only).
+    voice_key_state: Entity<InputState>,
+    voice_status: VoiceKeyStatus,
+    voice_select: Option<Entity<Select<SharedString>>>,
     ai_connection_state: AiConnectionState,
     shortcut_capture: Option<CompanionShortcutKind>,
     shortcut_status_before_capture: Option<(CompanionShortcutKind, ShortcutRegistrationStatus)>,
@@ -478,6 +491,9 @@ impl SettingsView {
                 state
             }),
             ai_api_key_state: cx.new(|cx| InputState::new(cx).input_type(InputType::Password)),
+            voice_key_state: cx.new(|cx| InputState::new(cx).input_type(InputType::Password)),
+            voice_status: VoiceKeyStatus::Unknown,
+            voice_select: None,
             ai_connection_state: AiConnectionState::NotTested,
             shortcut_capture: None,
             shortcut_status_before_capture: None,
@@ -1776,6 +1792,8 @@ impl SettingsView {
                 cx.notify();
             })),
         ));
+
+        root = root.child(self.render_voice_settings(cx));
 
         root.child(Self::render_about_section(
             t!("settings.ai.clippy.section").as_ref(),

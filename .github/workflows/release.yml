@@ -157,6 +157,7 @@ jobs:
             libxcb1-dev \
             libxkbcommon-x11-dev \
             libdbus-1-dev \
+            libasound2-dev \
             libxdo-dev \
             libfuse2 \
             cmake \

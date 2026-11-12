@@ -284,6 +284,11 @@ impl Workspace {
         self.settings.update(cx, |settings, cx| {
             settings.set_dev_tabs_enabled(dev_tabs_enabled, cx);
         });
+        // Whether an ElevenLabs key is stored: read once, then kept current
+        // by the Settings section.
+        if *self.settings.read(cx).voice_status() == crate::settings::VoiceKeyStatus::Unknown {
+            self.load_voice_key_status(cx);
+        }
         // Staff accounts get the Support console in the Dev rail as well.
         let support_rail = self.can_access_mode(AppMode::Support);
         self.sidebar.update(cx, |sidebar, cx| {

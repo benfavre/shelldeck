@@ -111,6 +111,8 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
     <string>11.0</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Inklura Desktop uses the microphone only while you dictate to an agent (push-to-talk). The recording is sent to ElevenLabs with your own key for transcription.</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
@@ -201,7 +203,8 @@ if ! "$APP_DIR/Contents/MacOS/shelldeck-sessiond" --version | grep -q "^shelldec
     echo "ERROR: The bundled session daemon does not run or is not version $VERSION" >&2
     exit 1
 fi
-codesign "${SIGN_ARGS[@]}" --options runtime "$APP_DIR"
+codesign "${SIGN_ARGS[@]}" --options runtime \
+    --entitlements "$SCRIPT_DIR/app.entitlements.plist" "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 if [ "${SHELLDECK_MACOS_APP_ONLY:-0}" = "1" ]; then

@@ -1324,6 +1324,9 @@ impl AgentConsoleView {
             .action(
                 self.render_composer_menu(super::composer_controls::ComposerMenu::Attachments, cx),
             );
+        for action in self.render_voice_actions(id, cx) {
+            composer = composer.action(action);
+        }
         for (index, attachment) in self
             .composer_ui
             .attachments
