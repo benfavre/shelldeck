@@ -14,8 +14,8 @@ pub use shelldeck_ui::command_palette::{
     ApplyTerminalTheme, OpenManageArea, SetAppMode, SetWorkspacePresentation, ToggleCommandPalette,
 };
 pub use shelldeck_ui::terminal_view::{
-    ClearTerminal, CopySelection, PasteClipboard, SplitHorizontal, SplitVertical, ToggleSearch,
-    ToggleSplitFocus, ZoomIn, ZoomOut, ZoomReset,
+    ClearTerminal, CopySelection, PasteClipboard, SplitHorizontal, SplitVertical, TogglePaneZoom,
+    ToggleSearch, ToggleSplitFocus, ZoomIn, ZoomOut, ZoomReset,
 };
 
 /// Register the application shortcuts.
@@ -79,6 +79,9 @@ pub fn register_keybindings(cx: &mut App) {
     });
     bind(B::SplitVertical, &|k| {
         KeyBinding::new(k, SplitVertical, None)
+    });
+    bind(B::MaximizePane, &|k| {
+        KeyBinding::new(k, TogglePaneZoom, None)
     });
     bind(B::Copy, &|k| KeyBinding::new(k, CopySelection, None));
     bind(B::Paste, &|k| KeyBinding::new(k, PasteClipboard, None));

@@ -170,6 +170,10 @@ pub struct TerminalConfig {
     /// Name of the active terminal color theme (matches a `TerminalTheme`
     /// built-in name, e.g. "Dark", "Light", "Pastel Dark", "High Contrast").
     pub theme: String,
+    /// Show the terminals as a list grouped by machine in place of the tab
+    /// strip. Toggled with the sidebar shortcut in the Terminal view.
+    #[serde(default)]
+    pub session_list: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -557,6 +561,7 @@ impl Default for TerminalConfig {
             cursor_style: "block".to_string(),
             cursor_blink: true,
             theme: "Dark".to_string(),
+            session_list: false,
         }
     }
 }

@@ -188,6 +188,26 @@ full width — and `total_width()` must account for that, which is why
   alone) to `TerminalView::set_sidebar_width`; that is how the grid ends up
   drawn underneath the rail. `sidebar_total_width` is extracted as a pure
   function so the arithmetic is unit-tested without a GPUI context.
+- **The terminals' own list lives in the view, not in the sidebar panel.** The
+  Terminals activity has no panel (`has_panel()` is false: a panel listing
+  the same sessions as the tab strip was two navigations for one thing).
+  `TerminalView::render_session_list` is the tab strip in another shape,
+  grouped by machine, and **replaces** the strip while it is shown
+  (`session_list_shown()`), never beside it. `ToggleSidebar` drives it in the
+  Terminal view, full app and focused view alike, and the choice is saved in
+  `[terminal] session_list`. Its width is part of `content_left`, and the
+  missing strip is taken off the rows above the panes
+  (`chrome_rows_height`): change either without the other and every pane is
+  mis-sized.
+- **A split pane's grid starts under its header.** `layout::grid_rect` takes
+  `PANE_HEADER_HEIGHT` off the top of a leaf rectangle, in the resize pass and
+  in the paint pass alike. A tab that is not split has no header and keeps its
+  exact geometry. A maximized pane (`TabLayout::zoomed`) is laid out alone by
+  `TabLayout::compute`; the tree is untouched.
+- **A layer over the terminal view must be `absolute` and sized.** The tab
+  context menu was returned as a bare `div()` holding an absolute backdrop
+  and menu; left in the flow, that box sat under the panes with no size and
+  the menu was drawn outside the window (2026-11-12).
 - **`Workspace::render` is where the terminal learns its sidebar.** It pushes
   `total_width()` to `TerminalView::set_sidebar_width` whenever the two differ.
   The panel appears and disappears with the rail activity (`has_panel()`) with

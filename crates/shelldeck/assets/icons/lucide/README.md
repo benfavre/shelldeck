@@ -105,6 +105,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `circle-help` | status | help tooltips |
 | `clock` | time | timestamps, SLA |
 | `cloud` | infra | bext Cloud nav |
+| `columns-2` | terminal | split a pane side by side; split tab marker in the session list |
 | `copy` | action | copy to clipboard |
 | `database` | infra | DB connections, sync |
 | `download` | action | export, pull |
@@ -144,6 +145,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `reply` | support | reply composer mode |
 | `route` | AI | dispatch an action to Monique or the fleet |
 | `rotate-ccw` | action | resume an AI task |
+| `rows-2` | terminal | split a pane top and bottom |
 | `scan` | support | interactive screen-area capture |
 | `search` | chrome | search inputs |
 | `scroll-text` | chrome | Dev sidebar — Scripts |

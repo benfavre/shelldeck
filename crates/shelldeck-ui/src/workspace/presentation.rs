@@ -60,10 +60,10 @@ impl WorkspacePresentation {
     }
 
     /// Whether `ToggleSidebar` has something to act on: the sidebar panel of
-    /// the full app or the session navigator of Agents. The focused Terminal
-    /// and Editor views have neither.
+    /// the full app, the session navigator of Agents or the session list of
+    /// Terminal. The focused Editor view has none.
     pub(super) fn has_sidebar_toggle(self) -> bool {
-        matches!(self, Self::Main | Self::Agents)
+        !matches!(self, Self::Editor)
     }
 
     pub fn next(self) -> Self {

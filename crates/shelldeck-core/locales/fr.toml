@@ -2988,6 +2988,12 @@ native_browser.stay_on_page = "Rester sur la page"
 "terminal.status.blocked" = "Attend votre réponse"
 "terminal.status.blocked_permission" = "Attend votre accord"
 "terminal.status.blocked_auth" = "Attend une authentification"
+# The terminals as a list grouped by machine, and the header of a split pane.
+"terminal.sessions.title" = "Terminaux"
+"terminal.sessions.this_machine" = "Cette machine"
+"terminal.sessions.remote" = "Serveur distant"
+"terminal.pane.maximize" = "Agrandir le volet"
+"terminal.pane.restore" = "Rétablir les volets"
 "agents.presentation.unavailable" = "Les agents nécessitent un compte Inklura Desktop Dev. Votre espace disponible est ouvert."
 
 # Agents conversation presentation

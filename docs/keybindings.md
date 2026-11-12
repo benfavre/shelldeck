@@ -31,7 +31,7 @@ The order of the modifiers and upper or lower case do not matter.
 | `ai_assistant` | `secondary-shift-k` | Open the assistant |
 | `settings` | `secondary-,` | Open Settings |
 | `next_view` | `secondary-shift-l` | Next view: full application, Agents, Terminal, Editor |
-| `toggle_sidebar` | `secondary-b` | Show or hide the sidebar (the session list in Agents) |
+| `toggle_sidebar` | `secondary-b` | Show or hide the sidebar (the session list in Agents and in Terminal) |
 | `toggle_menu_bar` | `secondary-shift-m` | Show or hide the menu row |
 | `file_editor` | `secondary-e` | Open the file editor |
 | `new_terminal` | `secondary-t` | New terminal tab |
@@ -41,6 +41,7 @@ The order of the modifiers and upper or lower case do not matter.
 | `split_horizontal` | `ctrl-shift-d` (`cmd-d` on macOS) | Split the terminal |
 | `split_vertical` | `ctrl-shift-alt-d` (`cmd-shift-d` on macOS) | Split the terminal the other way |
 | `toggle_split_focus` | `alt-[` | Move between the panes of a split |
+| `maximize_pane` | `secondary-shift-enter` | Show the focused pane of a split alone, or bring the split back |
 | `copy` | `ctrl-shift-c` (`cmd-c` on macOS) | Copy the terminal selection |
 | `paste` | `ctrl-shift-v` (`cmd-v` on macOS) | Paste into the terminal |
 | `search` | `secondary-f` | Search in the terminal |

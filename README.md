@@ -107,6 +107,14 @@ shelldeck --main       # full application
 Terminals, agent conversations and open files keep running when the view
 changes: a view is a way of looking at the same session, not a second one.
 
+### Terminals: session list and split panes
+
+In the Terminal view, `Ctrl+B` (or the sidebar button of the title bar) shows
+the terminals as a list grouped by machine, each with its status, in place of
+the tab strip. In a split tab every pane has a header with what runs there;
+the header of the active pane is highlighted and carries buttons to split
+again, maximize the pane (`Ctrl+Shift+Enter`) or close it.
+
 ### Use panes from a script or an agent
 
 `shelldeck-sessiond` can start a program in a terminal that outlives the
