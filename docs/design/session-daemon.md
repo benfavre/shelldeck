@@ -656,7 +656,9 @@ While a pane's queue is full the daemon stops reading from the connection
 whose `Input` hit the cap, so a large paste is flow-controlled end to end
 instead of dropped; that client's other panes wait with it. If the PTY then
 accepts no byte for 10 s, the daemon discards that pane's queued input,
-sends `Error(Busy)` for the pane and resumes reading. The client library
+sends `Error(Busy)` for the pane and resumes reading. The app counts it on
+the session (`AttachedStatus::note_dropped_input`) and shows a warning toast
+once per batch (SDTEST-3067); the session stays live. The client library
 queues outbound frames off the UI thread, capped at 16 MiB; beyond that the
 paste fails visibly.
 

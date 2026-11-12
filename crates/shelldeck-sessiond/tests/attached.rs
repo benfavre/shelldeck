@@ -1189,3 +1189,67 @@ fn sdtest_3053_panes_to_end_are_carried_to_the_next_run() {
     });
     assert!(pane_listed(&observer, kept_pane));
 }
+
+// SDTEST-3067 (SDUC-574): input the daemon refuses with `Busy` (a pane
+// whose program stopped reading, during a paste) is counted on the
+// session's status for the view to report, and the session stays live.
+#[test]
+fn sdtest_3067_refused_input_is_reported_on_the_session_status() {
+    use shelldeck_sessiond::server::{ServerConfig, ServerHandle};
+
+    let (_temp, dir) = private_run_dir();
+    let _daemon = ServerHandle::start(
+        &dir,
+        ServerConfig {
+            idle_exit: None,
+            term_grace: Duration::from_millis(300),
+            input_queue_cap: 64 * 1024,
+            input_stall: Duration::from_millis(300),
+            ..ServerConfig::default()
+        },
+    )
+    .expect("daemon starts")
+    .expect("the directory is free");
+    let app = LocalSessions::connect_existing(&dir, SessionsOptions::default())
+        .expect("connect")
+        .expect("daemon runs");
+    // Raw mode: in line mode the kernel drops input instead of holding the
+    // writer back.
+    let spawned = app
+        .spawn(
+            SpawnOptions {
+                label: "deaf".into(),
+                cwd: "/".into(),
+                argv: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "stty raw -echo; echo deaf-ready; exec sleep 600".into(),
+                ],
+                env: vec![("TERM".into(), "xterm-256color".into())],
+                ..SpawnOptions::default()
+            },
+            view("deaf"),
+        )
+        .expect("spawn");
+    let session = spawned.session;
+    wait_until("the deaf pane", || {
+        screen_text(&session).contains("deaf-ready")
+    });
+    let status = session.attached_status().expect("attached").clone();
+    assert_eq!(status.take_dropped_input(), 0);
+
+    // 400 KiB into a terminal nobody reads.
+    let chunk = vec![b'x'; 16 * 1024];
+    for _ in 0..25 {
+        session.write_input(&chunk);
+    }
+    let mut dropped = 0;
+    wait_until("the refused input to be reported", || {
+        dropped += status.take_dropped_input();
+        dropped > 0
+    });
+    // The pane is still there and the session still shows it.
+    assert_eq!(phase(&session), AttachedPhase::Live);
+    assert!(screen_text(&session).contains("deaf-ready"));
+    session.terminate();
+}

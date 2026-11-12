@@ -625,6 +625,14 @@ pub(crate) fn pump(
                 pumped.end = PumpEnd::PaneGone;
                 break;
             }
+            PaneEvent::Error(ErrorCode::Busy) => {
+                // The pane did not read its input in time: this chunk
+                // (typically part of a paste) was not delivered. The view
+                // tells the user; the session itself stays live.
+                tracing::warn!(%pane, "session daemon dropped input (pane busy)");
+                feed.status().note_dropped_input();
+                feed.wake();
+            }
             PaneEvent::Error(code) => {
                 tracing::warn!(%pane, ?code, "session daemon reported an error");
             }

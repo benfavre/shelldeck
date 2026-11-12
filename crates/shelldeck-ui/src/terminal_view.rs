@@ -108,6 +108,12 @@ pub enum TerminalEvent {
         exit_code: Option<i32>,
         output: String,
     },
+    /// The session daemon refused input for a pane that stopped reading
+    /// it (`count` chunks since the last report, typically one paste):
+    /// that input never reached the program.
+    InputDropped {
+        count: u32,
+    },
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -1985,6 +1991,19 @@ impl TerminalView {
                                     any_dirty = true;
                                 }
                             }
+                        }
+                        // Input the session daemon refused (pane busy):
+                        // reported once per wake, across tabs and splits.
+                        let dropped: u32 = this
+                            .pane
+                            .sessions
+                            .iter()
+                            .chain(this.layout.extra.values())
+                            .filter_map(|s| s.attached_status())
+                            .map(|status| status.take_dropped_input())
+                            .sum();
+                        if dropped > 0 {
+                            cx.emit(TerminalEvent::InputDropped { count: dropped });
                         }
                         // Extra (split) panes of the active tab.
                         for session in this.layout.extra.values() {
