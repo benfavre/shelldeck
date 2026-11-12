@@ -2963,7 +2963,16 @@ native_browser.stay_on_page = "Rester sur la page"
 
 "agents.live_browser.close" = "Fermer le navigateur"
 
-"agents.presentation.full_app" = "Ouvrir Inklura Desktop complet"
+# Workspace views: the full app and the focused Agents, Terminal and Editor
+# presentations (titlebar switcher, palette, View menu).
+"presentation.full" = "Application complète"
+"presentation.agents" = "Agents"
+"presentation.terminal" = "Terminal"
+"presentation.editor" = "Éditeur"
+"presentation.tooltip_active" = "%{name} (vue active) · %{keys} : vue suivante"
+"presentation.unavailable" = "Cette vue nécessite un compte Inklura Desktop Dev. Votre espace disponible est ouvert."
+"palette.presentation" = "Vue : %{name}"
+"presentation.next" = "Vue suivante"
 "agents.presentation.unavailable" = "Les agents nécessitent un compte Inklura Desktop Dev. Votre espace disponible est ouvert."
 
 # Agents conversation presentation

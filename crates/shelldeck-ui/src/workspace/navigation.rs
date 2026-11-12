@@ -312,8 +312,14 @@ impl Workspace {
     /// UUID, no permission) toasts instead of failing.
     pub fn open_deep_link(&mut self, link: DeepLink, cx: &mut Context<Self>) {
         tracing::info!("deep link: {link:?}");
-        if matches!(link, DeepLink::Agents) {
-            self.request_agents_presentation(cx);
+        let focused = match link {
+            DeepLink::Agents => Some(WorkspacePresentation::Agents),
+            DeepLink::Terminal => Some(WorkspacePresentation::Terminal),
+            DeepLink::Editor => Some(WorkspacePresentation::Editor),
+            _ => None,
+        };
+        if let Some(presentation) = focused {
+            self.request_presentation(presentation, cx);
             return;
         }
         if !matches!(link, DeepLink::Assistant) {
@@ -327,7 +333,7 @@ impl Workspace {
             // The application-level CompanionRuntime owns this target. It
             // authenticates before forwarding, so keep this arm inert if
             // another caller accidentally routes it into Workspace.
-            DeepLink::Assistant | DeepLink::Agents => {}
+            DeepLink::Assistant | DeepLink::Agents | DeepLink::Terminal | DeepLink::Editor => {}
             DeepLink::ExtensionSettings => {
                 self.settings.update(cx, |settings, cx| {
                     settings.set_active_tab(crate::settings::SettingsTab::General, cx);
@@ -530,6 +536,11 @@ impl Workspace {
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        // No sidebar is drawn there: toggling would only change, unseen, the
+        // panel the full app comes back to.
+        if !self.active_presentation().has_sidebar_toggle() {
+            return;
+        }
         if !self.enter_dev_mode(cx) {
             return;
         }
@@ -631,14 +642,9 @@ impl Workspace {
     /// console just became visible.
     pub(super) fn on_active_view_changed(&mut self, cx: &mut Context<Self>) {
         self.close_titlebar_menus();
-        // Native navigation from the dedicated Agents surface must reveal its
-        // destination in the full Dev shell, including when the saved mode was
-        // User or Support before the transient Agents launch.
-        if self.agents_presentation_active() && self.active_view != ActiveView::Agents {
-            self.presentation = WorkspacePresentation::Main;
-            self.agents_focus_pending = false;
-            self.set_mode(AppMode::Dev, cx);
-        }
+        // Native navigation from a focused window must reveal its destination:
+        // in the matching focused view, else in the full Dev shell.
+        self.follow_active_view(cx);
         if self.active_view != ActiveView::Workspaces
             || self.settings_open
             || !self.can_access_mode(AppMode::Dev)

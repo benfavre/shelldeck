@@ -210,6 +210,24 @@ impl Workspace {
                 Box::new(OpenClippy),
             ));
         }
+        // Views need the Dev capability, not the Dev mode: a focused view is
+        // reachable from User and Support for an account that holds it.
+        if allowed_modes.contains(&AppMode::Dev) {
+            for presentation in WorkspacePresentation::ALL {
+                actions.push(PaletteAction::new(
+                    t!("palette.presentation", name = presentation.label()).to_string(),
+                    None,
+                    presentation.icon(),
+                    Box::new(SetWorkspacePresentation { presentation }),
+                ));
+            }
+            actions.push(PaletteAction::new(
+                t!("presentation.next").to_string(),
+                Some("Ctrl+Shift+L"),
+                "layout-dashboard",
+                Box::new(CyclePresentation),
+            ));
+        }
         if allowed_modes.len() > 1 {
             for &m in allowed_modes {
                 actions.push(PaletteAction::new(
@@ -381,6 +399,10 @@ impl Workspace {
             self.open_manage_area(area.path.clone(), cx);
         } else if let Some(mode) = action.as_any().downcast_ref::<SetAppMode>() {
             self.set_mode(mode.mode, cx);
+        } else if let Some(action) = action.as_any().downcast_ref::<SetWorkspacePresentation>() {
+            self.set_presentation(action.presentation, cx);
+        } else if action.as_any().is::<CyclePresentation>() {
+            self.cycle_presentation(cx);
         } else if action.as_any().is::<OpenMoniqueConsole>() {
             self.open_monique_console(cx);
         } else if action.as_any().is::<OpenFleet>() {
@@ -412,11 +434,12 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppMode, ApplyTerminalTheme, CaptureAndShare, CloudSyncNow, NewRequest, NewScript,
-        NewTerminal, OpenAgents, OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView,
-        OpenFleet, OpenLogin, OpenMoniqueConsole, OpenRecent, OpenSettings, OpenSupportRequests,
-        OpenTemplateBrowser, PaletteAction, Quit, SetAppMode, ShareFiles, SwitchSite,
-        ToggleMenuBar, Workspace,
+        AppMode, ApplyTerminalTheme, CaptureAndShare, CloudSyncNow, CyclePresentation, NewRequest,
+        NewScript, NewTerminal, OpenAgents, OpenAiAssistant, OpenBextCloud, OpenClippy,
+        OpenFileEditorView, OpenFleet, OpenLogin, OpenMoniqueConsole, OpenRecent, OpenSettings,
+        OpenSupportRequests, OpenTemplateBrowser, PaletteAction, Quit, SetAppMode,
+        SetWorkspacePresentation, ShareFiles, SwitchSite, ToggleMenuBar, Workspace,
+        WorkspacePresentation,
     };
     use crate::t;
     use gpui::Action;
@@ -526,6 +549,49 @@ mod tests {
         // A single allowed mode means there is nothing to switch between, so
         // the mode rows must not appear either.
         assert!(!contains_action::<SetAppMode>(&actions));
+        assert_no_view_actions(&actions, "regular account");
+    }
+
+    fn assert_no_view_actions(actions: &[PaletteAction], context: &str) {
+        assert!(
+            !contains_action::<SetWorkspacePresentation>(actions),
+            "{context}"
+        );
+        assert!(!contains_action::<CyclePresentation>(actions), "{context}");
+    }
+
+    // SDTEST-3091 / SDUC-575. The view rows are how a Dev-capable account
+    // returns to Agents or opens a terminal from any surface, so they follow
+    // the capability and not the current mode (unlike the Dev command block).
+    #[test]
+    fn sdtest_3091_view_rows_follow_the_dev_capability_in_every_mode() {
+        let staff: &'static [AppMode] = &[AppMode::User, AppMode::Support, AppMode::Dev];
+        for mode in [AppMode::User, AppMode::Support, AppMode::Dev] {
+            let actions = Workspace::base_palette_actions(staff, mode, true, true);
+            let offered: Vec<WorkspacePresentation> = actions
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .action
+                        .as_any()
+                        .downcast_ref::<SetWorkspacePresentation>()
+                        .map(|action| action.presentation)
+                })
+                .collect();
+            assert_eq!(offered, WorkspacePresentation::ALL, "{mode:?}");
+            assert!(contains_action::<CyclePresentation>(&actions), "{mode:?}");
+        }
+        let support: &'static [AppMode] = &[AppMode::User, AppMode::Support];
+        for mode in [AppMode::User, AppMode::Support] {
+            assert_no_view_actions(
+                &Workspace::base_palette_actions(support, mode, true, true),
+                "support account",
+            );
+        }
+        assert_no_view_actions(
+            &Workspace::base_palette_actions(&[], AppMode::User, true, true),
+            "signed out",
+        );
     }
 
     // SDTEST-1377 — Inklura support reaches triage, never Dev.

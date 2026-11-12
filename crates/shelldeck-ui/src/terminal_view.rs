@@ -136,6 +136,15 @@ const MAX_TAB_WIDTH: f32 = 220.0;
 const STATUS_BAR_HEIGHT: f32 = 28.0;
 /// Width of the sidebar resize handle.
 const SIDEBAR_HANDLE_WIDTH: f32 = 4.0;
+
+/// Window-space x where the terminal view starts.
+fn content_left(sidebar_width: f32, full_width: bool) -> f32 {
+    if full_width {
+        0.0
+    } else {
+        sidebar_width + SIDEBAR_HANDLE_WIDTH
+    }
+}
 /// Width of the split-pane divider bar.
 const SPLIT_DIVIDER_SIZE: f32 = 6.0;
 /// Total vertical offset from the window top to the terminal grid
@@ -291,6 +300,9 @@ pub struct TerminalView {
     grid_y_offset: f32,
     /// Sidebar width in pixels (updated dynamically from workspace).
     sidebar_width: f32,
+    /// The focused Terminal presentation renders no sidebar beside the view:
+    /// the content then starts at the window's left edge.
+    full_width: bool,
     /// Whether the workspace is currently showing the application menu row
     /// above the content area (updated dynamically from the workspace).
     menu_bar_visible: bool,
@@ -435,6 +447,7 @@ impl TerminalView {
             grid_x_offset: 260.0 + SIDEBAR_HANDLE_WIDTH,
             grid_y_offset: GRID_TOP_OFFSET,
             sidebar_width: 260.0,
+            full_width: false,
             menu_bar_visible: true,
             split_dragging: false,
             active_divider: None,
@@ -485,6 +498,32 @@ impl TerminalView {
     /// Update the sidebar width used for coordinate mapping.
     pub fn set_sidebar_width(&mut self, width: f32) {
         self.sidebar_width = width;
+    }
+
+    /// Whether the view is drawn without a sidebar beside it (focused
+    /// Terminal presentation). The sidebar width is kept, so leaving the
+    /// presentation restores the previous geometry.
+    pub fn set_full_width(&mut self, full_width: bool) {
+        self.full_width = full_width;
+    }
+
+    pub fn full_width(&self) -> bool {
+        self.full_width
+    }
+
+    pub fn sidebar_width(&self) -> f32 {
+        self.sidebar_width
+    }
+
+    /// Give the active pane keyboard focus at the next render.
+    pub fn request_focus(&mut self) {
+        self.needs_focus = true;
+    }
+
+    /// Window-space x of the view's left edge: just right of the sidebar and
+    /// its resize handle, or the window edge when no sidebar is drawn.
+    fn content_left(&self) -> f32 {
+        content_left(self.sidebar_width, self.full_width)
     }
 
     /// Menu visibility is retained with the settings snapshot; the menus now
@@ -1812,10 +1851,9 @@ impl TerminalView {
     /// x = right of the sidebar, y = below the scaled tab bar + toolbar).
     fn content_area(&self, window: &Window) -> PaneRect {
         let viewport = window.viewport_size();
-        let x = self.sidebar_width + SIDEBAR_HANDLE_WIDTH;
+        let x = self.content_left();
         let y = Self::chrome_top_offset(window);
-        let w = (viewport.width.to_f64() as f32 - self.sidebar_width - SIDEBAR_HANDLE_WIDTH * 2.0)
-            .max(1.0);
+        let w = (viewport.width.to_f64() as f32 - x - SIDEBAR_HANDLE_WIDTH).max(1.0);
         let h = (viewport.height.to_f64() as f32
             - TITLEBAR_HEIGHT * Self::ui_scale(window)
             - Self::chrome_top_offset(window)
@@ -2168,8 +2206,7 @@ impl TerminalView {
         // Compute a per-tab width that shrinks toward MIN_TAB_WIDTH as more tabs
         // open; once at the minimum, the strip scrolls (overflow_x_scroll).
         let n = self.tabs.len().max(1) as f32;
-        let content_w = (window.viewport_size().width.to_f64() as f32)
-            - (self.sidebar_width + SIDEBAR_HANDLE_WIDTH);
+        let content_w = (window.viewport_size().width.to_f64() as f32) - self.content_left();
         let reserve = 44.0 * scale; // new-tab button + bar padding
         let usable = (content_w - reserve).max(MIN_TAB_WIDTH * scale);
         let tab_w = (usable / n).clamp(MIN_TAB_WIDTH * scale, MAX_TAB_WIDTH * scale);
@@ -2410,8 +2447,7 @@ impl TerminalView {
         // The toolbar has no mouse-coordinate math, so this is safe.
         let scale = Self::ui_scale(window);
         let px = |v: f32| gpui::px(v * scale);
-        let available_width = window.viewport_size().width.to_f64() as f32
-            - (self.sidebar_width + SIDEBAR_HANDLE_WIDTH);
+        let available_width = window.viewport_size().width.to_f64() as f32 - self.content_left();
         let compact = available_width < 940.0 * scale;
         let show_pinned_scripts = available_width >= 1400.0 * scale;
 
@@ -4829,7 +4865,7 @@ impl TerminalView {
         // Convert the window-relative click x into terminal-view-local x
         // (the view starts just right of the sidebar). The menu drops down
         // just below the tab bar.
-        let left = state.position.x - px(self.sidebar_width + SIDEBAR_HANDLE_WIDTH);
+        let left = state.position.x - px(self.content_left());
 
         // Enabled menu item.
         let item = |id: &str, label: &str| {
@@ -5753,6 +5789,19 @@ mod tests {
         validate_ai_command, AuthorizedLocalRoot, LocalCwdScope, PaneId, PaneNode, TerminalView,
     };
     use gpui::{AppContext, TestAppContext};
+
+    // SDTEST-3092 / SDUC-575
+    #[test]
+    fn sdtest_3092_full_width_terminal_starts_at_the_window_edge() {
+        // Beside the sidebar: right of the rail, the panel and the handle.
+        assert_eq!(
+            super::content_left(308.0, false),
+            308.0 + super::SIDEBAR_HANDLE_WIDTH
+        );
+        // Focused Terminal view: no sidebar is drawn. Reserving its width
+        // would shift every pane, tab menu and column count by the rail.
+        assert_eq!(super::content_left(308.0, true), 0.0);
+    }
 
     // SDTEST-1333 / SDTEST-1334 retired 2026-08-06: command_available now
     // delegates to shelldeck_core::util::executable_on_path, whose contracts

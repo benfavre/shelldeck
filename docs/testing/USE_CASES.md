@@ -3367,6 +3367,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-12**: Added SDUC-575: the full application and the focused Agents, Terminal and Editor views are four presentations of one window, switched from the title bar, a shortcut, the palette, the View menu, `--terminal` / `--editor` and their links. The one-way "open the full application" button of SDUC-558 is replaced by the switcher. The terminal of the full application no longer loses the width of a sidebar panel that is not drawn. SDTEST-3085..3092.
+
 - **2026-11-11**: SDUC-574: daemon files that are missing, after the first release (0.21.0). The AppImage and the macOS bundle carry the daemon and the application copies it to its configuration directory before starting it (SDTEST-3059, 3060, 3064, 3065); an install updated by 0.20.0 or older, which has the new application and no daemon, fetches the files from a small signed archive that every release now publishes (SDTEST-3057, 3058, 3062); Settings and toasts say what the state is instead of a silent fallback (SDTEST-3061, 3063); a daemon started from an AppImage keeps nothing of the image in the environment its terminals inherit (SDTEST-3066). Design doc section 15, "Daemon files that are missing".
 
 - **2026-11-11**: SDUC-574: final review of the session daemon branch, eleven findings, all confirmed and addressed (two of them in part). Remote tabs keep retrying while they are open (`UNLIMITED_ATTEMPTS`); a pane being ended holds the connection until it is gone; panes closed while unreachable are ended at the next contact and not offered back; a handed-over SSH tab keeps one id; panes attached by another client are not taken; a saved daemon tab without live panes is restored as an ordinary tab; the install answer is bound to the server it was given for; a bundled remote build must carry the build marker of the app's release; a host that cannot execute the upload is uploaded to once per run; the run directory name includes the host name and has shorter forms before `/tmp`. SDTEST-3039..3048; SDTEST-3002, 3005, 3009, 3014, 3016, 3019, 3021, 3022 and 3025 changed. The app was not launched again: the visual checks of the earlier run were not repeated.
@@ -5166,3 +5168,66 @@ GPUI wiring is compile-checked only and the app was never launched, see
 toggle, layout restore, SSH use of the daemon in the app, binary packaging
 and remote delivery.
 
+### SDUC-575: Switching between the full application and focused views
+
+For an account that holds the Dev capability, the window has four
+presentations of the same session: the full application (menus, activity rail,
+every destination) and three focused views that show one thing with no rail
+and no menu row: Agents, Terminal and Editor.
+
+- A segmented control at the right of the title bar shows the four and marks
+  the current one. It is present in every presentation, so leaving a focused
+  view for the full application can always be undone in one click. It replaces
+  the former one-way "open the full application" button of the Agents window.
+- `Ctrl+Shift+L` (`Cmd+Shift+L` on macOS) steps to the next view in the order
+  full application, Agents, Terminal, Editor. The command palette has one row
+  per view and a "next view" row; the View menu of the full application has
+  one "next view" entry showing the shortcut.
+- `shelldeck --terminal` and `shelldeck --editor` open their view, like
+  `--agents`; `shelldeck://terminal` and `shelldeck://editor` do the same from
+  a link and are handed to a running instance. The links take no argument: a
+  path after the verb is refused, so a link shows a view and never runs a
+  command or opens a file. An explicit flag opens the window even when the
+  companion starts hidden.
+- Returning to the full application from the switcher keeps the view that was
+  on screen (the terminal stays in front, with the rail around it). A launch
+  with `--main` keeps the Agents landing of SDUC-558.
+- A focused window follows what is opened in it: Agents, Terminal and Editor
+  hand over to one another and stay focused; any other destination opens the
+  full Dev shell.
+- The focused Terminal view uses the full window width: its panes, column
+  count and tab menus are computed without the sidebar that is not drawn.
+  In the full application the terminal uses the width left by the sidebar
+  that is actually drawn (the rail alone for an activity without a panel).
+  Before this change it kept subtracting the panel of the activity shown at
+  startup: 105 columns beside a blank strip in a 1200 px window, now 136
+  (142 in the focused view).
+- The sidebar button of the title bar and `Ctrl+B` act on the sidebar panel
+  of the full application and on the session navigator of Agents. The focused
+  Terminal and Editor views have neither: the button is not shown and the
+  shortcut does nothing there.
+- Terminals, agent conversations and open files are not restarted by a switch.
+- The saved app mode (User, Support, Dev) is not changed by a focused view and
+  is what the full application returns to. Signed out, a requested view waits
+  behind the welcome screen. An account without the Dev capability is shown
+  none of this (no switcher, palette row or menu entry) and a requested view
+  falls back to its own application with a notice.
+- The native window title names the view (Inklura Desktop Agents, Terminal,
+  Editor).
+
+Verified by SDTEST-3085 (links), SDTEST-3086 (flags and hand-off payloads),
+SDTEST-3087..3089 (auth, saved mode, hand-over between views, cycle order),
+SDTEST-3090 and SDTEST-3091 (menu and palette follow the capability) and
+SDTEST-3092 (full-width terminal origin). The title bar control, the focus
+hand-over and the pane geometry are GPUI wiring: checked in a native
+walkthrough on 2026-11-12 (private headless desktop, throwaway profile, demo
+Manage stub), not by an automated test. Checked there: the switcher in the
+full application and in each focused view; `tput cols` of one terminal across
+full (136), focused (142) and full again (136); `Ctrl+T` from Agents and
+`Ctrl+E` from Terminal staying focused; `Ctrl+Shift+L` from Editor returning
+to the full application with the editor in front; the palette rows; the View
+menu entry fitting without scrolling; a cold start with `--terminal`; a
+`shelldeck://editor` hand-off to the running instance; a customer account
+started with `--terminal` landing on its own home with no switcher. Not
+checked: macOS and Windows, the fallback notice text for an account without
+Dev (the toast had gone before the capture), `--editor` as a cold start.

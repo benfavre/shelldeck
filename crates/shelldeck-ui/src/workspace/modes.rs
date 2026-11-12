@@ -76,7 +76,7 @@ impl Workspace {
             return false;
         }
         let was_settings_open = self.settings_open;
-        if !self.agents_presentation_active() {
+        if !self.focused_presentation_active() {
             self.set_mode(AppMode::Dev, cx);
         }
         self.settings_open = false;
@@ -114,7 +114,7 @@ impl Workspace {
         }
         let restored_main = self.presentation != WorkspacePresentation::Main;
         self.presentation = WorkspacePresentation::Main;
-        self.agents_focus_pending = false;
+        self.presentation_focus_pending = false;
         if self.app_config.cloud_sync.mode == mode {
             if restored_main {
                 self.activate_current_mode(cx);

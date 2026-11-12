@@ -124,6 +124,11 @@ mistake this list exists to prevent.
 Connections remains first and Agents second. Both the focused Agents window and
 the full Dev shell land on Agents; the full shell keeps the activity rail visible.
 
+Focused views (Agents, Terminal, Editor) draw no sidebar at all, rail included.
+That is a different presentation of the window, not a rail toggle: the titlebar
+switcher is their navigation, and it is present in the full app as well so each
+view can be reached again. See `WorkspacePresentation` in `AGENTS.md`.
+
 **The panel is contextual — it follows `active_section`.** Connections keeps
 its bespoke renderer (groups, pins, per-row hover actions, site badges);
 everything else feeds `set_panel_items(section, Vec<PanelItem>)` and renders
@@ -183,6 +188,17 @@ full width — and `total_width()` must account for that, which is why
   alone) to `TerminalView::set_sidebar_width`; that is how the grid ends up
   drawn underneath the rail. `sidebar_total_width` is extracted as a pure
   function so the arithmetic is unit-tested without a GPUI context.
+- **`Workspace::render` is where the terminal learns its sidebar.** It pushes
+  `total_width()` to `TerminalView::set_sidebar_width` whenever the two differ.
+  The panel appears and disappears with the rail activity (`has_panel()`) with
+  no event of its own, so a width pushed only on toggle or drag goes stale.
+  **Incident (2026-11-12):** the Terminals activity has no panel, the terminal
+  still subtracted the 260px panel of the activity shown at startup, and every
+  terminal of the full app was 105 columns wide beside a blank strip instead
+  of 136 (1200px window).
+- **A focused Terminal view has no sidebar to subtract.** The same block calls
+  `TerminalView::set_full_width(true)` from the value that hides the sidebar;
+  `content_left` then returns 0 instead of sidebar plus handle.
 - **The resize drag is in window space.** Subtract `rail_offset()` before
   clamping, or dragging jumps by the rail width.
 - **The rail and its glyphs are absolute pixels on purpose.** The terminal grid

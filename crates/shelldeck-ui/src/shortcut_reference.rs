@@ -15,6 +15,8 @@ pub const ZOOM_IN_BINDING: &str = "secondary-=";
 pub const ZOOM_OUT_BINDING: &str = "secondary--";
 pub const ZOOM_RESET_BINDING: &str = "secondary-0";
 pub const CLOSE_TAB_BINDING: &str = "secondary-w";
+/// Steps through the full app and the focused Agents, Terminal and Editor views.
+pub const CYCLE_PRESENTATION_BINDING: &str = "secondary-shift-l";
 pub const QUIT_BINDING: &str = "secondary-q";
 pub const MACOS_SPLIT_BINDING: &str = "cmd-d";
 pub const OTHER_SPLIT_BINDING: &str = "ctrl-shift-d";

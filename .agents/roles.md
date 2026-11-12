@@ -134,9 +134,11 @@ ShellDeck requires an account to launch. Historically the app ran a
   * `AppMode::resolve_effective(signed_in = false, …)` returns `User`
     as a defensive fallback. Dev is super-admin-only and must never
     render for anyone else — not even as a fallback.
-  * No flag bypasses welcome, login or role authorization. `--agents` opens an
-    authenticated Agents presentation in the production app; it does not grant
-    Dev capabilities or create guest access. The normal welcome screen remains
+  * No flag bypasses welcome, login or role authorization. `--agents`,
+    `--terminal` and `--editor` open an authenticated focused view in the
+    production app; they do not grant Dev capabilities or create guest access.
+    The titlebar view switcher, its palette rows and its menu entries exist only
+    for an account that holds the Dev capability. The normal welcome screen remains
     authoritative when signed out, including initial and single-instance launches.
 
 ## Rollout status (2026-07-13)

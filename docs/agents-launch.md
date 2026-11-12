@@ -12,8 +12,8 @@ The normal welcome, login and Dev capability checks still apply.
 
 If ShellDeck is already running, the launch request is handed to the existing
 application through its single-instance routing. It does not start a second
-agent runtime. A normal launch or macOS reopen focuses Agents. Use the in-app
-full-application action or `shelldeck --main` to return to the full ShellDeck
+agent runtime. A normal launch or macOS reopen focuses Agents. Use the title bar
+view switcher or `shelldeck --main` to return to the full ShellDeck
 interface; retained agent conversations and running sessions keep their state.
 In Dev mode the full interface also lands on Agents, the second sidebar item
 after Connections. Restored terminals remain available in the Terminals section.
@@ -21,6 +21,38 @@ Explicit deep links keep their requested destination. Normal cold launches still
 respect the configured start-hidden companion preference; `--agents` explicitly
 opens the visible Agents window. Neither choice changes saved account roles or
 app mode, and launching the view does not start a provider run.
+
+## Focused views and switching
+
+Agents is one of three focused views; the others are **Terminal** (the tab bar
+and panes, no rail) and **Editor** (the file editor with its own file browser).
+The full application and the three focused views are four presentations of the
+same window and the same session:
+
+| View | Flag | Link | Shows |
+|------|------|------|-------|
+| Full application | `--main` | (none) | Menus, activity rail, every destination |
+| Agents | `--agents` | `shelldeck://agents` | Agent conversations |
+| Terminal | `--terminal` | `shelldeck://terminal` | Terminal tabs and splits |
+| Editor | `--editor` | `shelldeck://editor` | File editor |
+
+Switch at any time with the segmented control at the right of the title bar
+(shown in every view, the full application included), with `Ctrl+Shift+L` /
+`Cmd+Shift+L` for the next view (also "Next view" in the View menu of the full
+application) or from the command palette ("View: ..."). Returning to the full application keeps
+what was on screen: the terminal or the open file stays in front, with the rail
+and menus around it.
+
+A focused window follows what you open. From Agents, a new terminal
+(`Ctrl+T`) shows the focused Terminal view and the file editor (`Ctrl+E`) shows
+the focused Editor view; a destination with no focused view (Scripts, Recent,
+Fleet, the consoles) opens the full application. Sessions are not restarted by
+any of this.
+
+The links take no argument: `shelldeck://terminal/...` and
+`shelldeck://editor/...` are refused, so a web page can show a view but cannot
+run a command or open a file through it. The flags open their window even when
+the companion is set to start hidden.
 
 ## Installed launchers
 

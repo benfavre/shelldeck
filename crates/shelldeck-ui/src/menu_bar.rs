@@ -52,6 +52,8 @@ pub enum MenuCommand {
     TerminalZoomIn,
     TerminalZoomOut,
     TerminalZoomReset,
+    /// Step to the next view (full app, Agents, Terminal, Editor).
+    NextPresentation,
     // — Aller —
     GoAgents,
     GoTerminal,
@@ -419,6 +421,24 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
         );
     }
 
+    // The titlebar switcher picks a view directly; the menu carries the
+    // shortcut. One row, because this dropdown is at its height limit and a
+    // longer list would scroll its last entries out of sight. It follows the
+    // Dev capability, not the Dev mode: a focused view is reachable from the
+    // User and Support surfaces of an account that holds it.
+    if ctx.signed_in && ctx.dev_capable {
+        view.push(MenuEntry::Separator);
+        view.push(
+            MenuEntry::command(
+                "view-next-presentation",
+                t!("presentation.next").to_string(),
+                MenuCommand::NextPresentation,
+            )
+            .shortcut(crate::shortcut_reference::CYCLE_PRESENTATION_BINDING)
+            .icon("layout-dashboard"),
+        );
+    }
+
     let mut menus = vec![
         MenuSpec {
             id: "menu-file",
@@ -745,6 +765,27 @@ mod tests {
             );
         }
         assert!(!titles(&menus).contains(&"menu-terminal"));
+    }
+
+    // SDTEST-3090 / SDUC-575. Switching view follows the Dev capability: in
+    // every mode of an account that holds it (it is how such an account
+    // reaches Agents or a terminal from User mode), never for a customer or
+    // a Support-only account, never signed out.
+    #[test]
+    fn next_view_follows_the_dev_capability_not_the_mode() {
+        let offered =
+            |context| commands(&menu_bar_spec(context)).contains(&MenuCommand::NextPresentation);
+        for mode in [AppMode::User, AppMode::Support, AppMode::Dev] {
+            let mut capable = ctx(mode, true);
+            capable.dev_capable = true;
+            assert!(offered(capable), "{mode:?}");
+            let mut customer = ctx(mode, true);
+            customer.dev_capable = false;
+            assert!(!offered(customer), "{mode:?}");
+        }
+        let mut signed_out = ctx(AppMode::Dev, false);
+        signed_out.dev_capable = true;
+        assert!(!offered(signed_out));
     }
 
     // SDTEST-1202 — the staff consoles are gated on *availability*, not just

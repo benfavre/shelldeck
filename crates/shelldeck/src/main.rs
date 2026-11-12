@@ -20,6 +20,7 @@ use shelldeck_ui::{
     settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus},
     AiCompanionController, AiCompanionEvent, AiDockView, AiDockVisibilityHandler,
     CommandPaletteWindowView, PlatformAttentionNotification, Workspace, WorkspaceAiBindings,
+    WorkspacePresentation,
 };
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
@@ -573,7 +574,7 @@ enum CompanionCommand {
 /// alive without constructing every Workspace view and network poller.
 struct CompanionRoot {
     config: Option<AppConfig>,
-    initial_agents_presentation: bool,
+    initial_presentation: WorkspacePresentation,
     runtime: CompanionRuntime,
     workspace: Option<gpui::Entity<Workspace>>,
     workspace_slot: WorkspaceSlot,
@@ -607,7 +608,7 @@ impl CompanionRoot {
         );
         Self {
             config: Some(config),
-            initial_agents_presentation: false,
+            initial_presentation: WorkspacePresentation::Main,
             runtime: CompanionRuntime {
                 main_window,
                 ai_companion,
@@ -714,11 +715,10 @@ impl CompanionRoot {
         });
         workspace.read(cx).focus_handle.focus(window);
         workspace.update(cx, |ws, cx| ws.restore_session(cx));
-        if self.initial_agents_presentation {
-            workspace.update(cx, |ws, cx| ws.request_agents_presentation(cx));
-        } else {
-            workspace.update(cx, |ws, cx| ws.show_main_presentation(cx));
-        }
+        let initial_presentation = self.initial_presentation;
+        workspace.update(cx, |ws, cx| {
+            ws.request_presentation(initial_presentation, cx)
+        });
         workspace.update(cx, |ws, cx| ws.check_account_on_startup(cx));
         workspace.update(cx, |ws, cx| ws.activate_current_mode(cx));
         if sync_on_startup {
@@ -1061,7 +1061,7 @@ fn companion_main_window_visible(
     start_hidden: bool,
     tray_available: bool,
 ) -> bool {
-    target.forces_visible_agents() || !start_hidden || !tray_available
+    target.forces_visible() || !start_hidden || !tray_available
 }
 
 fn workspace_created_at_boot(main_window_visible: bool) -> bool {
@@ -1967,8 +1967,8 @@ fn main() -> Result<()> {
         }
         cli::Command::Launch(target) => target,
     };
-    let launch_agents = target.is_agents();
-    let force_visible_agents = target.forces_visible_agents();
+    let launch_presentation = target.presentation();
+    let force_visible = target.forces_visible();
 
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -2005,9 +2005,13 @@ fn main() -> Result<()> {
     let (deep_link_tx, deep_link_rx) = tokio::sync::mpsc::unbounded_channel();
     let platform_url_tx = deep_link_tx.clone();
     let platform_reopen_tx = deep_link_tx.clone();
-    // The Agents presentation is applied as the initial Workspace is created.
+    // A focused presentation is applied as the initial Workspace is created.
     // Other URL intents keep their existing event-driven startup dispatch.
-    let initial_payload = if launch_agents { None } else { deep_link_arg };
+    let initial_payload = if launch_presentation.is_focused() {
+        None
+    } else {
+        deep_link_arg
+    };
     primary.listen_with(initial_payload, move |payload| {
         deep_link_tx.send(payload).is_ok()
     });
@@ -2132,14 +2136,7 @@ fn main() -> Result<()> {
         // Open main window
         let mut window_options = WindowOptions {
             titlebar: Some(TitlebarOptions {
-                title: Some(
-                    if launch_agents {
-                        shelldeck_core::AGENTS_APP_NAME
-                    } else {
-                        shelldeck_core::APP_NAME
-                    }
-                    .into(),
-                ),
+                title: Some(launch_presentation.window_title().into()),
                 appears_transparent: true,
                 traffic_light_position: None,
             }),
@@ -2184,7 +2181,7 @@ fn main() -> Result<()> {
         let start_hidden = !window_options.show;
         if start_hidden {
             tracing::info!("companion start: main window hidden in system tray");
-        } else if config.companion.start_hidden && !force_visible_agents {
+        } else if config.companion.start_hidden && !force_visible {
             tracing::warn!(
                 "companion start requested but tray is unavailable; showing main window"
             );
@@ -2211,7 +2208,7 @@ fn main() -> Result<()> {
                 )
             });
             root.update(cx, |root, cx| {
-                root.initial_agents_presentation = launch_agents;
+                root.initial_presentation = launch_presentation;
                 if create_workspace_immediately {
                     root.ensure_workspace(window, cx);
                 }
@@ -2552,6 +2549,23 @@ fn main() -> Result<()> {
                 });
                 cx.on_action({
                     let w = w.clone();
+                    move |action: &SetWorkspacePresentation, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            let presentation = action.presentation;
+                            ws.update(cx, |ws, cx| ws.set_presentation(presentation, cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
+                    move |_: &CyclePresentation, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.cycle_presentation(cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
                     move |_: &OpenMoniqueConsole, cx| {
                         if let Some(ws) = w.upgrade() {
                             ws.update(cx, |ws, cx| ws.open_monique_console(cx));
@@ -2752,11 +2766,13 @@ mod tests {
                 &target, true, true,
             )));
         }
-        assert!(companion_main_window_visible(
-            &super::cli::Target::Agents,
-            true,
-            true,
-        ));
+        for target in [
+            super::cli::Target::Agents,
+            super::cli::Target::Terminal,
+            super::cli::Target::Editor,
+        ] {
+            assert!(companion_main_window_visible(&target, true, true));
+        }
     }
 
     // SDTEST-1493

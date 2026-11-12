@@ -2,13 +2,16 @@
 //! help/version never create a session or modify desktop settings.
 use shelldeck_core::config::deep_link::DeepLink;
 use shelldeck_core::config::share_intent::ShareIntent;
+use shelldeck_ui::WorkspacePresentation;
 use std::ffi::OsString;
 use std::path::Path;
 
 pub(crate) const HELP: &str =
-    "Usage: shelldeck [--agents | --main | shelldeck://URL | --share FILE...]
+    "Usage: shelldeck [--agents | --terminal | --editor | --main | shelldeck://URL | --share FILE...]
 
   --agents       Open the focused Agents workspace
+  --terminal     Open the focused Terminal view
+  --editor       Open the focused Editor view
   --main         Open the full Inklura Desktop application
   --share FILE   Stage files in Share for review (nothing is uploaded
                  until you click Share)
@@ -31,24 +34,37 @@ pub(crate) enum Target {
     DefaultAgents,
     Main,
     Agents,
+    Terminal,
+    Editor,
     DeepLink(String),
     /// Encoded [`ShareIntent`] payload for the single-instance hand-off.
     Share(String),
 }
 
 impl Target {
-    pub(crate) fn is_agents(&self) -> bool {
-        matches!(self, Self::DefaultAgents | Self::Agents)
+    /// An explicitly requested focused view opens its window even when the
+    /// companion is set to start hidden in the tray.
+    pub(crate) fn forces_visible(&self) -> bool {
+        matches!(self, Self::Agents | Self::Terminal | Self::Editor)
     }
 
-    pub(crate) fn forces_visible_agents(&self) -> bool {
-        matches!(self, Self::Agents)
+    /// The presentation the first window opens in. Deep links and share
+    /// hand-offs start on the full app and route themselves afterwards.
+    pub(crate) fn presentation(&self) -> WorkspacePresentation {
+        match self {
+            Self::DefaultAgents | Self::Agents => WorkspacePresentation::Agents,
+            Self::Terminal => WorkspacePresentation::Terminal,
+            Self::Editor => WorkspacePresentation::Editor,
+            Self::Main | Self::DeepLink(_) | Self::Share(_) => WorkspacePresentation::Main,
+        }
     }
 
     pub(crate) fn payload(&self) -> Option<&str> {
         match self {
             Self::Main => None,
             Self::DefaultAgents | Self::Agents => Some("shelldeck://agents"),
+            Self::Terminal => Some("shelldeck://terminal"),
+            Self::Editor => Some("shelldeck://editor"),
             Self::DeepLink(url) | Self::Share(url) => Some(url),
         }
     }
@@ -74,6 +90,8 @@ pub(crate) fn parse_in(
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
             "--agents" => Target::Agents,
+            "--terminal" => Target::Terminal,
+            "--editor" => Target::Editor,
             "--main" => Target::Main,
             // File managers append the selected files after the flag, so the
             // rest of the command line is the file list.
@@ -99,13 +117,12 @@ pub(crate) fn parse_in(
             // Finder supplied process serial numbers on older macOS versions.
             // They describe the launch, not a ShellDeck navigation target.
             value if value.starts_with("-psn_") => continue,
-            url if DeepLink::looks_like(url) => {
-                if matches!(DeepLink::parse(url), Some(DeepLink::Agents)) {
-                    Target::Agents
-                } else {
-                    Target::DeepLink(url.to_owned())
-                }
-            }
+            url if DeepLink::looks_like(url) => match DeepLink::parse(url) {
+                Some(DeepLink::Agents) => Target::Agents,
+                Some(DeepLink::Terminal) => Target::Terminal,
+                Some(DeepLink::Editor) => Target::Editor,
+                _ => Target::DeepLink(url.to_owned()),
+            },
             _ => return Err(format!("Unknown argument: {arg}\n\n{HELP}")),
         };
         if target.as_ref().is_some_and(|previous| previous != &next) {
@@ -129,15 +146,15 @@ mod tests {
             let Command::Launch(target) = parse(&args).unwrap() else {
                 panic!("expected the default Agents intent")
             };
-            assert!(target.is_agents());
-            assert!(!target.forces_visible_agents());
+            assert_eq!(target.presentation(), WorkspacePresentation::Agents);
+            assert!(!target.forces_visible());
             assert_eq!(target.payload(), Some("shelldeck://agents"));
         }
         let Command::Launch(main) = parse(&["--main"]).unwrap() else {
             panic!("expected the explicit full application intent")
         };
-        assert!(!main.is_agents());
-        assert!(!main.forces_visible_agents());
+        assert_eq!(main.presentation(), WorkspacePresentation::Main);
+        assert!(!main.forces_visible());
         assert_eq!(main.payload(), None);
         for args in [
             vec!["--agents"],
@@ -149,8 +166,8 @@ mod tests {
             let Command::Launch(target) = parse(&args).unwrap() else {
                 panic!("expected a launch intent")
             };
-            assert!(target.is_agents());
-            assert!(target.forces_visible_agents());
+            assert_eq!(target.presentation(), WorkspacePresentation::Agents);
+            assert!(target.forces_visible());
             assert_eq!(target.payload(), Some("shelldeck://agents"));
         }
         let url = "shelldeck://issue/Iss_MixedCase";
@@ -158,7 +175,7 @@ mod tests {
             panic!("expected a deep link")
         };
         assert_eq!(target.payload(), Some(url));
-        assert!(!target.is_agents());
+        assert_eq!(target.presentation(), WorkspacePresentation::Main);
         assert_eq!(parse(&["--help"]), Ok(Command::Help));
         assert_eq!(parse(&["--agents", "-h"]), Ok(Command::Help));
         assert_eq!(parse(&["--version"]), Ok(Command::Version));
@@ -169,6 +186,56 @@ mod tests {
         assert!(parse(&[url, "--agents"]).is_err());
         assert!(parse(&["--main", "--agents"]).is_err());
         assert!(parse(&["--main", url]).is_err());
+    }
+
+    // SDTEST-3086 / SDUC-575: the flag and the URL of a focused view are one
+    // intent, so a second launch forwards the same payload to the running
+    // instance and the first window opens directly in that view.
+    #[test]
+    fn sdtest_3086_terminal_and_editor_flags_launch_their_focused_view() {
+        let parse = |args: &[&str]| super::parse(args.iter().map(|arg| OsString::from(*arg)));
+        for (args, presentation, payload) in [
+            (
+                vec!["--terminal"],
+                WorkspacePresentation::Terminal,
+                "shelldeck://terminal",
+            ),
+            (
+                vec!["ShellDeck://Terminal/"],
+                WorkspacePresentation::Terminal,
+                "shelldeck://terminal",
+            ),
+            (
+                vec!["--editor"],
+                WorkspacePresentation::Editor,
+                "shelldeck://editor",
+            ),
+            (
+                vec!["shelldeck://editor"],
+                WorkspacePresentation::Editor,
+                "shelldeck://editor",
+            ),
+        ] {
+            let Command::Launch(target) = parse(&args).unwrap() else {
+                panic!("expected a launch intent")
+            };
+            assert_eq!(target.presentation(), presentation, "{args:?}");
+            assert_eq!(target.payload(), Some(payload), "{args:?}");
+            assert!(target.forces_visible(), "{args:?}");
+        }
+        // Other intents start on the full app; only the default opens Agents.
+        let Command::Launch(link) = parse(&["shelldeck://issue/Iss_1"]).unwrap() else {
+            panic!("expected a deep link")
+        };
+        assert_eq!(link.presentation(), WorkspacePresentation::Main);
+        assert_eq!(
+            Target::default().presentation(),
+            WorkspacePresentation::Agents
+        );
+        assert_eq!(Target::Main.presentation(), WorkspacePresentation::Main);
+        assert!(parse(&["--terminal", "--editor"]).is_err());
+        assert!(parse(&["--agents", "--terminal"]).is_err());
+        assert!(parse(&["--main", "--editor"]).is_err());
     }
 
     // "Share with Inklura" from a file manager: relative paths resolve
@@ -184,7 +251,7 @@ mod tests {
         let Command::Launch(target) = parse(&["--share", "a.png", "b c.pdf"]).unwrap() else {
             panic!("expected a share launch")
         };
-        assert!(!target.is_agents());
+        assert_eq!(target.presentation(), WorkspacePresentation::Main);
         let intent = ShareIntent::decode(target.payload().unwrap()).expect("share payload");
         assert_eq!(intent.files, vec![dir.join("a.png"), dir.join("b c.pdf")]);
         // Everything after --share is a file, even flag-looking names.

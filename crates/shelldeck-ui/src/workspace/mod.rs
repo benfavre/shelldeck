@@ -63,7 +63,7 @@ use crate::attachment_annotator::AttachmentAnnotator;
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::command_palette::{
     ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
-    PaletteAction, SetAppMode, ToggleCommandPalette,
+    PaletteAction, SetAppMode, SetWorkspacePresentation, ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
 use crate::dashboard::DashboardView;
@@ -405,6 +405,7 @@ actions!(
         OpenAiAssistant,
         OpenClippy,
         OpenAgents,
+        CyclePresentation,
         SetupInkluraExtension,
         CaptureAndShare,
         ShareFiles,
@@ -495,8 +496,8 @@ pub struct Workspace {
     variable_prompt: Option<Entity<VariablePrompt>>,
     active_view: ActiveView,
     presentation: WorkspacePresentation,
-    agents_focus_pending: bool,
-    native_title: Option<(gpui::WindowId, bool)>,
+    presentation_focus_pending: bool,
+    native_title: Option<(gpui::WindowId, WorkspacePresentation)>,
     /// Settings is a global personal surface, available from every app mode.
     /// Keeping this separate from `active_view` preserves the hidden Dev view
     /// (including live terminal tabs) while Settings is open.
@@ -1581,7 +1582,7 @@ impl Workspace {
             variable_prompt: None,
             active_view: ActiveView::Agents,
             presentation: WorkspacePresentation::Main,
-            agents_focus_pending: false,
+            presentation_focus_pending: false,
             native_title: None,
             settings_open: false,
             settings_dialog: None,

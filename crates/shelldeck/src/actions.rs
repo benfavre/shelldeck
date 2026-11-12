@@ -1,23 +1,23 @@
 use gpui::*;
 use shelldeck_ui::shortcut_reference::{
-    CLEAR_TERMINAL_BINDING, CLOSE_TAB_BINDING, COMMAND_PALETTE_BINDING, MACOS_COPY_BINDING,
-    MACOS_PASTE_BINDING, MACOS_SPLIT_BINDING, NEW_TERMINAL_BINDING, NEXT_TAB_BINDING,
-    OTHER_COPY_BINDING, OTHER_PASTE_BINDING, OTHER_SPLIT_BINDING, QUIT_BINDING, SEARCH_BINDING,
-    SETTINGS_BINDING, TOGGLE_SIDEBAR_BINDING, ZOOM_IN_BINDING, ZOOM_OUT_BINDING,
+    CLEAR_TERMINAL_BINDING, CLOSE_TAB_BINDING, COMMAND_PALETTE_BINDING, CYCLE_PRESENTATION_BINDING,
+    MACOS_COPY_BINDING, MACOS_PASTE_BINDING, MACOS_SPLIT_BINDING, NEW_TERMINAL_BINDING,
+    NEXT_TAB_BINDING, OTHER_COPY_BINDING, OTHER_PASTE_BINDING, OTHER_SPLIT_BINDING, QUIT_BINDING,
+    SEARCH_BINDING, SETTINGS_BINDING, TOGGLE_SIDEBAR_BINDING, ZOOM_IN_BINDING, ZOOM_OUT_BINDING,
     ZOOM_RESET_BINDING,
 };
 
 // Re-export workspace actions for keybinding registration
 pub use shelldeck_ui::workspace::{
-    CheckForUpdates, CloseTab, CloudSyncNow, ConnectBextCloud, NewRequest, NewTerminal, NextTab,
-    OpenAiAssistant, OpenBextCloud, OpenFileEditorView, OpenFleet, OpenMoniqueConsole,
-    OpenQuickConnect, OpenSettings, OpenSupportRequests, PrevTab, Quit, SwitchSite, ToggleMenuBar,
-    ToggleSidebar,
+    CheckForUpdates, CloseTab, CloudSyncNow, ConnectBextCloud, CyclePresentation, NewRequest,
+    NewTerminal, NextTab, OpenAiAssistant, OpenBextCloud, OpenFileEditorView, OpenFleet,
+    OpenMoniqueConsole, OpenQuickConnect, OpenSettings, OpenSupportRequests, PrevTab, Quit,
+    SwitchSite, ToggleMenuBar, ToggleSidebar,
 };
 
 // Re-export terminal view actions
 pub use shelldeck_ui::command_palette::{
-    ApplyTerminalTheme, OpenManageArea, SetAppMode, ToggleCommandPalette,
+    ApplyTerminalTheme, OpenManageArea, SetAppMode, SetWorkspacePresentation, ToggleCommandPalette,
 };
 pub use shelldeck_ui::terminal_view::{
     ClearTerminal, CopySelection, PasteClipboard, SplitHorizontal, SplitVertical, ToggleSearch,
@@ -62,6 +62,8 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new(ZOOM_RESET_BINDING, ZoomReset, None),
         // Command palette: Cmd+Shift+P / Ctrl+Shift+P
         KeyBinding::new(COMMAND_PALETTE_BINDING, ToggleCommandPalette, None),
+        // Next view (full app, Agents, Terminal, Editor): Cmd/Ctrl+Shift+L
+        KeyBinding::new(CYCLE_PRESENTATION_BINDING, CyclePresentation, None),
         // File editor: Cmd+E (macOS) / Ctrl+E (Linux/Win)
         KeyBinding::new("secondary-e", OpenFileEditorView, None),
         // Toggle split focus: Alt+[ (all platforms)

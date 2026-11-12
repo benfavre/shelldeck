@@ -32,3 +32,5 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// intentionally retain their original names so existing installations upgrade.
 pub const APP_NAME: &str = "Inklura Desktop";
 pub const AGENTS_APP_NAME: &str = "Inklura Desktop Agents";
+pub const TERMINAL_APP_NAME: &str = "Inklura Desktop Terminal";
+pub const EDITOR_APP_NAME: &str = "Inklura Desktop Editor";
