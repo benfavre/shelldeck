@@ -2963,7 +2963,31 @@ native_browser.stay_on_page = "Rester sur la page"
 
 "agents.live_browser.close" = "Fermer le navigateur"
 
-"agents.presentation.full_app" = "Ouvrir Inklura Desktop complet"
+# Workspace views: the full app and the focused Agents, Terminal and Editor
+# presentations (titlebar switcher, palette, View menu).
+"presentation.full" = "Application complète"
+"presentation.agents" = "Agents"
+"presentation.terminal" = "Terminal"
+"presentation.editor" = "Éditeur"
+"presentation.tooltip_active" = "%{name} (vue active) · %{keys} : vue suivante"
+"presentation.unavailable" = "Cette vue nécessite un compte Inklura Desktop Dev. Votre espace disponible est ouvert."
+"palette.presentation" = "Vue : %{name}"
+"presentation.next" = "Vue suivante"
+# Entries of the [keybindings] table that could not be applied at startup.
+"keybindings.problem.unknown" = "Raccourcis : action inconnue « %{name} » dans [keybindings], ignorée."
+"keybindings.problem.invalid" = "Raccourcis : « %{keys} » n’est pas une combinaison valide pour %{action}. Le raccourci d’origine est conservé."
+"keybindings.problem.conflict" = "Raccourcis : %{keys} est demandé par plusieurs actions (%{actions}). Les raccourcis d’origine sont conservés."
+"presentation.attention.needs_you" = "%{name} · une action vous attend"
+"presentation.attention.finished" = "%{name} · du nouveau à voir"
+# What a program in a terminal tab says it is doing (OSC 7501).
+"terminal.status.idle" = "Au repos"
+"terminal.status.working" = "En cours"
+"terminal.status.working_percent" = "En cours (%{percent} %)"
+"terminal.status.done" = "Terminé"
+"terminal.status.error" = "En erreur"
+"terminal.status.blocked" = "Attend votre réponse"
+"terminal.status.blocked_permission" = "Attend votre accord"
+"terminal.status.blocked_auth" = "Attend une authentification"
 "agents.presentation.unavailable" = "Les agents nécessitent un compte Inklura Desktop Dev. Votre espace disponible est ouvert."
 
 # Agents conversation presentation

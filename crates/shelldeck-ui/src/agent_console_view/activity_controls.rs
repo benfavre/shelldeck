@@ -82,6 +82,24 @@ impl AgentConsoleView {
             .into_any_element()
     }
 
+    /// What the conversations want from a user who is looking elsewhere:
+    /// one waits on them, or one has replies they have not read.
+    pub fn attention(&self) -> crate::view_attention::ViewAttention {
+        use crate::view_attention::ViewAttention;
+        use shelldeck_core::agent_session::AgentSessionAttention;
+        self.sessions
+            .sessions()
+            .iter()
+            .map(|session| match session.attention {
+                AgentSessionAttention::NeedsAttention => ViewAttention::NeedsYou,
+                AgentSessionAttention::Unread => ViewAttention::Finished,
+                AgentSessionAttention::None if session.unread_count > 0 => ViewAttention::Finished,
+                AgentSessionAttention::None => ViewAttention::None,
+            })
+            .max()
+            .unwrap_or_default()
+    }
+
     pub(crate) fn active_run_count(&self) -> usize {
         self.sessions.active_count()
     }

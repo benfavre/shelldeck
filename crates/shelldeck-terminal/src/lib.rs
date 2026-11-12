@@ -5,6 +5,7 @@ pub mod colors;
 pub mod error;
 pub mod grid;
 pub mod parser;
+pub mod program_status;
 pub mod pty;
 #[cfg(feature = "app")]
 pub mod session;

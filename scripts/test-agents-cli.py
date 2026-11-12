@@ -38,13 +38,14 @@ class AgentsCli(unittest.TestCase):
         for argument in ("--help", "-h"):
             result = self.run_cli(argument)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("--agents", result.stdout)
-            self.assertIn("--main", result.stdout)
+            for flag in ("--agents", "--terminal", "--editor", "--main"):
+                self.assertIn(flag, result.stdout)
             self.assertIn("Usage: shelldeck", result.stdout)
         result = self.run_cli("--version")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertRegex(result.stdout, r"^Inklura Desktop \d+\.\d+\.\d+")
-        for arguments in (("--unknown",), ("--agents", "shelldeck://issue/example")):
+        for arguments in (("--unknown",), ("--agents", "shelldeck://issue/example"),
+                          ("--terminal", "--editor")):
             result = self.run_cli(*arguments)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Usage: shelldeck", result.stderr)
@@ -57,6 +58,9 @@ class AgentsCli(unittest.TestCase):
                                    (("shelldeck://agents",), "shelldeck://agents"),
                                    ((), "shelldeck://agents"),
                                    (("-psn_0_42",), "shelldeck://agents"),
+                                   (("--terminal",), "shelldeck://terminal"),
+                                   (("shelldeck://terminal",), "shelldeck://terminal"),
+                                   (("--editor",), "shelldeck://editor"),
                                    (("--main",), ""),
                                    (("shelldeck://issue/MixedCase",), "shelldeck://issue/MixedCase"),
                                    (("shelldeck://assistant",), "shelldeck://assistant")]:

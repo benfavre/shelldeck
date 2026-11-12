@@ -3367,6 +3367,14 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-12**: Added SDUC-578: pane commands of `shelldeck-sessiond` for scripts and agents (`ls`, `run`, `send`, `read`, `wait`). SDTEST-3104..3107.
+
+- **2026-11-12**: Added SDUC-577: application shortcuts can be changed or removed in a `[keybindings]` table of the configuration file; every label follows. SDTEST-3100..3103.
+
+- **2026-11-12**: Added SDUC-576: a program in a terminal reports what it is doing through OSC 7501 (Program Status Protocol); the tab shows it and the view switcher marks the view that needs the user or has something new. SDTEST-3093..3099.
+
+- **2026-11-12**: Added SDUC-575: the full application and the focused Agents, Terminal and Editor views are four presentations of one window, switched from the title bar, a shortcut, the palette, the View menu, `--terminal` / `--editor` and their links. The one-way "open the full application" button of SDUC-558 is replaced by the switcher. The terminal of the full application no longer loses the width of a sidebar panel that is not drawn. SDTEST-3085..3092.
+
 - **2026-11-11**: SDUC-574: daemon files that are missing, after the first release (0.21.0). The AppImage and the macOS bundle carry the daemon and the application copies it to its configuration directory before starting it (SDTEST-3059, 3060, 3064, 3065); an install updated by 0.20.0 or older, which has the new application and no daemon, fetches the files from a small signed archive that every release now publishes (SDTEST-3057, 3058, 3062); Settings and toasts say what the state is instead of a silent fallback (SDTEST-3061, 3063); a daemon started from an AppImage keeps nothing of the image in the environment its terminals inherit (SDTEST-3066). Design doc section 15, "Daemon files that are missing".
 
 - **2026-11-11**: SDUC-574: final review of the session daemon branch, eleven findings, all confirmed and addressed (two of them in part). Remote tabs keep retrying while they are open (`UNLIMITED_ATTEMPTS`); a pane being ended holds the connection until it is gone; panes closed while unreachable are ended at the next contact and not offered back; a handed-over SSH tab keeps one id; panes attached by another client are not taken; a saved daemon tab without live panes is restored as an ordinary tab; the install answer is bound to the server it was given for; a bundled remote build must carry the build marker of the app's release; a host that cannot execute the upload is uploaded to once per run; the run directory name includes the host name and has shorter forms before `/tmp`. SDTEST-3039..3048; SDTEST-3002, 3005, 3009, 3014, 3016, 3019, 3021, 3022 and 3025 changed. The app was not launched again: the visual checks of the earlier run were not repeated.
@@ -5166,3 +5174,184 @@ GPUI wiring is compile-checked only and the app was never launched, see
 toggle, layout restore, SSH use of the daemon in the app, binary packaging
 and remote delivery.
 
+### SDUC-575: Switching between the full application and focused views
+
+For an account that holds the Dev capability, the window has four
+presentations of the same session: the full application (menus, activity rail,
+every destination) and three focused views that show one thing with no rail
+and no menu row: Agents, Terminal and Editor.
+
+- A segmented control at the right of the title bar shows the four and marks
+  the current one. It is present in every presentation, so leaving a focused
+  view for the full application can always be undone in one click. It replaces
+  the former one-way "open the full application" button of the Agents window.
+- `Ctrl+Shift+L` (`Cmd+Shift+L` on macOS) steps to the next view in the order
+  full application, Agents, Terminal, Editor. The command palette has one row
+  per view and a "next view" row; the View menu of the full application has
+  one "next view" entry showing the shortcut.
+- `shelldeck --terminal` and `shelldeck --editor` open their view, like
+  `--agents`; `shelldeck://terminal` and `shelldeck://editor` do the same from
+  a link and are handed to a running instance. The links take no argument: a
+  path after the verb is refused, so a link shows a view and never runs a
+  command or opens a file. An explicit flag opens the window even when the
+  companion starts hidden.
+- Returning to the full application from the switcher keeps the view that was
+  on screen (the terminal stays in front, with the rail around it). A launch
+  with `--main` keeps the Agents landing of SDUC-558.
+- A focused window follows what is opened in it: Agents, Terminal and Editor
+  hand over to one another and stay focused; any other destination opens the
+  full Dev shell.
+- The focused Terminal view uses the full window width: its panes, column
+  count and tab menus are computed without the sidebar that is not drawn.
+  In the full application the terminal uses the width left by the sidebar
+  that is actually drawn (the rail alone for an activity without a panel).
+  Before this change it kept subtracting the panel of the activity shown at
+  startup: 105 columns beside a blank strip in a 1200 px window, now 136
+  (142 in the focused view).
+- The sidebar button of the title bar and `Ctrl+B` act on the sidebar panel
+  of the full application and on the session navigator of Agents. The focused
+  Terminal and Editor views have neither: the button is not shown and the
+  shortcut does nothing there.
+- Terminals, agent conversations and open files are not restarted by a switch.
+- The saved app mode (User, Support, Dev) is not changed by a focused view and
+  is what the full application returns to. Signed out, a requested view waits
+  behind the welcome screen. An account without the Dev capability is shown
+  none of this (no switcher, palette row or menu entry) and a requested view
+  falls back to its own application with a notice.
+- The native window title names the view (Inklura Desktop Agents, Terminal,
+  Editor).
+
+Verified by SDTEST-3085 (links), SDTEST-3086 (flags and hand-off payloads),
+SDTEST-3087..3089 (auth, saved mode, hand-over between views, cycle order),
+SDTEST-3090 and SDTEST-3091 (menu and palette follow the capability) and
+SDTEST-3092 (full-width terminal origin). The title bar control, the focus
+hand-over and the pane geometry are GPUI wiring: checked in a native
+walkthrough on 2026-11-12 (private headless desktop, throwaway profile, demo
+Manage stub), not by an automated test. Checked there: the switcher in the
+full application and in each focused view; `tput cols` of one terminal across
+full (136), focused (142) and full again (136); `Ctrl+T` from Agents and
+`Ctrl+E` from Terminal staying focused; `Ctrl+Shift+L` from Editor returning
+to the full application with the editor in front; the palette rows; the View
+menu entry fitting without scrolling; a cold start with `--terminal`; a
+`shelldeck://editor` hand-off to the running instance; a customer account
+started with `--terminal` landing on its own home with no switcher. Not
+checked: macOS and Windows, the fallback notice text for an account without
+Dev (the toast had gone before the capture), `--editor` as a cold start.
+
+### SDUC-576: Programs say what they are doing, and the switcher shows who needs you
+
+A program running in a terminal can report its status through OSC 7501, the
+Program Status Protocol used by Rex, Ghostty and Herdr
+(`ESC ] 7501 ; state=working:app=cargo:progress=40 ESC \`). The terminal
+never guesses a status from the screen: a program that reports nothing has
+none.
+
+- States: `idle`, `working` (optional `progress` 0..100), `done`, `blocked`
+  (optional `kind`: `permission`, `question`, `auth`) and `error`. Optional
+  `app` (machine name), `title` and `msg` (base64 text for people) and `id`
+  (several records per program, `a/b` is a child of `a`). `state=clear`
+  removes a record and its children, or everything without an id.
+- A program may ask `ESC ] 7501 ; ? ESC \`; the terminal answers
+  `?:states=idle,working,done,blocked,error:kinds=permission,question,auth`
+  with the same terminator. A local terminal, an SSH tab and a session daemon
+  pane all answer.
+- A report is untrusted: sizes are bounded, text must be UTF-8 without control
+  characters, an unknown pair is skipped and a report that breaks a rule is
+  dropped whole.
+- The status leaves with the program: when the shell prompt comes back (shell
+  integration, OSC 133;A), on a full reset, and when the tab closes. Without
+  shell integration a program that dies without clearing leaves its last
+  status on the tab.
+- The tab dot shows the most urgent report among the panes of the tab: blue
+  while working, amber and larger when it waits on the user, red and larger
+  when it failed, blue and larger for finished work not looked at yet. The
+  tab tooltip gives the program name, what it is doing and its own message.
+- Finished work counts as seen once its tab has been in front in an active
+  window. A blocked or failed program keeps asking until its state changes.
+- The view switcher of the title bar carries a dot on the Agents and Terminal
+  segments: amber when something there waits on the user (a blocked or failed
+  terminal program, an agent conversation needing attention), blue when
+  something finished that was not looked at (finished terminal work, unread
+  agent replies). The view on screen carries no dot. The tooltip says which.
+
+Verified by SDTEST-3093..3096 (protocol, records, bytes to grid) and
+SDTEST-3097..3099 (tab attention, split tabs, switcher). The painting was
+checked in a native walkthrough on 2026-11-12 (private headless desktop,
+local `/bin/sh` tab, scripts printing the reports): blue dot while working;
+amber dot on the Terminal segment, with its tooltip, while a program
+reported `blocked` and Agents was in front; larger amber tab dot and the
+tooltip "demo · Attend votre accord · Apply?" back in the Terminal view, with
+the segment dot gone; blue segment dot for `done` reported while the Editor
+was in front, gone after the tab had been in front. Not checked there: SSH
+and session daemon tabs, split panes, `error`, the Agents segment. Not done: the status
+is not part of the session daemon snapshot, so a pane reattached after a
+restart has no status until its program reports again; no OS notification is
+sent; the rail of the full application carries no dot.
+
+### SDUC-577: Changing application shortcuts in the configuration file
+
+The user can change or remove an application shortcut by adding a
+`[keybindings]` table to the configuration file (`action = "keys"`, an empty
+value removes the shortcut). The table is read at startup. Reference:
+[`keybindings.md`](../keybindings.md).
+
+- 23 actions can be changed (palette, views, sidebar, tabs, splits, copy and
+  paste, search, zoom, quit...). An action that is not listed keeps its
+  built-in keys; a removed one stays reachable from menus and the palette.
+- Menus, the command palette, tooltips, the terminal toolbar, the status bar
+  and the shortcut lists show the keys in effect. A removed shortcut shows no
+  keys, and its row leaves the shortcut lists.
+- An entry that cannot be applied is reported in a notice at startup and the
+  built-in keys stay: unknown action, keys that cannot be read, or keys
+  already used by another action. Two actions never share keys; moving or
+  removing the other action in the same table makes the change valid, and a
+  swap is accepted.
+- The application never writes the table by itself and never loses it when it
+  saves the configuration.
+
+Verified by SDTEST-3100 (built-in keys and ids are distinct on both
+platforms), SDTEST-3101 and SDTEST-3102 (the table: change, removal, no-op,
+unknown, invalid, conflicts, swap), SDTEST-3103 (file format). Checked in
+the native walkthrough of 2026-11-12 with `next_view = "ctrl-alt-v"`,
+`toggle_sidebar = ""`, `quit = "ctrl-t"` and an unknown action: the two
+notices at startup, Ctrl+Alt+V switching view, "Vue suivante Ctrl+Alt+V" and
+a sidebar entry without keys in the View menu, the sidebar row gone from the
+shortcut list of the terminal welcome screen. Not checked: macOS. Not done: no
+editor in Settings, no reload without restart, and the keys of the Agents
+composer, the file editor and the embedded browser are not in the table.
+
+### SDUC-578: Starting, typing into, reading and waiting for panes from a shell
+
+A script or a coding agent can use the panes of the session daemon through
+the `shelldeck-sessiond` binary, so it can run a program in a terminal that
+outlives it and steer it. Reference: [`pane-cli.md`](../pane-cli.md).
+
+- `run [--name NAME] [--cwd DIR] [--rows N] [--cols N] [-- ARGV...]` starts a
+  pane (the login shell by default) in the caller's directory and prints its
+  id. It starts the daemon when none runs; no other command does.
+- `ls` lists the panes for people; `ls --json` for programs (a running pane
+  has a null exit code).
+- `send PANE [TEXT...]` types text and Enter (`--no-enter` to leave the line
+  open; text from stdin when none is given). Several lines go in as one
+  bracketed paste when the pane's program enabled it.
+- `read PANE [--lines N]` prints the last lines of the pane, history
+  included, ending at the last line that has text.
+- `wait PANE` blocks until the program exits and exits with its status (128
+  plus the signal for a killed program; at once for a pane that already
+  ended). `--until STATE` returns 0 when the program reports that state
+  through OSC 7501 (SDUC-576), for reports made after the command started.
+  `--timeout SECONDS` gives up with status 124.
+- A pane is named by its id, the start of its id (4 characters or more) or
+  its name. A selector that matches several panes is refused.
+- `send`, `read` and `wait` never resize a pane.
+- The commands use the daemon's private socket of the current user and add
+  nothing to the wire protocol. A pane started this way is restored as a tab
+  by the application at its next start, like any pane without a saved slot.
+
+Verified by SDTEST-3104 and SDTEST-3105 (selection, JSON list, exit status)
+and by SDTEST-3106 and SDTEST-3107, which run the real binary against a real
+daemon in a private temporary directory. Not done: a pane does not know its
+own id; `send` does not refuse a program blocked on a permission question; a
+status reached before `wait --until` started is not known (the daemon keeps
+no status); a running application does not show a pane started here until it
+restarts. Windows has no daemon.

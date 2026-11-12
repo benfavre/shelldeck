@@ -1,4 +1,13 @@
 use super::*;
+use crate::shortcut_reference::BindableAction;
+
+/// A tooltip label followed by the keys its action is bound to, if any.
+fn with_shortcut(label: String, action: BindableAction) -> String {
+    match crate::shortcut_reference::label(action) {
+        Some(keys) => format!("{label} · {keys}"),
+        None => label,
+    }
+}
 
 fn close_titlebar_menu_flags(account: &mut bool, mode: &mut bool, site: &mut bool) {
     *account = false;
@@ -31,7 +40,8 @@ impl Workspace {
     pub(super) fn render_titlebar(
         is_maximized: bool,
         compact: bool,
-        agents_presentation: bool,
+        presentation: WorkspacePresentation,
+        presentation_switch: Option<[crate::view_attention::ViewAttention; 4]>,
         account_menu_open: bool,
         mode_menu_open: bool,
         account: Option<AccountInfo>,
@@ -73,16 +83,17 @@ impl Workspace {
             .on_mouse_down(MouseButton::Left, |_e, window, _cx| {
                 window.start_window_move();
             });
-        if !compact && (!menu_bar_visible || agents_presentation) {
+        let focused_presentation = presentation.is_focused();
+        if !compact && (!menu_bar_visible || focused_presentation) {
             title_area = title_area
                 .child(crate::brand::brand_badge(20.0))
                 .child(crate::brand::brand_wordmark(12.0));
-            if agents_presentation {
+            if focused_presentation {
                 title_area = title_area.child(
                     div()
                         .text_size(px(12.0))
                         .text_color(title_dim)
-                        .child(t!("agents.title").to_string()),
+                        .child(presentation.label()),
                 );
             }
         }
@@ -90,10 +101,9 @@ impl Workspace {
         // Keep interactive controls outside the drag region. The menu bar owns
         // deferred dropdowns, so scrolling the titles never clips an open menu.
         let sidebar_button = sidebar_visible.map(|visible| {
-            let tooltip: SharedString = format!(
-                "{} · {}",
-                t!("shortcuts.toggle_sidebar"),
-                crate::menu_bar::accel("secondary-b")
+            let tooltip: SharedString = with_shortcut(
+                t!("shortcuts.toggle_sidebar").to_string(),
+                BindableAction::ToggleSidebar,
             )
             .into();
             IconButton::new(IconSource::FilePath("images/sidebar.svg".into()))
@@ -119,7 +129,7 @@ impl Workspace {
             .gap(px(8.0))
             .pl(px(10.0))
             .children(sidebar_button);
-        if menu_bar_visible && !agents_presentation {
+        if menu_bar_visible && !focused_presentation {
             navigation = navigation.child(
                 div()
                     .id("titlebar-menus")
@@ -373,9 +383,12 @@ impl Workspace {
         // The menu row contains its own visibility toggle, so hiding it would
         // otherwise remove the only discoverable way to restore it. This
         // compact titlebar affordance exists only while the row is hidden.
-        let restore_menu_button = (!menu_bar_visible && !agents_presentation).then(|| {
-            let tooltip: SharedString =
-                format!("{} · Ctrl+Shift+M", t!("menu.view.menu_bar")).into();
+        let restore_menu_button = (!menu_bar_visible && !focused_presentation).then(|| {
+            let tooltip: SharedString = with_shortcut(
+                t!("menu.view.menu_bar").to_string(),
+                BindableAction::ToggleMenuBar,
+            )
+            .into();
             let workspace = handle.clone();
             div()
                 .id("titlebar-restore-menu")
@@ -400,21 +413,10 @@ impl Workspace {
                 .child(lucide_icon("list-checks", 14.0, btn_text))
         });
 
-        let full_app_button = agents_presentation.then(|| {
-            let workspace = handle.clone();
-            Button::new(
-                "agents-open-full-app",
-                t!("agents.presentation.full_app").to_string(),
-            )
-            .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::Sm)
-            .icon(IconSource::from("chevron-left"))
-            .on_click(move |_, _, cx| {
-                if let Some(workspace) = workspace.upgrade() {
-                    workspace.update(cx, |this, cx| this.show_main_presentation(cx));
-                }
-            })
-        });
+        // One control both leaves a focused view and returns to it, so the
+        // full app is never a one-way door.
+        let presentation_switcher = presentation_switch
+            .map(|attention| Self::render_presentation_switcher(presentation, attention, handle));
 
         let ai_button = ai_configured.then(|| {
             let tooltip: SharedString = t!("ai.assistant.open").to_string().into();
@@ -556,7 +558,7 @@ impl Workspace {
                     .flex_shrink_0()
                     .gap(px(6.0))
                     .pr(px(8.0))
-                    .children(full_app_button)
+                    .children(presentation_switcher)
                     .children(restore_menu_button)
                     .children(ai_button)
                     .children(ai_dock_button)

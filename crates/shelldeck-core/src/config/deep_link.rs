@@ -20,6 +20,8 @@
 //! | `shelldeck://assistant`              | [`DeepLink::Assistant`] |
 //! | `shelldeck://extension`             | [`DeepLink::ExtensionSettings`] |
 //! | `shelldeck://agents`                 | [`DeepLink::Agents`] |
+//! | `shelldeck://terminal`               | [`DeepLink::Terminal`] |
+//! | `shelldeck://editor`                 | [`DeepLink::Editor`] |
 //! | `shelldeck://open/connection/<uuid>` | [`DeepLink::OpenConnection`] |
 //! | `shelldeck://ssh/connect/<uuid>`     | [`DeepLink::SshConnect`] |
 //! | `shelldeck://tunnel/start/<uuid>`    | [`DeepLink::TunnelStart`] |
@@ -49,6 +51,12 @@ pub enum DeepLink {
     /// Show the retained Agents workspace presentation after authentication
     /// and Dev capability checks. This intent grants no execution authority.
     Agents,
+    /// Show the focused Terminal presentation, under the same checks as
+    /// [`DeepLink::Agents`]. Opens no session and runs nothing.
+    Terminal,
+    /// Show the focused Editor presentation, under the same checks as
+    /// [`DeepLink::Agents`]. Opens no file.
+    Editor,
     /// Open extension setup settings. Never downloads or grants file access.
     ExtensionSettings,
     /// Focus the connections view and highlight this connection (no SSH).
@@ -99,6 +107,8 @@ impl DeepLink {
         match verbs.as_slice() {
             ["assistant"] => Some(DeepLink::Assistant),
             ["agents"] => Some(DeepLink::Agents),
+            ["terminal"] => Some(DeepLink::Terminal),
+            ["editor"] => Some(DeepLink::Editor),
             ["extension"] => Some(DeepLink::ExtensionSettings),
             ["open", "connection", _] => Uuid::parse_str(segments[2])
                 .ok()
@@ -168,6 +178,14 @@ mod tests {
         assert_eq!(
             DeepLink::parse("shelldeck://agents"),
             Some(DeepLink::Agents)
+        );
+        assert_eq!(
+            DeepLink::parse("shelldeck://terminal"),
+            Some(DeepLink::Terminal)
+        );
+        assert_eq!(
+            DeepLink::parse("shelldeck://editor"),
+            Some(DeepLink::Editor)
         );
         assert_eq!(
             DeepLink::parse(&format!("shelldeck://open/connection/{UUID}")),
@@ -255,6 +273,35 @@ mod tests {
             "https://extension",
         ] {
             assert_eq!(DeepLink::parse(url), None);
+        }
+    }
+
+    // SDTEST-3085 / SDUC-575
+    #[test]
+    fn sdtest_3085_terminal_and_editor_intents_accept_only_their_exact_route() {
+        for (url, link) in [
+            ("shelldeck://terminal", DeepLink::Terminal),
+            ("ShellDeck://TERMINAL/", DeepLink::Terminal),
+            (
+                "shelldeck://terminal?source=launcher#tab",
+                DeepLink::Terminal,
+            ),
+            ("shelldeck://editor", DeepLink::Editor),
+            ("ShellDeck://Editor/", DeepLink::Editor),
+        ] {
+            assert_eq!(DeepLink::parse(url), Some(link), "{url}");
+        }
+        // A focused view is a place to show, never a command to run or a
+        // file to open: anything after the verb is refused.
+        for url in [
+            "shelldeck://terminal/run/rm",
+            "shelldeck://terminal/ssh/host",
+            "shelldeck://editor/open/etc/passwd",
+            "shelldeck://terminals",
+            "shelldeck://%74erminal",
+            "https://terminal",
+        ] {
+            assert_eq!(DeepLink::parse(url), None, "{url}");
         }
     }
 

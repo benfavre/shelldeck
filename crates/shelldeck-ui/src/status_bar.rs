@@ -279,11 +279,12 @@ impl Render for StatusBar {
                             div()
                                 .text_size(px(10.0))
                                 .text_color(ShellDeckColors::text_muted())
-                                .child(if cfg!(target_os = "macos") {
-                                    "\u{2318}\u{21E7}P"
-                                } else {
-                                    "Ctrl+Shift+P"
-                                }),
+                                .child(
+                                    crate::shortcut_reference::label(
+                                        crate::shortcut_reference::BindableAction::CommandPalette,
+                                    )
+                                    .unwrap_or_default(),
+                                ),
                         )
                         .child(
                             div()

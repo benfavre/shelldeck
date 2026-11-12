@@ -1144,3 +1144,47 @@ unverified is listed in
 | SDTEST-3022 | `terminal_view::tests::sdtest_3022_an_ssh_tab_is_handed_over_to_a_daemon_pane_in_place` | SDUC-574 | Green | GPUI test context. `replace_session`: tab id, position, connection and active tab stay, the new session takes the id of the one it replaces (`tab.id == pane.sessions[i].id`, found by `session_by_id`, selectable with `select_tab`), the old session is dropped without `terminate`, the new one gets sized; an unknown id replaces nothing; a split pane is replaced under its key; tabs of an SSH connection are not saved as local daemon layouts. |
 | SDTEST-3023 | `toast::tests::sdtest_3023_a_prompt_toast_waits_for_its_answer` | SDUC-574 | Green | GPUI test context, no rendering. A question toast survives the visible limit while plain notifications are dropped oldest first; closing it runs no answer; an answer runs its handler. The buttons on screen are not covered. |
 | SDTEST-3037 | `terminal_view::tests::sdtest_3037_the_refresh_loop_restarts_after_the_last_tab_was_closed` | SDUC-574 | Green | GPUI test context, real local PTY. Closing the last tab stops the refresh loop; the next terminal starts a new one on a channel that is open. Found in the running app: the dropped loop owned the only receiver, so later terminals repainted on input events only and session daemon panes looked frozen. |
+
+## Workspace views (2026-11-12)
+
+| ID | Test | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3086 | `shelldeck/cli.rs::sdtest_3086_terminal_and_editor_flags_launch_their_focused_view` | SDUC-575 | Green | `--terminal`, `--editor` and their links resolve to one intent each: the presentation of the first window, the payload handed to a running instance and a visible window. Other links and `--main` start on the full application, the default stays Agents, two different views on one command line are refused. |
+| SDTEST-3087 | `workspace/presentation.rs::sdtest_3087_every_focused_view_waits_for_auth_and_never_persists_dev` | SDUC-575 | Green | No GPUI. Each focused view stays pending signed out, falls back to the full application for an account without Dev, resolves Dev for a capable account over each saved mode and leaves the saved mode in place otherwise. |
+| SDTEST-3088 | `workspace/presentation.rs::sdtest_3088_a_focused_window_follows_its_view_or_opens_the_full_app` | SDUC-575 | Green | No GPUI. From each focused view, opening Agents, Terminal or the file editor selects that focused view; Scripts, Recent, Workspaces, Monique, Fleet, bext Cloud and Support select the full application; the full application never becomes focused by navigation. |
+| SDTEST-3089 | `workspace/presentation.rs::sdtest_3089_the_cycle_shortcut_visits_every_view_once` | SDUC-575 | Green | No GPUI. `next()` visits the four views once in switcher order and returns to the start; switcher ids, window titles and icons are distinct per view. |
+| SDTEST-3090 | `menu_bar.rs::next_view_follows_the_dev_capability_not_the_mode` | SDUC-575 | Green | No GPUI. The View menu offers "next view" in every mode of a Dev-capable account and for no other account, nor signed out. It is a single row: three rows pushed the dropdown past its 400 px limit and the last one had to be scrolled to (native walkthrough of 2026-11-12). |
+| SDTEST-3091 | `workspace/palette.rs::sdtest_3091_view_rows_follow_the_dev_capability_in_every_mode` | SDUC-575 | Green | No GPUI. The palette offers the four views in order plus "next view" to a Dev-capable account in User, Support and Dev; a Support-only account, a customer and a signed-out palette get none. |
+| SDTEST-3092 | `terminal_view::tests::sdtest_3092_full_width_terminal_starts_at_the_window_edge` | SDUC-575 | Green | No GPUI. The terminal content starts right of the sidebar and its handle, or at the window edge when the focused Terminal view draws no sidebar. |
+
+Also extended: SDTEST-1383 (`--terminal` and `--editor` open the window when the
+companion starts hidden), SDTEST-1320 (the two new verbs), SDTEST-2640 and
+SDTEST-2641 in `scripts/test-agents-cli.py` (help text and hand-off payloads).
+Not automated: the title bar control, focus hand-over, the terminal width
+pushed from `Workspace::render` (full application and focused view) and the
+hidden sidebar button. They were checked in the native walkthrough of
+2026-11-12 listed under SDUC-575.
+
+## Program status in tabs and view attention (2026-11-12)
+
+| ID | Test | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3097 | `terminal_view::layout::title_tests::sdtest_3097_a_tab_asks_for_attention_until_seen_or_unblocked` | SDUC-576 | Green | No GPUI. A blocked or failed program asks for the user until its state changes, even after the tab was looked at; finished work asks until the tab has been in front; working and idle ask for nothing; any new report is unseen again. |
+| SDTEST-3098 | `terminal_view::layout::title_tests::sdtest_3098_a_split_tab_shows_its_most_urgent_pane` | SDUC-576 | Green | No GPUI. The tab takes the most urgent report among its panes; the tooltip is the program name, what it is doing and its own message. |
+| SDTEST-3099 | `workspace/presentation.rs::sdtest_3099_the_switcher_marks_only_views_that_are_not_on_screen` | SDUC-576 | Green | No GPUI. The switcher dot of Agents and Terminal follows their attention, is absent for the view on screen, and the full app and the editor never carry one. |
+
+Not automated: the tab dot colour and size, the tooltip, the switcher dot and
+the "seen" mark set while the terminal view renders in an active window.
+
+## Keyboard shortcuts table (2026-11-12)
+
+| ID | Test | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3100 | `shortcut_reference::tests::sdtest_3100_built_in_shortcuts_have_distinct_ids_and_keys` | SDUC-577 | Green | No GPUI. On Linux/Windows and on macOS no two built-in shortcuts share keys (compared in a canonical spelling), ids are distinct and round-trip through `from_id`. |
+| SDTEST-3101 | `shortcut_reference::tests::sdtest_3101_the_keybindings_table_rebinds_unbinds_and_reports` | SDUC-577 | Green | No GPUI. A change and a removal are kept, the built-in keys in another spelling are not a change, an unknown action and invalid keys are reported and skipped. |
+| SDTEST-3102 | `shortcut_reference::tests::sdtest_3102_a_change_onto_keys_in_use_is_refused_and_reported` | SDUC-577 | Green | No GPUI. A change onto keys in use is refused and names both actions; moving or removing the owner in the same table, and a swap, are accepted; two changes onto the same new keys are both refused. |
+
+SDTEST-3103 (`[keybindings]` file format) is in `tests-core.md`. Not
+automated: the registration of the resolved keys with GPUI and the labels in a
+real window.
+

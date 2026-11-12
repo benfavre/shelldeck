@@ -199,6 +199,8 @@ impl Workspace {
                     .update(cx, |settings, cx| settings.adjust_ui_font_size(delta, cx));
             }
 
+            Cmd::NextPresentation => self.execute_palette_action(&CyclePresentation, cx),
+
             Cmd::GoAgents => self.activate_dev_section(SidebarSection::Agents, cx),
             Cmd::GoTerminal => self.activate_dev_section(SidebarSection::Terminals, cx),
             Cmd::GoScripts => self.activate_dev_section(SidebarSection::Scripts, cx),

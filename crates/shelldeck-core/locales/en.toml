@@ -2963,7 +2963,31 @@ native_browser.stay_on_page = "Stay on page"
 
 "agents.live_browser.close" = "Close browser"
 
-"agents.presentation.full_app" = "Open full Inklura Desktop"
+# Workspace views: the full app and the focused Agents, Terminal and Editor
+# presentations (titlebar switcher, palette, View menu).
+"presentation.full" = "Full app"
+"presentation.agents" = "Agents"
+"presentation.terminal" = "Terminal"
+"presentation.editor" = "Editor"
+"presentation.tooltip_active" = "%{name} (current view) · %{keys}: next view"
+"presentation.unavailable" = "This view requires an Inklura Desktop Dev account. Your available workspace is open."
+"palette.presentation" = "View: %{name}"
+"presentation.next" = "Next view"
+# Entries of the [keybindings] table that could not be applied at startup.
+"keybindings.problem.unknown" = "Shortcuts: unknown action '%{name}' in [keybindings], ignored."
+"keybindings.problem.invalid" = "Shortcuts: '%{keys}' is not a valid key combination for %{action}. The built-in shortcut is kept."
+"keybindings.problem.conflict" = "Shortcuts: %{keys} is requested by several actions (%{actions}). The built-in shortcuts are kept."
+"presentation.attention.needs_you" = "%{name} · needs you"
+"presentation.attention.finished" = "%{name} · finished, not seen yet"
+# What a program in a terminal tab says it is doing (OSC 7501).
+"terminal.status.idle" = "Idle"
+"terminal.status.working" = "Working"
+"terminal.status.working_percent" = "Working (%{percent}%)"
+"terminal.status.done" = "Done"
+"terminal.status.error" = "Failed"
+"terminal.status.blocked" = "Waiting for you"
+"terminal.status.blocked_permission" = "Waiting for your approval"
+"terminal.status.blocked_auth" = "Waiting for a sign-in"
 "agents.presentation.unavailable" = "Agents requires a Inklura Desktop Dev account. Your available workspace is open."
 
 # Agents conversation presentation

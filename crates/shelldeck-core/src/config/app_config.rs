@@ -61,6 +61,13 @@ pub struct AppConfig {
     /// sections. Order is user-defined and preserved across sessions.
     #[serde(default)]
     pub pinned_connections: Vec<uuid::Uuid>,
+    /// `[keybindings]`: the user's changes to the application shortcuts, by
+    /// action id (`next_view = "secondary-alt-v"`; an empty value removes the
+    /// shortcut). Read at startup. The action ids and the validation live in
+    /// `shelldeck-ui::shortcut_reference`; an entry that cannot be applied is
+    /// reported there and the built-in keys stay.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub keybindings: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -911,6 +918,34 @@ mod tests {
         assert_eq!(prior.theme, ThemePreference::Dark);
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // SDTEST-3103 / SDUC-577. `[keybindings]` is a file the user edits by
+    // hand: an older file has none, the application writes none until one
+    // exists, and saving the configuration must not lose the user's table.
+    #[test]
+    fn sdtest_3103_keybindings_table_is_optional_and_survives_a_save() {
+        let older: AppConfig = toml::from_str("theme = \"Dark\"\n\n[terminal]\n\n[general]\n")
+            .expect("parse config without keybindings");
+        assert!(older.keybindings.is_empty());
+        let written = toml::to_string_pretty(&older).expect("serialize");
+        assert!(!written.contains("keybindings"), "{written}");
+
+        let edited = format!(
+            "{written}\n[keybindings]\nnext_view = \"secondary-alt-v\"\ntoggle_sidebar = \"\"\n"
+        );
+        let config: AppConfig = toml::from_str(&edited).expect("parse edited config");
+        assert_eq!(
+            config.keybindings.get("next_view").map(String::as_str),
+            Some("secondary-alt-v")
+        );
+        assert_eq!(
+            config.keybindings.get("toggle_sidebar").map(String::as_str),
+            Some("")
+        );
+        let saved = toml::to_string_pretty(&config).expect("serialize");
+        let reloaded: AppConfig = toml::from_str(&saved).expect("parse saved config");
+        assert_eq!(reloaded.keybindings, config.keybindings, "{saved}");
     }
 
     #[test]

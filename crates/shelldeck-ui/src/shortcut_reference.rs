@@ -15,6 +15,8 @@ pub const ZOOM_IN_BINDING: &str = "secondary-=";
 pub const ZOOM_OUT_BINDING: &str = "secondary--";
 pub const ZOOM_RESET_BINDING: &str = "secondary-0";
 pub const CLOSE_TAB_BINDING: &str = "secondary-w";
+/// Steps through the full app and the focused Agents, Terminal and Editor views.
+pub const CYCLE_PRESENTATION_BINDING: &str = "secondary-shift-l";
 pub const QUIT_BINDING: &str = "secondary-q";
 pub const MACOS_SPLIT_BINDING: &str = "cmd-d";
 pub const OTHER_SPLIT_BINDING: &str = "ctrl-shift-d";
@@ -22,6 +24,330 @@ pub const MACOS_COPY_BINDING: &str = "cmd-c";
 pub const OTHER_COPY_BINDING: &str = "ctrl-shift-c";
 pub const MACOS_PASTE_BINDING: &str = "cmd-v";
 pub const OTHER_PASTE_BINDING: &str = "ctrl-shift-v";
+
+/// An application shortcut the user can change in the `[keybindings]` table
+/// of the configuration file, by its [`id`](Self::id).
+///
+/// This is the one list both the key registration (`shelldeck/src/actions.rs`)
+/// and every label (menus, palette, tooltips, shortcut references) read, so a
+/// shortcut is never shown with keys it is not bound to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BindableAction {
+    QuickConnect,
+    AiAssistant,
+    NewTerminal,
+    ToggleSidebar,
+    ToggleMenuBar,
+    Settings,
+    NextTab,
+    PrevTab,
+    CloseTab,
+    ClearTerminal,
+    Search,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    CommandPalette,
+    NextView,
+    FileEditor,
+    ToggleSplitFocus,
+    Quit,
+    SplitHorizontal,
+    SplitVertical,
+    Copy,
+    Paste,
+}
+
+impl BindableAction {
+    pub const ALL: [Self; 23] = [
+        Self::QuickConnect,
+        Self::AiAssistant,
+        Self::NewTerminal,
+        Self::ToggleSidebar,
+        Self::ToggleMenuBar,
+        Self::Settings,
+        Self::NextTab,
+        Self::PrevTab,
+        Self::CloseTab,
+        Self::ClearTerminal,
+        Self::Search,
+        Self::ZoomIn,
+        Self::ZoomOut,
+        Self::ZoomReset,
+        Self::CommandPalette,
+        Self::NextView,
+        Self::FileEditor,
+        Self::ToggleSplitFocus,
+        Self::Quit,
+        Self::SplitHorizontal,
+        Self::SplitVertical,
+        Self::Copy,
+        Self::Paste,
+    ];
+
+    /// The key of this action in `[keybindings]`. Part of the configuration
+    /// file format: never rename one.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::QuickConnect => "quick_connect",
+            Self::AiAssistant => "ai_assistant",
+            Self::NewTerminal => "new_terminal",
+            Self::ToggleSidebar => "toggle_sidebar",
+            Self::ToggleMenuBar => "toggle_menu_bar",
+            Self::Settings => "settings",
+            Self::NextTab => "next_tab",
+            Self::PrevTab => "previous_tab",
+            Self::CloseTab => "close_tab",
+            Self::ClearTerminal => "clear_terminal",
+            Self::Search => "search",
+            Self::ZoomIn => "zoom_in",
+            Self::ZoomOut => "zoom_out",
+            Self::ZoomReset => "zoom_reset",
+            Self::CommandPalette => "command_palette",
+            Self::NextView => "next_view",
+            Self::FileEditor => "file_editor",
+            Self::ToggleSplitFocus => "toggle_split_focus",
+            Self::Quit => "quit",
+            Self::SplitHorizontal => "split_horizontal",
+            Self::SplitVertical => "split_vertical",
+            Self::Copy => "copy",
+            Self::Paste => "paste",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|action| action.id() == id)
+    }
+
+    /// The built-in keys. Split, copy and paste differ by platform: with
+    /// Ctrl they would collide with terminal control characters on Linux
+    /// and Windows.
+    fn default_keys_for(self, macos: bool) -> &'static str {
+        match self {
+            Self::QuickConnect => "secondary-k",
+            Self::AiAssistant => "secondary-shift-k",
+            Self::NewTerminal => NEW_TERMINAL_BINDING,
+            Self::ToggleSidebar => TOGGLE_SIDEBAR_BINDING,
+            Self::ToggleMenuBar => "secondary-shift-m",
+            Self::Settings => SETTINGS_BINDING,
+            Self::NextTab => NEXT_TAB_BINDING,
+            Self::PrevTab => "ctrl-shift-tab",
+            Self::CloseTab => CLOSE_TAB_BINDING,
+            Self::ClearTerminal => CLEAR_TERMINAL_BINDING,
+            Self::Search => SEARCH_BINDING,
+            Self::ZoomIn => ZOOM_IN_BINDING,
+            Self::ZoomOut => ZOOM_OUT_BINDING,
+            Self::ZoomReset => ZOOM_RESET_BINDING,
+            Self::CommandPalette => COMMAND_PALETTE_BINDING,
+            Self::NextView => CYCLE_PRESENTATION_BINDING,
+            Self::FileEditor => "secondary-e",
+            Self::ToggleSplitFocus => "alt-[",
+            Self::Quit => QUIT_BINDING,
+            Self::SplitHorizontal if macos => MACOS_SPLIT_BINDING,
+            Self::SplitHorizontal => OTHER_SPLIT_BINDING,
+            Self::SplitVertical if macos => "cmd-shift-d",
+            Self::SplitVertical => "ctrl-shift-alt-d",
+            Self::Copy if macos => MACOS_COPY_BINDING,
+            Self::Copy => OTHER_COPY_BINDING,
+            Self::Paste if macos => MACOS_PASTE_BINDING,
+            Self::Paste => OTHER_PASTE_BINDING,
+        }
+    }
+}
+
+/// Why an entry of `[keybindings]` was not applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeybindingProblem {
+    /// The table names an action that does not exist.
+    UnknownAction(String),
+    /// The keys cannot be parsed.
+    InvalidKeys { action: &'static str, keys: String },
+    /// Several actions would answer to the same keys. Every changed action
+    /// among them keeps its built-in keys.
+    Conflict {
+        keys: String,
+        actions: Vec<&'static str>,
+    },
+}
+
+impl KeybindingProblem {
+    pub fn message(&self) -> String {
+        match self {
+            Self::UnknownAction(name) => {
+                t!("keybindings.problem.unknown", name = name.as_str()).to_string()
+            }
+            Self::InvalidKeys { action, keys } => t!(
+                "keybindings.problem.invalid",
+                action = *action,
+                keys = keys.as_str()
+            )
+            .to_string(),
+            Self::Conflict { keys, actions } => t!(
+                "keybindings.problem.conflict",
+                keys = display_accelerator(keys),
+                actions = actions.join(", ")
+            )
+            .to_string(),
+        }
+    }
+}
+
+type Overrides = std::collections::BTreeMap<BindableAction, String>;
+
+/// The user's changes, by action. An empty value unbinds the action.
+static OVERRIDES: std::sync::RwLock<Overrides> = std::sync::RwLock::new(Overrides::new());
+static PROBLEMS: std::sync::Mutex<Vec<KeybindingProblem>> = std::sync::Mutex::new(Vec::new());
+
+/// One keystroke in a canonical spelling, so `shift-ctrl-d`, `Ctrl-Shift-D`
+/// and (off macOS) `secondary-shift-d` compare equal.
+fn normalize_keys(keys: &str, macos: bool) -> String {
+    keys.split_whitespace()
+        .map(|stroke| {
+            let stroke = stroke.to_ascii_lowercase();
+            // The key itself may be `-`, as in `secondary--`.
+            let (modifiers, key) = match stroke.strip_suffix("--") {
+                Some(modifiers) => (modifiers.to_string(), "-".to_string()),
+                None => match stroke.rsplit_once('-') {
+                    Some((modifiers, key)) => (modifiers.to_string(), key.to_string()),
+                    None => (String::new(), stroke.clone()),
+                },
+            };
+            let mut modifiers: Vec<&str> = modifiers
+                .split('-')
+                .filter(|modifier| !modifier.is_empty())
+                .map(|modifier| match modifier {
+                    "secondary" if macos => "cmd",
+                    "secondary" => "ctrl",
+                    "control" => "ctrl",
+                    "super" | "win" | "command" => "cmd",
+                    "option" => "alt",
+                    other => other,
+                })
+                .collect();
+            modifiers.sort_unstable();
+            modifiers.dedup();
+            modifiers.push(&key);
+            modifiers.join("-")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Turn the `[keybindings]` table into the changes to apply.
+///
+/// An unknown action or keys that do not parse are skipped. When several
+/// actions end up on the same keys, every changed action among them goes
+/// back to its built-in keys: a shortcut that silently does one of two
+/// things is worse than a change that is refused and reported.
+pub fn resolve_keybindings(
+    config: &std::collections::BTreeMap<String, String>,
+    macos: bool,
+    is_valid: impl Fn(&str) -> bool,
+) -> (Overrides, Vec<KeybindingProblem>) {
+    let mut overrides = Overrides::new();
+    let mut problems = Vec::new();
+    for (name, keys) in config {
+        let Some(action) = BindableAction::from_id(name.trim()) else {
+            problems.push(KeybindingProblem::UnknownAction(name.clone()));
+            continue;
+        };
+        let keys = keys.trim();
+        if !keys.is_empty() && !is_valid(keys) {
+            problems.push(KeybindingProblem::InvalidKeys {
+                action: action.id(),
+                keys: keys.to_string(),
+            });
+            continue;
+        }
+        let unchanged = !keys.is_empty()
+            && normalize_keys(keys, macos) == normalize_keys(action.default_keys_for(macos), macos);
+        if !unchanged {
+            overrides.insert(action, keys.to_string());
+        }
+    }
+
+    loop {
+        let mut by_keys: std::collections::BTreeMap<String, Vec<BindableAction>> =
+            std::collections::BTreeMap::new();
+        for action in BindableAction::ALL {
+            let keys = overrides
+                .get(&action)
+                .map_or(action.default_keys_for(macos), String::as_str);
+            if !keys.is_empty() {
+                by_keys
+                    .entry(normalize_keys(keys, macos))
+                    .or_default()
+                    .push(action);
+            }
+        }
+        let mut reverted = false;
+        for (keys, actions) in by_keys {
+            if actions.len() < 2 {
+                continue;
+            }
+            let changed: Vec<BindableAction> = actions
+                .iter()
+                .copied()
+                .filter(|action| overrides.contains_key(action))
+                .collect();
+            if changed.is_empty() {
+                // Two built-in shortcuts on the same keys: a defect of the
+                // defaults (SDTEST-3100), not something to loop on.
+                continue;
+            }
+            problems.push(KeybindingProblem::Conflict {
+                keys,
+                actions: actions.iter().map(|action| action.id()).collect(),
+            });
+            for action in changed {
+                overrides.remove(&action);
+            }
+            reverted = true;
+        }
+        if !reverted {
+            return (overrides, problems);
+        }
+    }
+}
+
+/// Apply the user's `[keybindings]` for this process. Call before the keys
+/// are registered. Problems are kept for [`take_keybinding_problems`].
+pub fn apply_keybindings(config: &std::collections::BTreeMap<String, String>) {
+    let (overrides, problems) = resolve_keybindings(config, cfg!(target_os = "macos"), |keys| {
+        keys.split_whitespace()
+            .all(|stroke| Keystroke::parse(stroke).is_ok())
+    });
+    for problem in &problems {
+        tracing::warn!("keybindings: {problem:?}");
+    }
+    *OVERRIDES.write().unwrap_or_else(|e| e.into_inner()) = overrides;
+    *PROBLEMS.lock().unwrap_or_else(|e| e.into_inner()) = problems;
+}
+
+/// What could not be applied at startup, once, for the first window to show.
+pub fn take_keybinding_problems() -> Vec<KeybindingProblem> {
+    std::mem::take(&mut *PROBLEMS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+fn keys_for(action: BindableAction, macos: bool) -> Option<String> {
+    let overrides = OVERRIDES.read().unwrap_or_else(|e| e.into_inner());
+    match overrides.get(&action) {
+        Some(keys) if keys.is_empty() => None,
+        Some(keys) => Some(keys.clone()),
+        None => Some(action.default_keys_for(macos).to_string()),
+    }
+}
+
+/// The keys an action is bound to, in GPUI spelling. `None` when the user
+/// unbound it.
+pub fn keys(action: BindableAction) -> Option<String> {
+    keys_for(action, cfg!(target_os = "macos"))
+}
+
+/// The keys an action is bound to, as shown to the user (`Ctrl+Shift+L`).
+pub fn label(action: BindableAction) -> Option<String> {
+    keys(action).map(|keys| display_accelerator(&keys))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShortcutGroup {
@@ -55,21 +381,10 @@ pub(crate) enum ShortcutId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShortcutBinding {
-    Single(&'static str),
-    Platform {
-        macos: &'static str,
-        other: &'static str,
-    },
-    Pair(&'static str, &'static str),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ShortcutDefinition {
     pub id: ShortcutId,
     pub group: ShortcutGroup,
     label_key: &'static str,
-    binding: ShortcutBinding,
     reference: bool,
     onboarding: Option<bool>,
 }
@@ -79,7 +394,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::CommandPalette,
         group: ShortcutGroup::Navigation,
         label_key: "shortcuts.command_palette",
-        binding: ShortcutBinding::Single(COMMAND_PALETTE_BINDING),
         reference: true,
         onboarding: Some(false),
     },
@@ -87,7 +401,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::NewTerminal,
         group: ShortcutGroup::Navigation,
         label_key: "shortcuts.new_terminal",
-        binding: ShortcutBinding::Single(NEW_TERMINAL_BINDING),
         reference: true,
         onboarding: Some(true),
     },
@@ -95,7 +408,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::NextTab,
         group: ShortcutGroup::Navigation,
         label_key: "shortcuts.next_tab",
-        binding: ShortcutBinding::Single(NEXT_TAB_BINDING),
         reference: true,
         onboarding: None,
     },
@@ -103,7 +415,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::ToggleSidebar,
         group: ShortcutGroup::Navigation,
         label_key: "shortcuts.toggle_sidebar",
-        binding: ShortcutBinding::Single(TOGGLE_SIDEBAR_BINDING),
         reference: true,
         onboarding: Some(true),
     },
@@ -111,7 +422,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::Settings,
         group: ShortcutGroup::Navigation,
         label_key: "shortcuts.settings",
-        binding: ShortcutBinding::Single(SETTINGS_BINDING),
         reference: true,
         onboarding: Some(false),
     },
@@ -119,7 +429,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::Search,
         group: ShortcutGroup::Terminal,
         label_key: "shortcuts.search",
-        binding: ShortcutBinding::Single(SEARCH_BINDING),
         reference: true,
         onboarding: None,
     },
@@ -127,10 +436,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::Split,
         group: ShortcutGroup::Terminal,
         label_key: "shortcuts.split",
-        binding: ShortcutBinding::Platform {
-            macos: MACOS_SPLIT_BINDING,
-            other: OTHER_SPLIT_BINDING,
-        },
         reference: true,
         onboarding: None,
     },
@@ -138,10 +443,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::Copy,
         group: ShortcutGroup::Terminal,
         label_key: "shortcuts.copy",
-        binding: ShortcutBinding::Platform {
-            macos: MACOS_COPY_BINDING,
-            other: OTHER_COPY_BINDING,
-        },
         reference: true,
         onboarding: None,
     },
@@ -149,10 +450,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::Paste,
         group: ShortcutGroup::Terminal,
         label_key: "shortcuts.paste",
-        binding: ShortcutBinding::Platform {
-            macos: MACOS_PASTE_BINDING,
-            other: OTHER_PASTE_BINDING,
-        },
         reference: true,
         onboarding: None,
     },
@@ -160,7 +457,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::ClearTerminal,
         group: ShortcutGroup::Terminal,
         label_key: "shortcuts.clear_terminal",
-        binding: ShortcutBinding::Single(CLEAR_TERMINAL_BINDING),
         reference: true,
         onboarding: None,
     },
@@ -168,7 +464,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::Zoom,
         group: ShortcutGroup::Terminal,
         label_key: "shortcuts.zoom",
-        binding: ShortcutBinding::Pair(ZOOM_IN_BINDING, ZOOM_OUT_BINDING),
         reference: true,
         onboarding: None,
     },
@@ -176,7 +471,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::CloseTab,
         group: ShortcutGroup::Navigation,
         label_key: "shortcuts.close_tab",
-        binding: ShortcutBinding::Single(CLOSE_TAB_BINDING),
         reference: false,
         onboarding: None,
     },
@@ -184,7 +478,6 @@ const SHORTCUTS: &[ShortcutDefinition] = &[
         id: ShortcutId::Quit,
         group: ShortcutGroup::Navigation,
         label_key: "shortcuts.quit",
-        binding: ShortcutBinding::Single(QUIT_BINDING),
         reference: false,
         onboarding: None,
     },
@@ -204,6 +497,8 @@ pub(crate) fn shortcuts_for(
                 .is_some_and(|requires_dev| !requires_dev || dev_capable),
             ShortcutSurface::About => true,
         })
+        // A row for a shortcut the user removed would show an empty key.
+        .filter(|shortcut| !shortcut_keys_for(*shortcut, cfg!(target_os = "macos")).is_empty())
         .collect()
 }
 
@@ -242,18 +537,38 @@ pub(crate) fn display_accelerator(keys: &str) -> String {
     display_accelerator_for(keys, cfg!(target_os = "macos"))
 }
 
-fn shortcut_keys_for(shortcut: ShortcutDefinition, macos: bool) -> String {
-    match shortcut.binding {
-        ShortcutBinding::Single(keys) => display_accelerator_for(keys, macos),
-        ShortcutBinding::Platform { macos: mac, other } => {
-            display_accelerator_for(if macos { mac } else { other }, macos)
+impl ShortcutId {
+    /// The actions a reference row stands for. Zoom shows two.
+    fn actions(self) -> &'static [BindableAction] {
+        match self {
+            Self::CommandPalette => &[BindableAction::CommandPalette],
+            Self::NewTerminal => &[BindableAction::NewTerminal],
+            Self::NextTab => &[BindableAction::NextTab],
+            Self::ToggleSidebar => &[BindableAction::ToggleSidebar],
+            Self::Settings => &[BindableAction::Settings],
+            Self::Search => &[BindableAction::Search],
+            Self::Split => &[BindableAction::SplitHorizontal],
+            Self::Copy => &[BindableAction::Copy],
+            Self::Paste => &[BindableAction::Paste],
+            Self::ClearTerminal => &[BindableAction::ClearTerminal],
+            Self::Zoom => &[BindableAction::ZoomIn, BindableAction::ZoomOut],
+            Self::CloseTab => &[BindableAction::CloseTab],
+            Self::Quit => &[BindableAction::Quit],
         }
-        ShortcutBinding::Pair(first, second) => format!(
-            "{} / {}",
-            display_accelerator_for(first, macos),
-            display_accelerator_for(second, macos)
-        ),
     }
+}
+
+/// The keys of a reference row as shown to the user. Empty when the user
+/// unbound every action of the row.
+fn shortcut_keys_for(shortcut: ShortcutDefinition, macos: bool) -> String {
+    shortcut
+        .id
+        .actions()
+        .iter()
+        .filter_map(|action| keys_for(*action, macos))
+        .map(|keys| display_accelerator_for(&keys, macos))
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 /// Shared, non-interactive shortcut reference. Keeping the row here avoids
@@ -322,7 +637,126 @@ pub(crate) fn render_shortcut_rows_with_width(
 
 #[cfg(test)]
 mod tests {
-    use super::{shortcut_keys_for, shortcuts_for, ShortcutId, ShortcutSurface, SHORTCUTS};
+    use super::{
+        normalize_keys, resolve_keybindings, shortcut_keys_for, shortcuts_for, BindableAction,
+        KeybindingProblem, ShortcutId, ShortcutSurface, SHORTCUTS,
+    };
+    use std::collections::BTreeMap;
+
+    fn table(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(name, keys)| (name.to_string(), keys.to_string()))
+            .collect()
+    }
+
+    // SDTEST-3100 / SDUC-577. The built-in shortcuts never share keys, on
+    // either platform, and their ids are distinct: the conflict rule of the
+    // user's table relies on both.
+    #[test]
+    fn sdtest_3100_built_in_shortcuts_have_distinct_ids_and_keys() {
+        for macos in [false, true] {
+            let mut seen = BTreeMap::new();
+            for action in BindableAction::ALL {
+                let keys = normalize_keys(action.default_keys_for(macos), macos);
+                if let Some(other) = seen.insert(keys.clone(), action) {
+                    panic!("{other:?} and {action:?} share {keys} (macos: {macos})");
+                }
+            }
+        }
+        let mut ids: Vec<&str> = BindableAction::ALL.iter().map(|a| a.id()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), BindableAction::ALL.len());
+        for action in BindableAction::ALL {
+            assert_eq!(BindableAction::from_id(action.id()), Some(action));
+        }
+    }
+
+    // SDTEST-3101 / SDUC-577. The table changes and removes shortcuts; what
+    // cannot be applied is reported and leaves the built-in keys in place.
+    #[test]
+    fn sdtest_3101_the_keybindings_table_rebinds_unbinds_and_reports() {
+        let valid = |keys: &str| !keys.contains("nonsense");
+        let resolve = |entries: &[(&str, &str)]| resolve_keybindings(&table(entries), false, valid);
+
+        // A change, a removal (frees Ctrl+B for tmux) and a no-op.
+        let (overrides, problems) = resolve(&[
+            ("next_view", "ctrl-alt-v"),
+            ("toggle_sidebar", ""),
+            ("new_terminal", "Ctrl-T"),
+        ]);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            overrides.get(&BindableAction::NextView).unwrap(),
+            "ctrl-alt-v"
+        );
+        assert_eq!(overrides.get(&BindableAction::ToggleSidebar).unwrap(), "");
+        assert!(
+            !overrides.contains_key(&BindableAction::NewTerminal),
+            "the built-in keys in another spelling are not a change"
+        );
+
+        let (overrides, problems) =
+            resolve(&[("open_the_pod_bay_doors", "ctrl-o"), ("quit", "nonsense-q")]);
+        assert!(overrides.is_empty());
+        assert_eq!(
+            problems,
+            vec![
+                KeybindingProblem::UnknownAction("open_the_pod_bay_doors".into()),
+                KeybindingProblem::InvalidKeys {
+                    action: "quit",
+                    keys: "nonsense-q".into()
+                },
+            ]
+        );
+    }
+
+    // SDTEST-3102 / SDUC-577. One set of keys never means two actions: a
+    // change that lands on keys in use is refused, unless the other action
+    // was moved or removed in the same table.
+    #[test]
+    fn sdtest_3102_a_change_onto_keys_in_use_is_refused_and_reported() {
+        let resolve =
+            |entries: &[(&str, &str)]| resolve_keybindings(&table(entries), false, |_| true);
+
+        // Ctrl+T is "new terminal".
+        let (overrides, problems) = resolve(&[("next_view", "shift-ctrl-t"), ("quit", "ctrl-t")]);
+        assert!(overrides.contains_key(&BindableAction::NextView));
+        assert!(!overrides.contains_key(&BindableAction::Quit));
+        assert_eq!(
+            problems,
+            vec![KeybindingProblem::Conflict {
+                keys: "ctrl-t".into(),
+                actions: vec!["new_terminal", "quit"],
+            }]
+        );
+
+        // Moving the owner out of the way makes the same change valid.
+        let (overrides, problems) = resolve(&[("quit", "ctrl-t"), ("new_terminal", "ctrl-alt-t")]);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(overrides.len(), 2);
+        // So does removing it.
+        let (overrides, problems) = resolve(&[("quit", "ctrl-t"), ("new_terminal", "")]);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(overrides.get(&BindableAction::Quit).unwrap(), "ctrl-t");
+
+        // Two changes onto the same new keys: both refused. Reverting one
+        // must not leave the other bound to keys the report called refused.
+        let (overrides, problems) = resolve(&[("quit", "ctrl-alt-x"), ("search", "alt-ctrl-x")]);
+        assert!(overrides.is_empty());
+        assert_eq!(problems.len(), 1);
+
+        // A swap is two changes that free each other.
+        let (overrides, problems) = resolve(&[
+            ("new_terminal", "secondary-w"),
+            ("close_tab", "secondary-t"),
+        ]);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(overrides.len(), 2);
+        assert_eq!(normalize_keys("secondary--", false), "ctrl--");
+        assert_eq!(normalize_keys("Shift-Secondary-P", true), "cmd-shift-p");
+    }
 
     // SDTEST-1720 — the two full Dev references are identical, onboarding is
     // a capability-safe ordered subset, and every displayed key is generated

@@ -543,6 +543,10 @@ pub struct TerminalGrid {
     pub prompt_lines: Vec<usize>,
     pub clipboard_request: Option<(String, String)>,
     pub palette_overrides: HashMap<u8, (u8, u8, u8)>,
+    /// What the running program says it is doing (OSC 7501). Not part of
+    /// the snapshot: a reattached pane has no status until the program
+    /// reports again.
+    pub program_status: crate::program_status::ProgramStatusRecords,
 }
 
 impl TerminalGrid {
@@ -612,6 +616,7 @@ impl TerminalGrid {
             command_output_start: None,
             prompt_lines: Vec::new(),
             clipboard_request: None,
+            program_status: Default::default(),
             palette_overrides: HashMap::new(),
         }
     }
@@ -1686,6 +1691,34 @@ impl TerminalGrid {
         output
     }
 
+    /// The last `max_lines` lines of history and screen as plain text,
+    /// oldest first, without the blank lines below the last line that has
+    /// text. What a person or an agent reads to see where a program is.
+    pub fn tail_text(&self, max_lines: usize) -> Vec<String> {
+        let history = self.scrollback.len();
+        let row_text = |index: usize| -> String {
+            let row = if index < history {
+                self.scrollback.get(index)
+            } else {
+                self.cells.get(index - history)
+            };
+            let mut line = String::new();
+            for cell in row.into_iter().flatten() {
+                if cell.wide == CellWidth::Spacer {
+                    continue;
+                }
+                line.push(cell.c);
+                line.extend(cell.combining.iter());
+            }
+            line.trim_end().to_string()
+        };
+        let mut end = history + self.cells.len();
+        while end > 0 && row_text(end - 1).is_empty() {
+            end -= 1;
+        }
+        (end.saturating_sub(max_lines)..end).map(row_text).collect()
+    }
+
     // -- Alternate screen buffer --
 
     /// Switch to alternate screen buffer (used by fullscreen apps).
@@ -1921,6 +1954,16 @@ impl TerminalGrid {
     /// Set the response channel sender for writing responses back to the PTY.
     pub fn set_response_tx(&mut self, tx: std::sync::mpsc::Sender<Vec<u8>>) {
         self.response_tx = Some(tx);
+    }
+
+    /// Apply an OSC 7501 report or clear.
+    pub fn apply_program_status(&mut self, command: crate::program_status::Command) {
+        self.program_status.apply(command);
+    }
+
+    /// Forget what the program reported: it left the foreground.
+    pub fn clear_program_status(&mut self) {
+        self.program_status.clear();
     }
 
     /// Send a response back to the PTY (e.g., DSR cursor position report).

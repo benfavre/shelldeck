@@ -14,9 +14,9 @@ use crate::overlay::window_backdrop;
 use crate::t;
 use crate::theme::ShellDeckColors;
 use crate::workspace::{
-    CaptureAndShare, CloseTab, NewRequest, NewScript, NewTerminal, NextTab, OpenAgents,
-    OpenAiAssistant, OpenBextCloud, OpenBoatConsole, OpenFileEditorView, OpenFleet, OpenLogin,
-    OpenMoniqueConsole, OpenQuickConnect, OpenRecent, OpenSettings, OpenSupportRequests,
+    CaptureAndShare, CloseTab, CyclePresentation, NewRequest, NewScript, NewTerminal, NextTab,
+    OpenAgents, OpenAiAssistant, OpenBextCloud, OpenBoatConsole, OpenFileEditorView, OpenFleet,
+    OpenLogin, OpenMoniqueConsole, OpenQuickConnect, OpenRecent, OpenSettings, OpenSupportRequests,
     OpenTemplateBrowser, PrevTab, ShareFiles, SwitchSite, ToggleMenuBar, ToggleSidebar,
 };
 
@@ -87,6 +87,14 @@ pub struct SetAppMode {
     pub mode: AppMode,
 }
 
+/// Show the full app or one focused view. Dev capability is re-checked by
+/// the workspace before anything changes.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = shelldeck, no_json)]
+pub struct SetWorkspacePresentation {
+    pub presentation: crate::workspace::WorkspacePresentation,
+}
+
 /// A registered action with a display name and shortcut hint.
 #[derive(Debug)]
 pub struct PaletteAction {
@@ -138,6 +146,8 @@ pub fn action_opens_main_window(action: &dyn Action) -> bool {
         || action.as_any().is::<NewScript>()
         || action.as_any().is::<OpenRecent>()
         || action.as_any().is::<OpenFileEditorView>()
+        || action.as_any().is::<CyclePresentation>()
+        || action.as_any().is::<SetWorkspacePresentation>()
         || action.as_any().is::<SwitchSite>()
         || action.as_any().is::<OpenMoniqueConsole>()
         || action.as_any().is::<OpenFleet>()

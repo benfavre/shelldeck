@@ -54,6 +54,7 @@ pub mod terminal_view;
 pub mod theme;
 pub mod toast;
 pub mod variable_prompt;
+pub mod view_attention;
 pub mod voice;
 mod window_chrome;
 pub mod workspace;

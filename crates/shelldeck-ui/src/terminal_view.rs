@@ -19,7 +19,9 @@ use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::tmux::TmuxAction;
 
 use crate::glyph_cache::GlyphCache;
-use crate::shortcut_reference::{shortcuts_for, ShortcutGroup, ShortcutSurface};
+use crate::shortcut_reference::{
+    label as shortcut_label, shortcuts_for, BindableAction, ShortcutGroup, ShortcutSurface,
+};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -30,10 +32,12 @@ pub(crate) use empty_state::trace_layout_for_preview;
 mod layout;
 mod palette;
 
+use crate::view_attention::ViewAttention;
 use block_drawing::paint_block_char;
-use layout::{PaneId, PaneNode, PaneRect, TabLayout};
+use layout::{PaneId, PaneNode, PaneRect, StatusTone, TabLayout};
 pub use layout::{SplitDirection, TerminalPane, TerminalTab};
 use palette::{brighten_for_bold, dim_color, TerminalPalette};
+use shelldeck_terminal::program_status::ProgramHeadline;
 
 const CLAUDE_CLI_COMMAND: &str = "claude --dangerously-skip-permissions";
 const CODEX_CLI_COMMAND: &str = "codex --sandbox workspace-write --ask-for-approval on-request";
@@ -108,6 +112,9 @@ pub enum TerminalEvent {
         exit_code: Option<i32>,
         output: String,
     },
+    /// What the terminals want from the user changed (a program reported
+    /// through OSC 7501, or its tab was looked at).
+    AttentionChanged,
     /// The session daemon refused input for a pane that stopped reading
     /// it (`count` chunks since the last report, typically one paste):
     /// that input never reached the program.
@@ -136,6 +143,15 @@ const MAX_TAB_WIDTH: f32 = 220.0;
 const STATUS_BAR_HEIGHT: f32 = 28.0;
 /// Width of the sidebar resize handle.
 const SIDEBAR_HANDLE_WIDTH: f32 = 4.0;
+
+/// Window-space x where the terminal view starts.
+fn content_left(sidebar_width: f32, full_width: bool) -> f32 {
+    if full_width {
+        0.0
+    } else {
+        sidebar_width + SIDEBAR_HANDLE_WIDTH
+    }
+}
 /// Width of the split-pane divider bar.
 const SPLIT_DIVIDER_SIZE: f32 = 6.0;
 /// Total vertical offset from the window top to the terminal grid
@@ -291,6 +307,9 @@ pub struct TerminalView {
     grid_y_offset: f32,
     /// Sidebar width in pixels (updated dynamically from workspace).
     sidebar_width: f32,
+    /// The focused Terminal presentation renders no sidebar beside the view:
+    /// the content then starts at the window's left edge.
+    full_width: bool,
     /// Whether the workspace is currently showing the application menu row
     /// above the content area (updated dynamically from the workspace).
     menu_bar_visible: bool,
@@ -435,6 +454,7 @@ impl TerminalView {
             grid_x_offset: 260.0 + SIDEBAR_HANDLE_WIDTH,
             grid_y_offset: GRID_TOP_OFFSET,
             sidebar_width: 260.0,
+            full_width: false,
             menu_bar_visible: true,
             split_dragging: false,
             active_divider: None,
@@ -485,6 +505,73 @@ impl TerminalView {
     /// Update the sidebar width used for coordinate mapping.
     pub fn set_sidebar_width(&mut self, width: f32) {
         self.sidebar_width = width;
+    }
+
+    /// Whether the view is drawn without a sidebar beside it (focused
+    /// Terminal presentation). The sidebar width is kept, so leaving the
+    /// presentation restores the previous geometry.
+    pub fn set_full_width(&mut self, full_width: bool) {
+        self.full_width = full_width;
+    }
+
+    pub fn full_width(&self) -> bool {
+        self.full_width
+    }
+
+    pub fn sidebar_width(&self) -> f32 {
+        self.sidebar_width
+    }
+
+    /// The most urgent report among the panes of a tab (OSC 7501).
+    fn tab_headline(&self, tab_id: Uuid) -> Option<ProgramHeadline> {
+        let active = self
+            .tabs
+            .get(self.pane.active_index)
+            .is_some_and(|tab| tab.id == tab_id);
+        let splits = if active {
+            Some(&self.layout)
+        } else {
+            self.stored_layouts.get(&tab_id)
+        };
+        let primary = self.pane.sessions.iter().find(|s| s.id == tab_id);
+        layout::most_urgent(
+            primary
+                .into_iter()
+                .chain(splits.into_iter().flat_map(|layout| layout.extra.values()))
+                .map(|session| session.grid.lock().program_status.headline()),
+        )
+    }
+
+    /// What the terminals want from a user who is looking elsewhere: the
+    /// most pressing tab.
+    pub fn attention(&self) -> ViewAttention {
+        self.tabs
+            .iter()
+            .map(TerminalTab::attention)
+            .max()
+            .unwrap_or_default()
+    }
+
+    /// The active tab is in front of the user: its finished work is seen.
+    fn mark_active_tab_seen(&mut self, cx: &mut Context<Self>) {
+        let before = self.attention();
+        if let Some(tab) = self.tabs.get_mut(self.pane.active_index) {
+            tab.status_seen = true;
+        }
+        if self.attention() != before {
+            cx.emit(TerminalEvent::AttentionChanged);
+        }
+    }
+
+    /// Give the active pane keyboard focus at the next render.
+    pub fn request_focus(&mut self) {
+        self.needs_focus = true;
+    }
+
+    /// Window-space x of the view's left edge: just right of the sidebar and
+    /// its resize handle, or the window edge when no sidebar is drawn.
+    fn content_left(&self) -> f32 {
+        content_left(self.sidebar_width, self.full_width)
     }
 
     /// Menu visibility is retained with the settings snapshot; the menus now
@@ -1003,6 +1090,8 @@ impl TerminalView {
             connection_id,
             program_title: String::new(),
             named: false,
+            status: None,
+            status_seen: false,
         };
 
         // Deactivate other tabs
@@ -1812,10 +1901,9 @@ impl TerminalView {
     /// x = right of the sidebar, y = below the scaled tab bar + toolbar).
     fn content_area(&self, window: &Window) -> PaneRect {
         let viewport = window.viewport_size();
-        let x = self.sidebar_width + SIDEBAR_HANDLE_WIDTH;
+        let x = self.content_left();
         let y = Self::chrome_top_offset(window);
-        let w = (viewport.width.to_f64() as f32 - self.sidebar_width - SIDEBAR_HANDLE_WIDTH * 2.0)
-            .max(1.0);
+        let w = (viewport.width.to_f64() as f32 - x - SIDEBAR_HANDLE_WIDTH).max(1.0);
         let h = (viewport.height.to_f64() as f32
             - TITLEBAR_HEIGHT * Self::ui_scale(window)
             - Self::chrome_top_offset(window)
@@ -2043,6 +2131,17 @@ impl TerminalView {
                                 }
                             }
                         }
+                        // Follow what each program says it is doing (OSC 7501).
+                        let before = this.attention();
+                        for index in 0..this.tabs.len() {
+                            let headline = this.tab_headline(this.tabs[index].id);
+                            if this.tabs[index].set_status(headline) {
+                                any_dirty = true;
+                            }
+                        }
+                        if this.attention() != before {
+                            cx.emit(TerminalEvent::AttentionChanged);
+                        }
                         // Input the session daemon refused (pane busy):
                         // reported once per wake, across tabs and splits.
                         let dropped: u32 = this
@@ -2168,8 +2267,7 @@ impl TerminalView {
         // Compute a per-tab width that shrinks toward MIN_TAB_WIDTH as more tabs
         // open; once at the minimum, the strip scrolls (overflow_x_scroll).
         let n = self.tabs.len().max(1) as f32;
-        let content_w = (window.viewport_size().width.to_f64() as f32)
-            - (self.sidebar_width + SIDEBAR_HANDLE_WIDTH);
+        let content_w = (window.viewport_size().width.to_f64() as f32) - self.content_left();
         let reserve = 44.0 * scale; // new-tab button + bar padding
         let usable = (content_w - reserve).max(MIN_TAB_WIDTH * scale);
         let tab_w = (usable / n).clamp(MIN_TAB_WIDTH * scale, MAX_TAB_WIDTH * scale);
@@ -2201,13 +2299,29 @@ impl TerminalView {
                     )
                 })
             });
+            // A running session shows what its program reports (OSC 7501);
+            // a report that asks for the user also makes the dot larger.
+            let tone = tab.status_tone();
             let state_color = match &tab.state {
                 SessionState::Running if pending => ShellDeckColors::warning(),
-                SessionState::Running => ShellDeckColors::success(),
+                SessionState::Running => match tone {
+                    StatusTone::NeedsYou => ShellDeckColors::warning(),
+                    StatusTone::Failed => ShellDeckColors::error(),
+                    StatusTone::Working | StatusTone::Finished => ShellDeckColors::primary(),
+                    StatusTone::Plain => ShellDeckColors::success(),
+                },
                 SessionState::Exited(0) => ShellDeckColors::text_muted(),
                 SessionState::Exited(_) => ShellDeckColors::warning(),
                 SessionState::Error(_) => ShellDeckColors::error(),
             };
+            let dot_size = match tone {
+                StatusTone::NeedsYou | StatusTone::Failed | StatusTone::Finished => 8.0,
+                StatusTone::Working | StatusTone::Plain => 6.0,
+            };
+            let status_tooltip: Option<SharedString> = tab
+                .status
+                .as_ref()
+                .map(|status| layout::status_tooltip(status).into());
 
             // Tab outer container — fixed (computed) width so tabs shrink as
             // more open, then the strip scrolls. Visual styling only.
@@ -2279,12 +2393,20 @@ impl TerminalView {
                 // Status dot
                 .child(
                     div()
-                        .w(s(6.0))
-                        .h(s(6.0))
+                        .w(s(dot_size))
+                        .h(s(dot_size))
                         .rounded_full()
                         .bg(state_color)
                         .flex_shrink_0(),
                 );
+            if let Some(label) = status_tooltip {
+                tab_content = tab_content.tooltip(move |_, cx| {
+                    cx.new(|_| TerminalToolbarTooltip {
+                        label: label.clone(),
+                    })
+                    .into()
+                });
+            }
 
             // Split indicator — small icon next to the tab's status dot
             let tab_has_split = if is_active {
@@ -2410,8 +2532,7 @@ impl TerminalView {
         // The toolbar has no mouse-coordinate math, so this is safe.
         let scale = Self::ui_scale(window);
         let px = |v: f32| gpui::px(v * scale);
-        let available_width = window.viewport_size().width.to_f64() as f32
-            - (self.sidebar_width + SIDEBAR_HANDLE_WIDTH);
+        let available_width = window.viewport_size().width.to_f64() as f32 - self.content_left();
         let compact = available_width < 940.0 * scale;
         let show_pinned_scripts = available_width >= 1400.0 * scale;
 
@@ -2445,25 +2566,11 @@ impl TerminalView {
         let lbl_ai_issue = t!("terminal.toolbar.ai_issue");
         let lbl_ai_stop = t!("terminal.toolbar.ai_stop");
 
-        let (primary, copy_keys, paste_keys, split_h_keys, split_v_keys) =
-            if cfg!(target_os = "macos") {
-                (
-                    "\u{2318}",
-                    "\u{2318}C",
-                    "\u{2318}V",
-                    "\u{2318}D",
-                    "\u{2318}\u{21E7}D",
-                )
-            } else {
-                (
-                    "Ctrl+",
-                    "Ctrl+Shift+C",
-                    "Ctrl+Shift+V",
-                    "Ctrl+Shift+D",
-                    "Ctrl+Shift+Alt+D",
-                )
-            };
-        let shortcut_tooltip = |label: &str, keys: String| format!("{label} ({keys})");
+        // The keys shown are the ones bound, which the user may have changed.
+        let shortcut_tooltip = |label: &str, action: BindableAction| match shortcut_label(action) {
+            Some(keys) => format!("{label} ({keys})"),
+            None => label.to_string(),
+        };
 
         let toolbar_btn = |id: &str, label: &str, tooltip_label: String| {
             let tooltip_label: SharedString = tooltip_label.into();
@@ -2702,7 +2809,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-search",
                     "search",
-                    shortcut_tooltip(lbl_search.as_ref(), format!("{primary}F")),
+                    shortcut_tooltip(lbl_search.as_ref(), BindableAction::Search),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.toggle_search();
@@ -2713,7 +2820,7 @@ impl TerminalView {
             let mut copy = toolbar_icon(
                 "tb-copy",
                 "copy",
-                shortcut_tooltip(lbl_copy.as_ref(), copy_keys.to_string()),
+                shortcut_tooltip(lbl_copy.as_ref(), BindableAction::Copy),
             );
             if !has_selection {
                 copy = copy.opacity(0.45).cursor_default();
@@ -2728,7 +2835,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-paste",
                     "clipboard-paste",
-                    shortcut_tooltip(lbl_paste.as_ref(), paste_keys.to_string()),
+                    shortcut_tooltip(lbl_paste.as_ref(), BindableAction::Paste),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.paste_clipboard(cx);
@@ -2741,7 +2848,7 @@ impl TerminalView {
                     toolbar_btn(
                         "tb-search",
                         lbl_search.as_ref(),
-                        shortcut_tooltip(lbl_search.as_ref(), format!("{primary}F")),
+                        shortcut_tooltip(lbl_search.as_ref(), BindableAction::Search),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_search();
@@ -2752,7 +2859,7 @@ impl TerminalView {
                     let mut btn = toolbar_btn(
                         "tb-copy",
                         lbl_copy.as_ref(),
-                        shortcut_tooltip(lbl_copy.as_ref(), copy_keys.to_string()),
+                        shortcut_tooltip(lbl_copy.as_ref(), BindableAction::Copy),
                     );
                     if !has_selection {
                         btn = btn.opacity(0.45).cursor_default();
@@ -2768,7 +2875,7 @@ impl TerminalView {
                     toolbar_btn(
                         "tb-paste",
                         lbl_paste.as_ref(),
-                        shortcut_tooltip(lbl_paste.as_ref(), paste_keys.to_string()),
+                        shortcut_tooltip(lbl_paste.as_ref(), BindableAction::Paste),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.paste_clipboard(cx);
@@ -2869,7 +2976,7 @@ impl TerminalView {
                 toolbar_btn(
                     "tb-split-h",
                     lbl_split_h.as_ref(),
-                    shortcut_tooltip(lbl_split_h.as_ref(), split_h_keys.to_string()),
+                    shortcut_tooltip(lbl_split_h.as_ref(), BindableAction::SplitHorizontal),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.split_horizontal(cx);
@@ -2879,7 +2986,7 @@ impl TerminalView {
                 toolbar_btn(
                     "tb-split-v",
                     lbl_split_v.as_ref(),
-                    shortcut_tooltip(lbl_split_v.as_ref(), split_v_keys.to_string()),
+                    shortcut_tooltip(lbl_split_v.as_ref(), BindableAction::SplitVertical),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.split_vertical(cx);
@@ -2905,7 +3012,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-zoom-out",
                     "minus",
-                    shortcut_tooltip(t!("shortcuts.zoom").as_ref(), format!("{primary}-")),
+                    shortcut_tooltip(t!("shortcuts.zoom").as_ref(), BindableAction::ZoomOut),
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.zoom_out();
@@ -2941,7 +3048,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-zoom-in",
                     "plus",
-                    shortcut_tooltip(t!("shortcuts.zoom").as_ref(), format!("{primary}=")),
+                    shortcut_tooltip(t!("shortcuts.zoom").as_ref(), BindableAction::ZoomIn),
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.zoom_in();
@@ -3263,7 +3370,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-clear",
                     "trash-2",
-                    shortcut_tooltip(lbl_clear.as_ref(), format!("{primary}L")),
+                    shortcut_tooltip(lbl_clear.as_ref(), BindableAction::ClearTerminal),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     if let Some(session) = this.active_session() {
@@ -3280,7 +3387,7 @@ impl TerminalView {
                 toolbar_btn(
                     "tb-clear",
                     lbl_clear.as_ref(),
-                    shortcut_tooltip(lbl_clear.as_ref(), format!("{primary}L")),
+                    shortcut_tooltip(lbl_clear.as_ref(), BindableAction::ClearTerminal),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     if let Some(session) = this.active_session() {
@@ -4829,7 +4936,7 @@ impl TerminalView {
         // Convert the window-relative click x into terminal-view-local x
         // (the view starts just right of the sidebar). The menu drops down
         // just below the tab bar.
-        let left = state.position.x - px(self.sidebar_width + SIDEBAR_HANDLE_WIDTH);
+        let left = state.position.x - px(self.content_left());
 
         // Enabled menu item.
         let item = |id: &str, label: &str| {
@@ -5482,6 +5589,11 @@ fn apply_pane_node_snapshot(node: &mut PaneNode, snapshot: &TerminalPaneNodeSnap
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Rendered means on screen: with the window active, the tab in
+        // front has been looked at.
+        if window.is_window_active() {
+            self.mark_active_tab_seen(cx);
+        }
         let mut container = div().relative().flex().flex_col().size_full();
 
         if self.pane.sessions.is_empty() {
@@ -5753,6 +5865,19 @@ mod tests {
         validate_ai_command, AuthorizedLocalRoot, LocalCwdScope, PaneId, PaneNode, TerminalView,
     };
     use gpui::{AppContext, TestAppContext};
+
+    // SDTEST-3092 / SDUC-575
+    #[test]
+    fn sdtest_3092_full_width_terminal_starts_at_the_window_edge() {
+        // Beside the sidebar: right of the rail, the panel and the handle.
+        assert_eq!(
+            super::content_left(308.0, false),
+            308.0 + super::SIDEBAR_HANDLE_WIDTH
+        );
+        // Focused Terminal view: no sidebar is drawn. Reserving its width
+        // would shift every pane, tab menu and column count by the rail.
+        assert_eq!(super::content_left(308.0, true), 0.0);
+    }
 
     // SDTEST-1333 / SDTEST-1334 retired 2026-08-06: command_available now
     // delegates to shelldeck_core::util::executable_on_path, whose contracts

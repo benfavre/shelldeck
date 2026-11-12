@@ -54,15 +54,30 @@ impl Render for Workspace {
                 sidebar.set_active_section(SidebarSection::Agents);
             });
         }
-        let agents_presentation = self.agents_presentation_active();
-        let native_title = (_window.window_handle().window_id(), agents_presentation);
+        let presentation = self.active_presentation();
+        let focused_presentation = presentation.is_focused();
+        let native_title = (_window.window_handle().window_id(), presentation);
         if self.native_title != Some(native_title) {
-            _window.set_window_title(if agents_presentation {
-                shelldeck_core::AGENTS_APP_NAME
-            } else {
-                shelldeck_core::APP_NAME
-            });
+            _window.set_window_title(presentation.window_title());
             self.native_title = Some(native_title);
+        }
+        // The terminal sizes its grid against the sidebar drawn beside it,
+        // so it is told here, where that sidebar is composed: nothing in the
+        // focused Terminal presentation, else rail plus panel. The panel
+        // comes and goes with the rail activity, with no event of its own:
+        // a terminal left on the width of another activity loses that many
+        // columns.
+        let terminal_full_width = presentation == WorkspacePresentation::Terminal;
+        let sidebar_total_width = self.sidebar.read(_cx).total_width();
+        let terminal = self.terminal.read(_cx);
+        if terminal.full_width() != terminal_full_width
+            || terminal.sidebar_width() != sidebar_total_width
+        {
+            self.terminal.update(_cx, |terminal, cx| {
+                terminal.set_full_width(terminal_full_width);
+                terminal.set_sidebar_width(sidebar_total_width);
+                cx.notify();
+            });
         }
         // Window chrome geometry is in real device-independent pixels.
         _window.set_client_inset(gpui::px(5.0));
@@ -84,7 +99,7 @@ impl Render for Workspace {
             / _window.rem_size().to_f64() as f32;
         self.rebuild_menu_bar(logical_width, _cx);
         // Only visible contextual panels need owned row summaries.
-        if self.effective_mode() == AppMode::Dev && !agents_presentation {
+        if self.effective_mode() == AppMode::Dev && !focused_presentation {
             self.refresh_sidebar_panels(_cx);
         }
 
@@ -134,7 +149,7 @@ impl Render for Workspace {
                     main_area = main_area.child(self.render_user_home(is_maximized, _window, _cx));
                 }
                 AppMode::Dev => {
-                    if !agents_presentation {
+                    if !focused_presentation {
                         main_area = main_area.child(self.sidebar.clone());
                     }
 
@@ -195,6 +210,8 @@ impl Render for Workspace {
         let h17 = handle.clone();
         let h18 = handle.clone();
         let h19 = handle.clone();
+        let h20 = handle.clone();
+        let h21 = handle.clone();
 
         let mut root = div()
             .relative()
@@ -327,6 +344,17 @@ impl Render for Workspace {
             .on_action(move |_: &OpenAiAssistant, _window, cx| {
                 if let Some(ws) = h17.upgrade() {
                     ws.update(cx, |ws, cx| ws.open_ai_assistant(cx));
+                }
+            })
+            .on_action(move |_: &CyclePresentation, _window, cx| {
+                if let Some(ws) = h20.upgrade() {
+                    ws.update(cx, |ws, cx| ws.cycle_presentation(cx));
+                }
+            })
+            .on_action(move |action: &SetWorkspacePresentation, _window, cx| {
+                if let Some(ws) = h21.upgrade() {
+                    let presentation = action.presentation;
+                    ws.update(cx, |ws, cx| ws.set_presentation(presentation, cx));
                 }
             });
 
@@ -511,7 +539,9 @@ impl Render for Workspace {
         let titlebar = Self::render_titlebar(
             is_maximized,
             compact_titlebar,
-            agents_presentation,
+            presentation,
+            (!self.show_welcome() && self.can_access_mode(AppMode::Dev))
+                .then(|| self.presentation_attention(_cx)),
             self.account_menu_open,
             self.mode_menu_open,
             self.app_config.account.clone(),
@@ -526,7 +556,10 @@ impl Render for Workspace {
             },
             self.app_config.general.menu_bar_visible,
             self.menu_bar.clone(),
-            if !self.show_welcome() && self.effective_mode() == AppMode::Dev {
+            if !self.show_welcome()
+                && self.effective_mode() == AppMode::Dev
+                && presentation.has_sidebar_toggle()
+            {
                 Some(self.contextual_sidebar_visible(_cx))
             } else {
                 None

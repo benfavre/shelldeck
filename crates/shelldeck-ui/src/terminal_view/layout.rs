@@ -1,6 +1,8 @@
 use super::*;
+use crate::view_attention::ViewAttention;
 use shelldeck_core::config::workspace_state::DaemonPaneNode;
 use shelldeck_terminal::attached::AttachedPhase;
+use shelldeck_terminal::program_status::{BlockedKind, ProgramHeadline, ProgramState};
 
 /// A single tab in the terminal tab bar
 #[derive(Debug, Clone)]
@@ -18,11 +20,106 @@ pub struct TerminalTab {
     /// The tab carries a deliberate name (AI naming) that program titles must
     /// not override.
     pub named: bool,
+    /// What the program in the tab says it is doing (OSC 7501): the most
+    /// urgent report among the tab's panes. `None` until a program reports.
+    pub status: Option<ProgramHeadline>,
+    /// The user has had this tab in front since `status` last changed.
+    pub status_seen: bool,
+}
+
+/// How the tab dot shows a reported status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusTone {
+    /// Nothing to add to the session state (no report, idle, done and seen).
+    Plain,
+    Working,
+    /// Finished and not looked at yet.
+    Finished,
+    NeedsYou,
+    Failed,
+}
+
+/// The most urgent of several reports; the first wins between equals.
+pub fn most_urgent(
+    headlines: impl IntoIterator<Item = Option<ProgramHeadline>>,
+) -> Option<ProgramHeadline> {
+    let mut best: Option<ProgramHeadline> = None;
+    for headline in headlines.into_iter().flatten() {
+        if best
+            .as_ref()
+            .is_none_or(|current| headline.state.urgency() > current.state.urgency())
+        {
+            best = Some(headline);
+        }
+    }
+    best
+}
+
+/// One line for the tab tooltip: who, what, and the program's own words.
+pub fn status_tooltip(status: &ProgramHeadline) -> String {
+    let what = match (status.state, status.kind) {
+        (ProgramState::Idle, _) => t!("terminal.status.idle").to_string(),
+        (ProgramState::Working, _) => match status.progress {
+            Some(percent) => t!("terminal.status.working_percent", percent = percent).to_string(),
+            None => t!("terminal.status.working").to_string(),
+        },
+        (ProgramState::Done, _) => t!("terminal.status.done").to_string(),
+        (ProgramState::Error, _) => t!("terminal.status.error").to_string(),
+        (ProgramState::Blocked, Some(BlockedKind::Permission)) => {
+            t!("terminal.status.blocked_permission").to_string()
+        }
+        (ProgramState::Blocked, Some(BlockedKind::Auth)) => {
+            t!("terminal.status.blocked_auth").to_string()
+        }
+        (ProgramState::Blocked, _) => t!("terminal.status.blocked").to_string(),
+    };
+    let mut line = if status.app.is_empty() {
+        what
+    } else {
+        format!("{} · {what}", status.app)
+    };
+    if !status.text.is_empty() {
+        line.push_str(" · ");
+        line.push_str(&status.text);
+    }
+    line
 }
 
 impl TerminalTab {
     /// Label shown in the tab strip: the live program title, like other
     /// terminal emulators, unless the tab was deliberately named.
+    /// Record what the tab's programs now report. A change is news: the
+    /// tab counts as not looked at again. Returns whether anything changed.
+    pub fn set_status(&mut self, status: Option<ProgramHeadline>) -> bool {
+        if self.status == status {
+            return false;
+        }
+        self.status = status;
+        self.status_seen = false;
+        true
+    }
+
+    pub fn status_tone(&self) -> StatusTone {
+        match self.status.as_ref().map(|status| status.state) {
+            Some(ProgramState::Blocked) => StatusTone::NeedsYou,
+            Some(ProgramState::Error) => StatusTone::Failed,
+            Some(ProgramState::Working) => StatusTone::Working,
+            Some(ProgramState::Done) if !self.status_seen => StatusTone::Finished,
+            Some(ProgramState::Done | ProgramState::Idle) | None => StatusTone::Plain,
+        }
+    }
+
+    /// What the tab wants from a user who is looking elsewhere. A blocked
+    /// or failed program keeps asking until its state changes; finished
+    /// work stops asking once the tab has been in front.
+    pub fn attention(&self) -> ViewAttention {
+        match self.status_tone() {
+            StatusTone::NeedsYou | StatusTone::Failed => ViewAttention::NeedsYou,
+            StatusTone::Finished => ViewAttention::Finished,
+            StatusTone::Working | StatusTone::Plain => ViewAttention::None,
+        }
+    }
+
     pub fn display_title(&self) -> &str {
         let program = self.program_title.trim();
         if self.named || program.is_empty() {
@@ -568,7 +665,8 @@ mod daemon_layout_tests {
 
 #[cfg(test)]
 mod title_tests {
-    use super::TerminalTab;
+    use super::{most_urgent, status_tooltip, StatusTone, TerminalTab, ViewAttention};
+    use shelldeck_terminal::program_status::{BlockedKind, ProgramHeadline, ProgramState};
     use shelldeck_terminal::session::SessionState;
     use uuid::Uuid;
 
@@ -582,7 +680,93 @@ mod title_tests {
             connection_id: None,
             program_title: program.into(),
             named,
+            status: None,
+            status_seen: false,
         }
+    }
+
+    fn headline(state: ProgramState) -> ProgramHeadline {
+        ProgramHeadline {
+            state,
+            kind: None,
+            progress: None,
+            app: String::new(),
+            text: String::new(),
+        }
+    }
+
+    // SDTEST-3097 / SDUC-576. A blocked or failed program asks for the user
+    // until it says otherwise; finished work asks until the tab has been in
+    // front; working and idle ask for nothing. Any new report is news again.
+    #[test]
+    fn sdtest_3097_a_tab_asks_for_attention_until_seen_or_unblocked() {
+        let mut tab = tab("", false);
+        assert_eq!(
+            (tab.status_tone(), tab.attention()),
+            (StatusTone::Plain, ViewAttention::None)
+        );
+
+        assert!(tab.set_status(Some(headline(ProgramState::Working))));
+        assert!(!tab.set_status(Some(headline(ProgramState::Working))));
+        assert_eq!(
+            (tab.status_tone(), tab.attention()),
+            (StatusTone::Working, ViewAttention::None)
+        );
+
+        assert!(tab.set_status(Some(headline(ProgramState::Done))));
+        assert_eq!(tab.attention(), ViewAttention::Finished);
+        tab.status_seen = true;
+        assert_eq!(
+            (tab.status_tone(), tab.attention()),
+            (StatusTone::Plain, ViewAttention::None)
+        );
+
+        // Looking at a blocked or failed tab does not make it stop asking.
+        for (state, tone) in [
+            (ProgramState::Blocked, StatusTone::NeedsYou),
+            (ProgramState::Error, StatusTone::Failed),
+        ] {
+            assert!(tab.set_status(Some(headline(state))));
+            assert!(!tab.status_seen, "a new report is not seen yet");
+            tab.status_seen = true;
+            assert_eq!(
+                (tab.status_tone(), tab.attention()),
+                (tone, ViewAttention::NeedsYou)
+            );
+        }
+
+        assert!(tab.set_status(None));
+        assert_eq!(tab.attention(), ViewAttention::None);
+        assert!(ViewAttention::NeedsYou > ViewAttention::Finished);
+        assert!(ViewAttention::Finished > ViewAttention::None);
+    }
+
+    // SDTEST-3098 / SDUC-576. A split tab shows its most urgent pane, and the
+    // tooltip carries the program's name and own words.
+    #[test]
+    fn sdtest_3098_a_split_tab_shows_its_most_urgent_pane() {
+        let blocked = ProgramHeadline {
+            state: ProgramState::Blocked,
+            kind: Some(BlockedKind::Permission),
+            progress: None,
+            app: "claude-code".into(),
+            text: "Apply?".into(),
+        };
+        assert_eq!(most_urgent([None, None]), None);
+        assert_eq!(
+            most_urgent([
+                Some(headline(ProgramState::Working)),
+                None,
+                Some(blocked.clone()),
+                Some(headline(ProgramState::Done)),
+            ]),
+            Some(blocked.clone())
+        );
+        let tooltip = status_tooltip(&blocked);
+        assert!(tooltip.starts_with("claude-code · "), "{tooltip}");
+        assert!(tooltip.ends_with(" · Apply?"), "{tooltip}");
+        // No name and no text: only what it is doing.
+        assert!(!status_tooltip(&headline(ProgramState::Working)).contains('·'));
     }
 
     // SDTEST-2912 : tabs follow the running program's title like other

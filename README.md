@@ -89,6 +89,37 @@ add **Inklura Desktop Agents** to the Start Menu. On macOS use
 full interface. See [launching Agents](docs/agents-launch.md) for single-instance
 behavior, AppImage usage and development commands.
 
+### Switch between the full app and a focused view
+
+Inklura Desktop can show the full application or one focused view with nothing
+around it: **Agents**, **Terminal** or **Editor**. The segmented control at the
+right of the title bar switches between the four and is always there, so leaving
+a focused view and coming back to it is one click each way. `Ctrl+Shift+L`
+(`Cmd+Shift+L` on macOS) steps to the next view, the command palette has a
+"View: ..." row for each, and the View menu has a "Next view" entry.
+
+```bash
+shelldeck --terminal   # focused Terminal view
+shelldeck --editor     # focused Editor view
+shelldeck --main       # full application
+```
+
+Terminals, agent conversations and open files keep running when the view
+changes: a view is a way of looking at the same session, not a second one.
+
+### Use panes from a script or an agent
+
+`shelldeck-sessiond` can start a program in a terminal that outlives the
+caller, type into it, read it and wait for it: `run`, `send`, `read`, `wait`,
+`ls`. See [pane commands](docs/pane-cli.md).
+
+### Change keyboard shortcuts
+
+Add a `[keybindings]` table to the configuration file to change or remove an
+application shortcut, for example `toggle_sidebar = ""` to leave `Ctrl+B` to
+tmux. See [changing keyboard shortcuts](docs/keybindings.md) for the action
+names and the key syntax.
+
 ## Requirements
 
 - **Rust nightly**, pinned in `rust-toolchain.toml` (do not change to floating `nightly` — it breaks the macOS build; see `CLAUDE.md`)

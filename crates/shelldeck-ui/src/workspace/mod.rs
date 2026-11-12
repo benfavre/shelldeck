@@ -63,7 +63,7 @@ use crate::attachment_annotator::AttachmentAnnotator;
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::command_palette::{
     ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
-    PaletteAction, SetAppMode, ToggleCommandPalette,
+    PaletteAction, SetAppMode, SetWorkspacePresentation, ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
 use crate::dashboard::DashboardView;
@@ -405,6 +405,7 @@ actions!(
         OpenAiAssistant,
         OpenClippy,
         OpenAgents,
+        CyclePresentation,
         SetupInkluraExtension,
         CaptureAndShare,
         ShareFiles,
@@ -495,8 +496,10 @@ pub struct Workspace {
     variable_prompt: Option<Entity<VariablePrompt>>,
     active_view: ActiveView,
     presentation: WorkspacePresentation,
-    agents_focus_pending: bool,
-    native_title: Option<(gpui::WindowId, bool)>,
+    presentation_focus_pending: bool,
+    /// What the agent conversations want from the user, for the view switcher.
+    agents_attention: crate::view_attention::ViewAttention,
+    native_title: Option<(gpui::WindowId, WorkspacePresentation)>,
     /// Settings is a global personal surface, available from every app mode.
     /// Keeping this separate from `active_view` preserves the hidden Dev view
     /// (including live terminal tabs) while Settings is open.
@@ -551,6 +554,7 @@ pub struct Workspace {
     _workspace_hub_sub: Subscription,
     _terminal_sub: Subscription,
     _agent_console_sub: Subscription,
+    _agent_attention_observer: Subscription,
     _palette_sub: Subscription,
     _companion_palette_sub: Subscription,
     _settings_sub: Subscription,
@@ -1400,6 +1404,15 @@ impl Workspace {
                 }
             },
         );
+        // The console repaints often while an agent streams; the title bar
+        // only needs to know when what it asks of the user changes.
+        let agent_attention_observer = cx.observe(&agent_console, |this, console, cx| {
+            let attention = console.read(cx).attention();
+            if attention != this.agents_attention {
+                this.agents_attention = attention;
+                cx.notify();
+            }
+        });
         let agent_console_sub = cx.subscribe(
             &agent_console,
             |this, _view, event: &AgentConsoleEvent, cx| {
@@ -1581,7 +1594,8 @@ impl Workspace {
             variable_prompt: None,
             active_view: ActiveView::Agents,
             presentation: WorkspacePresentation::Main,
-            agents_focus_pending: false,
+            presentation_focus_pending: false,
+            agents_attention: Default::default(),
             native_title: None,
             settings_open: false,
             settings_dialog: None,
@@ -1606,6 +1620,7 @@ impl Workspace {
             _workspace_hub_sub: workspace_hub_sub,
             _terminal_sub: terminal_sub,
             _agent_console_sub: agent_console_sub,
+            _agent_attention_observer: agent_attention_observer,
             _palette_sub: palette_sub,
             _companion_palette_sub: companion_palette_sub,
             _settings_sub: settings_sub,
