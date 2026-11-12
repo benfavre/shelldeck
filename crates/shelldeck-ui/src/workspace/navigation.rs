@@ -674,6 +674,7 @@ impl Workspace {
         self.sync_bext_poll(cx);
         // The Support console can be a Dev view: its polls follow it.
         self.sync_support_poll(cx);
+        self.sync_monique_activity_poll(cx);
         self.sync_issues_poll(cx);
         self.refresh_command_palette(cx);
     }

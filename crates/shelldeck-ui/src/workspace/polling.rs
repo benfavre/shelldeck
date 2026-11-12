@@ -19,6 +19,8 @@ pub(super) enum PolledSurface {
     Support,
     Issues,
     Monique,
+    /// Monique's job count behind the Dev status-bar indicator.
+    MoniqueActivity,
     Bext,
 }
 
@@ -82,6 +84,13 @@ pub(super) fn should_poll(ctx: PollContext, surface: PolledSurface) -> bool {
                     AppMode::Dev => ctx.active_view == ActiveView::MoniqueConsole,
                 }
         }
+        // The status bar is on screen in every Dev view; the console view
+        // has its own faster poll that already carries the jobs.
+        PolledSurface::MoniqueActivity => {
+            ctx.monique_configured
+                && ctx.mode == AppMode::Dev
+                && ctx.active_view != ActiveView::MoniqueConsole
+        }
         PolledSurface::Bext => ctx.mode == AppMode::Dev && ctx.active_view == ActiveView::BextCloud,
     }
 }
@@ -118,14 +127,49 @@ mod tests {
         }
     }
 
-    const ALL: [PolledSurface; 4] = [
+    const ALL: [PolledSurface; 5] = [
         PolledSurface::Support,
         PolledSurface::Issues,
         PolledSurface::Monique,
+        PolledSurface::MoniqueActivity,
         PolledSurface::Bext,
     ];
 
     // SDTEST-1059
+    // SDTEST-3076: the Monique job indicator polls in every Dev view except
+    // the console (which polls the jobs itself), never in User or Support
+    // mode, never without a Monique endpoint.
+    #[test]
+    fn monique_activity_polls_in_dev_outside_the_console() {
+        for view in [
+            ActiveView::Terminal,
+            ActiveView::Agents,
+            ActiveView::Support,
+        ] {
+            assert!(should_poll(
+                on_screen(AppMode::Dev, view),
+                PolledSurface::MoniqueActivity
+            ));
+        }
+        assert!(!should_poll(
+            on_screen(AppMode::Dev, ActiveView::MoniqueConsole),
+            PolledSurface::MoniqueActivity
+        ));
+        assert!(should_poll(
+            on_screen(AppMode::Dev, ActiveView::MoniqueConsole),
+            PolledSurface::Monique
+        ));
+        for mode in [AppMode::User, AppMode::Support] {
+            assert!(!should_poll(
+                on_screen(mode, ActiveView::Terminal),
+                PolledSurface::MoniqueActivity
+            ));
+        }
+        let mut unconfigured = on_screen(AppMode::Dev, ActiveView::Terminal);
+        unconfigured.monique_configured = false;
+        assert!(!should_poll(unconfigured, PolledSurface::MoniqueActivity));
+    }
+
     // SDTEST-3072: the Support console shown inside Dev (rail icons) polls
     // tickets and requests like Support mode, only while it is the Dev view
     // and only for staff; any other Dev view polls neither.

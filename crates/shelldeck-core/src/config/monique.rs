@@ -154,6 +154,107 @@ pub struct MoniqueProcess {
     pub output: Vec<MoniqueProcessOutput>,
 }
 
+impl MoniqueProcess {
+    /// Still to finish: queued, running, waiting for approval… Anything
+    /// that is not a final state counts, so a state the client does not
+    /// know yet is shown as in progress rather than hidden.
+    pub fn is_active(&self) -> bool {
+        !self.is_finished()
+    }
+
+    /// A final state: the job will not change any more.
+    pub fn is_finished(&self) -> bool {
+        matches!(
+            self.status.as_str(),
+            "completed" | "succeeded" | "done" | "failed" | "error" | "cancelled" | "canceled"
+        )
+    }
+
+    /// The job ended badly.
+    pub fn is_failed(&self) -> bool {
+        matches!(self.status.as_str(), "failed" | "error")
+    }
+
+    /// What the job is, for a list row: its kind (or its source), and the
+    /// request it works on when there is one.
+    pub fn label(&self) -> String {
+        let what = self
+            .kind
+            .as_deref()
+            .filter(|kind| !kind.trim().is_empty())
+            .unwrap_or(self.source.as_str());
+        let what = if what.trim().is_empty() {
+            self.id.as_str()
+        } else {
+            what
+        };
+        match self.issue_id.as_deref().filter(|id| !id.is_empty()) {
+            Some(issue) => format!("{what} · #{}", issue.chars().take(8).collect::<String>()),
+            None => what.to_string(),
+        }
+    }
+
+    /// The latest line of output that has text, trimmed.
+    pub fn last_output(&self) -> Option<&str> {
+        self.output
+            .iter()
+            .rev()
+            .map(|line| line.text.trim())
+            .find(|text| !text.is_empty())
+            .map(|text| text.lines().last().unwrap_or(text).trim())
+    }
+
+    /// Where the job's request can be opened: the Manage page, else the
+    /// issue page. Only `https` links are offered.
+    pub fn link(&self) -> Option<&str> {
+        [self.manage_url.as_deref(), self.issue_url.as_deref()]
+            .into_iter()
+            .flatten()
+            .find(|url| url.starts_with("https://"))
+    }
+}
+
+impl MoniqueProcesses {
+    /// Jobs in display order: in progress first (running before the
+    /// others), then finished ones, each group in the order the server
+    /// sent them. `active_only` keeps the first group.
+    pub fn ordered_jobs(&self, active_only: bool) -> Vec<&MoniqueProcess> {
+        let rank = |job: &MoniqueProcess| match () {
+            _ if job.status == "running" => 0,
+            _ if job.is_active() => 1,
+            _ => 2,
+        };
+        let mut jobs: Vec<&MoniqueProcess> = self
+            .jobs
+            .iter()
+            .filter(|job| !active_only || job.is_active())
+            .collect();
+        jobs.sort_by_key(|job| rank(job));
+        jobs
+    }
+
+    /// Jobs seen in progress in `before` that are finished here: what just
+    /// ended, for a notice. A job missing from this snapshot is not
+    /// reported (it may only have left the server's window).
+    pub fn newly_finished<'a>(&'a self, before: &MoniqueProcesses) -> Vec<&'a MoniqueProcess> {
+        self.jobs
+            .iter()
+            .filter(|job| job.is_finished() && !job.id.is_empty())
+            .filter(|job| {
+                before
+                    .jobs
+                    .iter()
+                    .any(|old| old.id == job.id && old.is_active())
+            })
+            .collect()
+    }
+
+    /// Jobs still to finish, from the job list (the stats may lag behind).
+    pub fn active_count(&self) -> usize {
+        self.jobs.iter().filter(|job| job.is_active()).count()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoniqueProcesses {
     #[serde(default)]
@@ -586,6 +687,79 @@ mod tests {
     const HISTORY: &str = r#"{"schema":"automonique.dashboard.chat-history/v1","messages":[{"role":"user","content":"hello","created_at_ms":41}],"pending_actions":[]}"#;
     const CHAT: &str = r#"{"schema":"automonique.dashboard.chat/v2","answer":"Hello from Monique","profile":"conversation","memory_evidence":0,"live_sources":["automonique:status"],"duration_ms":3,"conversation_retained":true,"action":{"id":"action-1","title":"Review action","detail":"Deploy one site","impact":"Changes Manage"}}"#;
     const ACCOUNTS: &str = r#"{"schema":"automonique.dashboard.agent-accounts/v1","max_accounts":64,"providers":[{"id":"codex","name":"Codex CLI","native_subscription":"ChatGPT subscription","available":true,"account_count":2},{"id":"claude","name":"Claude Code","native_subscription":"Claude.ai subscription","available":true,"account_count":1}],"worker_provider":"codex","accounts":[{"id":"acct-0123456789abcdef01234567","provider":"codex","provider_name":"Codex CLI","label":"Codex Pro","selected":true,"worker_selected":true,"status":"authenticated","method":"chatgpt","evidence":"execution_succeeded","observed_at_ms":42,"last_verified_at_ms":42},{"id":"acct-abcdef0123456789abcdef01","provider":"codex","provider_name":"Codex CLI","label":"Codex Team","selected":false,"worker_selected":false,"status":"configured_unverified","method":"chatgpt","evidence":"local_session_present","observed_at_ms":42,"last_verified_at_ms":null},{"id":"acct-111111111111111111111111","provider":"claude","provider_name":"Claude Code","label":"Claude Max","selected":true,"worker_selected":false,"status":"authenticated","method":"claude_ai","evidence":"native_login_verified","observed_at_ms":42,"last_verified_at_ms":42}],"login_sessions":[]}"#;
+
+    // SDTEST-3075: job helpers for the progress views. Final states are a
+    // closed list, anything else is in progress; labels name the kind and
+    // the request; the last output line is the latest non-empty one; only
+    // https links are offered; ordering puts running jobs first; a job that
+    // was in progress and is now final is reported once.
+    #[test]
+    fn sdtest_3075_job_progress_helpers() {
+        let job = |id: &str, status: &str| MoniqueProcess {
+            id: id.into(),
+            status: status.into(),
+            source: "manage".into(),
+            ..MoniqueProcess::default()
+        };
+        assert!(job("a", "queued").is_active());
+        assert!(job("a", "awaiting_approval").is_active());
+        assert!(job("a", "completed").is_finished());
+        assert!(job("a", "failed").is_failed() && job("a", "failed").is_finished());
+
+        let mut labelled = job("job-1", "running");
+        assert_eq!(labelled.label(), "manage");
+        labelled.kind = Some("fix".into());
+        labelled.issue_id = Some("7313c010-816a-41bf".into());
+        assert_eq!(labelled.label(), "fix · #7313c010");
+        labelled.output = vec![
+            MoniqueProcessOutput {
+                text: "Cloning".into(),
+                ..MoniqueProcessOutput::default()
+            },
+            MoniqueProcessOutput {
+                text: "Running tests\n12 passed".into(),
+                ..MoniqueProcessOutput::default()
+            },
+            MoniqueProcessOutput {
+                text: "   ".into(),
+                ..MoniqueProcessOutput::default()
+            },
+        ];
+        assert_eq!(labelled.last_output(), Some("12 passed"));
+        labelled.issue_url = Some("http://insecure.example".into());
+        assert_eq!(labelled.link(), None);
+        labelled.manage_url = Some("https://manage.inklura.fr/x".into());
+        assert_eq!(labelled.link(), Some("https://manage.inklura.fr/x"));
+
+        let snapshot = MoniqueProcesses {
+            jobs: vec![
+                job("done", "completed"),
+                job("wait", "queued"),
+                job("run", "running"),
+                job("bad", "failed"),
+            ],
+            ..MoniqueProcesses::default()
+        };
+        let ids =
+            |jobs: Vec<&MoniqueProcess>| jobs.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            ids(snapshot.ordered_jobs(false)),
+            ["run", "wait", "done", "bad"]
+        );
+        assert_eq!(ids(snapshot.ordered_jobs(true)), ["run", "wait"]);
+        assert_eq!(snapshot.active_count(), 2);
+
+        let later = MoniqueProcesses {
+            jobs: vec![
+                job("run", "completed"),
+                job("wait", "failed"),
+                job("done", "completed"),
+            ],
+            ..MoniqueProcesses::default()
+        };
+        assert_eq!(ids(later.newly_finished(&snapshot)), ["run", "wait"]);
+        assert!(later.newly_finished(&later).is_empty());
+    }
 
     #[test]
     // SDTEST-1662

@@ -13,6 +13,8 @@ pub enum StatusBarEvent {
     UpdateClicked,
     ConnectionsClicked,
     ScriptsClicked,
+    /// The Monique jobs indicator: open the console on its job list.
+    MoniqueClicked,
 }
 
 pub struct StatusBar {
@@ -21,6 +23,16 @@ pub struct StatusBar {
     pub notification: Option<String>,
     pub git_status: Option<String>,
     pub update_status: Option<String>,
+    /// Monique jobs still to finish, and how many of them are running.
+    /// Shown only while there are some.
+    pub monique_jobs: Option<MoniqueActivity>,
+}
+
+/// What the status bar says about Monique's jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoniqueActivity {
+    pub active: usize,
+    pub running: usize,
 }
 
 impl EventEmitter<StatusBarEvent> for StatusBar {}
@@ -39,7 +51,33 @@ impl StatusBar {
             notification: None,
             git_status: None,
             update_status: None,
+            monique_jobs: None,
         }
+    }
+
+    /// `None` hides the indicator (no Monique, or nothing in progress).
+    pub fn set_monique_activity(&mut self, activity: Option<MoniqueActivity>) {
+        self.monique_jobs = activity.filter(|activity| activity.active > 0);
+    }
+
+    fn monique_item(activity: MoniqueActivity, cx: &Context<Self>) -> impl IntoElement {
+        let tooltip = t!(
+            "status_bar.monique.tooltip",
+            running = activity.running,
+            queued = activity.active.saturating_sub(activity.running)
+        )
+        .to_string();
+        adabraka_ui::prelude::Button::new(
+            "status-monique-jobs",
+            t!("status_bar.monique.label", count = activity.active).to_string(),
+        )
+        .variant(adabraka_ui::prelude::ButtonVariant::Ghost)
+        .size(adabraka_ui::prelude::ButtonSize::Sm)
+        .icon("zap")
+        .h(px(22.0))
+        .px(px(4.0))
+        .tooltip(tooltip)
+        .on_click(cx.listener(|_, _, _, cx| cx.emit(StatusBarEvent::MoniqueClicked)))
     }
 
     pub fn set_counts(&mut self, connections: usize, scripts: usize) {
@@ -209,7 +247,11 @@ impl Render for StatusBar {
                     StatusMetric::RunningScripts,
                     self.running_scripts,
                     cx,
-                )),
+                ))
+                .children(
+                    self.monique_jobs
+                        .map(|activity| Self::monique_item(activity, cx)),
+                ),
         );
 
         let trailing_status = self.trailing_status(compact, cx);

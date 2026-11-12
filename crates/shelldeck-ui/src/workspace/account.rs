@@ -600,6 +600,11 @@ impl Workspace {
         self._support_poll_task = None;
         self._issues_poll = None;
         self._monique_poll_task = None;
+        self._monique_activity_task = None;
+        self.status_bar.update(cx, |bar, cx| {
+            bar.set_monique_activity(None);
+            cx.notify();
+        });
         self.agent_console
             .update(cx, |view, cx| view.reset_ssh_sessions(cx));
         self._fleet_view_poll = None;
