@@ -1234,3 +1234,57 @@ so this is the refusal path, end to end.
   with the archive has to be checked from an install without the daemon.
 - macOS: the bundle is built and signed by the release workflow, the
   application was not run there.
+
+## Remote splits and per-server answers against a real sshd (2026-11-12)
+
+Scope: SSH tab split restore (#232, `TabState::remote`) and the Settings
+rows that change the install answer for one server, in the real
+application (debug build of `feat/session-daemon-host-answers`, version
+0.21.3), against a real OpenSSH server.
+
+Server: OpenSSH 9.6 `sshd` unpacked from the distribution package and run
+unprivileged on `127.0.0.1:2222` (no Docker daemon, no root on the
+machine), key login only, `ForceCommand` wrapper that sets a throwaway
+`HOME` for every session, so the daemon was installed and ran under that
+directory and never under the real `~/.shelldeck`. The static `x86_64`
+build came from `scripts/build-sessiond-remote.sh` through
+`SHELLDECK_SESSIOND_ARTIFACT_DIR`.
+
+Desktop: a private headless GNOME Shell as in the earlier runs, input
+from `org.gnome.Mutter.RemoteDesktop` (`NotifyKeyboardKeysym`,
+`NotifyPointerMotionRelative` homed on the bottom-right corner, since the
+top-left one opens the overview, `NotifyPointerButton`,
+`NotifyPointerAxisDiscrete`; the first event of each remote desktop
+session is dropped, so each session starts with a Shift tap). The demo
+account was signed in by putting `token = "demo-token"` under
+`[cloud_sync]` before each start (accepted for migration, not written
+back), because the private bus has no keychain.
+
+**Isolation, read before repeating this.** The private D-Bus session must
+use a configuration without service directories, and every process on
+it (the bus included) needs a throwaway `HOME`; start the shell with
+`GSETTINGS_BACKEND=memory`. A first attempt used `dbus-daemon --session`
+with the default configuration: the headless shell activated
+`dconf-service` and the gvfs daemons with the real `HOME`, wrote the
+real `~/.config/dconf/user`, and the real session's user extensions were
+switched off (`org.gnome.shell disable-user-extensions` became `true`).
+It was set back to `false` and the run was redone with a bus
+configuration that only has `<listen>`, `<auth>` and an allow-all
+policy; the real dconf database was not written again.
+
+| Check | Result |
+|---|---|
+| Connect with the answer "allow" recorded | Pass. Daemon uploaded (SHA-256 logged), "Session daemon ready", one pane spawned; the tab is a daemon pane |
+| Split H, a marker in each pane | Pass. A second pane spawned on the same connection; `echo LEFT_PANE_$$` / `RIGHT_PANE_$$` print the two pane PIDs (`01-split-before-kill.png`) |
+| Autosave | Pass. `workspace.json` holds `remote` for the SSH tab: the split by pane id on the host, ratio 0.5, focus on the right pane; no `daemon` entry |
+| `SIGKILL` the application | Pass. `shelldeck-sessiond list` on the server: both panes alive, no client |
+| Start again | Pass. One tab with the split, both screens as they were, same shell PIDs, focus on the right pane; typing into it answers from the same shell (`02-split-after-restart.png`). Before #232 the two panes came back as two tabs |
+| Settings, General, per-server row | Pass. Under "Persistent sessions on SSH servers" (button now "Forget all"): a row `pc1@127.0.0.1:2222`, "Allowed: …", buttons Refuse and Forget (`03-settings-per-server.png`) |
+| Refuse | Pass. The file reads `never` for that connection, its server unchanged; the row and the counts follow (`04-settings-refused.png`) |
+| Forget | Pass. Both tables are gone from the file; the summary row and the server row disappear |
+| Terminal after closing Settings | Pass. The split is intact |
+
+Not verified: the dropped-paste toast on screen (SDTEST-3067 covers the
+daemon to session path; filling a 1 MiB queue by synthetic typing was
+not attempted), several tabs of one host reconnecting at once with
+their own trees (covered by SDTEST-3068 only), a jump host, `aarch64`.

@@ -485,14 +485,25 @@ impl Workspace {
                     self.ai_workflow = None;
                     self._ai_workflow_sub = None;
                 }
-                // The recorded install answers were forgotten in Settings:
-                // the servers already asked about in this run are asked
-                // again at their next connection.
+                // Recorded install answers were forgotten or changed in
+                // Settings: those servers, if already asked about in this
+                // run, are asked again (or told again) at their next
+                // connection.
                 #[cfg(unix)]
-                if !self.app_config.general.session_daemon_hosts.is_empty()
-                    && config.general.session_daemon_hosts.is_empty()
                 {
-                    super::remote_daemon::forget_questions();
+                    let before = &self.app_config.general.session_daemon_hosts;
+                    let after = &config.general.session_daemon_hosts;
+                    if !before.is_empty() && after.is_empty() {
+                        super::remote_daemon::forget_questions();
+                    } else {
+                        for (key, answer) in before {
+                            if after.get(key) != Some(answer) {
+                                if let Ok(id) = key.parse::<Uuid>() {
+                                    super::remote_daemon::forget_question(id);
+                                }
+                            }
+                        }
+                    }
                 }
                 // Turned on just now: the daemon of this machine is
                 // fetched when this copy of the app came without it.

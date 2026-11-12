@@ -1097,6 +1097,75 @@ impl SettingsView {
                         this.save_config(cx);
                     })),
                 ));
+                // One row per server: the answer can be turned around or
+                // forgotten for that server only.
+                use shelldeck_core::config::app_config::RemoteDaemonInstall;
+                for (index, entry) in self
+                    .config
+                    .general
+                    .remote_daemon_install_entries()
+                    .into_iter()
+                    .enumerate()
+                {
+                    let label = entry.server_label().unwrap_or_else(|| {
+                        t!("settings.general.session_daemon_answers.unknown_server").to_string()
+                    });
+                    let (state, flip_label, flipped) = match entry.answer {
+                        RemoteDaemonInstall::Allow => (
+                            t!("settings.general.session_daemon_answers.allowed"),
+                            t!("settings.general.session_daemon_answers.refuse"),
+                            RemoteDaemonInstall::Never,
+                        ),
+                        RemoteDaemonInstall::Never => (
+                            t!("settings.general.session_daemon_answers.refused"),
+                            t!("settings.general.session_daemon_answers.allow"),
+                            RemoteDaemonInstall::Allow,
+                        ),
+                    };
+                    let flip_key = entry.key.clone();
+                    let forget_key = entry.key;
+                    settings = settings.child(Self::render_setting_row(
+                        label.as_str(),
+                        state.as_ref(),
+                        div()
+                            .flex()
+                            .flex_shrink_0()
+                            .gap(px(8.0))
+                            .child(
+                                Button::new(
+                                    ("general-session-daemon-answer-flip", index),
+                                    flip_label.to_string(),
+                                )
+                                .variant(ButtonVariant::Outline)
+                                .size(ButtonSize::Sm)
+                                .on_click(cx.listener(
+                                    move |this, _, _window, cx| {
+                                        this.config
+                                            .general
+                                            .change_remote_daemon_install(&flip_key, flipped);
+                                        this.save_config(cx);
+                                    },
+                                )),
+                            )
+                            .child(
+                                Button::new(
+                                    ("general-session-daemon-answer-forget", index),
+                                    t!("settings.general.session_daemon_answers.forget_one")
+                                        .to_string(),
+                                )
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Sm)
+                                .on_click(cx.listener(
+                                    move |this, _, _window, cx| {
+                                        this.config
+                                            .general
+                                            .forget_remote_daemon_install(&forget_key);
+                                        this.save_config(cx);
+                                    },
+                                )),
+                            ),
+                    ));
+                }
             }
         }
         settings

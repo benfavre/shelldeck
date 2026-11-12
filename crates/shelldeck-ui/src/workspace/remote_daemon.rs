@@ -419,6 +419,14 @@ pub(super) fn first_ask(connection_id: Uuid) -> bool {
 }
 
 /// The recorded answers were forgotten: ask and notify again in this run.
+/// The answer for this connection was changed or forgotten in Settings:
+/// its notice and question may come back in this run.
+pub(super) fn forget_question(connection_id: Uuid) {
+    let mut state = state().lock();
+    state.asked.remove(&connection_id);
+    state.noticed.remove(&connection_id);
+}
+
 pub(super) fn forget_questions() {
     let mut state = state().lock();
     state.asked.clear();
@@ -623,8 +631,9 @@ fn fallback_reason_key(reason: FallbackReason) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_connect, consent, end_connect, expect_layout, ready_plan, ready_plan_with,
-        reserved_panes, take_layout, ReadyPlan, PANE_LABEL,
+        begin_connect, consent, end_connect, expect_layout, first_ask, first_notice,
+        forget_question, ready_plan, ready_plan_with, reserved_panes, take_layout, ReadyPlan,
+        PANE_LABEL,
     };
     use shelldeck_core::config::app_config::{AppConfig, RemoteDaemonInstall};
     use shelldeck_core::config::workspace_state::DaemonTabLayout;
@@ -1007,6 +1016,20 @@ mod tests {
         // A fallback or a failure ends the connect: nothing is kept.
         assert_eq!(end_connect(conn, Some(tab_two)), 0);
         assert!(reserved_panes(conn).is_empty());
+    }
+
+    // SDTEST-3071 (SDUC-574): an answer changed or forgotten for one
+    // server in Settings lets that server's question and notice come back
+    // in this run; the other servers stay as they were.
+    #[test]
+    fn sdtest_3071_one_server_is_asked_again_after_its_answer_changed() {
+        let (changed, other) = (Uuid::new_v4(), Uuid::new_v4());
+        assert!(first_ask(changed) && first_notice(changed));
+        assert!(first_ask(other) && first_notice(other));
+        assert!(!first_ask(changed) && !first_notice(changed));
+        forget_question(changed);
+        assert!(first_ask(changed) && first_notice(changed));
+        assert!(!first_ask(other) && !first_notice(other));
     }
 
     fn pane(label: &str, alive: bool) -> PaneInfo {
