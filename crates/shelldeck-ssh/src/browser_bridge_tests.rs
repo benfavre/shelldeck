@@ -58,9 +58,11 @@ impl server::Handler for Server {
     async fn channel_open_session(
         &mut self,
         _: Channel<server::Msg>,
+        reply: russh::server::ChannelOpenHandle,
         _: &mut Session,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
+    ) -> Result<(), Self::Error> {
+        reply.accept().await;
+        Ok(())
     }
     async fn exec_request(
         &mut self,

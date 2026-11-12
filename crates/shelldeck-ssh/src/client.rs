@@ -613,9 +613,11 @@ mod proxy_jump_transport_tests {
         async fn channel_open_session(
             &mut self,
             _channel: Channel<Msg>,
+            reply: russh::server::ChannelOpenHandle,
             _session: &mut Session,
-        ) -> Result<bool, Self::Error> {
-            Ok(true)
+        ) -> Result<(), Self::Error> {
+            reply.accept().await;
+            Ok(())
         }
 
         async fn exec_request(
@@ -653,8 +655,10 @@ mod proxy_jump_transport_tests {
             port_to_connect: u32,
             _originator_address: &str,
             _originator_port: u32,
+            reply: russh::server::ChannelOpenHandle,
             _session: &mut Session,
-        ) -> Result<bool, Self::Error> {
+        ) -> Result<(), Self::Error> {
+            reply.accept().await;
             let _ = self.requests.send(DirectTcpIpRequest {
                 host: host_to_connect.to_owned(),
                 port: port_to_connect,
@@ -671,7 +675,7 @@ mod proxy_jump_transport_tests {
                 let _ = running.await;
             });
 
-            Ok(true)
+            Ok(())
         }
     }
 
@@ -748,9 +752,9 @@ mod proxy_jump_transport_tests {
         async fn auth_publickey(
             &mut self,
             user: &str,
-            key: &russh::keys::ssh_key::PublicKey,
+            key: russh::server::VerifiedPublicKey<'_>,
         ) -> Result<Auth, Self::Error> {
-            if user == "shelldeck-key-fixture" && key == &self.expected {
+            if user == "shelldeck-key-fixture" && key.public_key == &self.expected {
                 let _ = self.verified.send(());
                 Ok(Auth::Accept)
             } else {

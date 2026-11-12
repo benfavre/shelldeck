@@ -806,8 +806,10 @@ mod tests {
             port_to_connect: u32,
             _originator_address: &str,
             _originator_port: u32,
+            reply: russh::server::ChannelOpenHandle,
             _session: &mut Session,
-        ) -> Result<bool, Self::Error> {
+        ) -> Result<(), Self::Error> {
+            reply.accept().await;
             let _ = self.requests.send(DirectTcpIpRequest {
                 host: host_to_connect.to_owned(),
                 port: port_to_connect,
@@ -819,7 +821,7 @@ mod tests {
                 let _ = tokio::io::copy(&mut reader, &mut writer).await;
             });
 
-            Ok(true)
+            Ok(())
         }
     }
 
