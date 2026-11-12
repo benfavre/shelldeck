@@ -356,6 +356,10 @@ pub enum ActiveView {
     MoniqueConsole,
     Fleet,
     BextCloud,
+    /// The Support console (tickets and requests) inside Dev, for staff
+    /// accounts. The same `SupportView` entity as Support mode: only one
+    /// mode surface renders per frame.
+    Support,
     Settings,
 }
 

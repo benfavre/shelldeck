@@ -284,8 +284,17 @@ impl Workspace {
         self.settings.update(cx, |settings, cx| {
             settings.set_dev_tabs_enabled(dev_tabs_enabled, cx);
         });
+        // Staff accounts get the Support console in the Dev rail as well.
+        let support_rail = self.can_access_mode(AppMode::Support);
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_support_rail(support_rail);
+            cx.notify();
+        });
+        if !support_rail && self.active_view == ActiveView::Support {
+            self.active_view = ActiveView::Terminal;
+        }
         self.sync_support_poll(cx);
-        if self.effective_mode() == AppMode::Support && self.can_access_mode(AppMode::Support) {
+        if self.support_surface_visible() {
             self.refresh_support(cx);
         }
         self.update_monique_availability(cx);

@@ -174,7 +174,7 @@ impl Workspace {
     }
 
     pub(super) fn current_ai_context(&self, cx: &App) -> AiContext {
-        if self.effective_mode() == AppMode::Support {
+        if self.support_surface_visible() {
             let support = self.support.read(cx);
             return AiContext::new(
                 support.ai_surface(),
@@ -2309,7 +2309,7 @@ impl Workspace {
                         return;
                     }
                 };
-                if self.effective_mode() == AppMode::Support {
+                if self.support_surface_visible() {
                     self.support.update(cx, |view, cx| {
                         view.set_section(crate::support_view::SupportSection::Requests, cx);
                         cx.notify();
