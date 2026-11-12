@@ -386,6 +386,7 @@ actions!(
         OpenRecent,
         OpenFileEditorView,
         CloudSyncNow,
+        CheckForUpdates,
         SwitchSite,
         OpenMoniqueConsole,
         OpenFleet,

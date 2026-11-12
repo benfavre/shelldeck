@@ -219,6 +219,7 @@ impl Workspace {
             Cmd::Documentation => {
                 let _ = cloud_account::open_in_browser("https://shelldeck.1clic.pro");
             }
+            Cmd::CheckForUpdates => self.check_for_updates_now(cx),
             Cmd::About => {
                 self.settings.update(cx, |settings, cx| {
                     settings.set_active_tab(crate::settings::SettingsTab::About, cx);

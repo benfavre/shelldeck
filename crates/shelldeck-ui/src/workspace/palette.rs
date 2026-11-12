@@ -43,6 +43,12 @@ impl Workspace {
                     Box::new(CloudSyncNow),
                 ),
                 PaletteAction::new(
+                    t!("palette.check_for_updates").to_string(),
+                    None,
+                    "download",
+                    Box::new(CheckForUpdates),
+                ),
+                PaletteAction::new(
                     t!("palette.switch_site").to_string(),
                     None,
                     "globe",
@@ -365,6 +371,8 @@ impl Workspace {
             self.activate_dev_section(SidebarSection::FileEditor, cx);
         } else if action.as_any().is::<CloudSyncNow>() {
             self.cloud_sync_now(cx);
+        } else if action.as_any().is::<CheckForUpdates>() {
+            self.check_for_updates_now(cx);
         } else if action.as_any().is::<SetupInkluraExtension>() {
             self.setup_inklura_extension(cx);
         } else if action.as_any().is::<SwitchSite>() {

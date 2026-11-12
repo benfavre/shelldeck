@@ -149,6 +149,9 @@ fn verify_release_signature_with_key(
 #[derive(Debug, Clone)]
 pub enum AutoUpdateEvent {
     StatusChanged(AutoUpdateStatus),
+    /// A check the user asked for (`check_now`) found nothing newer, or could
+    /// not run at all. Automatic checks stay silent; a manual one always answers.
+    ManualCheckResult(String),
 }
 
 /// GPUI entity that manages background update polling.
@@ -212,7 +215,47 @@ impl AutoUpdater {
         if !self.enabled {
             return;
         }
+        self.run_check(false, cx);
+    }
 
+    /// Check for an update because the user asked to, and install it if one
+    /// is found. Works even with automatic updates turned off, and always
+    /// reports an outcome — including the reason it cannot check at all.
+    pub fn check_now(&mut self, cx: &mut Context<Self>) {
+        if embedded_verification_key().is_none() {
+            cx.emit(AutoUpdateEvent::ManualCheckResult(format!(
+                "v{CURRENT_VERSION} is a local build without the release signing key, so it cannot \
+                 update itself. Install a release build: \
+                 curl -fsSL {UPDATE_SERVER}/install.sh | sh"
+            )));
+            return;
+        }
+        match &self.status {
+            AutoUpdateStatus::Updated(v) => {
+                cx.emit(AutoUpdateEvent::ManualCheckResult(format!(
+                    "Update {v} is already installed — restart to apply"
+                )));
+                return;
+            }
+            AutoUpdateStatus::Checking
+            | AutoUpdateStatus::Downloading
+            | AutoUpdateStatus::Installing => {
+                cx.emit(AutoUpdateEvent::ManualCheckResult(
+                    "An update check is already in progress".into(),
+                ));
+                return;
+            }
+            _ => {}
+        }
+        // A release found by an earlier check but not installed yet.
+        if let Some(release) = self.latest_release.take() {
+            self.download_and_install(release, cx);
+            return;
+        }
+        self.run_check(true, cx);
+    }
+
+    fn run_check(&mut self, manual: bool, cx: &mut Context<Self>) {
         let Some(generation) = self.begin_operation(AutoUpdateStatus::Checking, cx) else {
             return;
         };
@@ -247,16 +290,18 @@ impl AutoUpdater {
             match result {
                 Ok(release) => {
                     let _ = this.update(cx, |u, cx| {
-                        if u.accepts_operation(generation, &AutoUpdateStatus::Checking) && u.enabled
+                        if u.accepts_operation(generation, &AutoUpdateStatus::Checking)
+                            && (manual || u.enabled)
                         {
-                            u.handle_release_check(release, cx);
+                            u.handle_release_check(release, manual, cx);
                         }
                     });
                 }
                 Err(e) => {
                     tracing::warn!("Update check failed: {}", e);
                     let _ = this.update(cx, |u, cx| {
-                        if u.accepts_operation(generation, &AutoUpdateStatus::Checking) && u.enabled
+                        if u.accepts_operation(generation, &AutoUpdateStatus::Checking)
+                            && (manual || u.enabled)
                         {
                             u.set_status(AutoUpdateStatus::Errored(e.to_string()), cx);
                         }
@@ -267,7 +312,7 @@ impl AutoUpdater {
         .detach();
     }
 
-    fn handle_release_check(&mut self, release: ReleaseInfo, cx: &mut Context<Self>) {
+    fn handle_release_check(&mut self, release: ReleaseInfo, manual: bool, cx: &mut Context<Self>) {
         let current = match semver::Version::parse(CURRENT_VERSION) {
             Ok(v) => v,
             Err(e) => {
@@ -301,13 +346,19 @@ impl AutoUpdater {
                 AutoUpdateStatus::UpdateAvailable(release.version.clone()),
                 cx,
             );
-            if self.enabled {
+            if self.enabled || manual {
                 self.download_and_install(release, cx);
             }
         } else {
             tracing::info!("Already up to date ({})", CURRENT_VERSION);
             self.latest_release = None;
             self.set_status(AutoUpdateStatus::Idle, cx);
+            if manual {
+                cx.emit(AutoUpdateEvent::ManualCheckResult(format!(
+                    "Inklura Desktop v{CURRENT_VERSION} is up to date (latest: {})",
+                    release.version
+                )));
+            }
         }
     }
 
@@ -412,8 +463,10 @@ impl AutoUpdater {
         let was_enabled = self.enabled;
         self.enabled = update_checks_enabled(requested, embedded_verification_key());
         if requested && !self.enabled {
-            tracing::debug!(
-                "Auto-update disabled because this build has no embedded verification key"
+            tracing::warn!(
+                "Auto-update disabled: this build (v{}) has no embedded update verification key \
+                 (local/dev build). Install a release build to receive updates.",
+                CURRENT_VERSION
             );
         }
 
