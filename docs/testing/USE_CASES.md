@@ -3367,6 +3367,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-12**: Added SDUC-577: application shortcuts can be changed or removed in a `[keybindings]` table of the configuration file; every label follows. SDTEST-3100..3103.
+
 - **2026-11-12**: Added SDUC-576: a program in a terminal reports what it is doing through OSC 7501 (Program Status Protocol); the tab shows it and the view switcher marks the view that needs the user or has something new. SDTEST-3093..3099.
 
 - **2026-11-12**: Added SDUC-575: the full application and the focused Agents, Terminal and Editor views are four presentations of one window, switched from the title bar, a shortcut, the palette, the View menu, `--terminal` / `--editor` and their links. The one-way "open the full application" button of SDUC-558 is replaced by the switcher. The terminal of the full application no longer loses the width of a sidebar panel that is not drawn. SDTEST-3085..3092.
@@ -5275,3 +5277,30 @@ SDTEST-3097..3099 (tab attention, split tabs, switcher). Not done: the status
 is not part of the session daemon snapshot, so a pane reattached after a
 restart has no status until its program reports again; no OS notification is
 sent; the rail of the full application carries no dot.
+
+### SDUC-577: Changing application shortcuts in the configuration file
+
+The user can change or remove an application shortcut by adding a
+`[keybindings]` table to the configuration file (`action = "keys"`, an empty
+value removes the shortcut). The table is read at startup. Reference:
+[`keybindings.md`](../keybindings.md).
+
+- 23 actions can be changed (palette, views, sidebar, tabs, splits, copy and
+  paste, search, zoom, quit...). An action that is not listed keeps its
+  built-in keys; a removed one stays reachable from menus and the palette.
+- Menus, the command palette, tooltips, the terminal toolbar, the status bar
+  and the shortcut lists show the keys in effect. A removed shortcut shows no
+  keys, and its row leaves the shortcut lists.
+- An entry that cannot be applied is reported in a notice at startup and the
+  built-in keys stay: unknown action, keys that cannot be read, or keys
+  already used by another action. Two actions never share keys; moving or
+  removing the other action in the same table makes the change valid, and a
+  swap is accepted.
+- The application never writes the table by itself and never loses it when it
+  saves the configuration.
+
+Verified by SDTEST-3100 (built-in keys and ids are distinct on both
+platforms), SDTEST-3101 and SDTEST-3102 (the table: change, removal, no-op,
+unknown, invalid, conflicts, swap), SDTEST-3103 (file format). Not done: no
+editor in Settings, no reload without restart, and the keys of the Agents
+composer, the file editor and the embedded browser are not in the table.

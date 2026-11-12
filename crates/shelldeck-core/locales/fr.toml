@@ -2973,6 +2973,10 @@ native_browser.stay_on_page = "Rester sur la page"
 "presentation.unavailable" = "Cette vue nécessite un compte Inklura Desktop Dev. Votre espace disponible est ouvert."
 "palette.presentation" = "Vue : %{name}"
 "presentation.next" = "Vue suivante"
+# Entries of the [keybindings] table that could not be applied at startup.
+"keybindings.problem.unknown" = "Raccourcis : action inconnue « %{name} » dans [keybindings], ignorée."
+"keybindings.problem.invalid" = "Raccourcis : « %{keys} » n’est pas une combinaison valide pour %{action}. Le raccourci d’origine est conservé."
+"keybindings.problem.conflict" = "Raccourcis : %{keys} est demandé par plusieurs actions (%{actions}). Les raccourcis d’origine sont conservés."
 "presentation.attention.needs_you" = "%{name} · une action vous attend"
 "presentation.attention.finished" = "%{name} · du nouveau à voir"
 # What a program in a terminal tab says it is doing (OSC 7501).

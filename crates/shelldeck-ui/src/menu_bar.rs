@@ -14,7 +14,7 @@
 //! for which account in which mode* — testable without a GPUI context, per
 //! `.agents/testing.md`.
 
-use crate::shortcut_reference::display_accelerator;
+use crate::shortcut_reference::BindableAction;
 use shelldeck_core::config::cloud_account::AppMode;
 
 /// Height of the menu triggers, in logical px before UI scaling.
@@ -113,9 +113,10 @@ impl MenuEntry {
         }
     }
 
-    fn shortcut(mut self, keys: &str) -> Self {
+    /// Show the keys the action is bound to. Nothing when the user unbound it.
+    fn shortcut(mut self, action: BindableAction) -> Self {
         if let MenuEntry::Command { shortcut, .. } = &mut self {
-            *shortcut = Some(accel(keys));
+            *shortcut = crate::shortcut_reference::label(action);
         }
         self
     }
@@ -160,13 +161,6 @@ pub struct MenuBarContext {
     /// Current destination in the Dev « Aller » menu. Marking it selected
     /// lets the bounded dropdown reveal it automatically when it opens.
     pub active_go: Option<MenuCommand>,
-}
-
-/// Render `secondary-k` style binding descriptions the way the host platform
-/// spells them. `secondary` is Cmd on macOS and Ctrl elsewhere, matching
-/// `crates/shelldeck/src/actions.rs`.
-pub(crate) fn accel(keys: &str) -> String {
-    display_accelerator(keys)
 }
 
 /// Collapse the menu titles before they compete with account/window controls.
@@ -221,7 +215,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.file.quick_connect").to_string(),
                     MenuCommand::QuickConnect,
                 )
-                .shortcut("secondary-k")
+                .shortcut(BindableAction::QuickConnect)
                 .icon("zap"),
             );
             file.push(
@@ -230,7 +224,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.file.new_terminal").to_string(),
                     MenuCommand::NewTerminal,
                 )
-                .shortcut("secondary-t")
+                .shortcut(BindableAction::NewTerminal)
                 .icon("terminal"),
             );
             file.push(
@@ -274,7 +268,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 t!("menu.file.settings").to_string(),
                 MenuCommand::OpenSettings,
             )
-            .shortcut("secondary-,")
+            .shortcut(BindableAction::Settings)
             .icon("settings"),
         );
         file.push(MenuEntry::Separator);
@@ -295,7 +289,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
             t!("menu.file.quit").to_string(),
             MenuCommand::Quit,
         )
-        .shortcut("secondary-q")
+        .shortcut(BindableAction::Quit)
         .icon("x"),
     );
 
@@ -308,22 +302,14 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 t!("menu.edit.copy").to_string(),
                 MenuCommand::Copy,
             )
-            .shortcut(if cfg!(target_os = "macos") {
-                "secondary-c"
-            } else {
-                "ctrl-shift-c"
-            })
+            .shortcut(BindableAction::Copy)
             .icon("copy"),
             MenuEntry::command(
                 "edit-paste",
                 t!("menu.edit.paste").to_string(),
                 MenuCommand::Paste,
             )
-            .shortcut(if cfg!(target_os = "macos") {
-                "secondary-v"
-            } else {
-                "ctrl-shift-v"
-            })
+            .shortcut(BindableAction::Paste)
             .icon("clipboard-paste"),
             MenuEntry::Separator,
         ]);
@@ -335,7 +321,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 t!("menu.edit.find").to_string(),
                 MenuCommand::Find,
             )
-            .shortcut("secondary-f")
+            .shortcut(BindableAction::Search)
             .icon("search"),
         );
     }
@@ -345,7 +331,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
             t!("menu.edit.command_palette").to_string(),
             MenuCommand::CommandPalette,
         )
-        .shortcut("secondary-shift-p")
+        .shortcut(BindableAction::CommandPalette)
         .icon("keyboard"),
     );
 
@@ -358,7 +344,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 t!("menu.view.sidebar").to_string(),
                 MenuCommand::ToggleSidebar,
             )
-            .shortcut("secondary-b")
+            .shortcut(BindableAction::ToggleSidebar)
             .checked(ctx.sidebar_visible),
         );
     }
@@ -368,7 +354,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
             t!("menu.view.menu_bar").to_string(),
             MenuCommand::ToggleMenuBar,
         )
-        .shortcut("secondary-shift-m")
+        .shortcut(BindableAction::ToggleMenuBar)
         .checked(ctx.menu_bar_visible),
     );
     view.push(MenuEntry::Separator);
@@ -401,7 +387,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 t!("menu.view.terminal_zoom_in").to_string(),
                 MenuCommand::TerminalZoomIn,
             )
-            .shortcut("secondary-="),
+            .shortcut(BindableAction::ZoomIn),
         );
         view.push(
             MenuEntry::command(
@@ -409,7 +395,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 t!("menu.view.terminal_zoom_out").to_string(),
                 MenuCommand::TerminalZoomOut,
             )
-            .shortcut("secondary--"),
+            .shortcut(BindableAction::ZoomOut),
         );
         view.push(
             MenuEntry::command(
@@ -417,7 +403,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 t!("menu.view.terminal_zoom_reset").to_string(),
                 MenuCommand::TerminalZoomReset,
             )
-            .shortcut("secondary-0"),
+            .shortcut(BindableAction::ZoomReset),
         );
     }
 
@@ -434,7 +420,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 t!("presentation.next").to_string(),
                 MenuCommand::NextPresentation,
             )
-            .shortcut(crate::shortcut_reference::CYCLE_PRESENTATION_BINDING)
+            .shortcut(BindableAction::NextView)
             .icon("layout-dashboard"),
         );
     }
@@ -504,7 +490,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.go.file_editor").to_string(),
                     MenuCommand::GoFileEditor,
                 )
-                .shortcut("secondary-e")
+                .shortcut(BindableAction::FileEditor)
                 .icon("pencil")
                 .checked(ctx.active_go == Some(MenuCommand::GoFileEditor)),
             );
@@ -572,26 +558,26 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.file.new_terminal").to_string(),
                     MenuCommand::NewTerminal,
                 )
-                .shortcut("secondary-t"),
+                .shortcut(BindableAction::NewTerminal),
                 MenuEntry::command(
                     "term-close",
                     t!("menu.terminal.close_tab").to_string(),
                     MenuCommand::CloseTab,
                 )
-                .shortcut("secondary-w"),
+                .shortcut(BindableAction::CloseTab),
                 MenuEntry::Separator,
                 MenuEntry::command(
                     "term-next",
                     t!("menu.terminal.next_tab").to_string(),
                     MenuCommand::NextTab,
                 )
-                .shortcut("ctrl-tab"),
+                .shortcut(BindableAction::NextTab),
                 MenuEntry::command(
                     "term-prev",
                     t!("menu.terminal.prev_tab").to_string(),
                     MenuCommand::PrevTab,
                 )
-                .shortcut("ctrl-shift-tab"),
+                .shortcut(BindableAction::PrevTab),
                 MenuEntry::Separator,
                 MenuEntry::command(
                     "term-split-h",
@@ -609,7 +595,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                     t!("menu.terminal.clear").to_string(),
                     MenuCommand::ClearTerminal,
                 )
-                .shortcut("secondary-l"),
+                .shortcut(BindableAction::ClearTerminal),
             ],
         });
     }
@@ -623,7 +609,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 t!("menu.help.ai_assistant").to_string(),
                 MenuCommand::OpenAiAssistant,
             )
-            .shortcut("secondary-shift-k")
+            .shortcut(BindableAction::AiAssistant)
             .icon("sparkles"),
         );
         help.push(MenuEntry::Separator);
@@ -953,8 +939,17 @@ mod tests {
         } else {
             "Ctrl"
         };
-        assert_eq!(accel("secondary-k"), format!("{secondary}+K"));
-        assert_eq!(accel("secondary-shift-p"), format!("{secondary}+Shift+P"));
-        assert_eq!(accel("ctrl-shift-tab"), "Ctrl+Shift+Tab");
+        assert_eq!(
+            crate::shortcut_reference::display_accelerator("secondary-k"),
+            format!("{secondary}+K")
+        );
+        assert_eq!(
+            crate::shortcut_reference::display_accelerator("secondary-shift-p"),
+            format!("{secondary}+Shift+P")
+        );
+        assert_eq!(
+            crate::shortcut_reference::display_accelerator("ctrl-shift-tab"),
+            "Ctrl+Shift+Tab"
+        );
     }
 }

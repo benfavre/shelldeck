@@ -1176,3 +1176,15 @@ hidden sidebar button. They were checked in the native walkthrough of
 Not automated: the tab dot colour and size, the tooltip, the switcher dot and
 the "seen" mark set while the terminal view renders in an active window.
 
+## Keyboard shortcuts table (2026-11-12)
+
+| ID | Test | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3100 | `shortcut_reference::tests::sdtest_3100_built_in_shortcuts_have_distinct_ids_and_keys` | SDUC-577 | Green | No GPUI. On Linux/Windows and on macOS no two built-in shortcuts share keys (compared in a canonical spelling), ids are distinct and round-trip through `from_id`. |
+| SDTEST-3101 | `shortcut_reference::tests::sdtest_3101_the_keybindings_table_rebinds_unbinds_and_reports` | SDUC-577 | Green | No GPUI. A change and a removal are kept, the built-in keys in another spelling are not a change, an unknown action and invalid keys are reported and skipped. |
+| SDTEST-3102 | `shortcut_reference::tests::sdtest_3102_a_change_onto_keys_in_use_is_refused_and_reported` | SDUC-577 | Green | No GPUI. A change onto keys in use is refused and names both actions; moving or removing the owner in the same table, and a swap, are accepted; two changes onto the same new keys are both refused. |
+
+SDTEST-3103 (`[keybindings]` file format) is in `tests-core.md`. Not
+automated: the registration of the resolved keys with GPUI and the labels in a
+real window.
+

@@ -238,6 +238,14 @@ impl Workspace {
         });
     }
 
+    /// Tell the user which entries of `[keybindings]` were not applied at
+    /// startup, once. The built-in keys stay for those actions.
+    pub fn report_keybinding_problems(&mut self, cx: &mut Context<Self>) {
+        for problem in crate::shortcut_reference::take_keybinding_problems() {
+            self.show_toast(problem.message(), ToastLevel::Warning, cx);
+        }
+    }
+
     /// Show a toast notification in the bottom-right corner of the workspace.
     pub fn show_toast(&self, msg: impl Into<String>, level: ToastLevel, cx: &mut Context<Self>) {
         // When notifications are disabled, suppress informational toasts

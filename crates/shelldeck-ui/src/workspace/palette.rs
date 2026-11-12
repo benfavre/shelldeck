@@ -1,4 +1,5 @@
 use super::*;
+use crate::shortcut_reference::{label as shortcut_label, BindableAction};
 
 impl Workspace {
     /// The fixed command-palette entries (everything except the runtime-dependent
@@ -22,7 +23,7 @@ impl Workspace {
             // the menu row cannot be the only place that can restore itself.
             PaletteAction::new(
                 t!("menu.view.menu_bar").to_string(),
-                Some("Ctrl+Shift+M"),
+                shortcut_label(BindableAction::ToggleMenuBar).as_deref(),
                 "menu",
                 Box::new(ToggleMenuBar),
             ),
@@ -32,7 +33,7 @@ impl Workspace {
             actions.extend([
                 PaletteAction::new(
                     t!("palette.open_settings").to_string(),
-                    Some("Ctrl+,"),
+                    shortcut_label(BindableAction::Settings).as_deref(),
                     "settings",
                     Box::new(OpenSettings),
                 ),
@@ -101,31 +102,31 @@ impl Workspace {
             actions.extend([
                 PaletteAction::new(
                     t!("palette.new_terminal").to_string(),
-                    Some("Ctrl+T"),
+                    shortcut_label(BindableAction::NewTerminal).as_deref(),
                     "terminal",
                     Box::new(NewTerminal),
                 ),
                 PaletteAction::new(
                     t!("palette.toggle_sidebar").to_string(),
-                    Some("Ctrl+B"),
+                    shortcut_label(BindableAction::ToggleSidebar).as_deref(),
                     "chevron-left",
                     Box::new(ToggleSidebar),
                 ),
                 PaletteAction::new(
                     t!("palette.close_tab").to_string(),
-                    Some("Ctrl+W"),
+                    shortcut_label(BindableAction::CloseTab).as_deref(),
                     "x",
                     Box::new(CloseTab),
                 ),
                 PaletteAction::new(
                     t!("palette.next_tab").to_string(),
-                    Some("Ctrl+Tab"),
+                    shortcut_label(BindableAction::NextTab).as_deref(),
                     "chevron-right",
                     Box::new(NextTab),
                 ),
                 PaletteAction::new(
                     t!("palette.prev_tab").to_string(),
-                    Some("Ctrl+Shift+Tab"),
+                    shortcut_label(BindableAction::PrevTab).as_deref(),
                     "chevron-left",
                     Box::new(PrevTab),
                 ),
@@ -155,7 +156,7 @@ impl Workspace {
                 ),
                 PaletteAction::new(
                     t!("palette.open_file_editor").to_string(),
-                    Some("Ctrl+E"),
+                    shortcut_label(BindableAction::FileEditor).as_deref(),
                     "pencil",
                     Box::new(OpenFileEditorView),
                 ),
@@ -195,7 +196,7 @@ impl Workspace {
         if signed_in && (ai_configured || allowed_modes.contains(&AppMode::Dev)) {
             actions.push(PaletteAction::new(
                 t!("palette.open_ai").to_string(),
-                Some("Ctrl+Shift+K"),
+                shortcut_label(BindableAction::AiAssistant).as_deref(),
                 "zap",
                 Box::new(OpenAiAssistant),
             ));
@@ -223,7 +224,7 @@ impl Workspace {
             }
             actions.push(PaletteAction::new(
                 t!("presentation.next").to_string(),
-                Some("Ctrl+Shift+L"),
+                shortcut_label(BindableAction::NextView).as_deref(),
                 "layout-dashboard",
                 Box::new(CyclePresentation),
             ));
@@ -261,7 +262,7 @@ impl Workspace {
         // palette puis Entrée » une fermeture de l'application.
         actions.push(PaletteAction::new(
             t!("palette.quit").to_string(),
-            Some("Ctrl+Q"),
+            shortcut_label(BindableAction::Quit).as_deref(),
             "x",
             Box::new(Quit),
         ));

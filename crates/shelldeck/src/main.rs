@@ -715,6 +715,7 @@ impl CompanionRoot {
         });
         workspace.read(cx).focus_handle.focus(window);
         workspace.update(cx, |ws, cx| ws.restore_session(cx));
+        workspace.update(cx, |ws, cx| ws.report_keybinding_problems(cx));
         let initial_presentation = self.initial_presentation;
         workspace.update(cx, |ws, cx| {
             ws.request_presentation(initial_presentation, cx)
@@ -2107,7 +2108,9 @@ fn main() -> Result<()> {
         ShellDeckColors::set_theme(&config.theme);
         install_theme(cx, shelldeck_ui::theme::adabraka_theme_from_palette());
 
-        // Register keyboard shortcuts
+        // Register keyboard shortcuts: the built-in ones with the user's
+        // `[keybindings]` applied first.
+        shelldeck_ui::shortcut_reference::apply_keybindings(&config.keybindings);
         actions::register_keybindings(cx);
 
         // Platform callbacks intentionally only enqueue a small ID. Routing

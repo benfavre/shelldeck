@@ -1,6 +1,7 @@
 //! Transient workspace presentation: the full app or one focused Dev view.
 //! Authentication and the persisted app mode remain authoritative.
 use super::*;
+use crate::shortcut_reference::BindableAction;
 use crate::view_attention::ViewAttention;
 
 /// What the window shows around the Dev views: the full app (titlebar menus,
@@ -331,7 +332,7 @@ impl Workspace {
         attention: [ViewAttention; 4],
         handle: &WeakEntity<Self>,
     ) -> impl IntoElement {
-        let keys = crate::menu_bar::accel(crate::shortcut_reference::CYCLE_PRESENTATION_BINDING);
+        let keys = crate::shortcut_reference::label(BindableAction::NextView);
         let mut group = div()
             .id("titlebar-presentation")
             .flex()
@@ -357,16 +358,15 @@ impl Workspace {
                 .to_string(),
                 ViewAttention::None => presentation.label(),
             };
-            let tooltip: SharedString = if active {
-                t!(
+            let tooltip: SharedString = match &keys {
+                Some(keys) if active => t!(
                     "presentation.tooltip_active",
                     name = name,
                     keys = keys.clone()
                 )
                 .to_string()
-                .into()
-            } else {
-                name.into()
+                .into(),
+                _ => name.into(),
             };
             let workspace = handle.clone();
             let mut segment = div()

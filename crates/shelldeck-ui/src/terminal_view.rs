@@ -19,7 +19,9 @@ use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::tmux::TmuxAction;
 
 use crate::glyph_cache::GlyphCache;
-use crate::shortcut_reference::{shortcuts_for, ShortcutGroup, ShortcutSurface};
+use crate::shortcut_reference::{
+    label as shortcut_label, shortcuts_for, BindableAction, ShortcutGroup, ShortcutSurface,
+};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -2564,25 +2566,11 @@ impl TerminalView {
         let lbl_ai_issue = t!("terminal.toolbar.ai_issue");
         let lbl_ai_stop = t!("terminal.toolbar.ai_stop");
 
-        let (primary, copy_keys, paste_keys, split_h_keys, split_v_keys) =
-            if cfg!(target_os = "macos") {
-                (
-                    "\u{2318}",
-                    "\u{2318}C",
-                    "\u{2318}V",
-                    "\u{2318}D",
-                    "\u{2318}\u{21E7}D",
-                )
-            } else {
-                (
-                    "Ctrl+",
-                    "Ctrl+Shift+C",
-                    "Ctrl+Shift+V",
-                    "Ctrl+Shift+D",
-                    "Ctrl+Shift+Alt+D",
-                )
-            };
-        let shortcut_tooltip = |label: &str, keys: String| format!("{label} ({keys})");
+        // The keys shown are the ones bound, which the user may have changed.
+        let shortcut_tooltip = |label: &str, action: BindableAction| match shortcut_label(action) {
+            Some(keys) => format!("{label} ({keys})"),
+            None => label.to_string(),
+        };
 
         let toolbar_btn = |id: &str, label: &str, tooltip_label: String| {
             let tooltip_label: SharedString = tooltip_label.into();
@@ -2821,7 +2809,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-search",
                     "search",
-                    shortcut_tooltip(lbl_search.as_ref(), format!("{primary}F")),
+                    shortcut_tooltip(lbl_search.as_ref(), BindableAction::Search),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.toggle_search();
@@ -2832,7 +2820,7 @@ impl TerminalView {
             let mut copy = toolbar_icon(
                 "tb-copy",
                 "copy",
-                shortcut_tooltip(lbl_copy.as_ref(), copy_keys.to_string()),
+                shortcut_tooltip(lbl_copy.as_ref(), BindableAction::Copy),
             );
             if !has_selection {
                 copy = copy.opacity(0.45).cursor_default();
@@ -2847,7 +2835,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-paste",
                     "clipboard-paste",
-                    shortcut_tooltip(lbl_paste.as_ref(), paste_keys.to_string()),
+                    shortcut_tooltip(lbl_paste.as_ref(), BindableAction::Paste),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.paste_clipboard(cx);
@@ -2860,7 +2848,7 @@ impl TerminalView {
                     toolbar_btn(
                         "tb-search",
                         lbl_search.as_ref(),
-                        shortcut_tooltip(lbl_search.as_ref(), format!("{primary}F")),
+                        shortcut_tooltip(lbl_search.as_ref(), BindableAction::Search),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_search();
@@ -2871,7 +2859,7 @@ impl TerminalView {
                     let mut btn = toolbar_btn(
                         "tb-copy",
                         lbl_copy.as_ref(),
-                        shortcut_tooltip(lbl_copy.as_ref(), copy_keys.to_string()),
+                        shortcut_tooltip(lbl_copy.as_ref(), BindableAction::Copy),
                     );
                     if !has_selection {
                         btn = btn.opacity(0.45).cursor_default();
@@ -2887,7 +2875,7 @@ impl TerminalView {
                     toolbar_btn(
                         "tb-paste",
                         lbl_paste.as_ref(),
-                        shortcut_tooltip(lbl_paste.as_ref(), paste_keys.to_string()),
+                        shortcut_tooltip(lbl_paste.as_ref(), BindableAction::Paste),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.paste_clipboard(cx);
@@ -2988,7 +2976,7 @@ impl TerminalView {
                 toolbar_btn(
                     "tb-split-h",
                     lbl_split_h.as_ref(),
-                    shortcut_tooltip(lbl_split_h.as_ref(), split_h_keys.to_string()),
+                    shortcut_tooltip(lbl_split_h.as_ref(), BindableAction::SplitHorizontal),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.split_horizontal(cx);
@@ -2998,7 +2986,7 @@ impl TerminalView {
                 toolbar_btn(
                     "tb-split-v",
                     lbl_split_v.as_ref(),
-                    shortcut_tooltip(lbl_split_v.as_ref(), split_v_keys.to_string()),
+                    shortcut_tooltip(lbl_split_v.as_ref(), BindableAction::SplitVertical),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.split_vertical(cx);
@@ -3024,7 +3012,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-zoom-out",
                     "minus",
-                    shortcut_tooltip(t!("shortcuts.zoom").as_ref(), format!("{primary}-")),
+                    shortcut_tooltip(t!("shortcuts.zoom").as_ref(), BindableAction::ZoomOut),
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.zoom_out();
@@ -3060,7 +3048,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-zoom-in",
                     "plus",
-                    shortcut_tooltip(t!("shortcuts.zoom").as_ref(), format!("{primary}=")),
+                    shortcut_tooltip(t!("shortcuts.zoom").as_ref(), BindableAction::ZoomIn),
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.zoom_in();
@@ -3382,7 +3370,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-clear",
                     "trash-2",
-                    shortcut_tooltip(lbl_clear.as_ref(), format!("{primary}L")),
+                    shortcut_tooltip(lbl_clear.as_ref(), BindableAction::ClearTerminal),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     if let Some(session) = this.active_session() {
@@ -3399,7 +3387,7 @@ impl TerminalView {
                 toolbar_btn(
                     "tb-clear",
                     lbl_clear.as_ref(),
-                    shortcut_tooltip(lbl_clear.as_ref(), format!("{primary}L")),
+                    shortcut_tooltip(lbl_clear.as_ref(), BindableAction::ClearTerminal),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     if let Some(session) = this.active_session() {

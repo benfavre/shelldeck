@@ -2973,6 +2973,10 @@ native_browser.stay_on_page = "Stay on page"
 "presentation.unavailable" = "This view requires an Inklura Desktop Dev account. Your available workspace is open."
 "palette.presentation" = "View: %{name}"
 "presentation.next" = "Next view"
+# Entries of the [keybindings] table that could not be applied at startup.
+"keybindings.problem.unknown" = "Shortcuts: unknown action '%{name}' in [keybindings], ignored."
+"keybindings.problem.invalid" = "Shortcuts: '%{keys}' is not a valid key combination for %{action}. The built-in shortcut is kept."
+"keybindings.problem.conflict" = "Shortcuts: %{keys} is requested by several actions (%{actions}). The built-in shortcuts are kept."
 "presentation.attention.needs_you" = "%{name} · needs you"
 "presentation.attention.finished" = "%{name} · finished, not seen yet"
 # What a program in a terminal tab says it is doing (OSC 7501).

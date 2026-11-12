@@ -1,11 +1,5 @@
 use gpui::*;
-use shelldeck_ui::shortcut_reference::{
-    CLEAR_TERMINAL_BINDING, CLOSE_TAB_BINDING, COMMAND_PALETTE_BINDING, CYCLE_PRESENTATION_BINDING,
-    MACOS_COPY_BINDING, MACOS_PASTE_BINDING, MACOS_SPLIT_BINDING, NEW_TERMINAL_BINDING,
-    NEXT_TAB_BINDING, OTHER_COPY_BINDING, OTHER_PASTE_BINDING, OTHER_SPLIT_BINDING, QUIT_BINDING,
-    SEARCH_BINDING, SETTINGS_BINDING, TOGGLE_SIDEBAR_BINDING, ZOOM_IN_BINDING, ZOOM_OUT_BINDING,
-    ZOOM_RESET_BINDING,
-};
+use shelldeck_ui::shortcut_reference::BindableAction;
 
 // Re-export workspace actions for keybinding registration
 pub use shelldeck_ui::workspace::{
@@ -24,75 +18,70 @@ pub use shelldeck_ui::terminal_view::{
     ToggleSplitFocus, ZoomIn, ZoomOut, ZoomReset,
 };
 
-/// Register all keyboard shortcuts.
+/// Register the application shortcuts.
 ///
-/// Uses the `secondary` modifier for cross-platform correctness:
-///   - macOS: `secondary` = Cmd
-///   - Linux/Windows: `secondary` = Ctrl
-///
-/// Clipboard and split shortcuts need platform-specific bindings because
-/// Ctrl+C (SIGINT), Ctrl+V (literal-next), and Ctrl+D (EOF) conflict
-/// with terminal control characters on Linux/Windows.
+/// The keys come from `shortcut_reference::keys`: the built-in ones, or the
+/// user's `[keybindings]` (apply those first). The built-in keys use the
+/// `secondary` modifier (Cmd on macOS, Ctrl elsewhere); split, copy and paste
+/// differ by platform because Ctrl+C (SIGINT), Ctrl+V (literal-next) and
+/// Ctrl+D (EOF) are terminal control characters on Linux and Windows.
 pub fn register_keybindings(cx: &mut App) {
-    let mut bindings = vec![
-        // Quick connect: Cmd+K (macOS) / Ctrl+K (Linux/Win)
-        KeyBinding::new("secondary-k", OpenQuickConnect, None),
-        // Contextual AI assistant: keep Quick Connect's established Cmd/Ctrl+K.
-        KeyBinding::new("secondary-shift-k", OpenAiAssistant, None),
-        // New terminal: Cmd+T (macOS) / Ctrl+T (Linux/Win)
-        KeyBinding::new(NEW_TERMINAL_BINDING, NewTerminal, None),
-        // Toggle sidebar: Cmd+B (macOS) / Ctrl+B (Linux/Win)
-        KeyBinding::new(TOGGLE_SIDEBAR_BINDING, ToggleSidebar, None),
-        // Toggle application menu bar; remains available after the row hides.
-        KeyBinding::new("secondary-shift-m", ToggleMenuBar, None),
-        // Settings: Cmd+, (macOS) / Ctrl+, (Linux/Win)
-        KeyBinding::new(SETTINGS_BINDING, OpenSettings, None),
-        // Tab navigation (Ctrl+Tab on all platforms)
-        KeyBinding::new(NEXT_TAB_BINDING, NextTab, None),
-        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
-        // Close tab: Cmd+W (macOS) / Ctrl+W (Linux/Win)
-        KeyBinding::new(CLOSE_TAB_BINDING, CloseTab, None),
-        // Clear terminal: Cmd+L (macOS) / Ctrl+L (Linux/Win)
-        KeyBinding::new(CLEAR_TERMINAL_BINDING, ClearTerminal, None),
-        // Search: Cmd+F (macOS) / Ctrl+F (Linux/Win) — intercepted before terminal
-        KeyBinding::new(SEARCH_BINDING, ToggleSearch, None),
-        // Zoom: Cmd+=/- (macOS) / Ctrl+=/- (Linux/Win)
-        KeyBinding::new(ZOOM_IN_BINDING, ZoomIn, None),
-        KeyBinding::new(ZOOM_OUT_BINDING, ZoomOut, None),
-        KeyBinding::new(ZOOM_RESET_BINDING, ZoomReset, None),
-        // Command palette: Cmd+Shift+P / Ctrl+Shift+P
-        KeyBinding::new(COMMAND_PALETTE_BINDING, ToggleCommandPalette, None),
-        // Next view (full app, Agents, Terminal, Editor): Cmd/Ctrl+Shift+L
-        KeyBinding::new(CYCLE_PRESENTATION_BINDING, CyclePresentation, None),
-        // File editor: Cmd+E (macOS) / Ctrl+E (Linux/Win)
-        KeyBinding::new("secondary-e", OpenFileEditorView, None),
-        // Toggle split focus: Alt+[ (all platforms)
-        KeyBinding::new("alt-[", ToggleSplitFocus, None),
-        // Quit: Cmd+Q (macOS) / Ctrl+Q (Linux/Win)
-        KeyBinding::new(QUIT_BINDING, Quit, None),
-    ];
-
-    // Platform-specific bindings for actions that conflict with terminal
-    // control characters when using Ctrl on Linux/Windows.
-    if cfg!(target_os = "macos") {
-        bindings.extend([
-            // Cmd+D / Cmd+Shift+D — no terminal conflict on macOS
-            KeyBinding::new(MACOS_SPLIT_BINDING, SplitHorizontal, None),
-            KeyBinding::new("cmd-shift-d", SplitVertical, None),
-            // Cmd+C / Cmd+V — no terminal conflict on macOS
-            KeyBinding::new(MACOS_COPY_BINDING, CopySelection, None),
-            KeyBinding::new(MACOS_PASTE_BINDING, PasteClipboard, None),
-        ]);
-    } else {
-        bindings.extend([
-            // Ctrl+Shift+D — avoids Ctrl+D (EOF) conflict
-            KeyBinding::new(OTHER_SPLIT_BINDING, SplitHorizontal, None),
-            KeyBinding::new("ctrl-shift-alt-d", SplitVertical, None),
-            // Ctrl+Shift+C/V — standard terminal emulator copy/paste
-            KeyBinding::new(OTHER_COPY_BINDING, CopySelection, None),
-            KeyBinding::new(OTHER_PASTE_BINDING, PasteClipboard, None),
-        ]);
-    }
+    use BindableAction as B;
+    let mut bindings = Vec::new();
+    let mut bind = |action: BindableAction, binding: &dyn Fn(&str) -> KeyBinding| {
+        // An action the user unbound has no keys.
+        if let Some(keys) = shelldeck_ui::shortcut_reference::keys(action) {
+            bindings.push(binding(&keys));
+        }
+    };
+    bind(B::QuickConnect, &|k| {
+        KeyBinding::new(k, OpenQuickConnect, None)
+    });
+    bind(B::AiAssistant, &|k| {
+        KeyBinding::new(k, OpenAiAssistant, None)
+    });
+    bind(B::NewTerminal, &|k| KeyBinding::new(k, NewTerminal, None));
+    bind(B::ToggleSidebar, &|k| {
+        KeyBinding::new(k, ToggleSidebar, None)
+    });
+    // Remains available after the menu row hides.
+    bind(B::ToggleMenuBar, &|k| {
+        KeyBinding::new(k, ToggleMenuBar, None)
+    });
+    bind(B::Settings, &|k| KeyBinding::new(k, OpenSettings, None));
+    bind(B::NextTab, &|k| KeyBinding::new(k, NextTab, None));
+    bind(B::PrevTab, &|k| KeyBinding::new(k, PrevTab, None));
+    bind(B::CloseTab, &|k| KeyBinding::new(k, CloseTab, None));
+    bind(B::ClearTerminal, &|k| {
+        KeyBinding::new(k, ClearTerminal, None)
+    });
+    // Intercepted before the terminal.
+    bind(B::Search, &|k| KeyBinding::new(k, ToggleSearch, None));
+    bind(B::ZoomIn, &|k| KeyBinding::new(k, ZoomIn, None));
+    bind(B::ZoomOut, &|k| KeyBinding::new(k, ZoomOut, None));
+    bind(B::ZoomReset, &|k| KeyBinding::new(k, ZoomReset, None));
+    bind(B::CommandPalette, &|k| {
+        KeyBinding::new(k, ToggleCommandPalette, None)
+    });
+    // Full app, Agents, Terminal, Editor.
+    bind(B::NextView, &|k| {
+        KeyBinding::new(k, CyclePresentation, None)
+    });
+    bind(B::FileEditor, &|k| {
+        KeyBinding::new(k, OpenFileEditorView, None)
+    });
+    bind(B::ToggleSplitFocus, &|k| {
+        KeyBinding::new(k, ToggleSplitFocus, None)
+    });
+    bind(B::Quit, &|k| KeyBinding::new(k, Quit, None));
+    bind(B::SplitHorizontal, &|k| {
+        KeyBinding::new(k, SplitHorizontal, None)
+    });
+    bind(B::SplitVertical, &|k| {
+        KeyBinding::new(k, SplitVertical, None)
+    });
+    bind(B::Copy, &|k| KeyBinding::new(k, CopySelection, None));
+    bind(B::Paste, &|k| KeyBinding::new(k, PasteClipboard, None));
 
     cx.bind_keys(bindings);
 }

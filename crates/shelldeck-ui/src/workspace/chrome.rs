@@ -1,4 +1,13 @@
 use super::*;
+use crate::shortcut_reference::BindableAction;
+
+/// A tooltip label followed by the keys its action is bound to, if any.
+fn with_shortcut(label: String, action: BindableAction) -> String {
+    match crate::shortcut_reference::label(action) {
+        Some(keys) => format!("{label} · {keys}"),
+        None => label,
+    }
+}
 
 fn close_titlebar_menu_flags(account: &mut bool, mode: &mut bool, site: &mut bool) {
     *account = false;
@@ -92,10 +101,9 @@ impl Workspace {
         // Keep interactive controls outside the drag region. The menu bar owns
         // deferred dropdowns, so scrolling the titles never clips an open menu.
         let sidebar_button = sidebar_visible.map(|visible| {
-            let tooltip: SharedString = format!(
-                "{} · {}",
-                t!("shortcuts.toggle_sidebar"),
-                crate::menu_bar::accel("secondary-b")
+            let tooltip: SharedString = with_shortcut(
+                t!("shortcuts.toggle_sidebar").to_string(),
+                BindableAction::ToggleSidebar,
             )
             .into();
             IconButton::new(IconSource::FilePath("images/sidebar.svg".into()))
@@ -376,8 +384,11 @@ impl Workspace {
         // otherwise remove the only discoverable way to restore it. This
         // compact titlebar affordance exists only while the row is hidden.
         let restore_menu_button = (!menu_bar_visible && !focused_presentation).then(|| {
-            let tooltip: SharedString =
-                format!("{} · Ctrl+Shift+M", t!("menu.view.menu_bar")).into();
+            let tooltip: SharedString = with_shortcut(
+                t!("menu.view.menu_bar").to_string(),
+                BindableAction::ToggleMenuBar,
+            )
+            .into();
             let workspace = handle.clone();
             div()
                 .id("titlebar-restore-menu")

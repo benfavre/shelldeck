@@ -107,6 +107,13 @@ shelldeck --main       # full application
 Terminals, agent conversations and open files keep running when the view
 changes: a view is a way of looking at the same session, not a second one.
 
+### Change keyboard shortcuts
+
+Add a `[keybindings]` table to the configuration file to change or remove an
+application shortcut, for example `toggle_sidebar = ""` to leave `Ctrl+B` to
+tmux. See [changing keyboard shortcuts](docs/keybindings.md) for the action
+names and the key syntax.
+
 ## Requirements
 
 - **Rust nightly**, pinned in `rust-toolchain.toml` (do not change to floating `nightly` — it breaks the macOS build; see `CLAUDE.md`)
