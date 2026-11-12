@@ -17,7 +17,7 @@
 
 use crate::t;
 use parking_lot::Mutex;
-use shelldeck_core::config::app_config::{AppConfig, GeneralConfig, RemoteDaemonInstall};
+use shelldeck_core::config::app_config::{GeneralConfig, RemoteDaemonInstall};
 use shelldeck_core::config::workspace_state::DaemonCleanup;
 use shelldeck_core::config::WorkspaceState;
 use shelldeck_core::models::connection::Connection;
@@ -32,7 +32,6 @@ use shelldeck_ssh::sessiond_host::{
 use shelldeck_ssh::sessiond_install::{FallbackReason, InstallConsent};
 use shelldeck_terminal::session::TerminalSession;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -254,26 +253,6 @@ pub(super) fn runtime() -> Result<&'static tokio::runtime::Runtime, String> {
         .map_err(Clone::clone)
 }
 
-/// Where the bundled daemon builds are looked up, in order:
-/// `SHELLDECK_SESSIOND_ARTIFACT_DIR` (development), the directory of the
-/// app binary, then `sessiond/` in the app data directory.
-fn artifact_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(dir) = std::env::var_os("SHELLDECK_SESSIOND_ARTIFACT_DIR").map(PathBuf::from) {
-        if dir.is_absolute() {
-            dirs.push(dir);
-        }
-    }
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(PathBuf::from))
-    {
-        dirs.push(dir);
-    }
-    dirs.push(AppConfig::config_dir().join("sessiond"));
-    dirs
-}
-
 fn dial_target(connection: &Connection) -> String {
     connection.dial_identity()
 }
@@ -299,7 +278,7 @@ pub(super) fn host_for(connection: &Connection) -> Result<RemoteHost, String> {
         handle,
         dial,
         RemoteHostOptions {
-            artifact_dirs: artifact_dirs(),
+            artifact_dirs: crate::sessiond_files::artifact_dirs(),
             supervisor: SupervisorOptions {
                 notices: Notices {
                     connecting: notice("terminal.session_daemon.connecting"),

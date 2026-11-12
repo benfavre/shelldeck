@@ -27,6 +27,9 @@ class MacBranding(unittest.TestCase):
         self.binary = self.root / 'target/release/shelldeck'
         self.binary.write_bytes(b'not executed by the packaging fixture')
         self.binary.chmod(0o755)
+        self.daemon = self.root / 'target/release/shelldeck-sessiond'
+        self.daemon.write_bytes(b'not executed by the packaging fixture')
+        self.daemon.chmod(0o755)
 
     # SDTEST-2885 / SDUC-566: the actual shipped icon is accepted by Apple's decoder.
     @unittest.skipUnless(shutil.which('iconutil'), 'native Apple iconutil is required; macOS CI runs this')
@@ -53,12 +56,36 @@ class MacBranding(unittest.TestCase):
         self.assertIn('Required macOS icon is missing', result.stderr)
         self.assertEqual(sentinel.read_text(), 'preserve on preflight failure')
 
-    def prepare_bundle(self):
+    # SDTEST-3065 (SDUC-574): a bundle is not built, and its archive is not
+    # published, without the session daemon beside the application binary.
+    def test_sdtest_3065_bundle_and_archive_require_the_session_daemon(self):
+        bundle = self.root / 'dist/Inklura Desktop.app'
+        bundle.mkdir(parents=True)
+        sentinel = bundle / 'existing-bundle'
+        sentinel.write_text('preserve on preflight failure')
+        self.daemon.unlink()
+        result = subprocess.run(['bash', str(self.root / 'packaging/macos/build-dmg.sh'), str(self.binary)],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Session daemon not found', result.stderr)
+        self.assertEqual(sentinel.read_text(), 'preserve on preflight failure')
+        shutil.rmtree(bundle)
+
+        app = self.prepare_bundle(daemon=False)
+        shutil.copyfile(ICON, app / 'Contents/Resources/shelldeck.icns')
+        result = self.package()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('macOS bundle has no session daemon', result.stderr)
+        self.assertFalse((self.root / 'dist/shelldeck-macos-aarch64.zip').exists())
+
+    def prepare_bundle(self, daemon=True):
         app = self.root / 'dist/Inklura Desktop.app'
         contents = app / 'Contents'
         (contents / 'Resources').mkdir(parents=True)
         (contents / 'MacOS').mkdir()
         shutil.copyfile(self.binary, contents / 'MacOS/shelldeck')
+        if daemon:
+            shutil.copy2(self.daemon, contents / 'MacOS/shelldeck-sessiond')
         browser = contents / 'Frameworks/browser/ShellDeck Browser.app/Contents'
         (browser / 'MacOS').mkdir(parents=True)
         helper = browser / 'MacOS/shelldeck-browser'
@@ -93,6 +120,7 @@ class MacBranding(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         with zipfile.ZipFile(self.root / 'dist/shelldeck-macos-aarch64.zip') as archive:
             self.assertEqual(archive.read('Inklura Desktop.app/Contents/Resources/shelldeck.icns'), ICON.read_bytes())
+            self.assertIn('Inklura Desktop.app/Contents/MacOS/shelldeck-sessiond', archive.namelist())
 
 
 if __name__ == '__main__':

@@ -12,7 +12,7 @@ pub async fn download_and_verify(release: &ReleaseInfo, dest: &Path) -> Result<(
     download_verified_payload(release, dest).await
 }
 
-async fn download_verified_payload(release: &ReleaseInfo, dest: &Path) -> Result<()> {
+pub(crate) async fn download_verified_payload(release: &ReleaseInfo, dest: &Path) -> Result<()> {
     tracing::info!("Downloading update from {}", release.url);
 
     anyhow::ensure!(
@@ -468,7 +468,7 @@ const MAX_SESSIOND_BYTES: u64 = 256 * 1024 * 1024;
 /// goes on serving its terminals. The new file is used by the next daemon
 /// that starts.
 #[cfg(target_os = "linux")]
-struct SessiondPayload {
+pub(crate) struct SessiondPayload {
     /// (staged copy, final path)
     staged: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     /// Installed builds for SSH servers that the archive does not
@@ -484,12 +484,18 @@ impl SessiondPayload {
     /// is accepted (nothing is staged, the installed files stay); a file
     /// that is present must be a real ELF file.
     fn stage(new_binary: &Path, install_dir: &Path) -> Result<Self> {
-        use std::io::Read;
-        use std::os::unix::fs::PermissionsExt;
-
         let source_dir = new_binary
             .parent()
             .context("Update executable has no parent")?;
+        Self::stage_from(source_dir, install_dir)
+    }
+
+    /// [`stage`](Self::stage) for files that sit directly in `source_dir`
+    /// (the daemon files downloaded on their own, `crate::sessiond`).
+    pub(crate) fn stage_from(source_dir: &Path, install_dir: &Path) -> Result<Self> {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+
         let mut payload = Self {
             staged: Vec::new(),
             stale: Vec::new(),
@@ -535,10 +541,17 @@ impl SessiondPayload {
         Ok(payload)
     }
 
+    /// Whether `name` is among the staged files.
+    pub(crate) fn carries(&self, name: &str) -> bool {
+        self.staged
+            .iter()
+            .any(|(_, destination)| destination.file_name().is_some_and(|file| file == name))
+    }
+
     /// Publish the staged files. The application binary is already
     /// replaced at this point, so a failure is logged, not returned: the
     /// application works without the daemon file (in-process terminals).
-    fn commit(mut self) {
+    pub(crate) fn commit(mut self) {
         for (staged, destination) in self.staged.drain(..) {
             if let Err(error) = std::fs::rename(&staged, &destination) {
                 tracing::warn!("Failed to publish {}: {error}", destination.display());

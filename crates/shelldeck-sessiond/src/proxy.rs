@@ -79,6 +79,17 @@ pub fn start_daemon(exe: &Path, dir: Option<&Path>) -> std::io::Result<()> {
     if let Some(dir) = dir {
         command.arg("--dir").arg(dir);
     }
+    // Started by an application that runs from an AppImage: the daemon
+    // outlives the image, so it is not even loaded with the image's
+    // search paths (the daemon applies the same rule to itself).
+    for (name, value) in
+        paths::appimage_env_changes(std::env::vars_os(), std::env::var_os("APPDIR").as_deref())
+    {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
     let status = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())

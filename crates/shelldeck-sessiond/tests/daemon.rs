@@ -1857,7 +1857,7 @@ fn descriptor_exhaustion(limit: u32) {
     // once in nine runs). Count again until the expected number fits.
     let expected = 3 - usize::from(limit == 12);
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut held = loop {
+    let held = loop {
         let mut held = Vec::new();
         loop {
             let (greeting, stream) = greet(&dir.path);

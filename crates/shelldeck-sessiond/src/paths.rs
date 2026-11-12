@@ -7,6 +7,7 @@
 //! and the connected peer must have the caller's uid. A failure is never
 //! repaired in place: the daemon path is simply unavailable.
 
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::os::unix::io::AsRawFd;
@@ -359,9 +360,114 @@ pub fn connect_checked(dir: &Path) -> Result<std::os::unix::net::UnixStream, Pat
     Ok(stream)
 }
 
+/// What a daemon started by an application running from an AppImage must
+/// not keep of its environment, as `(name, new value)` pairs (`None`: the
+/// variable is removed).
+///
+/// The image is a mount that exists while the application runs. Its
+/// runtime and launcher point `PATH`, `LD_LIBRARY_PATH` and the like into
+/// it, and the daemon passes its environment on to every terminal: without
+/// this, a shell opened later would look for programs and libraries in a
+/// mount that is gone, or load the libraries bundled for the application.
+/// Every entry of a `:` separated value that lies inside `appdir` is
+/// dropped, and so are the variables of the AppImage runtime itself.
+///
+/// `appdir` is `$APPDIR`. Nothing changes when it is absent or relative.
+pub fn appimage_env_changes(
+    vars: impl IntoIterator<Item = (OsString, OsString)>,
+    appdir: Option<&OsStr>,
+) -> Vec<(OsString, Option<OsString>)> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    let Some(appdir) = appdir.map(Path::new).filter(|dir| dir.is_absolute()) else {
+        return Vec::new();
+    };
+    let mut changes = Vec::new();
+    for (name, value) in vars {
+        if ["APPDIR", "APPIMAGE", "OWD", "ARGV0"]
+            .iter()
+            .any(|runtime| name == *runtime)
+        {
+            changes.push((name, None));
+            continue;
+        }
+        let entries: Vec<&[u8]> = value.as_bytes().split(|byte| *byte == b':').collect();
+        let kept: Vec<&[u8]> = entries
+            .iter()
+            .copied()
+            .filter(|entry| !Path::new(OsStr::from_bytes(entry)).starts_with(appdir))
+            .collect();
+        if kept.len() == entries.len() {
+            continue;
+        }
+        // An empty entry means "the current directory" in a search path:
+        // what is left of a value made only of image entries is removed,
+        // not kept as such an entry.
+        let kept: Vec<&[u8]> = kept.into_iter().filter(|entry| !entry.is_empty()).collect();
+        let new = (!kept.is_empty()).then(|| OsString::from_vec(kept.join(&b':')));
+        changes.push((name, new));
+    }
+    changes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SDTEST-3066 (SDUC-574): a daemon started from an AppImage keeps
+    // nothing of the image in its environment, which every terminal
+    // inherits: no search path entry inside the mount, none of the
+    // variables of the AppImage runtime. Elsewhere nothing is touched.
+    #[test]
+    fn sdtest_3066_a_daemon_keeps_nothing_of_the_appimage_mount() {
+        let vars = |pairs: &[(&str, &str)]| -> Vec<(OsString, OsString)> {
+            pairs
+                .iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+                .collect()
+        };
+        let environment = vars(&[
+            ("APPDIR", "/tmp/.mount_abc"),
+            ("APPIMAGE", "/home/u/Inklura.AppImage"),
+            ("OWD", "/home/u"),
+            ("ARGV0", "./Inklura.AppImage"),
+            ("PATH", "/tmp/.mount_abc/usr/bin:/usr/local/bin:/usr/bin"),
+            ("LD_LIBRARY_PATH", "/tmp/.mount_abc/usr/lib:"),
+            ("XDG_DATA_DIRS", "/usr/share:/tmp/.mount_abc/usr/share"),
+            (
+                "GSETTINGS_SCHEMA_DIR",
+                "/tmp/.mount_abc/usr/share/glib-2.0/schemas",
+            ),
+            // A directory whose name only starts the same way is not
+            // inside the image.
+            ("OTHER", "/tmp/.mount_abcdef/bin:/tmp/.mount_abc"),
+            ("HOME", "/home/u"),
+            ("LANG", "fr_FR.UTF-8"),
+        ]);
+        let mut changes =
+            appimage_env_changes(environment.clone(), Some(OsStr::new("/tmp/.mount_abc")));
+        changes.sort();
+        let expect =
+            |name: &str, value: Option<&str>| (OsString::from(name), value.map(OsString::from));
+        assert_eq!(
+            changes,
+            [
+                expect("APPDIR", None),
+                expect("APPIMAGE", None),
+                expect("ARGV0", None),
+                expect("GSETTINGS_SCHEMA_DIR", None),
+                expect("LD_LIBRARY_PATH", None),
+                expect("OTHER", Some("/tmp/.mount_abcdef/bin")),
+                expect("OWD", None),
+                expect("PATH", Some("/usr/local/bin:/usr/bin")),
+                expect("XDG_DATA_DIRS", Some("/usr/share")),
+            ]
+        );
+        // Not started from an image: the environment is left alone, also
+        // the names an image would have set.
+        assert!(appimage_env_changes(environment.clone(), None).is_empty());
+        assert!(appimage_env_changes(environment, Some(OsStr::new("relative"))).is_empty());
+    }
 
     // SDTEST-3025 (SDUC-574): the run directory name is derived from the
     // machine identity and the host name, shows neither, and falls back

@@ -1150,8 +1150,9 @@ Implemented now, with automated tests on Linux:
 
 Deferred (details in the subsections below):
 
-- Packaging: the AppImage, the macOS bundle and the Windows archive do
-  not carry the daemon. Saving the split tree of remote tabs.
+- Packaging: the Windows archive does not carry the daemon (Unix code).
+  The AppImage and the macOS bundle carry it since "Daemon files that
+  are missing" (last subsection). Saving the split tree of remote tabs.
   Workspace-scoped terminals are not deferred but excluded: they stay
   in-process until the protocol can carry a directory identity (see
   "Workspace-scoped terminals" below).
@@ -1169,8 +1170,9 @@ Deferred (details in the subsections below):
   its first run passed 40 of 41 tests, real daemons and PTYs included
   (so the `kern.uuid` lookup, `getpeereid` and the socket path work
   there); the one failure was a kernel difference, now stated in the
-  test (see the end of this section). The application itself was never
-  run on macOS with the setting on. Windows is a stub; a CI step builds
+  test (see the end of this section). The macOS bundle now carries the
+  daemon (signed with it, checked by the release dry run), but the
+  application itself was never run on macOS with the setting on. Windows is a stub; a CI step builds
   it and checks that it refuses to run (green).
 
 Layout:
@@ -1601,10 +1603,12 @@ Differences from sections 9 and 10, and limits of this slice:
 - Reading `workspace.json` at restore still happens on the UI thread (a
   small local file, as before); it now also happens with
   `auto_connect_on_startup` off when panes came back.
-- The daemon binary ships with the Linux tar.gz install only (see "Daemon
-  hardening, version skew and packaging"). From an AppImage, on macOS and
-  on Windows the setting falls back to in-process terminals (with a
-  warning in the log).
+- The daemon binary shipped with the Linux tar.gz install only when this
+  was written (see "Daemon hardening, version skew and packaging"); the
+  AppImage and the macOS bundle carry it now, and an install without it
+  fetches it ("Daemon files that are missing"). On Windows, and wherever
+  the daemon is really absent, the setting falls back to in-process
+  terminals, with a warning in the log and a line in Settings.
 - A daemon left over from another app version keeps serving until it idles
   out (60 s without pane or client). It is used when it speaks the
   protocol; otherwise its panes are shown as managed by another version
@@ -1742,10 +1746,11 @@ Packaging:
 - A running daemon keeps the file it was started from in all three cases
   (replacement is always a rename), and starts its panes through
   `/proc/self/exe`.
-- The AppImage does not carry the daemon: the image is a mount that goes
-  away with the application, and a daemon outlives it. Shipping it there
-  needs a copy to a stable path first (not done). The macOS bundle and
-  the Windows archive are unchanged.
+- The AppImage did not carry the daemon at this point: the image is a
+  mount that goes away with the application, and a daemon outlives it.
+  Shipping it there needed a copy to a stable path first. Done since,
+  for the AppImage and the macOS bundle: see "Daemon files that are
+  missing". The Windows archive is unchanged.
 - Static remote builds: `scripts/build-sessiond-remote.sh` checks the
   targets, builds with `crt-static`, checks the ELF machine and that the
   result has no interpreter, and writes
@@ -2116,4 +2121,109 @@ line), SDTEST-2969 (the allowlist).
 
 Version note: a daemon built before this change refuses a `Spawn` that
 carries the two names. No such daemon was ever released.
+
+### Daemon files that are missing
+
+What the first release (0.21.0) left open, and what was done about it.
+
+The gap. The updater of 0.20.0 and older replaces the application binary
+only. An install updated by it runs the new application without
+`shelldeck-sessiond` and without the builds for SSH servers, until the
+update after that one. The AppImage and the macOS bundle did not carry
+the daemon at all. In all three cases the setting could be turned on and
+did nothing: every terminal quietly fell back to an in-process one, with
+a line in the log as the only trace.
+
+Where the files are looked up (`crates/shelldeck-ui/src/sessiond_files.rs`,
+used by the local backend and by the remote one):
+
+1. Beside the application binary, as before.
+2. From an AppImage or a macOS bundle the daemon is found beside the
+   binary but never run there. The application copies it to
+   `sessiond/shelldeck-sessiond` in its configuration directory (once per
+   run: the bytes are compared and the file is only replaced, by rename,
+   when they differ) and starts it from the copy. A daemon started from
+   the image would lose its executable when the image is unmounted; a
+   bundle can be a read-only translocated copy or be replaced by an
+   update. On macOS the daemon starts its panes through the path of its
+   own executable, which the copy keeps stable across updates. Which
+   directory counts as such a place: one inside `$APPDIR` (set by the
+   AppImage runtime), or, on macOS, one inside a `.app` (SDTEST-3059,
+   SDTEST-3060).
+3. `sessiond/` in the configuration directory, for files that were
+   fetched (below). It was already a lookup place of the builds for SSH
+   servers.
+
+The builds for SSH servers are only read, to be uploaded, so they are
+used where they sit, the image included.
+
+Fetching. A release now publishes the daemon files a second time, as a
+small archive (`shelldeck-sessiond-linux-x86_64.tar.gz`, built by
+`scripts/package-release.sh` from the same files as the main archive),
+listed in the signed update manifest under the key
+`linux-x86_64-sessiond`. The update worker serves any key of the
+manifest, so it did not change. With the setting on and no daemon found,
+the application (`shelldeck_update::sessiond`, called from
+`workspace/daemon_files.rs` at startup and when the setting is turned
+on) asks the update server for that entry and installs the archive into
+`sessiond/` of the configuration directory. The rules are those of an
+application update, and one more:
+
+- the entry is signed by the update key and names this key of the
+  manifest (the entry of the application archive is refused);
+- it is the release of this very application: a build for SSH servers
+  is tied to its release, and when the latest release is a newer one,
+  the files come with the update to it instead;
+- the archive has the signed size and SHA-256, is fetched over https
+  and is at most 64 MiB;
+- only the three known names are taken out of it, each a regular ELF
+  file, staged beside its final name and published by rename
+  (`SessiondPayload`, the code the updater uses); the archive must carry
+  the daemon for this machine, or nothing is installed.
+
+SDTEST-3057 (the manifest entry), SDTEST-3058 (the archive). Nothing
+waits for the fetch: terminals opened meanwhile are ordinary ones, and
+the ones opened after it use the daemon. A build without the update key
+(development) or for another platform than Linux x86_64 cannot fetch.
+Fetched files are marked; once an update has installed the daemon beside
+the binary, they are deleted at the next start (SDTEST-3062). Files put
+in that directory by hand are never deleted.
+
+What the user sees. Settings shows a line under the toggle whenever the
+daemon is not simply there: not installed (it will be fetched), being
+fetched, why the last fetch failed, or not available in this copy of the
+application. Turning the setting on says what happens (downloading,
+installed, failed and why, not available); at startup only an install or
+a failure is announced, and a failure that only means "an update is on
+its way" is not (SDTEST-3061, SDTEST-3063).
+
+Environment of a daemon started from an AppImage. The daemon passes its
+environment on to every terminal, and the image's runtime and launcher
+point `PATH` and `LD_LIBRARY_PATH` into the mount. A shell opened in such
+a daemon would have looked for programs and libraries in a mount that is
+gone, or loaded the libraries bundled for the application. The
+application now starts the daemon without any search path entry that
+lies inside `$APPDIR` and without the runtime's own variables
+(`APPDIR`, `APPIMAGE`, `OWD`, `ARGV0`), and the daemon applies the same
+rule to itself at startup (`paths::appimage_env_changes`, SDTEST-3066).
+An in-process terminal of the AppImage still inherits them, as before.
+
+Packaging:
+
+- `scripts/build-release.sh` builds the daemon on macOS too.
+- `packaging/linux/build-appimage.sh` puts the daemon and the builds for
+  SSH servers in `usr/bin` of the image and refuses to build without the
+  daemon (SDTEST-3064).
+- `packaging/macos/build-dmg.sh` puts the daemon in `Contents/MacOS`,
+  signed on its own with the hardened runtime before the bundle is
+  signed, and refuses to build without it; `package-release.sh` refuses
+  to archive a bundle without it (SDTEST-3065).
+- `release.yml` uploads the small archive with the Linux one and adds
+  its key to the manifest (SDTEST-3034 covers the archive).
+
+Not done, stated plainly: the application was still never run on macOS
+with the setting on (the daemon's own tests run there in CI, and the
+bundle is built and signed by the release workflow); there is no fetch
+for macOS or for Linux on `aarch64`; an install updated from 0.20.0
+needs the network once to become persistent.
 

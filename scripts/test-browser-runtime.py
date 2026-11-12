@@ -137,6 +137,10 @@ try:
     wait('Popup', lambda p: p['visible'])
     send('Key', browser_id=1, event={'kind': 'RawKeyDown', 'windows_key_code': 40, 'native_key_code': 116, 'modifiers': 0, 'character': None, 'unmodified_character': None, 'is_system_key': False})
     send('Key', browser_id=1, event={'kind': 'RawKeyDown', 'windows_key_code': 13, 'native_key_code': 36, 'modifiers': 0, 'character': None, 'unmodified_character': None, 'is_system_key': False})
+    # The list closes on Enter. Until it has, a click is taken by the list
+    # (it only dismisses it) and never reaches the page: clicking at once
+    # made the dialog below fail to open now and then.
+    wait('Popup', lambda p: not p['visible'])
     click('#dialog')
     (d, _) = wait('Dialog')
     send('DialogResponse', browser_id=1, dialog_id=d['dialog_id'], accept=True, prompt='')

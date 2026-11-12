@@ -445,7 +445,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: shelldeck-${{ matrix.platform }}
-          path: dist/shelldeck-${{ matrix.platform }}.${{ matrix.archive_ext }}
+          # The second line matches on Linux only: the session daemon
+          # files as an archive of their own (scripts/package-release.sh).
+          path: |
+            dist/shelldeck-${{ matrix.platform }}.${{ matrix.archive_ext }}
+            dist/shelldeck-sessiond-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
           retention-days: 14
 
@@ -575,6 +579,9 @@ jobs:
           PLATFORMS[linux-x86_64]="shelldeck-linux-x86_64/shelldeck-linux-x86_64.tar.gz"
           PLATFORMS[macos-aarch64]="shelldeck-macos-aarch64/shelldeck-macos-aarch64.zip"
           PLATFORMS[windows-x86_64]="shelldeck-windows-x86_64/shelldeck-windows-x86_64.zip"
+          # Not an application archive: the session daemon files, fetched
+          # by an install that lacks them (shelldeck_update::sessiond).
+          PLATFORMS[linux-x86_64-sessiond]="shelldeck-linux-x86_64/shelldeck-sessiond-linux-x86_64.tar.gz"
 
           jq -n \
             --arg version "$VERSION" \

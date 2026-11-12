@@ -89,9 +89,9 @@ python3 scripts/bundle-browser-runtime.py --profile release
 # The session daemon is a separate small process that owns the terminals of
 # `general.session_daemon`. The application looks for it beside its own
 # executable, so it is built with the same profile and packaged with it.
-# Linux only for now: the macOS bundle and the Windows archive do not carry
-# it (the application then uses in-process terminals).
-if [ "$PLATFORM" = "linux-x86_64" ]; then
+# Unix only: the Windows archive does not carry it (the daemon is Unix
+# code, and the application then uses in-process terminals).
+if [ "$PLATFORM" != "windows-x86_64" ]; then
     echo "==> Building the session daemon..."
     # The binary needs none of the application side of its crate (the
     # `app` feature, which links shelldeck-core).
@@ -100,6 +100,10 @@ if [ "$PLATFORM" = "linux-x86_64" ]; then
         echo "ERROR: Expected binary not found: target/release/shelldeck-sessiond" >&2
         exit 1
     fi
+fi
+# Static builds for SSH servers: Linux only for now, so only the Linux
+# packages carry them.
+if [ "$PLATFORM" = "linux-x86_64" ]; then
     if [ "${SHELLDECK_SESSIOND_REMOTE:-1}" = "0" ]; then
         echo "==> SHELLDECK_SESSIOND_REMOTE=0: no session daemon builds for SSH servers"
         # A build left by an earlier run would be packaged under this

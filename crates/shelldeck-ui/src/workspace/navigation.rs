@@ -683,6 +683,9 @@ impl Workspace {
     /// restore continues when the answer is in; no daemon is ever started
     /// for it. With the setting off the restore is synchronous, as before.
     pub fn restore_session(&mut self, cx: &mut Context<Self>) {
+        // An install without the daemon files gets them now (in the
+        // background; the terminals restored below do not wait for it).
+        self.ensure_session_daemon_files(false, cx);
         let wants_panes = self.app_config.general.session_daemon
             && self.terminal.update(cx, |terminal, _| {
                 terminal.set_persistent_sessions(true);

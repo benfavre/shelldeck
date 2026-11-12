@@ -126,6 +126,7 @@ mod ai_routing;
 mod bext;
 mod chrome;
 mod cloud_sync;
+mod daemon_files;
 mod discovery;
 mod events;
 mod fleet;
