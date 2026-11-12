@@ -232,9 +232,11 @@ impl server::Handler for InMemoryServer {
     async fn channel_open_session(
         &mut self,
         _channel: Channel<Msg>,
+        reply: russh::server::ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
+    ) -> Result<(), Self::Error> {
+        reply.accept().await;
+        Ok(())
     }
 
     async fn exec_request(
@@ -450,15 +452,19 @@ impl Fixture {
         assert_eq!(self.next_event().await, ServerEvent::ChannelClose);
     }
 
-    /// The client answered a channel the remote side closed first. Its EOF
-    /// may or may not still be sent; its Close always is.
+    /// The remote side closed the channel first. The client's answering
+    /// Close is the RFC 4254 reply; since russh 0.63 the server consumes it
+    /// without calling `channel_close` (the channel left its table when it
+    /// sent its own Close), so the reply may or may not be reported. What
+    /// must not happen is any other traffic on the way out.
     async fn expect_closed(&mut self) {
-        match self.next_event().await {
-            ServerEvent::ChannelClose => {}
-            ServerEvent::ChannelEof => {
-                assert_eq!(self.next_event().await, ServerEvent::ChannelClose)
+        let window = Duration::from_millis(400);
+        loop {
+            match timeout(window, self.events.recv()).await {
+                Err(_) | Ok(None) => return,
+                Ok(Some(ServerEvent::ChannelEof | ServerEvent::ChannelClose)) => continue,
+                Ok(Some(other)) => panic!("expected only the channel release, got {other:?}"),
             }
-            other => panic!("expected the channel release, got {other:?}"),
         }
     }
 

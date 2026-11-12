@@ -88,12 +88,22 @@ impl client::Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        offered: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         #[cfg(test)]
         if self.trust_server_key_for_test {
             return Ok(true);
         }
+        // A host certificate is checked through the host key it certifies,
+        // against known_hosts like a plain key (no CA trust is configured).
+        let certified;
+        let server_public_key: &PublicKey = match offered {
+            russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
+            russh::keys::PublicKeyOrCertificate::Certificate(certificate) => {
+                certified = PublicKey::from(certificate.public_key().clone());
+                &certified
+            }
+        };
 
         let key_type = server_public_key.algorithm().as_str().to_owned();
         let key_base64 = server_public_key.public_key_base64();
@@ -270,8 +280,20 @@ impl client::Handler for ClientHandler {
         connected_port: u32,
         originator_address: &str,
         originator_port: u32,
+        reply: client::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // russh >= 0.63 only opens channels the handler accepts; dropping
+        // `reply` refuses it. Accept only while a tunnel listens.
+        if self.forwarded_tcpip_tx.is_closed() {
+            tracing::warn!(
+                "Refused forwarded-tcpip channel {}:{}: no tunnel is listening",
+                connected_address,
+                connected_port,
+            );
+            return Ok(());
+        }
+        reply.accept().await;
         tracing::info!(
             "Server opened forwarded-tcpip channel: {}:{} (originator {}:{})",
             connected_address,
