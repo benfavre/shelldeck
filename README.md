@@ -107,6 +107,12 @@ shelldeck --main       # full application
 Terminals, agent conversations and open files keep running when the view
 changes: a view is a way of looking at the same session, not a second one.
 
+### Use panes from a script or an agent
+
+`shelldeck-sessiond` can start a program in a terminal that outlives the
+caller, type into it, read it and wait for it: `run`, `send`, `read`, `wait`,
+`ls`. See [pane commands](docs/pane-cli.md).
+
 ### Change keyboard shortcuts
 
 Add a `[keybindings]` table to the configuration file to change or remove an

@@ -21,6 +21,7 @@
 //! binary is built without it.
 
 pub mod client;
+pub mod pane_cli;
 pub mod protocol;
 
 #[cfg(all(unix, feature = "app"))]

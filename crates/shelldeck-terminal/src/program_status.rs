@@ -62,7 +62,9 @@ pub enum ProgramState {
 }
 
 impl ProgramState {
-    fn parse(value: &str) -> Option<Self> {
+    /// The state named by the protocol word (`idle`, `working`, `done`,
+    /// `blocked`, `error`).
+    pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "idle" => Self::Idle,
             "working" => Self::Working,

@@ -34,12 +34,31 @@ usage: shelldeck-sessiond <command>
   proxy --hello NONCE [--dir DIR]     stdio bridge to the daemon (SSH transport)
   --version
 
+pane commands, for scripts and agents (each takes --dir DIR):
+  ls [--json]                         list panes
+  run [--name NAME] [--cwd DIR] [--rows N] [--cols N] [-- ARGV...]
+                                      start a pane and print its id (login
+                                      shell by default); starts the daemon
+                                      when none runs
+  send PANE [--no-enter] [TEXT...]    type TEXT into a pane, then Enter
+                                      (TEXT from stdin when not given)
+  read PANE [--lines N]               print the last N lines of a pane
+                                      (default 40)
+  wait PANE [--until STATE] [--timeout SECONDS]
+                                      wait until the pane's program exits
+                                      and exit with its status; with
+                                      --until, until it reports STATE
+                                      through OSC 7501 (idle, working, done,
+                                      blocked, error). 124 on timeout
+  attach PANE                         attach this terminal (Ctrl-\\ detaches)
+  kill PANE [1|15|9]                  signal a pane, or remove a dead one
+
+  PANE is a pane id, the start of one, or a name given with --name.
+
 debug commands:
-  list [--dir DIR]                    list panes
+  list [--dir DIR]                    list panes with stream offsets
   spawn [--dir DIR] [--rows N] [--cols N] [-- ARGV...]
                                       start a pane (login shell by default)
-  attach [--dir DIR] PANE             attach this terminal (Ctrl-\\ detaches)
-  kill [--dir DIR] PANE [1|15|9]      signal a pane, or remove a dead one
 ";
 
     static STOP: AtomicBool = AtomicBool::new(false);
@@ -51,12 +70,12 @@ debug commands:
     extern "C" fn on_hangup(_signal: libc::c_int) {}
 
     #[derive(Default)]
-    struct Args {
-        dir: Option<PathBuf>,
+    pub(crate) struct Args {
+        pub(crate) dir: Option<PathBuf>,
         detach: bool,
         hello: Option<String>,
-        rows: Option<u16>,
-        cols: Option<u16>,
+        pub(crate) rows: Option<u16>,
+        pub(crate) cols: Option<u16>,
         nofile: Option<u64>,
         program: Option<String>,
         history_budget: Option<u64>,
@@ -66,8 +85,15 @@ debug commands:
         seed: u64,
         bytes: u64,
         pace_us: u64,
-        positional: Vec<String>,
-        trailing: Vec<String>,
+        pub(crate) name: Option<String>,
+        pub(crate) cwd: Option<String>,
+        pub(crate) lines: Option<usize>,
+        pub(crate) until: Option<String>,
+        pub(crate) timeout: Option<u64>,
+        pub(crate) json: bool,
+        pub(crate) no_enter: bool,
+        pub(crate) positional: Vec<String>,
+        pub(crate) trailing: Vec<String>,
     }
 
     fn parse(args: Vec<String>) -> Result<Args, String> {
@@ -96,6 +122,13 @@ debug commands:
                 "--seed" => parsed.seed = number(&value("--seed")?)?,
                 "--bytes" => parsed.bytes = number(&value("--bytes")?)?,
                 "--pace-us" => parsed.pace_us = number(&value("--pace-us")?)?,
+                "--name" => parsed.name = Some(value("--name")?),
+                "--cwd" => parsed.cwd = Some(value("--cwd")?),
+                "--lines" => parsed.lines = Some(number(&value("--lines")?)?),
+                "--until" => parsed.until = Some(value("--until")?),
+                "--timeout" => parsed.timeout = Some(number(&value("--timeout")?)?),
+                "--json" => parsed.json = true,
+                "--no-enter" => parsed.no_enter = true,
                 "--" => {
                     parsed.trailing = iter.collect();
                     break;
@@ -160,6 +193,7 @@ debug commands:
                 launch::exec_pane(args.nofile, args.program.as_deref(), &args.trailing)
             )),
             "debug-flood" => crate::flood::run(args.seed, args.bytes, args.pace_us),
+            "ls" | "run" | "send" | "read" | "wait" => return crate::panes::main(&command, args),
             "list" | "spawn" | "attach" | "kill" => debug_command(&command, args),
             _ => {
                 eprint!("{USAGE}");
@@ -336,11 +370,11 @@ debug commands:
             let client = connect_unix(&dir, ClientOptions::default())
                 .await
                 .map_err(|e| format!("cannot connect to {}: {e}", dir.display()))?;
-            let pane = || -> Result<uuid::Uuid, String> {
-                args.positional
-                    .first()
-                    .and_then(|text| text.parse().ok())
-                    .ok_or_else(|| "expected a pane id".to_string())
+            // An id, the start of one, or a name (`run --name`).
+            let selector = args.positional.first().cloned().unwrap_or_default();
+            let pane = || async {
+                let panes = client.list_panes().await.map_err(|e| e.to_string())?;
+                shelldeck_sessiond::pane_cli::resolve_pane(&selector, &panes)
             };
             match command {
                 "list" => {
@@ -380,12 +414,14 @@ debug commands:
                         Some(text) => number(text)?,
                         None => 15,
                     };
-                    client.kill(pane()?, signal).map_err(|e| e.to_string())?;
+                    client
+                        .kill(pane().await?, signal)
+                        .map_err(|e| e.to_string())?;
                     // One round trip, so the frame is delivered before exit.
                     client.list_panes().await.map_err(|e| e.to_string())?;
                     Ok(())
                 }
-                _ => attach(&client, pane()?).await,
+                _ => attach(&client, pane().await?).await,
             }
         })
     }
@@ -504,6 +540,353 @@ debug commands:
         drop(_raw);
         println!("\r\n[shelldeck-sessiond: {message}]");
         Ok(())
+    }
+}
+
+/// The pane commands: what a script or an agent uses to start programs in
+/// panes that outlive it, type into them, read them and wait for them.
+/// The pure parts are in `shelldeck_sessiond::pane_cli`. See
+/// `docs/pane-cli.md`.
+#[cfg(unix)]
+mod panes {
+    use crate::unix::Args;
+    use shelldeck_sessiond::client::{
+        connect_unix, AttachOptions, Client, ClientOptions, MirrorOutcome, PaneEvent, PaneMirror,
+        SpawnOptions,
+    };
+    use shelldeck_sessiond::pane_cli::{exit_status, panes_json, panes_table, resolve_pane};
+    use shelldeck_sessiond::paths;
+    use shelldeck_sessiond::protocol::PaneInfo;
+    use shelldeck_terminal::program_status::ProgramState;
+    use std::io::{Read, Write};
+    use std::path::Path;
+    use std::process::ExitCode;
+    use std::time::{Duration, Instant};
+
+    /// Exit status of `wait` when the time given with `--timeout` runs out,
+    /// as `timeout(1)` reports it.
+    const TIMED_OUT: u8 = 124;
+    /// How long `read` waits for the history after the screen arrived. The
+    /// daemon marks the last history frame; this only bounds a daemon that
+    /// has none to send.
+    const HISTORY_GRACE: Duration = Duration::from_millis(1500);
+    const DEFAULT_LINES: usize = 40;
+
+    pub fn main(command: &str, args: Args) -> ExitCode {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("shelldeck-sessiond: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match runtime.block_on(run(command, args)) {
+            Ok(status) => ExitCode::from(status),
+            Err(message) => {
+                eprintln!("shelldeck-sessiond: {message}");
+                ExitCode::FAILURE
+            }
+        }
+    }
+
+    async fn run(command: &str, args: Args) -> Result<u8, String> {
+        let dir = paths::resolve_run_dir(args.dir.as_deref()).map_err(|e| e.to_string())?;
+        // Only `run` starts a daemon: the other commands act on panes that
+        // exist, and there are none without one.
+        let client = connect(&dir, command == "run").await?;
+        match command {
+            "ls" => {
+                let panes = client.list_panes().await.map_err(|e| e.to_string())?;
+                if args.json {
+                    println!("{}", panes_json(&panes));
+                } else {
+                    print!("{}", panes_table(&panes));
+                }
+                Ok(0)
+            }
+            "run" => start(&client, &args).await,
+            _ => {
+                let panes = client.list_panes().await.map_err(|e| e.to_string())?;
+                let selector = args.positional.first().map(String::as_str).unwrap_or("");
+                let id = resolve_pane(selector, &panes)?;
+                let Some(info) = panes.iter().find(|info| info.pane == id) else {
+                    return Err(format!("no pane {id}"));
+                };
+                match command {
+                    "send" => send(&client, info, &args).await,
+                    "read" => read(&client, info, &args).await,
+                    _ => wait(&client, info, &args).await,
+                }
+            }
+        }
+    }
+
+    async fn connect(dir: &Path, start_daemon: bool) -> Result<Client, String> {
+        let first = match connect_unix(dir, ClientOptions::default()).await {
+            Ok(client) => return Ok(client),
+            Err(error) => error,
+        };
+        if !start_daemon {
+            return Err(format!(
+                "no session daemon at {} ({first}). `run` starts one.",
+                dir.display()
+            ));
+        }
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        // `serve --detach` forks and returns at once; a second daemon next
+        // to a running one exits by itself.
+        std::process::Command::new(exe)
+            .arg("serve")
+            .arg("--detach")
+            .arg("--dir")
+            .arg(dir)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .map_err(|e| format!("cannot start the session daemon: {e}"))?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match connect_unix(dir, ClientOptions::default()).await {
+                Ok(client) => return Ok(client),
+                Err(error) if Instant::now() >= deadline => {
+                    return Err(format!(
+                        "the session daemon did not start at {}: {error}",
+                        dir.display()
+                    ))
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    }
+
+    /// What a pane gets from the caller's environment, within what the
+    /// daemon lets a client set: the terminal type and the locale.
+    fn pane_env() -> Vec<(String, String)> {
+        let mut env = vec![("TERM".to_string(), "xterm-256color".to_string())];
+        for (name, value) in std::env::vars() {
+            if name == "COLORTERM" || name == "LANG" || name.starts_with("LC_") {
+                env.push((name, value));
+            }
+        }
+        env
+    }
+
+    async fn start(client: &Client, args: &Args) -> Result<u8, String> {
+        // Like a shell: the pane starts where the caller is.
+        let cwd = match &args.cwd {
+            Some(cwd) => cwd.clone(),
+            None => std::env::current_dir()
+                .ok()
+                .and_then(|dir| dir.to_str().map(str::to_string))
+                .unwrap_or_default(),
+        };
+        let spawned = client
+            .spawn(SpawnOptions {
+                label: args.name.clone().unwrap_or_default(),
+                rows: args.rows.unwrap_or(40),
+                cols: args.cols.unwrap_or(120),
+                cwd,
+                argv: args.trailing.clone(),
+                env: pane_env(),
+                ..SpawnOptions::default()
+            })
+            .await
+            .map_err(|e| format!("cannot start the pane: {e}"))?;
+        println!("{}", spawned.pane);
+        Ok(0)
+    }
+
+    /// Attach without asking for a size, so the pane keeps the size its
+    /// viewers gave it.
+    fn attach(
+        client: &Client,
+        info: &PaneInfo,
+        scrollback_rows: u32,
+        read_only: bool,
+    ) -> Result<(shelldeck_sessiond::client::PaneEvents, PaneMirror), String> {
+        let events = client
+            .attach(
+                info.pane,
+                AttachOptions {
+                    rows: 0,
+                    cols: 0,
+                    scrollback_rows,
+                    read_only,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        let mirror = PaneMirror::new(
+            info.rows.max(1),
+            info.cols.max(1),
+            (scrollback_rows as usize).max(1),
+            client.hello().emulator_rev,
+        );
+        Ok((events, mirror))
+    }
+
+    /// Apply one event of `pane` to the mirror. `Err` carries why the pane
+    /// cannot be followed any further.
+    fn follow(
+        client: &Client,
+        pane: uuid::Uuid,
+        mirror: &mut PaneMirror,
+        event: &PaneEvent,
+    ) -> Result<(), String> {
+        match event {
+            PaneEvent::Error(code) => return Err(format!("daemon error {code:?}")),
+            PaneEvent::Closed => return Err("the connection to the daemon closed".into()),
+            _ => {}
+        }
+        if mirror.apply(event).map_err(|e| e.to_string())? == MirrorOutcome::NeedsReattach {
+            client.reattach(pane, true).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    async fn send(client: &Client, info: &PaneInfo, args: &Args) -> Result<u8, String> {
+        if !info.alive {
+            return Err(format!("pane {} has exited", info.pane));
+        }
+        let words: Vec<&str> = args.positional[1..]
+            .iter()
+            .chain(&args.trailing)
+            .map(String::as_str)
+            .collect();
+        let text = if words.is_empty() {
+            let mut text = String::new();
+            std::io::stdin()
+                .read_to_string(&mut text)
+                .map_err(|e| format!("cannot read the text from stdin: {e}"))?;
+            text.strip_suffix('\n').map(str::to_string).unwrap_or(text)
+        } else {
+            words.join(" ")
+        };
+
+        // Input needs an attached, writing client. The first event is the
+        // screen, which also says whether the program takes pastes whole.
+        let (mut events, mut mirror) = attach(client, info, 0, false)?;
+        let restored = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = events.next().await {
+                follow(client, info.pane, &mut mirror, &event)?;
+                if mirror.in_sync() {
+                    return Ok(());
+                }
+            }
+            Err("the connection to the daemon closed".to_string())
+        })
+        .await
+        .map_err(|_| "the daemon did not send the pane".to_string())?;
+        restored?;
+
+        let mut bytes = Vec::with_capacity(text.len() + 16);
+        if text.contains('\n') && mirror.grid().lock().bracketed_paste() {
+            // Several lines go in as one paste, or the program would take
+            // each line break as Enter.
+            bytes.extend_from_slice(b"\x1b[200~");
+            bytes.extend_from_slice(text.as_bytes());
+            bytes.extend_from_slice(b"\x1b[201~");
+        } else {
+            bytes.extend_from_slice(text.replace('\n', "\r").as_bytes());
+        }
+        if !args.no_enter {
+            bytes.push(b'\r');
+        }
+        for chunk in bytes.chunks(4096) {
+            client.input(info.pane, chunk).map_err(|e| e.to_string())?;
+        }
+        // One round trip, so the input frames are delivered before exit.
+        client.list_panes().await.map_err(|e| e.to_string())?;
+        Ok(0)
+    }
+
+    async fn read(client: &Client, info: &PaneInfo, args: &Args) -> Result<u8, String> {
+        let lines = args.lines.unwrap_or(DEFAULT_LINES);
+        // The screen comes first, then history: ask for what the screen
+        // alone cannot give.
+        let history = lines.saturating_sub(1).min(100_000) as u32;
+        let (mut events, mut mirror) = attach(client, info, history, true)?;
+        let mut deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Ok(event) = tokio::time::timeout(left, events.next()).await else {
+                break;
+            };
+            let Some(event) = event else { break };
+            let last_history = matches!(event, PaneEvent::History { last: true, .. });
+            let screen = matches!(event, PaneEvent::Restore { .. });
+            follow(client, info.pane, &mut mirror, &event)?;
+            if last_history || (screen && history == 0) {
+                break;
+            }
+            if screen {
+                deadline = Instant::now() + HISTORY_GRACE;
+            }
+        }
+        if !mirror.in_sync() {
+            return Err("the daemon did not send the pane".into());
+        }
+        let text = mirror.grid().lock().tail_text(lines).join("\n");
+        let mut out = std::io::stdout().lock();
+        if !text.is_empty() {
+            writeln!(out, "{text}").map_err(|e| e.to_string())?;
+        }
+        Ok(0)
+    }
+
+    async fn wait(client: &Client, info: &PaneInfo, args: &Args) -> Result<u8, String> {
+        let until = match args.until.as_deref() {
+            Some(word) => Some(ProgramState::parse(word).ok_or_else(|| {
+                format!("--until takes idle, working, done, blocked or error, not {word:?}")
+            })?),
+            None => None,
+        };
+        if !info.alive {
+            return Ok(exit_status(info.exit_code, 0));
+        }
+        let deadline = args
+            .timeout
+            .map(|seconds| Instant::now() + Duration::from_secs(seconds));
+        let (mut events, mut mirror) = attach(client, info, 0, true)?;
+        loop {
+            let event = match deadline {
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    match tokio::time::timeout(left, events.next()).await {
+                        Ok(event) => event,
+                        Err(_) => {
+                            eprintln!("shelldeck-sessiond: timed out waiting for {}", info.pane);
+                            return Ok(TIMED_OUT);
+                        }
+                    }
+                }
+                None => events.next().await,
+            };
+            let Some(event) = event else {
+                return Err("the connection to the daemon closed".into());
+            };
+            if let PaneEvent::Exited {
+                exit_code, signal, ..
+            } = event
+            {
+                return Ok(exit_status(exit_code, signal));
+            }
+            follow(client, info.pane, &mut mirror, &event)?;
+            if let Some(until) = until {
+                // The program's own record when it has one, else whichever
+                // of its records matters most.
+                let grid = mirror.grid().lock();
+                let state = grid
+                    .program_status
+                    .get("")
+                    .map(|record| record.state)
+                    .or_else(|| grid.program_status.headline().map(|h| h.state));
+                if state == Some(until) {
+                    return Ok(0);
+                }
+            }
+        }
     }
 }
 

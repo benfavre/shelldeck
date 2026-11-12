@@ -2944,3 +2944,184 @@ fn sdtest_3047_the_binary_carries_the_build_marker_of_its_release() {
         format!("shelldeck-sessiond {}\n", env!("CARGO_PKG_VERSION"))
     );
 }
+
+/// One pane command of the real binary against a private run directory:
+/// exit status, stdout, stderr.
+fn pane_cli(dir: &RunDir, args: &[&str]) -> (i32, String, String) {
+    let output = tokio::task::block_in_place(|| {
+        std::process::Command::new(BIN)
+            .arg(args[0])
+            .arg("--dir")
+            .arg(&dir.path)
+            .args(&args[1..])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run the pane command")
+    });
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// Poll `read` until the pane shows `needle`.
+fn pane_shows(dir: &RunDir, pane: &str, lines: &str, needle: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, text, err) = pane_cli(dir, &["read", pane, "--lines", lines]);
+        assert_eq!(code, 0, "{err}");
+        if text.contains(needle) {
+            return text;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{needle:?} never showed:\n{text}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+// SDTEST-3106 (SDUC-578): the pane commands of the shipped binary, the way a
+// script or an agent uses them: start a named pane, type into it, read its
+// screen and history, wait for a reported status and for its exit status.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3106_pane_commands_start_type_read_and_wait_from_the_command_line() {
+    let dir = run_dir();
+    let _daemon = start(&dir, test_config());
+    let client = connect(&dir).await;
+
+    let (code, out, err) = pane_cli(
+        &dir,
+        &[
+            "run", "--name", "helper", "--rows", "10", "--cols", "60", "--", "/bin/sh",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let id = out.trim().to_string();
+    let pane: Uuid = id.parse().expect("run prints the pane id");
+
+    let (_, table, _) = pane_cli(&dir, &["ls"]);
+    for expected in [id.as_str(), "helper", "running", "10x60"] {
+        assert!(table.contains(expected), "{expected:?} missing:\n{table}");
+    }
+    let (_, json, _) = pane_cli(&dir, &["ls", "--json"]);
+    assert!(json.contains(&format!("\"id\":\"{id}\"")), "{json}");
+    assert!(json.contains("\"name\":\"helper\""), "{json}");
+    assert!(json.contains("\"alive\":true,\"exit_code\":null"), "{json}");
+
+    // Typed by name, read by id prefix. The shell computes the marker, so
+    // the echo of the typed command cannot satisfy the check.
+    let (code, _, err) = pane_cli(&dir, &["send", "helper", "--", "echo", "marker-$((6*7))"]);
+    assert_eq!(code, 0, "{err}");
+    pane_shows(&dir, &id[..8], "5", "marker-42");
+
+    // More output than the 10-row screen holds: the history comes back,
+    // and --lines bounds what is printed, ending at the last line with text.
+    let (code, _, err) = pane_cli(
+        &dir,
+        &[
+            "send",
+            "helper",
+            "--",
+            "for i in $(seq 1 30); do echo line-$i; done",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let all = pane_shows(&dir, "helper", "100", "line-30");
+    assert!(all.lines().any(|line| line == "line-1"), "history:\n{all}");
+    let (_, tail, _) = pane_cli(&dir, &["read", "helper", "--lines", "3"]);
+    assert_eq!(tail.lines().count(), 3, "{tail:?}");
+    assert!(
+        tail.contains("line-30") && !tail.contains("line-27"),
+        "{tail:?}"
+    );
+
+    // Typing and reading attach without a size: the pane keeps its own.
+    let info = pane_info(&client, pane).await.expect("listed");
+    assert_eq!((info.rows, info.cols), (10, 60));
+
+    // `wait --until done` returns when the program reports it (OSC 7501).
+    // It sees reports made after it attached, so type once it is attached.
+    let mut waiting = std::process::Command::new(BIN)
+        .args(["wait", "--dir"])
+        .arg(&dir.path)
+        .args(["helper", "--until", "done", "--timeout", "30"])
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .expect("start wait");
+    let attached = Instant::now() + Duration::from_secs(10);
+    while pane_info(&client, pane).await.expect("listed").clients == 0 {
+        assert!(Instant::now() < attached, "wait never attached");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(waiting.try_wait().expect("try_wait").is_none());
+    let (code, _, err) = pane_cli(
+        &dir,
+        &[
+            "send",
+            "helper",
+            "--",
+            "printf '\\033]7501;state=done\\033\\\\'",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let status = tokio::task::block_in_place(|| waiting.wait().expect("wait exits"));
+    assert_eq!(status.code(), Some(0));
+
+    // A pane that keeps running: the timeout is reported like timeout(1).
+    let (code, _, err) = pane_cli(&dir, &["wait", "helper", "--timeout", "1"]);
+    assert_eq!(code, 124, "{err}");
+    let (code, _, err) = pane_cli(&dir, &["wait", "helper", "--until", "finished"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--until takes"), "{err}");
+
+    // The exit status of the pane is the exit status of `wait`, also for a
+    // pane that already ended. Nothing can be typed into it any more.
+    let mut waiting = std::process::Command::new(BIN)
+        .args(["wait", "--dir"])
+        .arg(&dir.path)
+        .args(["helper", "--timeout", "30"])
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .expect("start wait");
+    let (code, _, err) = pane_cli(&dir, &["send", "helper", "--", "exit", "7"]);
+    assert_eq!(code, 0, "{err}");
+    let status = tokio::task::block_in_place(|| waiting.wait().expect("wait exits"));
+    assert_eq!(status.code(), Some(7));
+    let (code, _, _) = pane_cli(&dir, &["wait", "helper"]);
+    assert_eq!(code, 7);
+    let (code, _, err) = pane_cli(&dir, &["send", "helper", "--", "echo", "late"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("has exited"), "{err}");
+
+    let (code, _, err) = pane_cli(&dir, &["read", "nobody"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no pane matches"), "{err}");
+}
+
+// SDTEST-3107 (SDUC-578): `run` starts the daemon when none runs; the other
+// pane commands never do, since they act on panes that already exist.
+// Linux only: the daemon it starts is detached, and only there does the
+// test harness find and stop it (`terminate_daemons_of`).
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3107_only_run_starts_a_daemon() {
+    let dir = run_dir();
+
+    let (code, out, err) = pane_cli(&dir, &["ls"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(err.contains("no session daemon"), "{err}");
+    assert!(!dir.path.exists(), "ls created the run directory");
+
+    let (code, out, err) = pane_cli(&dir, &["run", "--", "/bin/sh", "-c", "sleep 30"]);
+    assert_eq!(code, 0, "{err}");
+    let id = out.trim().to_string();
+    let _: Uuid = id.parse().expect("run prints the pane id");
+    let (code, table, err) = pane_cli(&dir, &["ls"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(table.contains(&id), "{table}");
+    // The pane is removed before the directory goes away with its daemon.
+    let (code, _, err) = pane_cli(&dir, &["kill", &id, "9"]);
+    assert_eq!(code, 0, "{err}");
+}

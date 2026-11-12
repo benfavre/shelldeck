@@ -3367,6 +3367,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-12**: Added SDUC-578: pane commands of `shelldeck-sessiond` for scripts and agents (`ls`, `run`, `send`, `read`, `wait`). SDTEST-3104..3107.
+
 - **2026-11-12**: Added SDUC-577: application shortcuts can be changed or removed in a `[keybindings]` table of the configuration file; every label follows. SDTEST-3100..3103.
 
 - **2026-11-12**: Added SDUC-576: a program in a terminal reports what it is doing through OSC 7501 (Program Status Protocol); the tab shows it and the view switcher marks the view that needs the user or has something new. SDTEST-3093..3099.
@@ -5304,3 +5306,39 @@ platforms), SDTEST-3101 and SDTEST-3102 (the table: change, removal, no-op,
 unknown, invalid, conflicts, swap), SDTEST-3103 (file format). Not done: no
 editor in Settings, no reload without restart, and the keys of the Agents
 composer, the file editor and the embedded browser are not in the table.
+
+### SDUC-578: Starting, typing into, reading and waiting for panes from a shell
+
+A script or a coding agent can use the panes of the session daemon through
+the `shelldeck-sessiond` binary, so it can run a program in a terminal that
+outlives it and steer it. Reference: [`pane-cli.md`](../pane-cli.md).
+
+- `run [--name NAME] [--cwd DIR] [--rows N] [--cols N] [-- ARGV...]` starts a
+  pane (the login shell by default) in the caller's directory and prints its
+  id. It starts the daemon when none runs; no other command does.
+- `ls` lists the panes for people; `ls --json` for programs (a running pane
+  has a null exit code).
+- `send PANE [TEXT...]` types text and Enter (`--no-enter` to leave the line
+  open; text from stdin when none is given). Several lines go in as one
+  bracketed paste when the pane's program enabled it.
+- `read PANE [--lines N]` prints the last lines of the pane, history
+  included, ending at the last line that has text.
+- `wait PANE` blocks until the program exits and exits with its status (128
+  plus the signal for a killed program; at once for a pane that already
+  ended). `--until STATE` returns 0 when the program reports that state
+  through OSC 7501 (SDUC-576), for reports made after the command started.
+  `--timeout SECONDS` gives up with status 124.
+- A pane is named by its id, the start of its id (4 characters or more) or
+  its name. A selector that matches several panes is refused.
+- `send`, `read` and `wait` never resize a pane.
+- The commands use the daemon's private socket of the current user and add
+  nothing to the wire protocol. A pane started this way is restored as a tab
+  by the application at its next start, like any pane without a saved slot.
+
+Verified by SDTEST-3104 and SDTEST-3105 (selection, JSON list, exit status)
+and by SDTEST-3106 and SDTEST-3107, which run the real binary against a real
+daemon in a private temporary directory. Not done: a pane does not know its
+own id; `send` does not refuse a program blocked on a permission question; a
+status reached before `wait --until` started is not known (the daemon keeps
+no status); a running application does not show a pane started here until it
+restarts. Windows has no daemon.

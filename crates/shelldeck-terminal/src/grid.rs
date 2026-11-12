@@ -1691,6 +1691,34 @@ impl TerminalGrid {
         output
     }
 
+    /// The last `max_lines` lines of history and screen as plain text,
+    /// oldest first, without the blank lines below the last line that has
+    /// text. What a person or an agent reads to see where a program is.
+    pub fn tail_text(&self, max_lines: usize) -> Vec<String> {
+        let history = self.scrollback.len();
+        let row_text = |index: usize| -> String {
+            let row = if index < history {
+                self.scrollback.get(index)
+            } else {
+                self.cells.get(index - history)
+            };
+            let mut line = String::new();
+            for cell in row.into_iter().flatten() {
+                if cell.wide == CellWidth::Spacer {
+                    continue;
+                }
+                line.push(cell.c);
+                line.extend(cell.combining.iter());
+            }
+            line.trim_end().to_string()
+        };
+        let mut end = history + self.cells.len();
+        while end > 0 && row_text(end - 1).is_empty() {
+            end -= 1;
+        }
+        (end.saturating_sub(max_lines)..end).map(row_text).collect()
+    }
+
     // -- Alternate screen buffer --
 
     /// Switch to alternate screen buffer (used by fullscreen apps).

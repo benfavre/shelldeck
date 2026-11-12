@@ -107,6 +107,15 @@ an in-process daemon by SDTEST-2992..2995 and SDTEST-2998 in [`tests-terminal.md
 | SDTEST-3004 | `supervisor.rs::sdtest_3004_backoff_doubles_up_to_the_cap` | SDUC-574 | Green | Delays 100, 200, 400, 800 ms then the 1 s cap; no overflow for huge attempt numbers or durations. |
 | SDTEST-3005 | `supervisor.rs::sdtest_3005_reconnect_state_machine` | SDUC-574 | Green | `Reconnect`, no I/O: a new pane that cannot be created is unavailable at once; a lost connection retries with growing delays and a reattach that showed the pane resets them; attempts without the pane's screen are bounded, except with `UNLIMITED_ATTEMPTS` (200 failed connects still retry, at the capped delay; a pane that was never created still fails at once); no daemon at all, or `NoSuchPane`, ends the session; the exit code survives a later loss or removal; "connecting" until first shown, "reconnecting" after. |
 
+## Pane commands (`pane_cli.rs`, `tests/daemon.rs`)
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3104 | `pane_cli.rs::sdtest_3104_a_pane_selector_names_exactly_one_pane` | SDUC-578 | Green | A full id, a name (trimmed), an id prefix of 4 characters or more in any case; two panes with the same name, two ids with the same prefix, a prefix that is too short, an empty selector and an unknown full id are refused. |
+| SDTEST-3105 | `pane_cli.rs::sdtest_3105_the_json_pane_list_escapes_text_and_marks_running_panes` | SDUC-578 | Green | Quotes, backslashes, line breaks and control characters are escaped; a running pane has a null exit code; an empty list is `[]`; one pane per line. Exit status mapping (code, clamp, 128 plus signal). |
+| SDTEST-3106 | `tests/daemon.rs::sdtest_3106_pane_commands_start_type_read_and_wait_from_the_command_line` | SDUC-578 | Green | The real binary against an in-process daemon on a private directory, real PTY and `/bin/sh`: `run --name` prints the id; `ls` and `ls --json`; `send` by name and `read` by id prefix (the shell computes the marker, so the echo cannot pass); 30 lines through a 10-row pane come back from history and `--lines 3` prints three; the pane keeps its 10 x 60 size; `wait --until done` returns 0 on an OSC 7501 report typed after it attached; `--timeout 1` gives 124; a bad `--until` word is refused; `wait` exits 7 for `exit 7`, also afterwards; typing into the ended pane and an unknown selector fail. |
+| SDTEST-3107 | `tests/daemon.rs::sdtest_3107_only_run_starts_a_daemon` | SDUC-578 | Green | Linux only (the detached daemon is found and stopped by the harness there). `ls` without a daemon fails and creates nothing; `run` starts the daemon and the pane is listed. |
+
 ## SSH transport
 
 The daemon over SSH is tested inside `shelldeck-ssh`, where the in-memory
