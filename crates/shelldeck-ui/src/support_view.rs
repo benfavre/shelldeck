@@ -443,6 +443,12 @@ struct HeaderAssigneeOption {
 #[derive(Debug, Clone)]
 pub enum SupportViewEvent {
     Refresh,
+    /// The console switched section (its own tabs, a home card, or the
+    /// workspace), so the Dev rail can highlight the matching icon.
+    SectionChanged(SupportSection),
+    /// "New request" in the Requests header: open the composer here,
+    /// without leaving the console.
+    NewRequest,
     SelectTicket(String),
     SuggestReply(String),
     SummarizeTicket(String),
@@ -879,6 +885,7 @@ impl SupportView {
             self.stash_active_composer(cx);
             self.section = section;
             self.restore_active_composer(cx);
+            cx.emit(SupportViewEvent::SectionChanged(section));
         }
         self.thread_link_action = None;
     }

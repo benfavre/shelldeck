@@ -169,6 +169,7 @@ impl Render for Workspace {
                         }
                         ActiveView::Fleet => content = content.child(self.fleet_view.clone()),
                         ActiveView::BextCloud => content = content.child(self.bext_view.clone()),
+                        ActiveView::Support => content = content.child(self.support.clone()),
                         ActiveView::Settings => content = content.child(self.settings.clone()),
                     }
 
@@ -582,7 +583,20 @@ impl Render for Workspace {
         // User-mode "Mes demandes" sheets: composer + selected-request detail.
         // Both live at workspace root so they slide over the list without
         // pushing it down (their inline predecessors did the pushing).
-        if !self.settings_open && matches!(self.effective_mode(), AppMode::User) {
+        // The composer also opens over the Support console (Support mode, or
+        // its Dev view); the detail sheet stays a User-mode surface.
+        let composer_here = new_request_composer_visible(
+            self.user_new_request_sheet_open,
+            self.settings_open,
+            self.effective_mode(),
+            self.support_surface_visible(),
+        );
+        if composer_here {
+            root = root.child(
+                self.render_user_new_request_sheet(is_maximized, _window, _cx)
+                    .into_any_element(),
+            );
+        } else if !self.settings_open && matches!(self.effective_mode(), AppMode::User) {
             let sheet = if self.user_new_request_sheet_open {
                 Some(
                     self.render_user_new_request_sheet(is_maximized, _window, _cx)
@@ -750,12 +764,67 @@ impl Render for Workspace {
     }
 }
 
+/// The new-request composer is painted: open, Settings not over it, and on
+/// a surface that files requests (User home, or the Support console in
+/// Support mode or inside Dev).
+fn new_request_composer_visible(
+    open: bool,
+    settings_open: bool,
+    mode: AppMode,
+    support_console: bool,
+) -> bool {
+    open && !settings_open && (mode == AppMode::User || support_console)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        mode_transition_overlay_opacity, workspace_status_bar_visible, AppMode,
-        MODE_TRANSITION_IN_MS, MODE_TRANSITION_OUT_MS,
+        mode_transition_overlay_opacity, new_request_composer_visible,
+        workspace_status_bar_visible, AppMode, MODE_TRANSITION_IN_MS, MODE_TRANSITION_OUT_MS,
     };
+
+    // SDTEST-3073: the new-request composer opens over the Support console
+    // (Support mode, or its Dev view) as well as the User home, never over
+    // another Dev view and never under Settings.
+    #[test]
+    fn new_request_composer_opens_over_the_support_console() {
+        assert!(new_request_composer_visible(
+            true,
+            false,
+            AppMode::User,
+            false
+        ));
+        assert!(new_request_composer_visible(
+            true,
+            false,
+            AppMode::Support,
+            true
+        ));
+        assert!(new_request_composer_visible(
+            true,
+            false,
+            AppMode::Dev,
+            true
+        ));
+        assert!(!new_request_composer_visible(
+            true,
+            false,
+            AppMode::Dev,
+            false
+        ));
+        assert!(!new_request_composer_visible(
+            true,
+            true,
+            AppMode::Support,
+            true
+        ));
+        assert!(!new_request_composer_visible(
+            false,
+            false,
+            AppMode::User,
+            false
+        ));
+    }
 
     // SDTEST-1703 — the brief veil covers the commit midpoint and clears fully.
     #[test]

@@ -199,6 +199,10 @@ pub enum SidebarSection {
     MoniqueConsole,
     Fleet,
     BextCloud,
+    /// Inklura support tickets, shown in Dev with the Support console.
+    Support,
+    /// Inklura requests (« Demandes »), same console on its Requests tab.
+    Requests,
     Settings,
 }
 
@@ -227,6 +231,12 @@ impl SidebarSection {
             self,
             Self::Connections | Self::PortForwards | Self::ServerSync | Self::Sites
         )
+    }
+
+    /// The staff group of the rail (Support console tickets and requests),
+    /// shown below the activities only to accounts that may use Support.
+    pub fn rail_support_activities() -> &'static [SidebarSection] {
+        &[SidebarSection::Support, SidebarSection::Requests]
     }
 
     /// Starts the secondary/tool group in the compact activity rail.
@@ -312,6 +322,8 @@ impl SidebarSection {
             SidebarSection::MoniqueConsole => "cpu",
             SidebarSection::Fleet => "box",
             SidebarSection::BextCloud => "cloud",
+            SidebarSection::Support => "life-buoy",
+            SidebarSection::Requests => "tag",
             SidebarSection::Settings => "settings",
         }
     }
@@ -331,6 +343,8 @@ impl SidebarSection {
             SidebarSection::MoniqueConsole => t!("sidebar.nav.monique"),
             SidebarSection::Fleet => t!("sidebar.nav.fleet"),
             SidebarSection::BextCloud => t!("sidebar.nav.bext"),
+            SidebarSection::Support => t!("sidebar.nav.support"),
+            SidebarSection::Requests => t!("sidebar.nav.requests"),
             SidebarSection::Settings => t!("sidebar.nav.settings"),
         }
         .to_string()
@@ -393,6 +407,9 @@ pub struct SidebarView {
     resizing: bool,
     /// Number of open terminal tabs (shown as badge)
     terminal_tab_count: usize,
+    /// The signed-in account may use the Support console: the rail shows
+    /// its Support and Requests group.
+    support_rail: bool,
     /// Host search query
     search_state: Entity<InputState>,
     /// Cached snapshot of the current input value (used by `conn_matches_search`
@@ -427,6 +444,7 @@ impl SidebarView {
             width: 260.0,
             resizing: false,
             terminal_tab_count: 0,
+            support_rail: false,
             search_state: cx.new(InputState::new),
             search_query: String::new(),
             site_filter: None,
@@ -523,6 +541,15 @@ impl SidebarView {
     /// match, or an unbound connection (manual / ssh / cloud-without-site).
     fn conn_matches_site(&self, conn: &Connection) -> bool {
         conn_matches_site_filter(self.site_filter, conn.site_id)
+    }
+
+    /// Show or hide the Support/Requests group of the rail.
+    pub fn set_support_rail(&mut self, visible: bool) {
+        self.support_rail = visible;
+    }
+
+    pub fn support_rail(&self) -> bool {
+        self.support_rail
     }
 
     pub fn set_terminal_tab_count(&mut self, count: usize) {
@@ -689,6 +716,18 @@ impl SidebarView {
                 _ => None,
             };
             activities = activities.child(self.render_rail_item(section, count, cx));
+        }
+        if self.support_rail {
+            activities = activities.child(
+                div()
+                    .w(gpui::px(20.0))
+                    .h(gpui::px(1.0))
+                    .my(gpui::px(3.0))
+                    .bg(ShellDeckColors::border()),
+            );
+            for &section in SidebarSection::rail_support_activities() {
+                activities = activities.child(self.render_rail_item(section, None, cx));
+            }
         }
 
         div()
@@ -1495,6 +1534,40 @@ mod tests {
             "seules les activités dont le panneau apporte une information \
              absente de leur vue en gardent un"
         );
+    }
+
+    // SDTEST-3074: staff accounts get Support and Requests in the Dev rail,
+    // as their own group after the activities: no contextual panel, not
+    // retired, icons that ship with the app; hidden until the workspace
+    // says the account may use Support.
+    #[test]
+    fn staff_rail_group_holds_support_and_requests() {
+        use super::{SidebarSection, SidebarView};
+        use gpui::{AppContext, TestAppContext};
+        let group = SidebarSection::rail_support_activities();
+        assert_eq!(group, &[SidebarSection::Support, SidebarSection::Requests]);
+        let icons = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../shelldeck/assets/icons/lucide");
+        for section in group {
+            assert!(!SidebarSection::rail_activities().contains(section));
+            assert!(!section.has_panel() && !section.is_retired(), "{section:?}");
+            assert!(
+                icons
+                    .join(format!("{}.svg", section.lucide_icon()))
+                    .exists(),
+                "{section:?} icon missing"
+            );
+            assert!(!section.label().is_empty());
+        }
+        let mut cx = TestAppContext::single();
+        let sidebar = cx.update(|cx| cx.new(SidebarView::new));
+        sidebar.update(&mut cx, |sidebar, _| {
+            assert!(!sidebar.support_rail());
+            sidebar.set_support_rail(true);
+            assert!(sidebar.support_rail());
+            sidebar.set_active_section(SidebarSection::Requests);
+            assert_eq!(sidebar.active_section, SidebarSection::Requests);
+        });
     }
 
     // SDTEST-2910 : Dev opens on Agents. The Connections activity and its

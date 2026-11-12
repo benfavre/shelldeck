@@ -376,6 +376,22 @@ impl Workspace {
         use manage_support as ms;
         match event {
             SupportViewEvent::Refresh => self.refresh_support(cx),
+            SupportViewEvent::SectionChanged(section) => {
+                // Inside Dev the rail follows the console's own tabs.
+                if self.effective_mode() == AppMode::Dev && self.active_view == ActiveView::Support
+                {
+                    let rail = if section == crate::support_view::SupportSection::Requests {
+                        SidebarSection::Requests
+                    } else {
+                        SidebarSection::Support
+                    };
+                    self.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.set_active_section(rail);
+                        cx.notify();
+                    });
+                }
+            }
+            SupportViewEvent::NewRequest => self.open_new_request(cx),
             SupportViewEvent::SelectTicket(id) => self.select_support_ticket(id, cx),
             SupportViewEvent::SuggestReply(ticket_id) => {
                 self.open_ai_workflow(AiWorkflowTarget::SupportReply { ticket_id }, cx)

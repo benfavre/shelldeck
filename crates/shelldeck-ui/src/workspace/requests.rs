@@ -48,10 +48,13 @@ impl Workspace {
             );
             return;
         }
-        if self.can_switch_mode() {
+        // From the Support console (Support mode, or its Dev view) the
+        // composer opens over it: staff file requests without leaving it.
+        let from_support = self.support_surface_visible();
+        if !from_support && self.can_switch_mode() {
             self.set_mode(AppMode::User, cx);
         }
-        self.issue_new_source = "user";
+        self.issue_new_source = if from_support { "support" } else { "user" };
         self.reset_new_request_site_to_active(cx);
         self.settings_open = false;
         self.settings_dialog = None;
@@ -83,7 +86,7 @@ impl Workspace {
         self.issue_ai_loading = false;
         self.issue_ai_error = None;
         self.issue_ai_request_id = self.issue_ai_request_id.wrapping_add(1);
-        if self.can_switch_mode() {
+        if !self.support_surface_visible() && self.can_switch_mode() {
             self.set_mode(AppMode::User, cx);
         }
         self.user_new_request_sheet_open = true;
@@ -1116,6 +1119,15 @@ impl Workspace {
                         ws.issue_detail = Some(iss.clone());
                         ws.issue_selected = Some(iss.id.clone());
                         ws.push_issues_to_support(cx);
+                        // Filed from the Support console (its Requests
+                        // header, or a ticket converted to a request): show
+                        // it there, on the Requests tab.
+                        if ws.support_surface_visible() {
+                            ws.support.update(cx, |view, cx| {
+                                view.set_section(crate::support_view::SupportSection::Requests, cx);
+                                cx.notify();
+                            });
+                        }
                         if let Some(error) = attachment_error {
                             ws.show_toast(
                                 t!(

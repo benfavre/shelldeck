@@ -191,11 +191,30 @@ impl SupportView {
                             .child(t!("support.requests").to_string()),
                     ),
             )
-            .child(support_refresh_button(
-                "support-requests-refresh",
-                SupportViewEvent::IssuesRefresh,
-                cx,
-            ));
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child({
+                        let label = t!("support.requests_new").to_string();
+                        Button::new("support-requests-new", label.clone())
+                            .variant(ButtonVariant::Default)
+                            .size(ButtonSize::Sm)
+                            .h(px(28.0))
+                            .px(px(8.0))
+                            .icon(IconSource::from("plus"))
+                            .tooltip(label)
+                            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                                cx.emit(SupportViewEvent::NewRequest);
+                            }))
+                    })
+                    .child(support_refresh_button(
+                        "support-requests-refresh",
+                        SupportViewEvent::IssuesRefresh,
+                        cx,
+                    )),
+            );
 
         let entity = cx.entity();
         // Simple filter bar — mirrors `render_filters` (tickets) exactly:

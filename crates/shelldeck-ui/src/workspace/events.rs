@@ -16,10 +16,16 @@ impl Workspace {
                 }
                 self.settings_open = false;
                 self.settings_dialog = None;
+                if super::navigation::support_rail_target(*section).is_some()
+                    && !self.can_access_mode(AppMode::Support)
+                {
+                    return;
+                }
                 self.switch_to_section(*section);
                 if *section == SidebarSection::Scripts {
                     self.populate_script_editor_connections(cx);
                 }
+                self.show_support_rail_section(*section, cx);
                 self.on_active_view_changed(cx);
                 cx.notify();
             }

@@ -572,12 +572,26 @@ impl Workspace {
             SidebarSection::MoniqueConsole => ActiveView::MoniqueConsole,
             SidebarSection::Fleet => ActiveView::Fleet,
             SidebarSection::BextCloud => ActiveView::BextCloud,
+            SidebarSection::Support | SidebarSection::Requests => ActiveView::Support,
             SidebarSection::Settings => ActiveView::Settings,
         };
     }
 
+    /// The Support console is on screen: Support mode, or its view inside
+    /// Dev. Gates its polls, its AI context and where new requests open.
+    pub(super) fn support_surface_visible(&self) -> bool {
+        super::polling::support_console_on_screen(
+            self.effective_mode(),
+            self.active_view,
+            self.can_access_mode(AppMode::Support),
+        )
+    }
+
     pub(super) fn activate_dev_section(&mut self, section: SidebarSection, cx: &mut Context<Self>) {
         if section.is_retired() {
+            return;
+        }
+        if support_rail_target(section).is_some() && !self.can_access_mode(AppMode::Support) {
             return;
         }
         if !self.enter_dev_mode(cx) {
@@ -588,8 +602,29 @@ impl Workspace {
             sidebar.set_active_section(section);
             cx.notify();
         });
+        self.show_support_rail_section(section, cx);
         self.on_active_view_changed(cx);
         cx.notify();
+    }
+
+    /// The Support or Requests rail icon was chosen in Dev: put the console
+    /// on the matching tab and load its data. No-op for other sections.
+    pub(super) fn show_support_rail_section(
+        &mut self,
+        section: SidebarSection,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(target) = support_rail_target(section) else {
+            return;
+        };
+        self.support.update(cx, |view, cx| {
+            view.set_section(target, cx);
+            cx.notify();
+        });
+        self.refresh_issues(cx);
+        if target != crate::support_view::SupportSection::Requests {
+            self.refresh_support(cx);
+        }
     }
 
     /// Called when the active Dev view changes — (re)start the Monique poll if the
@@ -637,6 +672,9 @@ impl Workspace {
         self.sync_monique_poll(cx);
         self.sync_fleet_view_poll(cx);
         self.sync_bext_poll(cx);
+        // The Support console can be a Dev view: its polls follow it.
+        self.sync_support_poll(cx);
+        self.sync_issues_poll(cx);
         self.refresh_command_palette(cx);
     }
 
@@ -936,5 +974,17 @@ impl Workspace {
                 break;
             }
         }));
+    }
+}
+
+/// The Support console tab a Dev rail icon opens: Support lands on the
+/// console's Accueil, as Support mode does; Requests on its Demandes tab.
+pub(super) fn support_rail_target(
+    section: SidebarSection,
+) -> Option<crate::support_view::SupportSection> {
+    match section {
+        SidebarSection::Support => Some(crate::support_view::SupportSection::Home),
+        SidebarSection::Requests => Some(crate::support_view::SupportSection::Requests),
+        _ => None,
     }
 }

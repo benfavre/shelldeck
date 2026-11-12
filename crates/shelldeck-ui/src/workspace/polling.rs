@@ -35,6 +35,21 @@ pub(super) struct PollContext {
     pub monique_configured: bool,
 }
 
+/// The Support console (tickets and requests) is on screen: Support mode,
+/// or its view inside Dev reached from the rail. Staff accounts only.
+pub(super) fn support_console_on_screen(
+    mode: AppMode,
+    active_view: ActiveView,
+    support_allowed: bool,
+) -> bool {
+    support_allowed
+        && match mode {
+            AppMode::Support => true,
+            AppMode::Dev => active_view == ActiveView::Support,
+            AppMode::User => false,
+        }
+}
+
 /// Whether `surface` is on screen, and therefore worth polling.
 pub(super) fn should_poll(ctx: PollContext, surface: PolledSurface) -> bool {
     // Two rules hold for every surface, so they are stated once here instead
@@ -51,8 +66,13 @@ pub(super) fn should_poll(ctx: PollContext, surface: PolledSurface) -> bool {
     }
 
     match surface {
-        PolledSurface::Support => ctx.support_allowed && ctx.mode == AppMode::Support,
-        PolledSurface::Issues => matches!(ctx.mode, AppMode::User | AppMode::Support),
+        PolledSurface::Support => {
+            support_console_on_screen(ctx.mode, ctx.active_view, ctx.support_allowed)
+        }
+        PolledSurface::Issues => {
+            ctx.mode == AppMode::User
+                || support_console_on_screen(ctx.mode, ctx.active_view, ctx.support_allowed)
+        }
         // Monique is reachable from the User and Support home surfaces, but in Dev
         // it lives behind its own view.
         PolledSurface::Monique => {
@@ -106,6 +126,54 @@ mod tests {
     ];
 
     // SDTEST-1059
+    // SDTEST-3072: the Support console shown inside Dev (rail icons) polls
+    // tickets and requests like Support mode, only while it is the Dev view
+    // and only for staff; any other Dev view polls neither.
+    #[test]
+    fn support_console_in_dev_polls_only_while_shown() {
+        let support = on_screen(AppMode::Dev, ActiveView::Support);
+        assert!(should_poll(support, PolledSurface::Support));
+        assert!(should_poll(support, PolledSurface::Issues));
+        for view in [
+            ActiveView::Terminal,
+            ActiveView::Agents,
+            ActiveView::Scripts,
+        ] {
+            let other = on_screen(AppMode::Dev, view);
+            assert!(!should_poll(other, PolledSurface::Support), "{view:?}");
+            assert!(!should_poll(other, PolledSurface::Issues), "{view:?}");
+        }
+        let mut not_staff = support;
+        not_staff.support_allowed = false;
+        assert!(!should_poll(not_staff, PolledSurface::Support));
+        assert!(!should_poll(not_staff, PolledSurface::Issues));
+        // Unchanged elsewhere: Support mode polls both, User mode requests.
+        let mode = on_screen(AppMode::Support, ActiveView::Terminal);
+        assert!(should_poll(mode, PolledSurface::Support));
+        assert!(should_poll(mode, PolledSurface::Issues));
+        let user = on_screen(AppMode::User, ActiveView::Support);
+        assert!(!should_poll(user, PolledSurface::Support));
+        assert!(should_poll(user, PolledSurface::Issues));
+        assert!(!support_console_on_screen(
+            AppMode::User,
+            ActiveView::Support,
+            true
+        ));
+        // The two rail icons: Support lands on Accueil, Requests on Demandes.
+        use super::super::navigation::support_rail_target;
+        use crate::sidebar::SidebarSection;
+        use crate::support_view::SupportSection;
+        assert_eq!(
+            support_rail_target(SidebarSection::Support),
+            Some(SupportSection::Home)
+        );
+        assert_eq!(
+            support_rail_target(SidebarSection::Requests),
+            Some(SupportSection::Requests)
+        );
+        assert_eq!(support_rail_target(SidebarSection::Terminals), None);
+    }
+
     #[test]
     fn no_surface_polls_behind_settings_or_while_signed_out() {
         for mode in [AppMode::User, AppMode::Support, AppMode::Dev] {
