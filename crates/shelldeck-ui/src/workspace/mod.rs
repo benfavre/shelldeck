@@ -113,6 +113,7 @@ pub type AiDockOpenHandler = Box<dyn Fn(&mut App)>;
 // 2,000 lines. See `.agents/workspace-architecture.md`.
 mod account;
 mod activity;
+mod agent_claude_warm;
 mod agent_codex;
 mod agent_companion;
 mod agent_local_sessions;
