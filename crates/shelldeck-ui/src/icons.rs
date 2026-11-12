@@ -75,8 +75,9 @@ pub fn agent_provider_path(provider: shelldeck_core::agent_runtime::AgentProvide
     match provider {
         AgentProvider::Claude => simple_path("claudecode"),
         AgentProvider::Codex => simple_path("openai"),
+        AgentProvider::DeepSeek => simple_path("deepseek"),
         AgentProvider::Jcode => lucide_path("sparkles"),
-        AgentProvider::Automonique | AgentProvider::DeepSeek => lucide_path("bot"),
+        AgentProvider::Automonique => lucide_path("bot"),
     }
 }
 pub fn agent_provider_icon(

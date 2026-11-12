@@ -59,17 +59,17 @@ impl AgentConsoleView {
             ComposerMenu::Access => (
                 "agent-permissions-picker",
                 provider_access_label(context.provider, context.access),
-                match context.access {
+                SharedString::from(match context.access {
                     AgentAccessMode::ReadOnly => "lock",
                     AgentAccessMode::WorkspaceWrite => "pencil",
                     AgentAccessMode::FullAccess => "shield",
-                },
+                }),
                 t!("agents.access.label").to_string(),
             ),
             ComposerMenu::Attachments => (
                 "agent-context-actions",
                 String::new(),
-                "plus",
+                SharedString::from("plus"),
                 t!("agents.composer.add_context").to_string(),
             ),
         };
@@ -128,7 +128,7 @@ impl AgentConsoleView {
                                     choices.push((
                                         ComposerChoice::Access(access),
                                         provider_access_label(context.provider, access),
-                                        icon,
+                                        SharedString::from(icon),
                                         access == context.access,
                                     ));
                                 }
@@ -138,19 +138,19 @@ impl AgentConsoleView {
                                     (
                                         ComposerChoice::Attach,
                                         t!("ai.attachment.choose").to_string(),
-                                        "paperclip",
+                                        SharedString::from("paperclip"),
                                         false,
                                     ),
                                     (
                                         ComposerChoice::Mention,
                                         t!("agents.composer.mention_file").to_string(),
-                                        "file-text",
+                                        SharedString::from("file-text"),
                                         false,
                                     ),
                                     (
                                         ComposerChoice::Paste,
                                         t!("agents.composer.paste").to_string(),
-                                        "copy",
+                                        SharedString::from("copy"),
                                         false,
                                     ),
                                 ]);
@@ -160,7 +160,7 @@ impl AgentConsoleView {
                                     choices.push((
                                         ComposerChoice::Capture,
                                         t!("agents.composer.capture").to_string(),
-                                        "scan",
+                                        SharedString::from("scan"),
                                         false,
                                     ));
                                 }
