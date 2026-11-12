@@ -256,6 +256,8 @@ impl Workspace {
                     tracing::error!("Split requested for unknown connection {}", connection_id);
                 }
             }
+            // The view switcher shows which view needs the user.
+            TerminalEvent::AttentionChanged => cx.notify(),
             TerminalEvent::InputDropped { count } => {
                 self.show_toast(
                     t!("toast.terminal.input_dropped", count = count).to_string(),

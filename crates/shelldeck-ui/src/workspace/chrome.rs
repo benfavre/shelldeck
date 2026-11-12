@@ -32,7 +32,7 @@ impl Workspace {
         is_maximized: bool,
         compact: bool,
         presentation: WorkspacePresentation,
-        presentation_switch: bool,
+        presentation_switch: Option<[crate::view_attention::ViewAttention; 4]>,
         account_menu_open: bool,
         mode_menu_open: bool,
         account: Option<AccountInfo>,
@@ -404,8 +404,8 @@ impl Workspace {
 
         // One control both leaves a focused view and returns to it, so the
         // full app is never a one-way door.
-        let presentation_switcher =
-            presentation_switch.then(|| Self::render_presentation_switcher(presentation, handle));
+        let presentation_switcher = presentation_switch
+            .map(|attention| Self::render_presentation_switcher(presentation, attention, handle));
 
         let ai_button = ai_configured.then(|| {
             let tooltip: SharedString = t!("ai.assistant.open").to_string().into();

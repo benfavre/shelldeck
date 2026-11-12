@@ -1,6 +1,7 @@
 //! Transient workspace presentation: the full app or one focused Dev view.
 //! Authentication and the persisted app mode remain authoritative.
 use super::*;
+use crate::view_attention::ViewAttention;
 
 /// What the window shows around the Dev views: the full app (titlebar menus,
 /// activity rail, every destination) or one focused view with no rail.
@@ -125,6 +126,26 @@ impl WorkspacePresentation {
             resolved
         }
     }
+}
+
+/// The dot of each switcher segment, in [`WorkspacePresentation::ALL`]
+/// order. A view that is on screen asks for nothing there: its own surface
+/// already shows it. The full app and the editor report nothing.
+fn switcher_attention(
+    on_screen: Option<ActiveView>,
+    agents: ViewAttention,
+    terminal: ViewAttention,
+) -> [ViewAttention; 4] {
+    WorkspacePresentation::ALL.map(|presentation| {
+        if on_screen.is_some() && presentation.view() == on_screen {
+            return ViewAttention::None;
+        }
+        match presentation {
+            WorkspacePresentation::Agents => agents,
+            WorkspacePresentation::Terminal => terminal,
+            WorkspacePresentation::Main | WorkspacePresentation::Editor => ViewAttention::None,
+        }
+    })
 }
 
 pub(super) fn agent_surface_visible(
@@ -290,10 +311,24 @@ impl Workspace {
         }
     }
 
+    /// What each view of the switcher wants from the user, in
+    /// [`WorkspacePresentation::ALL`] order.
+    pub(super) fn presentation_attention(&self, cx: &App) -> [ViewAttention; 4] {
+        let on_screen = (self.effective_mode() == AppMode::Dev && !self.settings_open)
+            .then_some(self.active_view);
+        switcher_attention(
+            on_screen,
+            self.agents_attention,
+            self.terminal.read(cx).attention(),
+        )
+    }
+
     /// The titlebar segmented control between the full app and the focused
-    /// views. Icon-only so its width never changes with the selection.
+    /// views. Icon-only so its width never changes with the selection. A dot
+    /// marks a view that needs the user or has something new.
     pub(super) fn render_presentation_switcher(
         current: WorkspacePresentation,
+        attention: [ViewAttention; 4],
         handle: &WeakEntity<Self>,
     ) -> impl IntoElement {
         let keys = crate::menu_bar::accel(crate::shortcut_reference::CYCLE_PRESENTATION_BINDING);
@@ -307,9 +342,21 @@ impl Workspace {
             .gap(px(2.0))
             .rounded(px(7.0))
             .bg(ShellDeckColors::badge_bg());
-        for presentation in WorkspacePresentation::ALL {
+        for (presentation, attention) in WorkspacePresentation::ALL.into_iter().zip(attention) {
             let active = presentation == current;
-            let name = presentation.label();
+            let name = match attention {
+                ViewAttention::NeedsYou => t!(
+                    "presentation.attention.needs_you",
+                    name = presentation.label()
+                )
+                .to_string(),
+                ViewAttention::Finished => t!(
+                    "presentation.attention.finished",
+                    name = presentation.label()
+                )
+                .to_string(),
+                ViewAttention::None => presentation.label(),
+            };
             let tooltip: SharedString = if active {
                 t!(
                     "presentation.tooltip_active",
@@ -324,6 +371,7 @@ impl Workspace {
             let workspace = handle.clone();
             let mut segment = div()
                 .id(presentation.switcher_id())
+                .relative()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -359,6 +407,24 @@ impl Workspace {
                         ShellDeckColors::text_muted(),
                     ))
             };
+            let dot = match attention {
+                ViewAttention::NeedsYou => Some(ShellDeckColors::warning()),
+                ViewAttention::Finished => Some(ShellDeckColors::primary()),
+                ViewAttention::None => None,
+            };
+            if let Some(color) = dot {
+                segment = segment.child(
+                    div()
+                        .absolute()
+                        .top(px(2.0))
+                        .right(px(3.0))
+                        .size(px(7.0))
+                        .rounded_full()
+                        .bg(color)
+                        .border_1()
+                        .border_color(ShellDeckColors::badge_bg()),
+                );
+            }
             group = group.child(segment);
         }
         group
@@ -451,6 +517,36 @@ mod tests {
         for (view, _) in owned {
             assert_eq!(Main.after_view_change(view), Main, "{view:?}");
         }
+    }
+
+    // SDTEST-3099 / SDUC-576. The switcher points at the view that needs the
+    // user, never at the one they are already looking at.
+    #[test]
+    fn sdtest_3099_the_switcher_marks_only_views_that_are_not_on_screen() {
+        use super::{switcher_attention, ViewAttention};
+        let (needs, finished, none) = (
+            ViewAttention::NeedsYou,
+            ViewAttention::Finished,
+            ViewAttention::None,
+        );
+        // Order: full app, Agents, Terminal, Editor.
+        assert_eq!(
+            switcher_attention(Some(ActiveView::FileEditor), finished, needs),
+            [none, finished, needs, none]
+        );
+        assert_eq!(
+            switcher_attention(Some(ActiveView::Terminal), finished, needs),
+            [none, finished, none, none]
+        );
+        assert_eq!(
+            switcher_attention(Some(ActiveView::Agents), finished, needs),
+            [none, none, needs, none]
+        );
+        // User or Support surface, or Settings open: no Dev view is on screen.
+        assert_eq!(
+            switcher_attention(None, needs, finished),
+            [none, needs, finished, none]
+        );
     }
 
     // SDTEST-3089 / SDUC-575

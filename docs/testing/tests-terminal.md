@@ -248,6 +248,15 @@ The auto-start through the real daemon binary is SDTEST-2996 in
 
 ---
 
+## 6d. Program status, OSC 7501 (`program_status.rs`, `parser.rs`)
+
+| ID | Test | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3093 | `program_status::tests::sdtest_3093_reports_and_the_support_query_follow_the_specification` | SDUC-576 | Green | The examples of the specification and of the reference parser (Ghostty): minimal report, every key, optional base64 padding, last value of a repeated key, `clear` with and without id, the support query and the exact reply body. |
+| SDTEST-3094 | `program_status::tests::sdtest_3094_a_bad_pair_is_skipped_and_a_bad_report_is_dropped_whole` | SDUC-576 | Green | An unknown key, a pair without `=`, a kind outside `blocked`, a progress outside 0..100 or outside `working`/`blocked`, an `app` that is not a name and a value outside the value alphabet are skipped. A missing or unknown state, an over-long key or value (even one replaced later), a malformed id, invalid base64, non UTF-8 text, a control character and an over-long body drop the whole report. |
+| SDTEST-3095 | `program_status::tests::sdtest_3095_records_replace_clear_by_subtree_and_pick_the_urgent_headline` | SDUC-576 | Green | One record per id; a report replaces its record completely; `clear` removes a record and its children but not a sibling with the same prefix; the headline is the most urgent record (blocked, error, working, done, idle), the root between equals, with the `app` of the nearest ancestor; at most 256 records. |
+| SDTEST-3096 | `parser::tests::sdtest_3096_program_status_reaches_the_grid_and_leaves_with_the_program` | SDUC-576 | Green | Bytes through the real parser: the query is answered with the terminator it used (ST and BEL), a report reaches the grid and prints nothing, a bad report changes nothing and gets no reply, OSC 133;A (shell prompt) and RIS remove every record. |
+
 ## 7. `error.rs`
 
 No behaviour to test — pure `thiserror` enums. **Do not** write tests

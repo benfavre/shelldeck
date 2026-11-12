@@ -3367,6 +3367,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-12**: Added SDUC-576: a program in a terminal reports what it is doing through OSC 7501 (Program Status Protocol); the tab shows it and the view switcher marks the view that needs the user or has something new. SDTEST-3093..3099.
+
 - **2026-11-12**: Added SDUC-575: the full application and the focused Agents, Terminal and Editor views are four presentations of one window, switched from the title bar, a shortcut, the palette, the View menu, `--terminal` / `--editor` and their links. The one-way "open the full application" button of SDUC-558 is replaced by the switcher. The terminal of the full application no longer loses the width of a sidebar panel that is not drawn. SDTEST-3085..3092.
 
 - **2026-11-11**: SDUC-574: daemon files that are missing, after the first release (0.21.0). The AppImage and the macOS bundle carry the daemon and the application copies it to its configuration directory before starting it (SDTEST-3059, 3060, 3064, 3065); an install updated by 0.20.0 or older, which has the new application and no daemon, fetches the files from a small signed archive that every release now publishes (SDTEST-3057, 3058, 3062); Settings and toasts say what the state is instead of a silent fallback (SDTEST-3061, 3063); a daemon started from an AppImage keeps nothing of the image in the environment its terminals inherit (SDTEST-3066). Design doc section 15, "Daemon files that are missing".
@@ -5231,3 +5233,45 @@ menu entry fitting without scrolling; a cold start with `--terminal`; a
 started with `--terminal` landing on its own home with no switcher. Not
 checked: macOS and Windows, the fallback notice text for an account without
 Dev (the toast had gone before the capture), `--editor` as a cold start.
+
+### SDUC-576: Programs say what they are doing, and the switcher shows who needs you
+
+A program running in a terminal can report its status through OSC 7501, the
+Program Status Protocol used by Rex, Ghostty and Herdr
+(`ESC ] 7501 ; state=working:app=cargo:progress=40 ESC \`). The terminal
+never guesses a status from the screen: a program that reports nothing has
+none.
+
+- States: `idle`, `working` (optional `progress` 0..100), `done`, `blocked`
+  (optional `kind`: `permission`, `question`, `auth`) and `error`. Optional
+  `app` (machine name), `title` and `msg` (base64 text for people) and `id`
+  (several records per program, `a/b` is a child of `a`). `state=clear`
+  removes a record and its children, or everything without an id.
+- A program may ask `ESC ] 7501 ; ? ESC \`; the terminal answers
+  `?:states=idle,working,done,blocked,error:kinds=permission,question,auth`
+  with the same terminator. A local terminal, an SSH tab and a session daemon
+  pane all answer.
+- A report is untrusted: sizes are bounded, text must be UTF-8 without control
+  characters, an unknown pair is skipped and a report that breaks a rule is
+  dropped whole.
+- The status leaves with the program: when the shell prompt comes back (shell
+  integration, OSC 133;A), on a full reset, and when the tab closes. Without
+  shell integration a program that dies without clearing leaves its last
+  status on the tab.
+- The tab dot shows the most urgent report among the panes of the tab: blue
+  while working, amber and larger when it waits on the user, red and larger
+  when it failed, blue and larger for finished work not looked at yet. The
+  tab tooltip gives the program name, what it is doing and its own message.
+- Finished work counts as seen once its tab has been in front in an active
+  window. A blocked or failed program keeps asking until its state changes.
+- The view switcher of the title bar carries a dot on the Agents and Terminal
+  segments: amber when something there waits on the user (a blocked or failed
+  terminal program, an agent conversation needing attention), blue when
+  something finished that was not looked at (finished terminal work, unread
+  agent replies). The view on screen carries no dot. The tooltip says which.
+
+Verified by SDTEST-3093..3096 (protocol, records, bytes to grid) and
+SDTEST-3097..3099 (tab attention, split tabs, switcher). Not done: the status
+is not part of the session daemon snapshot, so a pane reattached after a
+restart has no status until its program reports again; no OS notification is
+sent; the rail of the full application carries no dot.

@@ -543,6 +543,10 @@ pub struct TerminalGrid {
     pub prompt_lines: Vec<usize>,
     pub clipboard_request: Option<(String, String)>,
     pub palette_overrides: HashMap<u8, (u8, u8, u8)>,
+    /// What the running program says it is doing (OSC 7501). Not part of
+    /// the snapshot: a reattached pane has no status until the program
+    /// reports again.
+    pub program_status: crate::program_status::ProgramStatusRecords,
 }
 
 impl TerminalGrid {
@@ -612,6 +616,7 @@ impl TerminalGrid {
             command_output_start: None,
             prompt_lines: Vec::new(),
             clipboard_request: None,
+            program_status: Default::default(),
             palette_overrides: HashMap::new(),
         }
     }
@@ -1921,6 +1926,16 @@ impl TerminalGrid {
     /// Set the response channel sender for writing responses back to the PTY.
     pub fn set_response_tx(&mut self, tx: std::sync::mpsc::Sender<Vec<u8>>) {
         self.response_tx = Some(tx);
+    }
+
+    /// Apply an OSC 7501 report or clear.
+    pub fn apply_program_status(&mut self, command: crate::program_status::Command) {
+        self.program_status.apply(command);
+    }
+
+    /// Forget what the program reported: it left the foreground.
+    pub fn clear_program_status(&mut self) {
+        self.program_status.clear();
     }
 
     /// Send a response back to the PTY (e.g., DSR cursor position report).

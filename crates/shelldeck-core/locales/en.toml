@@ -2973,6 +2973,17 @@ native_browser.stay_on_page = "Stay on page"
 "presentation.unavailable" = "This view requires an Inklura Desktop Dev account. Your available workspace is open."
 "palette.presentation" = "View: %{name}"
 "presentation.next" = "Next view"
+"presentation.attention.needs_you" = "%{name} · needs you"
+"presentation.attention.finished" = "%{name} · finished, not seen yet"
+# What a program in a terminal tab says it is doing (OSC 7501).
+"terminal.status.idle" = "Idle"
+"terminal.status.working" = "Working"
+"terminal.status.working_percent" = "Working (%{percent}%)"
+"terminal.status.done" = "Done"
+"terminal.status.error" = "Failed"
+"terminal.status.blocked" = "Waiting for you"
+"terminal.status.blocked_permission" = "Waiting for your approval"
+"terminal.status.blocked_auth" = "Waiting for a sign-in"
 "agents.presentation.unavailable" = "Agents requires a Inklura Desktop Dev account. Your available workspace is open."
 
 # Agents conversation presentation

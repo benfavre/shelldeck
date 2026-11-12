@@ -1165,3 +1165,14 @@ pushed from `Workspace::render` (full application and focused view) and the
 hidden sidebar button. They were checked in the native walkthrough of
 2026-11-12 listed under SDUC-575.
 
+## Program status in tabs and view attention (2026-11-12)
+
+| ID | Test | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3097 | `terminal_view::layout::title_tests::sdtest_3097_a_tab_asks_for_attention_until_seen_or_unblocked` | SDUC-576 | Green | No GPUI. A blocked or failed program asks for the user until its state changes, even after the tab was looked at; finished work asks until the tab has been in front; working and idle ask for nothing; any new report is unseen again. |
+| SDTEST-3098 | `terminal_view::layout::title_tests::sdtest_3098_a_split_tab_shows_its_most_urgent_pane` | SDUC-576 | Green | No GPUI. The tab takes the most urgent report among its panes; the tooltip is the program name, what it is doing and its own message. |
+| SDTEST-3099 | `workspace/presentation.rs::sdtest_3099_the_switcher_marks_only_views_that_are_not_on_screen` | SDUC-576 | Green | No GPUI. The switcher dot of Agents and Terminal follows their attention, is absent for the view on screen, and the full app and the editor never carry one. |
+
+Not automated: the tab dot colour and size, the tooltip, the switcher dot and
+the "seen" mark set while the terminal view renders in an active window.
+

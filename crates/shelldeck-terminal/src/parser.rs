@@ -864,7 +864,7 @@ impl vte::Perform for Performer<'_> {
         }
     }
 
-    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
         if params.is_empty() {
             return;
         }
@@ -959,6 +959,9 @@ impl vte::Perform for Performer<'_> {
                     let grid = &mut *self.grid;
                     match marker.chars().next() {
                         Some('A') => {
+                            // The shell is back at its prompt: whatever
+                            // reported a status is no longer in front.
+                            grid.clear_program_status();
                             grid.prompt_mark = Some(PromptMark::PromptStart);
                             // Record the current cursor row as a prompt line.
                             let row = grid.cursor.row;
@@ -988,6 +991,24 @@ impl vte::Perform for Performer<'_> {
                         }
                         _ => {}
                     }
+                }
+            }
+            // OSC 7501 - Program Status Protocol: the program says what it
+            // is doing, or asks whether the terminal listens.
+            Some(7501) => {
+                let body = params[1..].join(&b';');
+                match crate::program_status::parse(&body) {
+                    Some(crate::program_status::Command::Query) => {
+                        // Answer with the terminator the query used, so the
+                        // program recognizes the reply.
+                        let terminator: &[u8] = if bell_terminated { b"\x07" } else { b"\x1b\\" };
+                        let mut reply = b"\x1b]7501;".to_vec();
+                        reply.extend_from_slice(crate::program_status::QUERY_REPLY.as_bytes());
+                        reply.extend_from_slice(terminator);
+                        self.grid.write_response(reply);
+                    }
+                    Some(command) => self.grid.apply_program_status(command),
+                    None => tracing::trace!("Ignored OSC 7501 report"),
                 }
             }
             _ => {
@@ -1393,6 +1414,62 @@ mod tests {
         processor.process_bytes(&mut parser, b"\x1b[2;4H\x1b[6n\x1b[c");
         assert_eq!(rx.try_recv().expect("CPR after RIS"), b"\x1b[2;4R");
         assert_eq!(rx.try_recv().expect("DA after RIS"), b"\x1b[?62;22c");
+    }
+
+    // SDTEST-3096 / SDUC-576. From bytes to the grid: a report is kept, the
+    // support query is answered with its own terminator, and the status
+    // goes away with the program (shell prompt, full reset).
+    #[test]
+    fn sdtest_3096_program_status_reaches_the_grid_and_leaves_with_the_program() {
+        use crate::program_status::ProgramState;
+
+        let grid = run(4, 40, b"");
+        let (tx, rx) = std::sync::mpsc::channel();
+        grid.lock().set_response_tx(tx);
+        let mut processor = TerminalProcessor::new(grid.clone());
+        let mut parser = vte::Parser::new();
+        let state = |grid: &Arc<Mutex<TerminalGrid>>| {
+            grid.lock()
+                .program_status
+                .headline()
+                .map(|h| (h.state, h.app, h.text))
+        };
+
+        let reply = "?:states=idle,working,done,blocked,error:kinds=permission,question,auth";
+        processor.process_bytes(&mut parser, b"\x1b]7501;?\x1b\\");
+        assert_eq!(
+            rx.try_recv().expect("reply to an ST query"),
+            format!("\x1b]7501;{reply}\x1b\\").into_bytes()
+        );
+        processor.process_bytes(&mut parser, b"\x1b]7501;?\x07");
+        assert_eq!(
+            rx.try_recv().expect("reply to a BEL query"),
+            format!("\x1b]7501;{reply}\x07").into_bytes()
+        );
+        assert_eq!(state(&grid), None, "a query is not a report");
+
+        processor.process_bytes(
+            &mut parser,
+            b"\x1b]7501;state=blocked:kind=permission:app=claude-code:msg=QXBwbHk/\x07",
+        );
+        assert_eq!(
+            state(&grid),
+            Some((ProgramState::Blocked, "claude-code".into(), "Apply?".into()))
+        );
+        // Nothing of the sequence is printed, and a bad report changes nothing.
+        processor.process_bytes(&mut parser, b"\x1b]7501;state=bogus\x1b\\ok");
+        assert_eq!(row_text(&grid.lock(), 0).trim_end(), "ok");
+        assert_eq!(state(&grid).map(|s| s.0), Some(ProgramState::Blocked));
+        assert!(rx.try_recv().is_err(), "a report gets no reply");
+
+        // The shell prompt comes back: the program is no longer in front.
+        processor.process_bytes(&mut parser, b"\x1b]133;A\x07");
+        assert_eq!(state(&grid), None);
+
+        processor.process_bytes(&mut parser, b"\x1b]7501;state=working\x1b\\");
+        assert_eq!(state(&grid).map(|s| s.0), Some(ProgramState::Working));
+        processor.process_bytes(&mut parser, b"\x1bc");
+        assert_eq!(state(&grid), None, "a full reset removes every record");
     }
 
     // SDTEST-1928

@@ -540,7 +540,8 @@ impl Render for Workspace {
             is_maximized,
             compact_titlebar,
             presentation,
-            !self.show_welcome() && self.can_access_mode(AppMode::Dev),
+            (!self.show_welcome() && self.can_access_mode(AppMode::Dev))
+                .then(|| self.presentation_attention(_cx)),
             self.account_menu_open,
             self.mode_menu_open,
             self.app_config.account.clone(),

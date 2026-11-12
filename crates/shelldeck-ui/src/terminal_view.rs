@@ -30,10 +30,12 @@ pub(crate) use empty_state::trace_layout_for_preview;
 mod layout;
 mod palette;
 
+use crate::view_attention::ViewAttention;
 use block_drawing::paint_block_char;
-use layout::{PaneId, PaneNode, PaneRect, TabLayout};
+use layout::{PaneId, PaneNode, PaneRect, StatusTone, TabLayout};
 pub use layout::{SplitDirection, TerminalPane, TerminalTab};
 use palette::{brighten_for_bold, dim_color, TerminalPalette};
+use shelldeck_terminal::program_status::ProgramHeadline;
 
 const CLAUDE_CLI_COMMAND: &str = "claude --dangerously-skip-permissions";
 const CODEX_CLI_COMMAND: &str = "codex --sandbox workspace-write --ask-for-approval on-request";
@@ -108,6 +110,9 @@ pub enum TerminalEvent {
         exit_code: Option<i32>,
         output: String,
     },
+    /// What the terminals want from the user changed (a program reported
+    /// through OSC 7501, or its tab was looked at).
+    AttentionChanged,
     /// The session daemon refused input for a pane that stopped reading
     /// it (`count` chunks since the last report, typically one paste):
     /// that input never reached the program.
@@ -513,6 +518,47 @@ impl TerminalView {
 
     pub fn sidebar_width(&self) -> f32 {
         self.sidebar_width
+    }
+
+    /// The most urgent report among the panes of a tab (OSC 7501).
+    fn tab_headline(&self, tab_id: Uuid) -> Option<ProgramHeadline> {
+        let active = self
+            .tabs
+            .get(self.pane.active_index)
+            .is_some_and(|tab| tab.id == tab_id);
+        let splits = if active {
+            Some(&self.layout)
+        } else {
+            self.stored_layouts.get(&tab_id)
+        };
+        let primary = self.pane.sessions.iter().find(|s| s.id == tab_id);
+        layout::most_urgent(
+            primary
+                .into_iter()
+                .chain(splits.into_iter().flat_map(|layout| layout.extra.values()))
+                .map(|session| session.grid.lock().program_status.headline()),
+        )
+    }
+
+    /// What the terminals want from a user who is looking elsewhere: the
+    /// most pressing tab.
+    pub fn attention(&self) -> ViewAttention {
+        self.tabs
+            .iter()
+            .map(TerminalTab::attention)
+            .max()
+            .unwrap_or_default()
+    }
+
+    /// The active tab is in front of the user: its finished work is seen.
+    fn mark_active_tab_seen(&mut self, cx: &mut Context<Self>) {
+        let before = self.attention();
+        if let Some(tab) = self.tabs.get_mut(self.pane.active_index) {
+            tab.status_seen = true;
+        }
+        if self.attention() != before {
+            cx.emit(TerminalEvent::AttentionChanged);
+        }
     }
 
     /// Give the active pane keyboard focus at the next render.
@@ -1042,6 +1088,8 @@ impl TerminalView {
             connection_id,
             program_title: String::new(),
             named: false,
+            status: None,
+            status_seen: false,
         };
 
         // Deactivate other tabs
@@ -2081,6 +2129,17 @@ impl TerminalView {
                                 }
                             }
                         }
+                        // Follow what each program says it is doing (OSC 7501).
+                        let before = this.attention();
+                        for index in 0..this.tabs.len() {
+                            let headline = this.tab_headline(this.tabs[index].id);
+                            if this.tabs[index].set_status(headline) {
+                                any_dirty = true;
+                            }
+                        }
+                        if this.attention() != before {
+                            cx.emit(TerminalEvent::AttentionChanged);
+                        }
                         // Input the session daemon refused (pane busy):
                         // reported once per wake, across tabs and splits.
                         let dropped: u32 = this
@@ -2238,13 +2297,29 @@ impl TerminalView {
                     )
                 })
             });
+            // A running session shows what its program reports (OSC 7501);
+            // a report that asks for the user also makes the dot larger.
+            let tone = tab.status_tone();
             let state_color = match &tab.state {
                 SessionState::Running if pending => ShellDeckColors::warning(),
-                SessionState::Running => ShellDeckColors::success(),
+                SessionState::Running => match tone {
+                    StatusTone::NeedsYou => ShellDeckColors::warning(),
+                    StatusTone::Failed => ShellDeckColors::error(),
+                    StatusTone::Working | StatusTone::Finished => ShellDeckColors::primary(),
+                    StatusTone::Plain => ShellDeckColors::success(),
+                },
                 SessionState::Exited(0) => ShellDeckColors::text_muted(),
                 SessionState::Exited(_) => ShellDeckColors::warning(),
                 SessionState::Error(_) => ShellDeckColors::error(),
             };
+            let dot_size = match tone {
+                StatusTone::NeedsYou | StatusTone::Failed | StatusTone::Finished => 8.0,
+                StatusTone::Working | StatusTone::Plain => 6.0,
+            };
+            let status_tooltip: Option<SharedString> = tab
+                .status
+                .as_ref()
+                .map(|status| layout::status_tooltip(status).into());
 
             // Tab outer container — fixed (computed) width so tabs shrink as
             // more open, then the strip scrolls. Visual styling only.
@@ -2316,12 +2391,20 @@ impl TerminalView {
                 // Status dot
                 .child(
                     div()
-                        .w(s(6.0))
-                        .h(s(6.0))
+                        .w(s(dot_size))
+                        .h(s(dot_size))
                         .rounded_full()
                         .bg(state_color)
                         .flex_shrink_0(),
                 );
+            if let Some(label) = status_tooltip {
+                tab_content = tab_content.tooltip(move |_, cx| {
+                    cx.new(|_| TerminalToolbarTooltip {
+                        label: label.clone(),
+                    })
+                    .into()
+                });
+            }
 
             // Split indicator — small icon next to the tab's status dot
             let tab_has_split = if is_active {
@@ -5518,6 +5601,11 @@ fn apply_pane_node_snapshot(node: &mut PaneNode, snapshot: &TerminalPaneNodeSnap
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Rendered means on screen: with the window active, the tab in
+        // front has been looked at.
+        if window.is_window_active() {
+            self.mark_active_tab_seen(cx);
+        }
         let mut container = div().relative().flex().flex_col().size_full();
 
         if self.pane.sessions.is_empty() {
