@@ -7406,7 +7406,7 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shelldeck"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "adabraka-gpui",
  "adabraka-ui",
@@ -7430,7 +7430,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-browser"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "base64 0.22.1",
  "cef",
@@ -7446,7 +7446,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-core"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -7480,7 +7480,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-sessiond"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "libc",
  "parking_lot",
@@ -7497,7 +7497,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-ssh"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7524,7 +7524,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-terminal"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7547,7 +7547,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-ui"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "adabraka-gpui",
  "adabraka-ui",
@@ -7604,7 +7604,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-update"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "adabraka-gpui",
  "anyhow",
