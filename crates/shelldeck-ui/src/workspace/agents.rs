@@ -84,7 +84,7 @@ impl ActiveAgentRun {
     }
 }
 
-type AgentDone = (Option<i32>, Option<String>);
+pub(super) type AgentDone = (Option<i32>, Option<String>);
 
 /// Keep parallel coding work useful without allowing an accidental prompt
 /// fan-out to exhaust the desktop host. Every admitted run still owns an
@@ -535,6 +535,17 @@ impl Workspace {
                 event_tx,
                 done_tx,
             ),
+            None if super::agent_claude_warm::eligible(&request, &options) => {
+                super::agent_claude_warm::spawn_local_claude_warm(
+                    run_id,
+                    super::agent_claude_warm::session_key(&request),
+                    spec,
+                    request.prompt.clone(),
+                    shutdown_rx,
+                    event_tx,
+                    done_tx,
+                )
+            }
             None => spawn_local_agent(run_id, provider, spec, shutdown_rx, event_tx, done_tx),
         };
         let thread = match thread {
