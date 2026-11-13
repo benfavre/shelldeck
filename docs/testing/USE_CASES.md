@@ -3368,9 +3368,7 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 ## Change log
 
 - **2026-11-13**: Added SDUC-583: `events` pushed by the daemon (`Subscribe`, `PaneEvent`, a second feature bit; an older daemon is still polled), `show` opens a pane as a tab behind the active one, `skill setup --with-hook` and `skill context` (Claude Code start hook). SDTEST-3124..3134.
-
 - **2026-11-13**: Added SDUC-584: projects in the terminal session list (the repository or the folder each tab works in), grouping by machine or by project remembered in the configuration, next and previous project from the palette or keys the user gives them. SDUC-577 amended (26 actions, two without built-in keys). A screen that loses rows keeps what was printed at its top (the split pane of SDUC-581 that looked empty), `EMULATOR_REV` 3. SDTEST-3140..3153.
-
 - **2026-11-13**: Added SDUC-585: machines of the Tailscale network offered as SSH connections in the new connection form, read from the local `tailscale status --json`. SDTEST-3156 to 3170.
 - **2026-11-13**: Added SDUC-582: `focus`, `rename`, `zoom`, `unzoom` from the command line; `send` and `send-key` refuse a pane that waits for a permission. SDTEST-3122, 3123.
 - **2026-11-13**: Added SDUC-581: pane commands for agents (`split`, `send-key`, `status`, `events`, `skill setup`, `read --format html`, `--json`), a pane knows its own id, the daemon keeps the reported status (`ListStatus`). SDUC-578 amended. SDTEST-3113..3121.
