@@ -1089,6 +1089,48 @@ mod tests {
     use crate::colors::{NamedColor, TermColor};
     use crate::grid::CellWidth;
 
+    // SDTEST-3117 / SDUC-581. The HTML of a pane keeps what plain text
+    // loses (colours, bold, underline, inverse video, links), escapes what
+    // the program printed, and ends at the last line that has text.
+    #[test]
+    fn sdtest_3117_the_html_of_a_pane_keeps_colours_and_escapes_text() {
+        let grid = run(
+            6,
+            40,
+            b"plain <b> & \"q\"\r\n\
+              \x1b[1;31mred\x1b[0m \x1b[38;2;1;2;3;4mrgb\x1b[0m\r\n\
+              \x1b[7mrev\x1b[0m \x1b[44mbg\x1b[0m\r\n\
+              \x1b]8;;https://example.com/?a=1&b=2\x1b\\link\x1b]8;;\x1b\\ end\r\n",
+        );
+        let html = grid.lock().tail_html(10);
+        let lines: Vec<&str> = html.lines().collect();
+        assert_eq!(lines.len(), 5, "four lines of text, then the end:\n{html}");
+        assert_eq!(
+            lines[0],
+            "<pre class=\"terminal\">plain &lt;b&gt; &amp; &quot;q&quot;"
+        );
+        assert_eq!(
+            lines[1],
+            "<span style=\"color:#cd0000;font-weight:bold;\">red</span> \
+             <span style=\"color:#010203;text-decoration:underline;\">rgb</span>"
+        );
+        // Inverse video swaps the default colours, which are made explicit.
+        assert_eq!(
+            lines[2],
+            "<span style=\"color:#1e1e1e;background:#cccccc;\">rev</span> \
+             <span style=\"background:#0000ee;\">bg</span>"
+        );
+        assert_eq!(
+            lines[3],
+            "<a href=\"https://example.com/?a=1&amp;b=2\">link</a> end"
+        );
+        assert_eq!(lines[4], "</pre>");
+        // Bounded like the text: the last two lines only.
+        let tail = grid.lock().tail_html(2);
+        assert!(tail.contains("rev") && !tail.contains("red"), "{tail}");
+        assert_eq!(grid.lock().tail_text(2).len(), 2);
+    }
+
     /// Drive a byte stream through a real vte parser into a fresh grid.
     fn run(rows: usize, cols: usize, input: &[u8]) -> Arc<Mutex<TerminalGrid>> {
         let grid = Arc::new(Mutex::new(TerminalGrid::new(rows, cols)));

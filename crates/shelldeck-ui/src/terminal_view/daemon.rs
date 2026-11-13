@@ -47,6 +47,7 @@ mod imp {
     use shelldeck_sessiond::client::SpawnOptions;
     use shelldeck_sessiond::paths;
     use shelldeck_sessiond::protocol::PaneInfo;
+    use shelldeck_sessiond::requests::{self, SplitRequest};
     use shelldeck_sessiond::supervisor::{
         DaemonTarget, Notices, PaneTarget, Supervisor, SupervisorOptions,
     };
@@ -250,6 +251,62 @@ mod imp {
         )
     }
 
+    /// Requests of `shelldeck-sessiond split` (see
+    /// `shelldeck_sessiond::requests`): read from the run directory, and
+    /// answered there, by one thread, so the view only exchanges them
+    /// through memory.
+    #[derive(Default)]
+    struct SplitRequests {
+        started: AtomicBool,
+        waiting: parking_lot::Mutex<Vec<(Uuid, SplitRequest)>>,
+        answers: parking_lot::Mutex<Vec<(Uuid, Result<(), String>)>>,
+    }
+
+    static SPLIT_REQUESTS: OnceLock<SplitRequests> = OnceLock::new();
+
+    fn split_requests() -> &'static SplitRequests {
+        let state = SPLIT_REQUESTS.get_or_init(SplitRequests::default);
+        if !state.started.swap(true, Ordering::SeqCst) {
+            let started = std::thread::Builder::new()
+                .name("sessiond-requests".into())
+                .spawn(move || {
+                    let mut dir: Option<PathBuf> = None;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(150));
+                        // Finding the run directory may probe a socket:
+                        // done here, once it succeeds.
+                        if dir.is_none() {
+                            dir = paths::default_run_dir().ok();
+                        }
+                        let Some(dir) = dir.as_deref() else { continue };
+                        for (id, result) in std::mem::take(&mut *state.answers.lock()) {
+                            requests::answer(
+                                dir,
+                                id,
+                                result.as_ref().map(|_| ()).map_err(String::as_str),
+                            );
+                        }
+                        let taken = requests::take(dir);
+                        if !taken.is_empty() {
+                            state.waiting.lock().extend(taken);
+                        }
+                    }
+                });
+            if started.is_err() {
+                state.started.store(false, Ordering::SeqCst);
+            }
+        }
+        state
+    }
+
+    pub(super) fn take_split_requests() -> Vec<(Uuid, SplitRequest)> {
+        std::mem::take(&mut *split_requests().waiting.lock())
+    }
+
+    pub(super) fn answer_split_request(id: Uuid, result: Result<(), String>) {
+        split_requests().answers.lock().push((id, result));
+    }
+
     #[cfg(test)]
     mod tests {
         use super::{restorable, PANE_LABEL};
@@ -345,5 +402,54 @@ pub(crate) fn restorable_panes() -> RestorablePanes {
     #[cfg(not(unix))]
     {
         RestorablePanes::Live(Vec::new())
+    }
+}
+
+/// A pane to show beside another one, asked by `shelldeck-sessiond split`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct SplitAsk {
+    /// Id of the request, to answer it.
+    pub(super) id: Uuid,
+    /// The daemon pane to show.
+    pub(super) pane: Uuid,
+    /// The daemon pane it goes beside.
+    pub(super) beside: Uuid,
+    /// Below it, else at its right.
+    pub(super) down: bool,
+    /// Share of the space the new pane takes.
+    pub(super) ratio: f32,
+}
+
+/// The split requests that arrived since the last call. Never blocks: a
+/// thread reads them from the run directory. The first call starts it.
+pub(super) fn take_split_requests() -> Vec<SplitAsk> {
+    #[cfg(unix)]
+    {
+        imp::take_split_requests()
+            .into_iter()
+            .map(|(id, request)| SplitAsk {
+                id,
+                pane: request.pane,
+                beside: request.beside,
+                down: request.side == shelldeck_sessiond::requests::Side::Down,
+                ratio: request.ratio,
+            })
+            .collect()
+    }
+    #[cfg(not(unix))]
+    {
+        Vec::new()
+    }
+}
+
+/// Tell the command that asked whether its pane is shown. Never blocks.
+pub(super) fn answer_split_request(id: Uuid, result: Result<(), String>) {
+    #[cfg(unix)]
+    {
+        imp::answer_split_request(id, result);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (id, result);
     }
 }

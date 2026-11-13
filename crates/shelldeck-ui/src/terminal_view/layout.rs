@@ -362,25 +362,50 @@ impl TabLayout {
 
     /// Replace the leaf `target` with a split of `[target, Extra(new_id)]`.
     pub(super) fn split_leaf(&mut self, target: PaneId, direction: SplitDirection, new_id: Uuid) {
-        fn walk(node: &mut PaneNode, target: PaneId, direction: SplitDirection, new_id: Uuid) {
+        self.split_leaf_at(target, direction, new_id, 0.5);
+    }
+
+    /// [`Self::split_leaf`] where `target` keeps `ratio` of the space
+    /// (between 0.1 and 0.9). Returns false when `target` is not a leaf of
+    /// this tab: nothing is changed then.
+    pub(super) fn split_leaf_at(
+        &mut self,
+        target: PaneId,
+        direction: SplitDirection,
+        new_id: Uuid,
+        ratio: f32,
+    ) -> bool {
+        fn walk(
+            node: &mut PaneNode,
+            target: PaneId,
+            direction: SplitDirection,
+            new_id: Uuid,
+            ratio: f32,
+        ) -> bool {
             match node {
                 PaneNode::Leaf(id) if *id == target => {
                     let old = PaneNode::Leaf(*id);
                     *node = PaneNode::Split {
                         direction,
-                        ratio: 0.5,
+                        ratio,
                         a: Box::new(old),
                         b: Box::new(PaneNode::Leaf(PaneId::Extra(new_id))),
                     };
+                    true
                 }
-                PaneNode::Leaf(_) => {}
+                PaneNode::Leaf(_) => false,
                 PaneNode::Split { a, b, .. } => {
-                    walk(a, target, direction, new_id);
-                    walk(b, target, direction, new_id);
+                    walk(a, target, direction, new_id, ratio)
+                        || walk(b, target, direction, new_id, ratio)
                 }
             }
         }
-        walk(&mut self.tree, target, direction, new_id);
+        let ratio = if ratio.is_finite() {
+            ratio.clamp(0.1, 0.9)
+        } else {
+            0.5
+        };
+        walk(&mut self.tree, target, direction, new_id, ratio)
     }
 
     /// Remove the leaf `target`, collapsing its parent into the sibling.
@@ -817,6 +842,60 @@ mod daemon_layout_tests {
             8.0,
         );
         assert_eq!((none.w, none.h), (0.0, 0.0));
+    }
+
+    // SDTEST-3121 / SDUC-581. A pane shown beside another one on request
+    // takes the share it asked for, on the side it asked for, and leaves
+    // the rest of the tab as it was; a pane that is not in the tab changes
+    // nothing.
+    #[test]
+    fn sdtest_3121_a_pane_is_placed_beside_another_with_its_share() {
+        let area = PaneRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1000.0,
+            h: 600.0,
+        };
+        let first = uuid::Uuid::from_u128(1);
+        let second = uuid::Uuid::from_u128(2);
+        let mut layout = TabLayout::single();
+        // The new pane asked for 30 %: the pane it splits keeps 70 %.
+        assert!(layout.split_leaf_at(PaneId::Primary, SplitDirection::Horizontal, first, 0.7));
+        let (leaves, _) = layout.compute(area, 0.0);
+        assert_eq!(leaves.len(), 2);
+        assert_eq!((leaves[0].0, leaves[0].1.w), (PaneId::Primary, 700.0));
+        assert_eq!((leaves[1].0, leaves[1].1.w), (PaneId::Extra(first), 300.0));
+        // Below the new pane, not below the whole tab; the focus stays.
+        assert!(layout.split_leaf_at(PaneId::Extra(first), SplitDirection::Vertical, second, 0.5));
+        let (leaves, _) = layout.compute(area, 0.0);
+        let below = leaves.iter().find(|(id, _)| *id == PaneId::Extra(second));
+        let below = below.expect("placed").1;
+        assert_eq!(
+            [below.x, below.y, below.w, below.h],
+            [700.0, 300.0, 300.0, 300.0]
+        );
+        assert_eq!(layout.focused, PaneId::Primary);
+        // Not a pane of this tab: refused, nothing moves.
+        let before: Vec<_> = leaves
+            .iter()
+            .map(|(id, r)| (*id, [r.x, r.y, r.w, r.h]))
+            .collect();
+        assert!(!layout.split_leaf_at(
+            PaneId::Extra(uuid::Uuid::from_u128(9)),
+            SplitDirection::Horizontal,
+            uuid::Uuid::from_u128(3),
+            0.5
+        ));
+        let (after, _) = layout.compute(area, 0.0);
+        let after: Vec<_> = after
+            .iter()
+            .map(|(id, r)| (*id, [r.x, r.y, r.w, r.h]))
+            .collect();
+        assert_eq!(after, before);
+        // A share out of range is brought back into it.
+        let mut wide = TabLayout::single();
+        assert!(wide.split_leaf_at(PaneId::Primary, SplitDirection::Horizontal, first, 7.0));
+        assert_eq!(wide.compute(area, 0.0).0[0].1.w, 900.0);
     }
 
     // SDTEST-3112 / SDUC-580. The name and the folder of a terminal are

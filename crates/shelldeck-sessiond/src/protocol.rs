@@ -41,6 +41,14 @@ pub const MAX_SNAPSHOT_TOTAL: usize = 32 * 1024 * 1024;
 pub const MAX_SCROLLBACK_CHUNK: usize = 256 * 1024;
 
 pub const MAX_PANES: usize = 256;
+/// `HelloAck::features` bit: the daemon answers `ListStatus` with the
+/// status the program of each pane reported (OSC 7501). A daemon without
+/// the bit closes the connection on that frame, so a client checks first.
+pub const FEATURE_PANE_STATUS: u32 = 1;
+/// Limits of the strings of a `PaneStatus`.
+pub const MAX_STATUS_WORD: usize = 16;
+pub const MAX_STATUS_APP: usize = 64;
+pub const MAX_STATUS_TEXT: usize = 255;
 pub const MAX_CONNECTIONS: usize = 32;
 pub const MAX_ATTACHMENTS_PER_PANE: usize = 16;
 
@@ -60,6 +68,8 @@ pub mod frame_type {
     pub const RESIZE: u8 = 0x06;
     pub const DETACH: u8 = 0x07;
     pub const KILL: u8 = 0x08;
+    /// Only to a daemon that announced `FEATURE_PANE_STATUS`.
+    pub const LIST_STATUS: u8 = 0x09;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const PANE_LIST: u8 = 0x82;
@@ -70,6 +80,7 @@ pub mod frame_type {
     pub const RESIZED: u8 = 0x87;
     pub const SCROLLBACK_CHUNK: u8 = 0x88;
     pub const EXITED: u8 = 0x89;
+    pub const STATUS_LIST: u8 = 0x8a;
     pub const ERROR: u8 = 0xff;
 }
 
@@ -204,6 +215,7 @@ pub struct Attach {
 pub enum ClientFrame {
     Hello(Hello),
     ListPanes,
+    ListStatus,
     Spawn(Spawn),
     Attach(Attach),
     Input { pane: Uuid, bytes: Vec<u8> },
@@ -238,10 +250,31 @@ pub struct PaneInfo {
     pub offset: u64,
 }
 
+/// What the program of a pane last reported about itself (OSC 7501), as
+/// the daemon's own terminal recorded it. Words, not codes, so a newer
+/// daemon can report a state an older client only passes along.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneStatus {
+    pub pane: Uuid,
+    /// `idle`, `working`, `done`, `blocked` or `error`.
+    pub state: String,
+    /// What a blocked program waits for (`permission`, `question`, `auth`),
+    /// or empty.
+    pub kind: String,
+    /// 0..=100, or -1 when the program gave none.
+    pub progress: i8,
+    /// Machine name of the program (`claude-code`), or empty.
+    pub app: String,
+    /// One line for people, or empty.
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonFrame {
     HelloAck(HelloAck),
     PaneList(Vec<PaneInfo>),
+    /// Reply to `ListStatus`: only the panes whose program reported.
+    StatusList(Vec<PaneStatus>),
     Spawned {
         request_id: u32,
         pane: Uuid,
@@ -430,6 +463,7 @@ impl ClientFrame {
                 e.finish(MAX_HELLO_FRAME)
             }
             Self::ListPanes => Encoder::new(frame_type::LIST_PANES, 0).finish(MIN_FRAME_BYTES),
+            Self::ListStatus => Encoder::new(frame_type::LIST_STATUS, 0).finish(MIN_FRAME_BYTES),
             Self::Spawn(spawn) => {
                 spawn.validate()?;
                 let mut e = Encoder::new(frame_type::SPAWN, 256);
@@ -509,6 +543,7 @@ impl ClientFrame {
                 })
             }
             frame_type::LIST_PANES => Self::ListPanes,
+            frame_type::LIST_STATUS => Self::ListStatus,
             frame_type::SPAWN => {
                 d.limit(MAX_SPAWN_FRAME)?;
                 let request_id = d.u32()?;
@@ -631,6 +666,30 @@ impl DaemonFrame {
                     e.i32(pane.exit_code);
                     e.u16(pane.clients);
                     e.u64(pane.offset);
+                }
+                e.finish(MAX_FRAME_BYTES)
+            }
+            Self::StatusList(statuses) => {
+                if statuses.len() > MAX_PANES {
+                    return Err(ProtocolError::TooLong("status list"));
+                }
+                let mut e = Encoder::new(frame_type::STATUS_LIST, statuses.len() * 64);
+                e.u16(statuses.len() as u16);
+                for status in statuses {
+                    e.uuid(&status.pane);
+                    e.string(&status.state, MAX_STATUS_WORD, "state")?;
+                    e.string(&status.kind, MAX_STATUS_WORD, "kind")?;
+                    e.u8(status.progress as u8);
+                    e.string(
+                        truncated(&status.app, MAX_STATUS_APP),
+                        MAX_STATUS_APP,
+                        "app",
+                    )?;
+                    e.string(
+                        truncated(&status.text, MAX_STATUS_TEXT),
+                        MAX_STATUS_TEXT,
+                        "text",
+                    )?;
                 }
                 e.finish(MAX_FRAME_BYTES)
             }
@@ -788,6 +847,24 @@ impl DaemonFrame {
                     });
                 }
                 Self::PaneList(panes)
+            }
+            frame_type::STATUS_LIST => {
+                let count = d.u16()? as usize;
+                if count > MAX_PANES {
+                    return Err(ProtocolError::TooLong("status list"));
+                }
+                let mut statuses = Vec::with_capacity(count);
+                for _ in 0..count {
+                    statuses.push(PaneStatus {
+                        pane: d.uuid()?,
+                        state: d.string(MAX_STATUS_WORD, "state")?,
+                        kind: d.string(MAX_STATUS_WORD, "kind")?,
+                        progress: d.u8()? as i8,
+                        app: d.string(MAX_STATUS_APP, "app")?,
+                        text: d.string(MAX_STATUS_TEXT, "text")?,
+                    });
+                }
+                Self::StatusList(statuses)
             }
             frame_type::SPAWNED => Self::Spawned {
                 request_id: d.u32()?,
@@ -1165,6 +1242,7 @@ mod tests {
                 pane,
                 signal: SIGNAL_TERM,
             },
+            ClientFrame::ListStatus,
         ]
     }
 
@@ -1247,6 +1325,24 @@ mod tests {
                 code: ErrorCode::SpawnFailed,
                 retryable: true,
             },
+            DaemonFrame::StatusList(vec![
+                PaneStatus {
+                    pane,
+                    state: "blocked".into(),
+                    kind: "permission".into(),
+                    progress: -1,
+                    app: "claude-code".into(),
+                    text: "Allow the edit?".into(),
+                },
+                PaneStatus {
+                    pane,
+                    state: "working".into(),
+                    kind: String::new(),
+                    progress: 40,
+                    app: String::new(),
+                    text: String::new(),
+                },
+            ]),
         ]
     }
 

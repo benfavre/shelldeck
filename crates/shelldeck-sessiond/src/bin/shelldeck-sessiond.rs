@@ -35,25 +35,47 @@ usage: shelldeck-sessiond <command>
   --version
 
 pane commands, for scripts and agents (each takes --dir DIR):
-  ls [--json]                         list panes
-  run [--name NAME] [--cwd DIR] [--rows N] [--cols N] [-- ARGV...]
+  ls [--json]                         list panes, with the status their
+                                      program reported
+  run [--name NAME] [--cwd DIR] [--rows N] [--cols N] [--json] [-- ARGV...]
                                       start a pane and print its id (login
                                       shell by default); starts the daemon
                                       when none runs
+  split [PANE] [--right|--down] [--ratio R] [--name NAME] [--cwd DIR]
+        [--json] [-- ARGV...]         start a pane and show it beside PANE
+                                      in the application (beside the pane
+                                      this runs in when PANE is not given);
+                                      R is the share the new pane takes
+                                      (0.1 to 0.9, default 0.5)
   send PANE [--no-enter] [TEXT...]    type TEXT into a pane, then Enter
                                       (TEXT from stdin when not given)
-  read PANE [--lines N]               print the last N lines of a pane
-                                      (default 40)
-  wait PANE [--until STATE] [--timeout SECONDS]
+  send-key PANE KEY...                press keys: enter, esc, tab, space,
+                                      backspace, delete, up, down, left,
+                                      right, home, end, pageup, pagedown,
+                                      f1..f12 or one character, with
+                                      ctrl-, alt-, shift- (ctrl-c, alt-b)
+  read PANE [--lines N] [--format text|html]
+                                      print the last N lines of a pane
+                                      (default 40); html keeps the colours
+  status PANE [--json]                what the pane's program last reported
+                                      through OSC 7501, or none
+  wait PANE [--until STATE] [--timeout SECONDS] [--json]
                                       wait until the pane's program exits
                                       and exit with its status; with
                                       --until, until it reports STATE
-                                      through OSC 7501 (idle, working, done,
-                                      blocked, error). 124 on timeout
+                                      (idle, working, done, blocked,
+                                      error). 124 on timeout
+  events [--timeout SECONDS]          print one JSON line per change (panes
+                                      started, ended, renamed, resized,
+                                      status reported) until interrupted
   attach PANE                         attach this terminal (Ctrl-\\ detaches)
   kill PANE [1|15|9]                  signal a pane, or remove a dead one
+  skill setup [--agent NAME]...       teach these commands to the coding
+                                      agents found (claude, codex, opencode,
+                                      pi); `skill show` prints the skill
 
-  PANE is a pane id, the start of one, or a name given with --name.
+  PANE is a pane id, the start of one, or a name given with --name. Inside
+  a pane, $SHELLDECK_PANE is its own id.
 
 debug commands:
   list [--dir DIR]                    list panes with stream offsets
@@ -92,6 +114,11 @@ debug commands:
         pub(crate) timeout: Option<u64>,
         pub(crate) json: bool,
         pub(crate) no_enter: bool,
+        pub(crate) format: Option<String>,
+        pub(crate) ratio: Option<f32>,
+        pub(crate) down: bool,
+        pub(crate) agents: Vec<String>,
+        pub(crate) interval_ms: Option<u64>,
         pub(crate) positional: Vec<String>,
         pub(crate) trailing: Vec<String>,
     }
@@ -129,6 +156,13 @@ debug commands:
                 "--timeout" => parsed.timeout = Some(number(&value("--timeout")?)?),
                 "--json" => parsed.json = true,
                 "--no-enter" => parsed.no_enter = true,
+                "--format" => parsed.format = Some(value("--format")?),
+                "--ratio" => parsed.ratio = Some(number(&value("--ratio")?)?),
+                "--right" => parsed.down = false,
+                "--down" => parsed.down = true,
+                "--agent" => parsed.agents.push(value("--agent")?),
+                // Not in the usage text: for tests of `events`.
+                "--interval-ms" => parsed.interval_ms = Some(number(&value("--interval-ms")?)?),
                 "--" => {
                     parsed.trailing = iter.collect();
                     break;
@@ -193,7 +227,8 @@ debug commands:
                 launch::exec_pane(args.nofile, args.program.as_deref(), &args.trailing)
             )),
             "debug-flood" => crate::flood::run(args.seed, args.bytes, args.pace_us),
-            "ls" | "run" | "send" | "read" | "wait" => return crate::panes::main(&command, args),
+            "ls" | "run" | "split" | "send" | "send-key" | "read" | "status" | "wait"
+            | "events" | "skill" => return crate::panes::main(&command, args),
             "list" | "spawn" | "attach" | "kill" => debug_command(&command, args),
             _ => {
                 eprint!("{USAGE}");
@@ -322,6 +357,7 @@ debug commands:
                 config.pane_launcher = Some(PaneLauncher { exe, nofile_soft });
             }
         }
+        config.cli_exe = std::env::current_exe().ok().filter(|exe| exe.is_absolute());
         // Only the daemon that holds the instance lock writes the log, and
         // it opens it before a client can connect.
         let log_cap = args.log_cap.unwrap_or(server::log::DEFAULT_LOG_CAP);
@@ -554,9 +590,13 @@ mod panes {
         connect_unix, AttachOptions, Client, ClientOptions, MirrorOutcome, PaneEvent, PaneMirror,
         SpawnOptions,
     };
-    use shelldeck_sessiond::pane_cli::{exit_status, panes_json, panes_table, resolve_pane};
+    use shelldeck_sessiond::pane_cli::{
+        exit_status, json_string, key_bytes, observed_events, panes_json, panes_table,
+        resolve_pane, skill_markdown, status_json, status_line, Observed, SKILL_AGENTS, SKILL_NAME,
+    };
     use shelldeck_sessiond::paths;
-    use shelldeck_sessiond::protocol::PaneInfo;
+    use shelldeck_sessiond::protocol::{env_name_allowed, PaneInfo};
+    use shelldeck_sessiond::requests::{self, Side, SplitRequest};
     use shelldeck_terminal::program_status::ProgramState;
     use std::io::{Read, Write};
     use std::path::Path;
@@ -571,6 +611,12 @@ mod panes {
     /// has none to send.
     const HISTORY_GRACE: Duration = Duration::from_millis(1500);
     const DEFAULT_LINES: usize = 40;
+    /// How long `split` waits for the application to show the pane.
+    const SPLIT_ANSWER: Duration = Duration::from_secs(3);
+    /// Label of the panes the application itself starts
+    /// (`shelldeck-ui/src/terminal_view/daemon.rs`): a split pane without a
+    /// name is one of them, so it comes back with the others.
+    const APP_PANE_LABEL: &str = "shelldeck-local";
 
     pub fn main(command: &str, args: Args) -> ExitCode {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -593,6 +639,10 @@ mod panes {
     }
 
     async fn run(command: &str, args: Args) -> Result<u8, String> {
+        // Nothing of the daemon is needed to write a file for an agent.
+        if command == "skill" {
+            return skill(&args);
+        }
         let dir = paths::resolve_run_dir(args.dir.as_deref()).map_err(|e| e.to_string())?;
         // Only `run` starts a daemon: the other commands act on panes that
         // exist, and there are none without one.
@@ -600,14 +650,22 @@ mod panes {
         match command {
             "ls" => {
                 let panes = client.list_panes().await.map_err(|e| e.to_string())?;
+                let statuses = statuses(&client).await?.unwrap_or_default();
                 if args.json {
-                    println!("{}", panes_json(&panes));
+                    println!("{}", panes_json(&panes, &statuses));
                 } else {
-                    print!("{}", panes_table(&panes));
+                    print!("{}", panes_table(&panes, &statuses));
                 }
                 Ok(0)
             }
-            "run" => start(&client, &args).await,
+            "run" => {
+                let label = args.name.clone().unwrap_or_default();
+                let spawned = start(&client, &args, label, (40, 120)).await?;
+                print_started(&args, &spawned, None);
+                Ok(0)
+            }
+            "split" => split(&client, &dir, &args).await,
+            "events" => events(&client, &args).await,
             _ => {
                 let panes = client.list_panes().await.map_err(|e| e.to_string())?;
                 let selector = args.positional.first().map(String::as_str).unwrap_or("");
@@ -617,11 +675,21 @@ mod panes {
                 };
                 match command {
                     "send" => send(&client, info, &args).await,
+                    "send-key" => send_key(&client, info, &args).await,
                     "read" => read(&client, info, &args).await,
+                    "status" => status(&client, info, &args).await,
                     _ => wait(&client, info, &args).await,
                 }
             }
         }
+    }
+
+    /// What the programs reported, or `None` from a daemon that is older
+    /// than this request.
+    async fn statuses(
+        client: &Client,
+    ) -> Result<Option<Vec<shelldeck_sessiond::protocol::PaneStatus>>, String> {
+        client.list_status().await.map_err(|e| e.to_string())
     }
 
     async fn connect(dir: &Path, start_daemon: bool) -> Result<Client, String> {
@@ -666,14 +734,203 @@ mod panes {
     fn pane_env() -> Vec<(String, String)> {
         let mut env = vec![("TERM".to_string(), "xterm-256color".to_string())];
         for (name, value) in std::env::vars() {
-            if name == "COLORTERM" || name == "LANG" || name.starts_with("LC_") {
+            // The display and the agents of the caller, so a pane started
+            // from a pane can do what its parent can.
+            let wanted = name == "COLORTERM"
+                || name == "LANG"
+                || name.starts_with("LC_")
+                || matches!(
+                    name.as_str(),
+                    "DISPLAY" | "WAYLAND_DISPLAY" | "XAUTHORITY" | "SSH_AUTH_SOCK"
+                );
+            if wanted && env_name_allowed(&name) && !value.is_empty() && value.len() <= 1024 {
                 env.push((name, value));
             }
         }
         env
     }
 
-    async fn start(client: &Client, args: &Args) -> Result<u8, String> {
+    /// `run` and `split` print the pane id, or with `--json` an object.
+    /// `shown`: what the application answered to `split`.
+    fn print_started(
+        args: &Args,
+        spawned: &shelldeck_sessiond::client::SpawnedPane,
+        shown: Option<bool>,
+    ) {
+        if !args.json {
+            println!("{}", spawned.pane);
+            return;
+        }
+        let shown = match shown {
+            Some(shown) => format!(",\"shown\":{shown}"),
+            None => String::new(),
+        };
+        println!(
+            "{{\"id\":{},\"pid\":{},\"cwd\":{}{shown}}}",
+            json_string(&spawned.pane.to_string()),
+            spawned.pid,
+            json_string(&spawned.cwd),
+        );
+    }
+
+    async fn split(client: &Client, dir: &Path, args: &Args) -> Result<u8, String> {
+        let own = std::env::var("SHELLDECK_PANE").unwrap_or_default();
+        let selector = match args.positional.first() {
+            Some(selector) => selector.as_str(),
+            None if !own.is_empty() => own.as_str(),
+            None => {
+                return Err(
+                    "split needs a pane: name one, or run it inside a pane (SHELLDECK_PANE)".into(),
+                )
+            }
+        };
+        let ratio = args.ratio.unwrap_or(0.5);
+        if !(0.1..=0.9).contains(&ratio) {
+            return Err(format!("--ratio takes 0.1 to 0.9, not {ratio}"));
+        }
+        let panes = client.list_panes().await.map_err(|e| e.to_string())?;
+        let beside = resolve_pane(selector, &panes)?;
+        let Some(info) = panes.iter().find(|info| info.pane == beside) else {
+            return Err(format!("no pane {beside}"));
+        };
+        if !info.alive {
+            return Err(format!("pane {beside} has exited"));
+        }
+        // About the size it will have; the application gives the real one.
+        let (rows, cols) = if args.down {
+            ((info.rows / 2).max(2), info.cols)
+        } else {
+            (info.rows, (info.cols / 2).max(10))
+        };
+        let label = args
+            .name
+            .clone()
+            .unwrap_or_else(|| APP_PANE_LABEL.to_string());
+        let spawned = start(client, args, label, (rows, cols)).await?;
+        let request = SplitRequest {
+            pane: spawned.pane,
+            beside,
+            side: if args.down { Side::Down } else { Side::Right },
+            ratio,
+        };
+        let id = requests::submit(dir, &request)
+            .map_err(|e| format!("cannot ask the application: {e}"))?;
+        let deadline = Instant::now() + SPLIT_ANSWER;
+        let answer = loop {
+            if let Some(answer) = requests::read_answer(dir, id) {
+                break Some(answer);
+            }
+            if Instant::now() >= deadline {
+                // Taken but not answered yet: the answer may still come,
+                // and nobody waits for it.
+                requests::withdraw(dir, id);
+                break requests::read_answer(dir, id);
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        };
+        let shown = match answer {
+            Some(Ok(())) => true,
+            Some(Err(reason)) => {
+                eprintln!(
+                    "shelldeck-sessiond: the pane runs but is not shown beside {beside}: {reason}"
+                );
+                false
+            }
+            None => {
+                eprintln!(
+                    "shelldeck-sessiond: the pane runs, but no application showed it \
+                     (Inklura Desktop is not running, or persistent sessions are off)"
+                );
+                false
+            }
+        };
+        print_started(args, &spawned, Some(shown));
+        Ok(0)
+    }
+
+    async fn events(client: &Client, args: &Args) -> Result<u8, String> {
+        let interval = Duration::from_millis(args.interval_ms.unwrap_or(250).max(10));
+        let deadline = args
+            .timeout
+            .map(|seconds| Instant::now() + Duration::from_secs(seconds));
+        let mut before = Observed::default();
+        let mut out = std::io::stdout().lock();
+        loop {
+            let after = Observed {
+                panes: client.list_panes().await.map_err(|e| e.to_string())?,
+                statuses: statuses(client).await?.unwrap_or_default(),
+            };
+            for event in observed_events(&before, &after) {
+                // The reader went away: that is how this command ends.
+                if writeln!(out, "{event}").and_then(|_| out.flush()).is_err() {
+                    return Ok(0);
+                }
+            }
+            before = after;
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(0);
+            }
+            tokio::time::sleep(interval).await;
+        }
+    }
+
+    /// `skill setup`: write the skill that teaches these commands into the
+    /// skill directory of each coding agent, `skill show`: print it.
+    fn skill(args: &Args) -> Result<u8, String> {
+        match args.positional.first().map(String::as_str) {
+            Some("show") => {
+                print!("{}", skill_markdown());
+                return Ok(0);
+            }
+            Some("setup") => {}
+            _ => return Err("skill takes `setup` or `show`".into()),
+        }
+        for name in &args.agents {
+            if !SKILL_AGENTS.iter().any(|(agent, _)| agent == name) {
+                let known: Vec<&str> = SKILL_AGENTS.iter().map(|(agent, _)| *agent).collect();
+                return Err(format!(
+                    "unknown agent {name:?}: {} are known",
+                    known.join(", ")
+                ));
+            }
+        }
+        // `--dir` stands for the home directory here (tests).
+        let home = match &args.dir {
+            Some(dir) => dir.clone(),
+            None => paths::home_dir().ok_or("no home directory")?,
+        };
+        let mut written = 0;
+        for (agent, skills) in SKILL_AGENTS {
+            let skills = home.join(skills);
+            let asked = args.agents.iter().any(|name| name == agent);
+            // Without --agent: the agents that are set up for this user,
+            // told by the directory that holds their skills directory.
+            let present = skills.parent().is_some_and(Path::is_dir);
+            if !(asked || (args.agents.is_empty() && present)) {
+                continue;
+            }
+            let dir = skills.join(SKILL_NAME);
+            let file = dir.join("SKILL.md");
+            std::fs::create_dir_all(&dir)
+                .and_then(|_| std::fs::write(&file, skill_markdown()))
+                .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+            println!("{agent}: {}", file.display());
+            written += 1;
+        }
+        if written == 0 {
+            return Err(
+                "no coding agent found (claude, codex, opencode, pi): name one with --agent".into(),
+            );
+        }
+        Ok(0)
+    }
+
+    async fn start(
+        client: &Client,
+        args: &Args,
+        label: String,
+        default_size: (u16, u16),
+    ) -> Result<shelldeck_sessiond::client::SpawnedPane, String> {
         // Like a shell: the pane starts where the caller is.
         let cwd = match &args.cwd {
             Some(cwd) => cwd.clone(),
@@ -682,20 +939,18 @@ mod panes {
                 .and_then(|dir| dir.to_str().map(str::to_string))
                 .unwrap_or_default(),
         };
-        let spawned = client
+        client
             .spawn(SpawnOptions {
-                label: args.name.clone().unwrap_or_default(),
-                rows: args.rows.unwrap_or(40),
-                cols: args.cols.unwrap_or(120),
+                label,
+                rows: args.rows.unwrap_or(default_size.0),
+                cols: args.cols.unwrap_or(default_size.1),
                 cwd,
                 argv: args.trailing.clone(),
                 env: pane_env(),
                 ..SpawnOptions::default()
             })
             .await
-            .map_err(|e| format!("cannot start the pane: {e}"))?;
-        println!("{}", spawned.pane);
-        Ok(0)
+            .map_err(|e| format!("cannot start the pane: {e}"))
     }
 
     /// Attach without asking for a size, so the pane keeps the size its
@@ -764,21 +1019,8 @@ mod panes {
             words.join(" ")
         };
 
-        // Input needs an attached, writing client. The first event is the
-        // screen, which also says whether the program takes pastes whole.
-        let (mut events, mut mirror) = attach(client, info, 0, false)?;
-        let restored = tokio::time::timeout(Duration::from_secs(5), async {
-            while let Some(event) = events.next().await {
-                follow(client, info.pane, &mut mirror, &event)?;
-                if mirror.in_sync() {
-                    return Ok(());
-                }
-            }
-            Err("the connection to the daemon closed".to_string())
-        })
-        .await
-        .map_err(|_| "the daemon did not send the pane".to_string())?;
-        restored?;
+        // The screen says whether the program takes pastes whole.
+        let (_events, mirror) = attach_for_input(client, info).await?;
 
         let mut bytes = Vec::with_capacity(text.len() + 16);
         if text.contains('\n') && mirror.grid().lock().bracketed_paste() {
@@ -793,6 +1035,32 @@ mod panes {
         if !args.no_enter {
             bytes.push(b'\r');
         }
+        type_bytes(client, info, &bytes).await
+    }
+
+    /// Input needs an attached, writing client: attach and wait for the
+    /// screen, which also carries the modes the program set.
+    async fn attach_for_input(
+        client: &Client,
+        info: &PaneInfo,
+    ) -> Result<(shelldeck_sessiond::client::PaneEvents, PaneMirror), String> {
+        let (mut events, mut mirror) = attach(client, info, 0, false)?;
+        let restored = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = events.next().await {
+                follow(client, info.pane, &mut mirror, &event)?;
+                if mirror.in_sync() {
+                    return Ok(());
+                }
+            }
+            Err("the connection to the daemon closed".to_string())
+        })
+        .await
+        .map_err(|_| "the daemon did not send the pane".to_string())?;
+        restored?;
+        Ok((events, mirror))
+    }
+
+    async fn type_bytes(client: &Client, info: &PaneInfo, bytes: &[u8]) -> Result<u8, String> {
         for chunk in bytes.chunks(4096) {
             client.input(info.pane, chunk).map_err(|e| e.to_string())?;
         }
@@ -801,8 +1069,48 @@ mod panes {
         Ok(0)
     }
 
+    async fn send_key(client: &Client, info: &PaneInfo, args: &Args) -> Result<u8, String> {
+        if !info.alive {
+            return Err(format!("pane {} has exited", info.pane));
+        }
+        let keys: Vec<&String> = args.positional[1..].iter().chain(&args.trailing).collect();
+        if keys.is_empty() {
+            return Err("send-key needs a key (enter, esc, ctrl-c, up, f5, ...)".into());
+        }
+        // The arrows depend on a mode the program set: read it off the screen.
+        let (_events, mirror) = attach_for_input(client, info).await?;
+        let application_cursor = mirror.grid().lock().application_cursor_keys();
+        let mut bytes = Vec::new();
+        for key in keys {
+            bytes.extend(key_bytes(key, application_cursor)?);
+        }
+        type_bytes(client, info, &bytes).await
+    }
+
+    async fn status(client: &Client, info: &PaneInfo, args: &Args) -> Result<u8, String> {
+        let Some(statuses) = statuses(client).await? else {
+            return Err(
+                "this session daemon was started by an older version and does not report \
+                 status; a new one starts once its panes have ended"
+                    .into(),
+            );
+        };
+        let status = statuses.iter().find(|status| status.pane == info.pane);
+        if args.json {
+            println!("{}", status_json(info, status));
+        } else {
+            println!("{}", status_line(status));
+        }
+        Ok(0)
+    }
+
     async fn read(client: &Client, info: &PaneInfo, args: &Args) -> Result<u8, String> {
         let lines = args.lines.unwrap_or(DEFAULT_LINES);
+        let html = match args.format.as_deref() {
+            None | Some("text") => false,
+            Some("html") => true,
+            Some(other) => return Err(format!("--format takes text or html, not {other:?}")),
+        };
         // The screen comes first, then history: ask for what the screen
         // alone cannot give.
         let history = lines.saturating_sub(1).min(100_000) as u32;
@@ -827,7 +1135,11 @@ mod panes {
         if !mirror.in_sync() {
             return Err("the daemon did not send the pane".into());
         }
-        let text = mirror.grid().lock().tail_text(lines).join("\n");
+        let text = if html {
+            mirror.grid().lock().tail_html(lines)
+        } else {
+            mirror.grid().lock().tail_text(lines).join("\n")
+        };
         let mut out = std::io::stdout().lock();
         if !text.is_empty() {
             writeln!(out, "{text}").map_err(|e| e.to_string())?;
@@ -842,13 +1154,41 @@ mod panes {
             })?),
             None => None,
         };
+        let pane = json_string(&info.pane.to_string());
+        let exited = |code: u8| {
+            if args.json {
+                println!("{{\"id\":{pane},\"result\":\"exited\",\"exit_code\":{code}}}");
+            }
+            code
+        };
+        let reported = |state: ProgramState| {
+            if args.json {
+                println!(
+                    "{{\"id\":{pane},\"result\":\"state\",\"state\":\"{}\"}}",
+                    state.word()
+                );
+            }
+            0u8
+        };
         if !info.alive {
-            return Ok(exit_status(info.exit_code, 0));
+            return Ok(exited(exit_status(info.exit_code, 0)));
         }
         let deadline = args
             .timeout
             .map(|seconds| Instant::now() + Duration::from_secs(seconds));
         let (mut events, mut mirror) = attach(client, info, 0, true)?;
+        // Attached first, asked second: a report made in between is seen
+        // by one of the two. A status reached before `wait` started is
+        // known to the daemon, not to this new viewer.
+        if let (Some(until), Some(statuses)) = (until, statuses(client).await?) {
+            let now = statuses
+                .iter()
+                .find(|status| status.pane == info.pane)
+                .and_then(|status| ProgramState::parse(&status.state));
+            if now == Some(until) {
+                return Ok(reported(until));
+            }
+        }
         loop {
             let event = match deadline {
                 Some(deadline) => {
@@ -857,6 +1197,9 @@ mod panes {
                         Ok(event) => event,
                         Err(_) => {
                             eprintln!("shelldeck-sessiond: timed out waiting for {}", info.pane);
+                            if args.json {
+                                println!("{{\"id\":{pane},\"result\":\"timeout\"}}");
+                            }
                             return Ok(TIMED_OUT);
                         }
                     }
@@ -870,7 +1213,7 @@ mod panes {
                 exit_code, signal, ..
             } = event
             {
-                return Ok(exit_status(exit_code, signal));
+                return Ok(exited(exit_status(exit_code, signal)));
             }
             follow(client, info.pane, &mut mirror, &event)?;
             if let Some(until) = until {
@@ -883,7 +1226,8 @@ mod panes {
                     .map(|record| record.state)
                     .or_else(|| grid.program_status.headline().map(|h| h.state));
                 if state == Some(until) {
-                    return Ok(0);
+                    drop(grid);
+                    return Ok(reported(until));
                 }
             }
         }

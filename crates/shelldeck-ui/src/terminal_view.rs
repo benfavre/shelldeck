@@ -739,6 +739,75 @@ impl TerminalView {
         Some(tab_id)
     }
 
+    /// Show the session daemon pane `ask.pane` beside the pane that shows
+    /// `ask.beside`, in whichever tab that is (`shelldeck-sessiond split`).
+    /// Neither the active tab nor the focused pane changes: the request
+    /// comes from a program, often an agent working in the background,
+    /// and the user keeps typing where they were. `Err` says why nothing
+    /// was shown; the pane itself runs either way.
+    fn adopt_daemon_split(&mut self, ask: &daemon::SplitAsk) -> Result<(), String> {
+        if !self.restores_daemon_panes() {
+            return Err("persistent sessions are off".into());
+        }
+        let shows = |session: &TerminalSession, pane: Uuid| session.daemon_pane() == Some(pane);
+        let active_tab = self.tabs.get(self.pane.active_index).map(|tab| tab.id);
+        let extras = |tab: Uuid| {
+            if Some(tab) == active_tab {
+                Some(&self.layout)
+            } else {
+                self.stored_layouts.get(&tab)
+            }
+        };
+        // Where each pane is shown: (tab, leaf).
+        let find = |pane: Uuid| {
+            self.pane.sessions.iter().find_map(|primary| {
+                if shows(primary, pane) {
+                    return Some((primary.id, PaneId::Primary));
+                }
+                extras(primary.id)?
+                    .extra
+                    .iter()
+                    .find(|(_, session)| shows(session, pane))
+                    .map(|(leaf, _)| (primary.id, PaneId::Extra(*leaf)))
+            })
+        };
+        if find(ask.pane).is_some() {
+            return Ok(());
+        }
+        let Some((tab, leaf)) = find(ask.beside) else {
+            return Err("no tab of the application shows that pane".into());
+        };
+        let (rows, cols) = self.grid_size();
+        let session = daemon::attach(ask.pane, "Terminal", rows, cols, self.configured_scrollback)?;
+        session
+            .grid
+            .lock()
+            .set_max_scrollback(self.configured_scrollback);
+        session.set_output_notifier(self.output_tx.clone());
+        let direction = if ask.down {
+            SplitDirection::Vertical
+        } else {
+            SplitDirection::Horizontal
+        };
+        let layout = if Some(tab) == active_tab {
+            &mut self.layout
+        } else {
+            self.stored_layouts
+                .entry(tab)
+                .or_insert_with(TabLayout::single)
+        };
+        let new_id = Uuid::new_v4();
+        if !layout.split_leaf_at(leaf, direction, new_id, 1.0 - ask.ratio) {
+            return Err("that pane is no longer part of its tab".into());
+        }
+        layout.extra.insert(new_id, session);
+        layout.zoomed = false;
+        // Size the panes of the tab again on the next render.
+        self.last_grid_rows = 0;
+        self.last_grid_cols = 0;
+        Ok(())
+    }
+
     /// Select a restored tab and give keyboard focus back to the pane that
     /// had it (selecting a tab focuses its primary pane otherwise).
     pub fn activate_restored_tab(&mut self, tab_id: Uuid, focused_pane: Option<Uuid>) {
@@ -2193,6 +2262,18 @@ impl TerminalView {
                     let result = this.update(cx, |this, cx| {
                         let mut any_dirty = false;
                         let mut any_sync = false;
+                        // Panes a command asked to show beside another one
+                        // (`shelldeck-sessiond split`).
+                        if this.restores_daemon_panes() {
+                            for ask in daemon::take_split_requests() {
+                                let result = this.adopt_daemon_split(&ask);
+                                if let Err(reason) = &result {
+                                    tracing::info!(pane = %ask.pane, "split request not shown: {reason}");
+                                }
+                                daemon::answer_split_request(ask.id, result);
+                                any_dirty = true;
+                            }
+                        }
                         for s in this.pane.sessions.iter() {
                             let g = s.grid.lock();
                             if g.dirty {

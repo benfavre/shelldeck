@@ -1719,6 +1719,72 @@ impl TerminalGrid {
         (end.saturating_sub(max_lines)..end).map(row_text).collect()
     }
 
+    /// The same lines as [`Self::tail_text`] as an HTML fragment that keeps
+    /// what the text alone loses: colours, bold, dim, italic, underline,
+    /// strikethrough, inverse video and links. One `<pre>` with a `<span>`
+    /// per run of cells drawn alike; default colours are left to the page.
+    pub fn tail_html(&self, max_lines: usize) -> String {
+        let history = self.scrollback.len();
+        let row_at = |index: usize| {
+            if index < history {
+                self.scrollback.get(index)
+            } else {
+                self.cells.get(index - history)
+            }
+        };
+        let blank = |index: usize| {
+            row_at(index)
+                .into_iter()
+                .flatten()
+                .all(|cell| cell.c == ' ' && cell.combining.is_empty())
+        };
+        let mut end = history + self.cells.len();
+        while end > 0 && blank(end - 1) {
+            end -= 1;
+        }
+        let mut out = String::from("<pre class=\"terminal\">");
+        for index in end.saturating_sub(max_lines)..end {
+            let cells: Vec<&Cell> = row_at(index)
+                .into_iter()
+                .flatten()
+                .filter(|cell| cell.wide != CellWidth::Spacer)
+                .collect();
+            // Trailing cells that draw nothing are not part of the line.
+            let used = cells
+                .iter()
+                .rposition(|cell| {
+                    cell.c != ' ' || !cell.combining.is_empty() || !html_style(cell).is_empty()
+                })
+                .map_or(0, |last| last + 1);
+            let mut open: Option<(String, Option<&str>)> = None;
+            for cell in &cells[..used] {
+                let look = (html_style(cell), cell.attrs.hyperlink.as_deref());
+                if open.as_ref() != Some(&look) {
+                    html_close(&mut out, open.take());
+                    if let Some(url) = look.1 {
+                        out.push_str("<a href=\"");
+                        html_escape(&mut out, url);
+                        out.push_str("\">");
+                    }
+                    if !look.0.is_empty() {
+                        out.push_str("<span style=\"");
+                        out.push_str(&look.0);
+                        out.push_str("\">");
+                    }
+                    open = Some(look);
+                }
+                let mut text = String::new();
+                text.push(cell.c);
+                text.extend(cell.combining.iter());
+                html_escape(&mut out, &text);
+            }
+            html_close(&mut out, open.take());
+            out.push('\n');
+        }
+        out.push_str("</pre>");
+        out
+    }
+
     // -- Alternate screen buffer --
 
     /// Switch to alternate screen buffer (used by fullscreen apps).
@@ -2456,6 +2522,75 @@ impl TerminalGrid {
     /// Return a new blank row with the current background color (BCE).
     fn bce_row(&self) -> Vec<Cell> {
         vec![self.bce_cell(); self.cols]
+    }
+}
+
+/// The inline CSS that draws `cell` as the terminal does, empty for a cell
+/// with nothing but default colours.
+fn html_style(cell: &Cell) -> String {
+    let hex = |color: TermColor, foreground: bool| {
+        let (r, g, b, _) = color.to_rgba(foreground);
+        format!("#{r:02x}{g:02x}{b:02x}")
+    };
+    let (mut fg, mut bg) = (cell.fg, cell.bg);
+    let mut style = String::new();
+    if cell.attrs.inverse {
+        // Swapped, with the defaults made explicit: the page's own colours
+        // cannot be swapped from here.
+        let front = hex(bg, false);
+        let back = hex(fg, true);
+        style.push_str(&format!("color:{front};background:{back};"));
+        fg = TermColor::Default;
+        bg = TermColor::Default;
+    }
+    if fg != TermColor::Default {
+        style.push_str(&format!("color:{};", hex(fg, true)));
+    }
+    if bg != TermColor::Default {
+        style.push_str(&format!("background:{};", hex(bg, false)));
+    }
+    if cell.attrs.bold {
+        style.push_str("font-weight:bold;");
+    }
+    if cell.attrs.dim {
+        style.push_str("opacity:0.6;");
+    }
+    if cell.attrs.italic {
+        style.push_str("font-style:italic;");
+    }
+    let underline = cell.attrs.underline != UnderlineStyle::None;
+    match (underline, cell.attrs.strikethrough) {
+        (true, true) => style.push_str("text-decoration:underline line-through;"),
+        (true, false) => style.push_str("text-decoration:underline;"),
+        (false, true) => style.push_str("text-decoration:line-through;"),
+        (false, false) => {}
+    }
+    if cell.attrs.hidden {
+        style.push_str("visibility:hidden;");
+    }
+    style
+}
+
+fn html_close(out: &mut String, open: Option<(String, Option<&str>)>) {
+    if let Some((style, link)) = open {
+        if !style.is_empty() {
+            out.push_str("</span>");
+        }
+        if link.is_some() {
+            out.push_str("</a>");
+        }
+    }
+}
+
+fn html_escape(out: &mut String, text: &str) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
     }
 }
 

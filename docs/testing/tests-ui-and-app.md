@@ -1198,6 +1198,7 @@ real window.
 
 | SDTEST-3111 | `terminal_view::layout::daemon_layout_tests::sdtest_3111_the_grid_is_sized_inside_the_card` | SDUC-580 | Green | No GPUI. The cards are laid out inside the margin; the grid is what is left inside the border and the padding, without a header; a card smaller than its padding has an empty grid, never a negative one. |
 | SDTEST-3112 | `terminal_view::layout::daemon_layout_tests::sdtest_3112_a_title_is_split_into_a_name_and_a_folder` | SDUC-580 | Green | No GPUI. `user@host: ~/folder` is split at the colon; another title is completed by the reported folder with the home shortened, another user's folder left whole; a colon not followed by a folder splits nothing; a folder already in the title is not repeated. |
+| SDTEST-3121 | `terminal_view::layout::daemon_layout_tests::sdtest_3121_a_pane_is_placed_beside_another_with_its_share` | SDUC-581 | Green | No GPUI. The pane that is split keeps the rest of the share asked for; a split of a split pane stays inside it; the focus does not move; a pane that is not in the tab changes nothing; a share out of range is brought back. |
 
 SDTEST-3109 now expects the grid under the header inside the card's border
 and padding (SDUC-580). Not automated: the painting of the cards, headers

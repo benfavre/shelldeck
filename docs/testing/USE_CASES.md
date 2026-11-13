@@ -3367,6 +3367,7 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-13**: Added SDUC-581: pane commands for agents (`split`, `send-key`, `status`, `events`, `skill setup`, `read --format html`, `--json`), a pane knows its own id, the daemon keeps the reported status (`ListStatus`). SDUC-578 amended. SDTEST-3113..3121.
 - **2026-11-13**: Added SDUC-580: terminal panes drawn as cards, a name and a folder in pane headers and tabs, tabs as pills, the space between cards as the resize handle. SDUC-579 amended (the look of a header moved to SDUC-580). The context menu opens at the pointer (it was about 36 px lower); the scrollbar is grabbed on the active pane's own edge. The toolbar row is removed: its actions open from a "⋯" button, Claude and Codex are beside "+". SDTEST-3111, SDTEST-3112; SDTEST-3109 follows the card padding, SDTEST-3110 the rows above the panes.
 - **2026-11-12**: Added SDUC-579: terminal session list grouped by machine, headers on split panes with their actions, maximize a pane. SDUC-575 amended (the sidebar button and shortcut now act in the Terminal view), SDUC-577 amended (24 actions, `maximize_pane`). The tab context menu is drawn again. SDTEST-3108..3110.
 
@@ -5353,11 +5354,11 @@ outlives it and steer it. Reference: [`pane-cli.md`](../pane-cli.md).
 
 Verified by SDTEST-3104 and SDTEST-3105 (selection, JSON list, exit status)
 and by SDTEST-3106 and SDTEST-3107, which run the real binary against a real
-daemon in a private temporary directory. Not done: a pane does not know its
-own id; `send` does not refuse a program blocked on a permission question; a
-status reached before `wait --until` started is not known (the daemon keeps
-no status); a running application does not show a pane started here until it
-restarts. Windows has no daemon.
+daemon in a private temporary directory. Not done: `send` does not refuse a
+program blocked on a permission question; a running application does not
+show a pane started with `run` until it restarts. Windows has no daemon.
+What SDUC-581 added: a pane knows its own id, the daemon keeps the reported
+status, `split` shows a pane at once.
 
 ### SDUC-579: Terminal session list, pane headers and maximizing a pane
 
@@ -5456,3 +5457,59 @@ card opened and closed from its button in the tab strip, the session list
 with its own button and no row above the cards. Not checked on
 screen: dragging the scrollbar, a UI scale other than 100 %, macOS and
 Windows.
+
+### SDUC-581: Pane commands for agents: split, keys, status, events, skill
+
+What the pane commands of SDUC-578 lacked for a coding agent to work beside
+itself: open a pane next to its own, press keys, know what another program is
+doing without having watched it, follow changes, and be taught all of it.
+Reference: [`pane-cli.md`](../pane-cli.md).
+
+- **A pane knows itself.** Every pane the daemon starts has `SHELLDECK_PANE`
+  (its id) and `SHELLDECK_SESSIOND` (the binary), and a `PATH` that ends
+  with the binary's directory.
+- **`split [PANE] [--right|--down] [--ratio R] [-- ARGV...]`** starts a pane
+  and shows it in the running application beside PANE (beside its own pane
+  when none is named), at the right or below, taking the share R. The active
+  tab and the keyboard focus do not change. The split is saved with the
+  layout. When no application shows it (none runs, persistent sessions off,
+  no tab shows that pane), the command says so and the pane runs all the
+  same. A bad ratio or an unknown pane starts nothing.
+- **`send-key PANE KEY...`** presses named keys (Enter, Esc, Tab, arrows,
+  function keys, one character) with Ctrl, Alt and Shift. A name that is not
+  a key types nothing.
+- **Status.** The daemon keeps what each program last reported (OSC 7501).
+  `status PANE` prints it, `ls` lists it, and `wait --until STATE` returns at
+  once when it is already the status. A daemon of an older version is not
+  asked: `status` says so.
+- **`read --format html`** prints the lines with their colours, bold, italic,
+  underline, inverse video and links, the program's text escaped.
+- **`events`** prints one JSON line per pane that exists, then per change:
+  started, exited, removed, title, folder, size, viewers, status.
+- **`--json`** on `run`, `split`, `status` and `wait`.
+- **`skill setup`** writes a skill describing these commands into the skills
+  directory of Claude Code, Codex, OpenCode and Pi, for the agents set up
+  for the user or those named with `--agent`.
+- The wire protocol gains one request and its reply (`ListStatus`,
+  `StatusList`), announced by a feature bit; nothing else changes on the
+  wire. The split request does not travel on it: it is a file in the user's
+  private run directory that the application takes and answers.
+
+Verified by SDTEST-3113 (keys), SDTEST-3114 (status and events), SDTEST-3115
+(skill text), SDTEST-3116 (split request), SDTEST-3117 (HTML), SDTEST-3118
+and SDTEST-3119 (the real binary against a real daemon: identity, status
+kept, keys, HTML, events, split with and without an application),
+SDTEST-3120 (skill setup) and SDTEST-3121 (placement in the tab). Checked in
+a native walkthrough on 2026-11-13 (private headless desktop, throwaway
+profile, persistent sessions on, debug build): `split --right` and
+`split --down --ratio 0.3` typed in a pane opened a pane at its right and
+one below it, the focus stayed, both panes took input and reported their
+size (32 x 67 and 7 rows), `workspace.json` held the two splits with the
+ratio 0.7
+([`screenshots/2026-11-13-pane-commands/`](./screenshots/2026-11-13-pane-commands/)).
+Not done: a scripting language or application actions from the command
+line; `events` pushed by the daemon (it polls four times a second); `split`
+for a pane on an SSH server; a start hook for agents. Not checked on
+screen: `split` aimed at a pane of a background tab; the skill loaded by
+each of the four agents. Seen and left: the first lines a split pane
+printed before the application sized it can be scrolled out of view.

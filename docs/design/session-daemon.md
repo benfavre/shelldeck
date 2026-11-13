@@ -331,6 +331,7 @@ range (only 1 exists). Anything else before `HelloAck` closes the connection.
 |---|---|---|---|
 | 0x01 | Hello | magic `SDSD` (4 bytes), `proto_min` u16, `proto_max` u16, `features` u32, `client_version` string | string 64; frame 128 |
 | 0x02 | ListPanes | none | frame 2 |
+| 0x09 | ListStatus | none. Only to a daemon whose `HelloAck.features` has bit 0 (`FEATURE_PANE_STATUS`): an older daemon closes the connection on an unknown type | frame 2 |
 | 0x03 | Spawn | `request_id` u32, `group` uuid, `label` string, `rows` u16, `cols` u16, `scrollback_max` u32, `cwd` string (empty = home), `argv` (u8 count + strings, empty = login shell), `env` (u8 count + name/value strings) | label 255; cwd 4096; argv 64 x 4096; env 32 entries, name 64, value 1024; rows and cols 1..=1000; scrollback at most 100000; frame 64 KiB |
 | 0x04 | Attach | `pane` uuid, `attach_id` u32 (unique per connection, increasing), `rows` u16, `cols` u16, `scrollback_rows` u32, `flags` u8 (bit 0 = read only) | frame 64; on a pane this connection already has attached it replaces that attachment (refresh, section 5); `rows` = `cols` = 0 means "keep the pane's current size" (section 7), any other value outside 1..1000 is refused |
 | 0x05 | Input | `pane` uuid, `bytes` blob | blob 64 KiB |
@@ -344,6 +345,7 @@ range (only 1 exists). Anything else before `HelloAck` closes the connection.
 |---|---|---|---|
 | 0x81 | HelloAck | `proto` u16, `features` u32, `daemon_version` string, `instance` uuid, `max_frame` u32, `emulator_rev` u16 | string 64 |
 | 0x82 | PaneList | u16 count, then per pane: `pane`, `group`, `label`, `title` (OSC 0/2), `cwd` (OSC 7), `rows`, `cols`, `created_at` u64 (unix seconds), `alive` u8, `exit_code` i32, `clients` u16, `offset` u64 | at most 256 panes; title 255; cwd truncated to 1024 (so 256 panes always fit); frame 1 MiB |
+| 0x8a | StatusList | reply to ListStatus. u16 count, then per pane whose program reported (OSC 7501) and still runs: `pane`, `state` string (`idle`, `working`, `done`, `blocked`, `error`), `kind` string (`permission`, `question`, `auth` or empty), `progress` i8 (-1 = none), `app` string, `text` string. Words, not codes: a client passes on a state it does not know | at most 256; state and kind 16, app 64, text 255 (truncated) |
 | 0x83 | Spawned | `request_id` u32, `pane` uuid, `pid` u32, `cwd` string (canonical path the daemon opened) | cwd 4096 |
 | 0x84 | Snapshot | `pane`, `attach_id` u32, `seq` u32, `flags` u8 (bit 0 = last), `bytes` blob | blob 256 KiB; whole snapshot 32 MiB |
 | 0x85 | Ready | `pane`, `attach_id`, `offset` u64, `rows` u16, `cols` u16 | |
