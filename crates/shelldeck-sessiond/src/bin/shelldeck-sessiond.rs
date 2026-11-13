@@ -47,9 +47,12 @@ pane commands, for scripts and agents (each takes --dir DIR):
                                       this runs in when PANE is not given);
                                       R is the share the new pane takes
                                       (0.1 to 0.9, default 0.5)
-  send PANE [--no-enter] [TEXT...]    type TEXT into a pane, then Enter
-                                      (TEXT from stdin when not given)
-  send-key PANE KEY...                press keys: enter, esc, tab, space,
+  send PANE [--no-enter] [--force] [TEXT...]
+                                      type TEXT into a pane, then Enter
+                                      (TEXT from stdin when not given).
+                                      Refused while the pane's program waits
+                                      for a permission, unless --force
+  send-key PANE [--force] KEY...      press keys: enter, esc, tab, space,
                                       backspace, delete, up, down, left,
                                       right, home, end, pageup, pagedown,
                                       f1..f12 or one character, with
@@ -65,6 +68,11 @@ pane commands, for scripts and agents (each takes --dir DIR):
                                       --until, until it reports STATE
                                       (idle, working, done, blocked,
                                       error). 124 on timeout
+  focus [PANE]                        select the pane's tab in the application
+                                      and give it the keyboard
+  rename [PANE] NAME                  name the pane's tab
+  zoom [PANE], unzoom [PANE]          show the pane alone in its tab, or
+                                      the whole split again
   events [--timeout SECONDS]          print one JSON line per change (panes
                                       started, ended, renamed, resized,
                                       status reported) until interrupted
@@ -114,6 +122,7 @@ debug commands:
         pub(crate) timeout: Option<u64>,
         pub(crate) json: bool,
         pub(crate) no_enter: bool,
+        pub(crate) force: bool,
         pub(crate) format: Option<String>,
         pub(crate) ratio: Option<f32>,
         pub(crate) down: bool,
@@ -156,6 +165,7 @@ debug commands:
                 "--timeout" => parsed.timeout = Some(number(&value("--timeout")?)?),
                 "--json" => parsed.json = true,
                 "--no-enter" => parsed.no_enter = true,
+                "--force" => parsed.force = true,
                 "--format" => parsed.format = Some(value("--format")?),
                 "--ratio" => parsed.ratio = Some(number(&value("--ratio")?)?),
                 "--right" => parsed.down = false,
@@ -228,7 +238,9 @@ debug commands:
             )),
             "debug-flood" => crate::flood::run(args.seed, args.bytes, args.pace_us),
             "ls" | "run" | "split" | "send" | "send-key" | "read" | "status" | "wait"
-            | "events" | "skill" => return crate::panes::main(&command, args),
+            | "events" | "skill" | "focus" | "rename" | "zoom" | "unzoom" => {
+                return crate::panes::main(&command, args)
+            }
             "list" | "spawn" | "attach" | "kill" => debug_command(&command, args),
             _ => {
                 eprint!("{USAGE}");
@@ -596,7 +608,7 @@ mod panes {
     };
     use shelldeck_sessiond::paths;
     use shelldeck_sessiond::protocol::{env_name_allowed, PaneInfo};
-    use shelldeck_sessiond::requests::{self, Side, SplitRequest};
+    use shelldeck_sessiond::requests::{self, ActRequest, Action, Request, Side, SplitRequest};
     use shelldeck_terminal::program_status::ProgramState;
     use std::io::{Read, Write};
     use std::path::Path;
@@ -666,6 +678,10 @@ mod panes {
             }
             "split" => split(&client, &dir, &args).await,
             "events" => events(&client, &args).await,
+            "focus" | "rename" | "zoom" | "unzoom" => {
+                let action = Action::parse(command).expect("matched above");
+                act(&client, &dir, action, &args).await
+            }
             _ => {
                 let panes = client.list_panes().await.map_err(|e| e.to_string())?;
                 let selector = args.positional.first().map(String::as_str).unwrap_or("");
@@ -807,28 +823,13 @@ mod panes {
             .clone()
             .unwrap_or_else(|| APP_PANE_LABEL.to_string());
         let spawned = start(client, args, label, (rows, cols)).await?;
-        let request = SplitRequest {
+        let request = Request::Split(SplitRequest {
             pane: spawned.pane,
             beside,
             side: if args.down { Side::Down } else { Side::Right },
             ratio,
-        };
-        let id = requests::submit(dir, &request)
-            .map_err(|e| format!("cannot ask the application: {e}"))?;
-        let deadline = Instant::now() + SPLIT_ANSWER;
-        let answer = loop {
-            if let Some(answer) = requests::read_answer(dir, id) {
-                break Some(answer);
-            }
-            if Instant::now() >= deadline {
-                // Taken but not answered yet: the answer may still come,
-                // and nobody waits for it.
-                requests::withdraw(dir, id);
-                break requests::read_answer(dir, id);
-            }
-            tokio::time::sleep(Duration::from_millis(40)).await;
-        };
-        let shown = match answer {
+        });
+        let shown = match ask_application(dir, &request).await? {
             Some(Ok(())) => true,
             Some(Err(reason)) => {
                 eprintln!(
@@ -846,6 +847,108 @@ mod panes {
         };
         print_started(args, &spawned, Some(shown));
         Ok(0)
+    }
+
+    /// Leave `request` for the application and wait for its answer.
+    /// `None`: no application took it.
+    async fn ask_application(
+        dir: &Path,
+        request: &Request,
+    ) -> Result<Option<Result<(), String>>, String> {
+        let id = requests::submit(dir, request)
+            .map_err(|e| format!("cannot ask the application: {e}"))?;
+        let deadline = Instant::now() + SPLIT_ANSWER;
+        loop {
+            if let Some(answer) = requests::read_answer(dir, id) {
+                return Ok(Some(answer));
+            }
+            if Instant::now() >= deadline {
+                // Taken but not answered yet: the answer may still come,
+                // and nobody waits for it.
+                requests::withdraw(dir, id);
+                return Ok(requests::read_answer(dir, id));
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+    }
+
+    /// `focus`, `rename`, `zoom`, `unzoom`: things only the application
+    /// can do with a pane it shows. The pane is the first argument, or the
+    /// pane the command runs in.
+    async fn act(client: &Client, dir: &Path, action: Action, args: &Args) -> Result<u8, String> {
+        let own = std::env::var("SHELLDECK_PANE").unwrap_or_default();
+        let words = &args.positional;
+        // `rename NAME` inside a pane names that pane.
+        let own_pane = !own.is_empty()
+            && match action {
+                Action::Rename => words.len() == 1,
+                _ => words.is_empty(),
+            };
+        let (selector, rest) = if own_pane {
+            (own.as_str(), &words[..])
+        } else {
+            match words.split_first() {
+                Some((selector, rest)) => (selector.as_str(), rest),
+                None => {
+                    return Err(format!(
+                        "{} needs a pane: name one, or run it inside a pane (SHELLDECK_PANE)",
+                        action.word()
+                    ))
+                }
+            }
+        };
+        let text = if action == Action::Rename {
+            let name = requests::clean_name(
+                &rest
+                    .iter()
+                    .chain(&args.trailing)
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+            if name.is_empty() {
+                return Err("rename needs a name".into());
+            }
+            name
+        } else {
+            String::new()
+        };
+        let panes = client.list_panes().await.map_err(|e| e.to_string())?;
+        let pane = resolve_pane(selector, &panes)?;
+        let request = Request::Act(ActRequest { action, pane, text });
+        match ask_application(dir, &request).await? {
+            Some(Ok(())) => Ok(0),
+            Some(Err(reason)) => Err(format!("{} {pane}: {reason}", action.word())),
+            None => Err(
+                "no application answered (Inklura Desktop is not running, or persistent \
+                 sessions are off)"
+                    .into(),
+            ),
+        }
+    }
+
+    /// Refuse to type into a pane whose program waits for its user to
+    /// allow something: that answer is the user's to give. `--force`
+    /// types all the same.
+    async fn refuse_permission_prompt(
+        client: &Client,
+        info: &PaneInfo,
+        args: &Args,
+    ) -> Result<(), String> {
+        if args.force {
+            return Ok(());
+        }
+        let statuses = statuses(client).await?.unwrap_or_default();
+        let waits = statuses
+            .iter()
+            .any(|s| s.pane == info.pane && s.state == "blocked" && s.kind == "permission");
+        if waits {
+            return Err(format!(
+                "pane {} waits for its user to allow something; --force types anyway",
+                info.pane
+            ));
+        }
+        Ok(())
     }
 
     async fn events(client: &Client, args: &Args) -> Result<u8, String> {
@@ -1004,6 +1107,7 @@ mod panes {
         if !info.alive {
             return Err(format!("pane {} has exited", info.pane));
         }
+        refuse_permission_prompt(client, info, args).await?;
         let words: Vec<&str> = args.positional[1..]
             .iter()
             .chain(&args.trailing)
@@ -1077,6 +1181,7 @@ mod panes {
         if keys.is_empty() {
             return Err("send-key needs a key (enter, esc, ctrl-c, up, f5, ...)".into());
         }
+        refuse_permission_prompt(client, info, args).await?;
         // The arrows depend on a mode the program set: read it off the screen.
         let (_events, mirror) = attach_for_input(client, info).await?;
         let application_cursor = mirror.grid().lock().application_cursor_keys();

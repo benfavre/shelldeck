@@ -47,7 +47,7 @@ mod imp {
     use shelldeck_sessiond::client::SpawnOptions;
     use shelldeck_sessiond::paths;
     use shelldeck_sessiond::protocol::PaneInfo;
-    use shelldeck_sessiond::requests::{self, SplitRequest};
+    use shelldeck_sessiond::requests::{self, Request};
     use shelldeck_sessiond::supervisor::{
         DaemonTarget, Notices, PaneTarget, Supervisor, SupervisorOptions,
     };
@@ -258,7 +258,7 @@ mod imp {
     #[derive(Default)]
     struct SplitRequests {
         started: AtomicBool,
-        waiting: parking_lot::Mutex<Vec<(Uuid, SplitRequest)>>,
+        waiting: parking_lot::Mutex<Vec<(Uuid, Request)>>,
         answers: parking_lot::Mutex<Vec<(Uuid, Result<(), String>)>>,
     }
 
@@ -299,11 +299,11 @@ mod imp {
         state
     }
 
-    pub(super) fn take_split_requests() -> Vec<(Uuid, SplitRequest)> {
+    pub(super) fn take_requests() -> Vec<(Uuid, Request)> {
         std::mem::take(&mut *split_requests().waiting.lock())
     }
 
-    pub(super) fn answer_split_request(id: Uuid, result: Result<(), String>) {
+    pub(super) fn answer_request(id: Uuid, result: Result<(), String>) {
         split_requests().answers.lock().push((id, result));
     }
 
@@ -408,8 +408,6 @@ pub(crate) fn restorable_panes() -> RestorablePanes {
 /// A pane to show beside another one, asked by `shelldeck-sessiond split`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct SplitAsk {
-    /// Id of the request, to answer it.
-    pub(super) id: Uuid,
     /// The daemon pane to show.
     pub(super) pane: Uuid,
     /// The daemon pane it goes beside.
@@ -420,19 +418,50 @@ pub(super) struct SplitAsk {
     pub(super) ratio: f32,
 }
 
-/// The split requests that arrived since the last call. Never blocks: a
-/// thread reads them from the run directory. The first call starts it.
-pub(super) fn take_split_requests() -> Vec<SplitAsk> {
+/// What `shelldeck-sessiond focus|rename|zoom|unzoom` asks for a pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PaneAction {
+    Focus,
+    Rename(String),
+    Zoom,
+    Unzoom,
+}
+
+/// Something a command asked of the application.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum PaneAsk {
+    Split(SplitAsk),
+    Act { pane: Uuid, action: PaneAction },
+}
+
+/// The requests that arrived since the last call, each with the id to
+/// answer it. Never blocks: a thread reads them from the run directory.
+/// The first call starts it.
+pub(super) fn take_requests() -> Vec<(Uuid, PaneAsk)> {
     #[cfg(unix)]
     {
-        imp::take_split_requests()
+        use shelldeck_sessiond::requests::{Action, Request, Side};
+        imp::take_requests()
             .into_iter()
-            .map(|(id, request)| SplitAsk {
-                id,
-                pane: request.pane,
-                beside: request.beside,
-                down: request.side == shelldeck_sessiond::requests::Side::Down,
-                ratio: request.ratio,
+            .map(|(id, request)| {
+                let ask = match request {
+                    Request::Split(split) => PaneAsk::Split(SplitAsk {
+                        pane: split.pane,
+                        beside: split.beside,
+                        down: split.side == Side::Down,
+                        ratio: split.ratio,
+                    }),
+                    Request::Act(act) => PaneAsk::Act {
+                        pane: act.pane,
+                        action: match act.action {
+                            Action::Focus => PaneAction::Focus,
+                            Action::Rename => PaneAction::Rename(act.text),
+                            Action::Zoom => PaneAction::Zoom,
+                            Action::Unzoom => PaneAction::Unzoom,
+                        },
+                    },
+                };
+                (id, ask)
             })
             .collect()
     }
@@ -442,11 +471,11 @@ pub(super) fn take_split_requests() -> Vec<SplitAsk> {
     }
 }
 
-/// Tell the command that asked whether its pane is shown. Never blocks.
-pub(super) fn answer_split_request(id: Uuid, result: Result<(), String>) {
+/// Tell the command that asked whether it was done. Never blocks.
+pub(super) fn answer_request(id: Uuid, result: Result<(), String>) {
     #[cfg(unix)]
     {
-        imp::answer_split_request(id, result);
+        imp::answer_request(id, result);
     }
     #[cfg(not(unix))]
     {

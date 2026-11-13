@@ -749,32 +749,11 @@ impl TerminalView {
         if !self.restores_daemon_panes() {
             return Err("persistent sessions are off".into());
         }
-        let shows = |session: &TerminalSession, pane: Uuid| session.daemon_pane() == Some(pane);
         let active_tab = self.tabs.get(self.pane.active_index).map(|tab| tab.id);
-        let extras = |tab: Uuid| {
-            if Some(tab) == active_tab {
-                Some(&self.layout)
-            } else {
-                self.stored_layouts.get(&tab)
-            }
-        };
-        // Where each pane is shown: (tab, leaf).
-        let find = |pane: Uuid| {
-            self.pane.sessions.iter().find_map(|primary| {
-                if shows(primary, pane) {
-                    return Some((primary.id, PaneId::Primary));
-                }
-                extras(primary.id)?
-                    .extra
-                    .iter()
-                    .find(|(_, session)| shows(session, pane))
-                    .map(|(leaf, _)| (primary.id, PaneId::Extra(*leaf)))
-            })
-        };
-        if find(ask.pane).is_some() {
+        if self.find_daemon_pane(ask.pane).is_some() {
             return Ok(());
         }
-        let Some((tab, leaf)) = find(ask.beside) else {
+        let Some((tab, leaf)) = self.find_daemon_pane(ask.beside) else {
             return Err("no tab of the application shows that pane".into());
         };
         let (rows, cols) = self.grid_size();
@@ -805,6 +784,93 @@ impl TerminalView {
         // Size the panes of the tab again on the next render.
         self.last_grid_rows = 0;
         self.last_grid_cols = 0;
+        Ok(())
+    }
+
+    /// Where the session daemon pane `pane` is shown: its tab and its
+    /// place in that tab's layout.
+    fn find_daemon_pane(&self, pane: Uuid) -> Option<(Uuid, PaneId)> {
+        let shows = |session: &TerminalSession| session.daemon_pane() == Some(pane);
+        let active_tab = self.tabs.get(self.pane.active_index).map(|tab| tab.id);
+        self.pane.sessions.iter().find_map(|primary| {
+            if shows(primary) {
+                return Some((primary.id, PaneId::Primary));
+            }
+            let layout = if Some(primary.id) == active_tab {
+                &self.layout
+            } else {
+                self.stored_layouts.get(&primary.id)?
+            };
+            layout
+                .extra
+                .iter()
+                .find(|(_, session)| shows(session))
+                .map(|(leaf, _)| (primary.id, PaneId::Extra(*leaf)))
+        })
+    }
+
+    /// Do what `shelldeck-sessiond focus|rename|zoom|unzoom` asked for the
+    /// session daemon pane `pane`. Only `focus` changes the active tab.
+    /// `Err` says why nothing was done.
+    fn act_on_daemon_pane(
+        &mut self,
+        pane: Uuid,
+        action: &daemon::PaneAction,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if !self.restores_daemon_panes() {
+            return Err("persistent sessions are off".into());
+        }
+        let Some((tab, leaf)) = self.find_daemon_pane(pane) else {
+            return Err("no tab of the application shows that pane".into());
+        };
+        let active = self.tabs.get(self.pane.active_index).map(|tab| tab.id) == Some(tab);
+        match action {
+            daemon::PaneAction::Focus => {
+                if !active {
+                    self.select_tab(tab);
+                    cx.emit(TerminalEvent::TabSelected(tab));
+                }
+                self.focus_pane(leaf);
+                if self.layout.zoomed {
+                    // The pane asked for is the one shown alone.
+                    self.last_grid_rows = 0;
+                    self.last_grid_cols = 0;
+                }
+            }
+            // The name is the tab's, whichever pane of it was named: a
+            // pane inside a split shows what its program calls itself.
+            daemon::PaneAction::Rename(name) => {
+                if let Some(session) = self.pane.sessions.iter_mut().find(|s| s.id == tab) {
+                    session.title = name.clone();
+                }
+                if let Some(entry) = self.tabs.iter_mut().find(|entry| entry.id == tab) {
+                    entry.title = name.clone();
+                    entry.named = true;
+                }
+            }
+            daemon::PaneAction::Zoom | daemon::PaneAction::Unzoom => {
+                let zoom = *action == daemon::PaneAction::Zoom;
+                let layout = if active {
+                    &mut self.layout
+                } else {
+                    self.stored_layouts
+                        .get_mut(&tab)
+                        .ok_or("that pane is no longer part of its tab")?
+                };
+                if zoom {
+                    if !layout.is_split() {
+                        return Err("that pane is alone in its tab".into());
+                    }
+                    layout.focused = leaf;
+                }
+                layout.zoomed = zoom;
+                if active {
+                    self.last_grid_rows = 0;
+                    self.last_grid_cols = 0;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2262,15 +2328,21 @@ impl TerminalView {
                     let result = this.update(cx, |this, cx| {
                         let mut any_dirty = false;
                         let mut any_sync = false;
-                        // Panes a command asked to show beside another one
-                        // (`shelldeck-sessiond split`).
+                        // What the pane commands asked of the application
+                        // (`shelldeck-sessiond split`, `focus`, `rename`,
+                        // `zoom`).
                         if this.restores_daemon_panes() {
-                            for ask in daemon::take_split_requests() {
-                                let result = this.adopt_daemon_split(&ask);
+                            for (id, ask) in daemon::take_requests() {
+                                let result = match &ask {
+                                    daemon::PaneAsk::Split(split) => this.adopt_daemon_split(split),
+                                    daemon::PaneAsk::Act { pane, action } => {
+                                        this.act_on_daemon_pane(*pane, action, cx)
+                                    }
+                                };
                                 if let Err(reason) = &result {
-                                    tracing::info!(pane = %ask.pane, "split request not shown: {reason}");
+                                    tracing::info!("pane request {ask:?} not done: {reason}");
                                 }
-                                daemon::answer_split_request(ask.id, result);
+                                daemon::answer_request(id, result);
                                 any_dirty = true;
                             }
                         }

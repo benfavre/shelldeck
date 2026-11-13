@@ -3367,6 +3367,7 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-13**: Added SDUC-582: `focus`, `rename`, `zoom`, `unzoom` from the command line; `send` and `send-key` refuse a pane that waits for a permission. SDTEST-3122, 3123.
 - **2026-11-13**: Added SDUC-581: pane commands for agents (`split`, `send-key`, `status`, `events`, `skill setup`, `read --format html`, `--json`), a pane knows its own id, the daemon keeps the reported status (`ListStatus`). SDUC-578 amended. SDTEST-3113..3121.
 - **2026-11-13**: Added SDUC-580: terminal panes drawn as cards, a name and a folder in pane headers and tabs, tabs as pills, the space between cards as the resize handle. SDUC-579 amended (the look of a header moved to SDUC-580). The context menu opens at the pointer (it was about 36 px lower); the scrollbar is grabbed on the active pane's own edge. The toolbar row is removed: its actions open from a "⋯" button, Claude and Codex are beside "+". SDTEST-3111, SDTEST-3112; SDTEST-3109 follows the card padding, SDTEST-3110 the rows above the panes.
 - **2026-11-12**: Added SDUC-579: terminal session list grouped by machine, headers on split panes with their actions, maximize a pane. SDUC-575 amended (the sidebar button and shortcut now act in the Terminal view), SDUC-577 amended (24 actions, `maximize_pane`). The tab context menu is drawn again. SDTEST-3108..3110.
@@ -5507,9 +5508,43 @@ one below it, the focus stayed, both panes took input and reported their
 size (32 x 67 and 7 rows), `workspace.json` held the two splits with the
 ratio 0.7
 ([`screenshots/2026-11-13-pane-commands/`](./screenshots/2026-11-13-pane-commands/)).
-Not done: a scripting language or application actions from the command
-line; `events` pushed by the daemon (it polls four times a second); `split`
+Not done: a scripting language (application actions came with SDUC-582);
+`events` pushed by the daemon (it polls four times a second); `split`
 for a pane on an SSH server; a start hook for agents. Not checked on
 screen: `split` aimed at a pane of a background tab; the skill loaded by
 each of the four agents. Seen and left: the first lines a split pane
 printed before the application sized it can be scrolled out of view.
+
+### SDUC-582: Application actions from the command line, and permission prompts left alone
+
+What SDUC-581 left out for a program that organises its own panes.
+Reference: [`pane-cli.md`](../pane-cli.md).
+
+- **`focus [PANE]`** selects the pane's tab in the running application and
+  gives the pane the keyboard.
+- **`rename [PANE] NAME`** names the pane's tab; the name stays like one
+  typed in the application. One line, 80 characters at most; control
+  characters are removed.
+- **`zoom [PANE]`** shows the pane alone in its tab, **`unzoom [PANE]`**
+  brings the split back. A pane alone in its tab is refused with the reason.
+- Without PANE, each acts on the pane the command runs in.
+- They travel like a split request: a file in the private run directory the
+  application takes and answers. Exit status 1 with the reason when nothing
+  was done, including when no application answers.
+- **`send` and `send-key`** refuse to type into a pane whose program
+  reported `blocked` with the kind `permission`; `--force` types anyway.
+
+Verified by SDTEST-3122 (the requests and the name) and SDTEST-3123 (the
+real binary against a real daemon: refusals before asking, the three
+requests as the application receives them, its refusal reported, no
+application, a permission prompt refused then forced). Checked in a native
+walkthrough on 2026-11-13 (private headless desktop, throwaway profile,
+persistent sessions on, debug build), one tab of three panes and a second
+tab: `rename` gave the second tab its name, `zoom` showed the top right pane
+alone and `unzoom` brought the three back, `zoom` on the pane of the second
+tab was refused, `focus` moved the keyboard to the bottom right pane, then
+to the second tab
+([`screenshots/2026-11-13-pane-commands/02-focus-and-rename.png`](./screenshots/2026-11-13-pane-commands/02-focus-and-rename.png)).
+Not automated: what the view does with a request (`act_on_daemon_pane`)
+needs a daemon and a window; only the walkthrough covers it. Not done:
+closing tabs or moving panes from the command line, a scripting language.

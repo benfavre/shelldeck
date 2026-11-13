@@ -3243,24 +3243,37 @@ async fn sdtest_3118_status_keys_html_and_events_from_the_command_line() {
         "{out}"
     );
 
+    // The program still waits for a permission: typing is forced (the
+    // refusal is SDTEST-3123).
     // Keys: Enter runs what was typed without it, Ctrl-C ends a program
     // that would otherwise hold the shell far longer than this test waits.
     let (code, _, err) = pane_cli(
         &dir,
-        &["send", "agent", "--no-enter", "--", "echo", "key-$((3*3))"],
+        &[
+            "send",
+            "agent",
+            "--force",
+            "--no-enter",
+            "--",
+            "echo",
+            "key-$((3*3))",
+        ],
     );
     assert_eq!(code, 0, "{err}");
-    let (code, _, err) = pane_cli(&dir, &["send-key", "agent", "enter"]);
+    let (code, _, err) = pane_cli(&dir, &["send-key", "agent", "--force", "enter"]);
     assert_eq!(code, 0, "{err}");
     pane_shows(&dir, "agent", "10", "key-9");
-    let (code, _, err) = pane_cli(&dir, &["send", "agent", "--", "sleep", "300"]);
+    let (code, _, err) = pane_cli(&dir, &["send", "agent", "--force", "--", "sleep", "300"]);
     assert_eq!(code, 0, "{err}");
-    let (code, _, err) = pane_cli(&dir, &["send-key", "agent", "ctrl-c"]);
+    let (code, _, err) = pane_cli(&dir, &["send-key", "agent", "--force", "ctrl-c"]);
     assert_eq!(code, 0, "{err}");
-    let (code, _, err) = pane_cli(&dir, &["send", "agent", "--", "echo", "after-$((2+2))"]);
+    let (code, _, err) = pane_cli(
+        &dir,
+        &["send", "agent", "--force", "--", "echo", "after-$((2+2))"],
+    );
     assert_eq!(code, 0, "{err}");
     pane_shows(&dir, "agent", "10", "after-4");
-    let (code, _, err) = pane_cli(&dir, &["send-key", "agent", "entre"]);
+    let (code, _, err) = pane_cli(&dir, &["send-key", "agent", "--force", "entre"]);
     assert_eq!(code, 1);
     assert!(err.contains("unknown key"), "{err}");
     let (code, _, err) = pane_cli(&dir, &["send-key", "agent"]);
@@ -3273,6 +3286,7 @@ async fn sdtest_3118_status_keys_html_and_events_from_the_command_line() {
         &[
             "send",
             "agent",
+            "--force",
             "--",
             "printf '\\033[31mcolo''red\\033[0m\\n'",
         ],
@@ -3362,7 +3376,9 @@ async fn sdtest_3119_split_starts_a_pane_and_asks_the_application_to_show_it() {
         .trim()
         .parse()
         .expect("split prints the pane id");
-    let request = application.join().expect("application thread");
+    let requests::Request::Split(request) = application.join().expect("application thread") else {
+        panic!("not a split request");
+    };
     assert_eq!(
         (request.pane, request.beside, request.side, request.ratio),
         (shown, base, Side::Down, 0.3)
@@ -3472,4 +3488,120 @@ fn sdtest_3120_skill_setup_writes_the_skill_for_the_agents_found() {
     let (code, _, err) = skill(&[]);
     assert_eq!(code, 1);
     assert!(err.contains("`setup` or `show`"), "{err}");
+}
+
+// SDTEST-3123 (SDUC-582): `focus`, `rename`, `zoom` and `unzoom` ask the
+// application and say when it did not do it; `send` and `send-key` leave
+// a pane alone while its program waits for a permission, unless forced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3123_pane_actions_ask_the_application_and_send_respects_permission_prompts() {
+    use shelldeck_sessiond::requests::{self, ActRequest, Action, Request};
+    let dir = run_dir();
+    let _daemon = start(&dir, test_config());
+
+    let (code, out, err) = pane_cli(&dir, &["run", "--name", "base", "--", "/bin/sh"]);
+    assert_eq!(code, 0, "{err}");
+    let base: Uuid = out.trim().parse().expect("id");
+
+    // Refused before anything is asked.
+    let (code, _, err) = pane_cli(&dir, &["rename", "base"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("rename needs a name"), "{err}");
+    let (code, _, err) = pane_cli(&dir, &["focus", "nobody"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no pane matches"), "{err}");
+    let (code, _, err) = pane_cli(&dir, &["zoom"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("zoom needs a pane"), "{err}");
+    assert!(requests::take(&dir.path).is_empty());
+
+    // An application that answers each request in turn.
+    let answering = |answers: Vec<Result<(), &'static str>>| {
+        let run = dir.path.clone();
+        std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for answer in answers {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    if let Some((id, request)) = requests::take(&run).into_iter().next() {
+                        requests::answer(&run, id, answer);
+                        seen.push(request);
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "no request arrived");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            seen
+        })
+    };
+    let act = |action, text: &str| {
+        Request::Act(ActRequest {
+            action,
+            pane: base,
+            text: text.into(),
+        })
+    };
+
+    let application = answering(vec![Ok(()), Ok(()), Err("that pane is alone in its tab")]);
+    let (code, out, err) = pane_cli(&dir, &["focus", "base"]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    // Inside a pane, `rename NAME` names that pane.
+    let output = tokio::task::block_in_place(|| {
+        std::process::Command::new(BIN)
+            .args(["rename", "--dir"])
+            .arg(&dir.path)
+            .arg("api server")
+            .env("SHELLDECK_PANE", base.to_string())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run rename")
+    });
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (code, _, err) = pane_cli(&dir, &["zoom", "base"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("that pane is alone in its tab"), "{err}");
+    assert_eq!(
+        application.join().expect("application thread"),
+        vec![
+            act(Action::Focus, ""),
+            act(Action::Rename, "api server"),
+            act(Action::Zoom, "")
+        ]
+    );
+
+    // No application: said after a short wait, and nothing is left behind.
+    let (code, _, err) = pane_cli(&dir, &["unzoom", "base"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no application answered"), "{err}");
+    assert!(requests::take(&dir.path).is_empty());
+
+    // A program that waits for a permission is not typed into.
+    let (code, _, err) = pane_cli(
+        &dir,
+        &[
+            "send",
+            "base",
+            "printf '\\033]7501;state=blocked:kind=permission:app=tool\\033\\\\'",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    cli_shows(&dir, &["status", "base"], "blocked");
+    let (code, _, err) = pane_cli(&dir, &["send", "base", "echo typed-anyway"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("waits for its user to allow"), "{err}");
+    let (code, _, err) = pane_cli(&dir, &["send-key", "base", "enter"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--force"), "{err}");
+    let (code, text, _) = pane_cli(&dir, &["read", "base"]);
+    assert_eq!(code, 0);
+    assert!(!text.contains("typed-anyway"), "{text}");
+    let (code, _, err) = pane_cli(&dir, &["send", "base", "--force", "echo typed-anyway"]);
+    assert_eq!(code, 0, "{err}");
+    cli_shows(&dir, &["read", "base"], "typed-anyway");
 }

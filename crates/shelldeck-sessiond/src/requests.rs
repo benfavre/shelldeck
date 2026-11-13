@@ -9,8 +9,11 @@
 //! command waits for. No application, or one that does not show session
 //! daemon panes: nobody answers, and the pane runs all the same.
 //!
+//! The other requests act on a pane the application already shows: give
+//! it the keyboard, name it, show it alone ([`ActRequest`]).
+//!
 //! A request is a few `key=value` lines: the crate has no JSON parser and
-//! the values are ids, words and a number.
+//! the values are ids, words, a number and one line of text.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -89,6 +92,113 @@ impl SplitRequest {
     }
 }
 
+/// Longest name `rename` gives, in characters.
+pub const MAX_NAME: usize = 80;
+
+/// What to do with a pane the application shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// Select its tab and give it the keyboard.
+    Focus,
+    /// Name its tab.
+    Rename,
+    /// Show it alone in its tab.
+    Zoom,
+    /// Show the whole split of its tab again.
+    Unzoom,
+}
+
+impl Action {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Focus => "focus",
+            Self::Rename => "rename",
+            Self::Zoom => "zoom",
+            Self::Unzoom => "unzoom",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Self> {
+        match word {
+            "focus" => Some(Self::Focus),
+            "rename" => Some(Self::Rename),
+            "zoom" => Some(Self::Zoom),
+            "unzoom" => Some(Self::Unzoom),
+            _ => None,
+        }
+    }
+}
+
+/// Do `action` on `pane`. `text` is the name for [`Action::Rename`] and
+/// empty otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActRequest {
+    pub action: Action,
+    pub pane: Uuid,
+    pub text: String,
+}
+
+/// One line, no control characters, at most [`MAX_NAME`] characters.
+pub fn clean_name(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(MAX_NAME)
+        .collect()
+}
+
+impl ActRequest {
+    pub fn encode(&self) -> String {
+        format!(
+            "action={}\npane={}\ntext={}\n",
+            self.action.word(),
+            self.pane,
+            clean_name(&self.text)
+        )
+    }
+
+    pub fn decode(text: &str) -> Option<Self> {
+        let value = |key: &str| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+        };
+        let action = Action::parse(value("action")?.trim())?;
+        let name = clean_name(value("text").unwrap_or(""));
+        if action == Action::Rename && name.is_empty() {
+            return None;
+        }
+        Some(Self {
+            action,
+            pane: value("pane")?.trim().parse().ok()?,
+            text: name,
+        })
+    }
+}
+
+/// Anything a command asks of the application.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Request {
+    Split(SplitRequest),
+    Act(ActRequest),
+}
+
+impl Request {
+    pub fn encode(&self) -> String {
+        match self {
+            Self::Split(request) => request.encode(),
+            Self::Act(request) => request.encode(),
+        }
+    }
+
+    pub fn decode(text: &str) -> Option<Self> {
+        SplitRequest::decode(text)
+            .map(Self::Split)
+            .or_else(|| ActRequest::decode(text).map(Self::Act))
+    }
+}
+
 pub fn requests_dir(run_dir: &Path) -> PathBuf {
     run_dir.join("requests")
 }
@@ -109,7 +219,7 @@ fn write_whole(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// Leave a request for the application. Returns its id.
-pub fn submit(run_dir: &Path, request: &SplitRequest) -> std::io::Result<Uuid> {
+pub fn submit(run_dir: &Path, request: &Request) -> std::io::Result<Uuid> {
     let dir = requests_dir(run_dir);
     std::fs::create_dir_all(&dir)?;
     #[cfg(unix)]
@@ -125,7 +235,7 @@ pub fn submit(run_dir: &Path, request: &SplitRequest) -> std::io::Result<Uuid> {
 /// Take every request that waits, oldest first. A taken request is gone:
 /// one application does it. Files that are not requests, and requests
 /// older than [`REQUEST_TTL`], are removed without being returned.
-pub fn take(run_dir: &Path) -> Vec<(Uuid, SplitRequest)> {
+pub fn take(run_dir: &Path) -> Vec<(Uuid, Request)> {
     let Ok(entries) = std::fs::read_dir(requests_dir(run_dir)) else {
         return Vec::new();
     };
@@ -155,7 +265,7 @@ pub fn take(run_dir: &Path) -> Vec<(Uuid, SplitRequest)> {
         if std::fs::remove_file(&path).is_err() || old {
             continue;
         }
-        if let (Some(id), Some(request)) = (id, text.as_deref().and_then(SplitRequest::decode)) {
+        if let (Some(id), Some(request)) = (id, text.as_deref().and_then(Request::decode)) {
             taken.push((modified, id, request));
         }
     }
@@ -204,12 +314,13 @@ mod tests {
         let run = dir.path();
         assert!(take(run).is_empty(), "no directory yet");
 
-        let request = SplitRequest {
+        let split = SplitRequest {
             pane: Uuid::from_u128(1),
             beside: Uuid::from_u128(2),
             side: Side::Down,
             ratio: 0.3,
         };
+        let request = Request::Split(split);
         let id = submit(run, &request).expect("submit");
         assert_eq!(read_answer(run, id), None);
 
@@ -228,7 +339,7 @@ mod tests {
         .unwrap();
         std::fs::write(requests.join("notes.txt"), "hello").unwrap();
 
-        assert_eq!(take(run), vec![(id, request)]);
+        assert_eq!(take(run), vec![(id, request.clone())]);
         assert!(take(run).is_empty(), "a request is taken once");
         assert!(!withdraw(run, id), "taken, so nothing to withdraw");
         assert!(!requests.join(format!("{stray}.req")).exists());
@@ -241,10 +352,10 @@ mod tests {
 
         // Out-of-range ratios are brought back into range, a ratio that is
         // not a number is refused.
-        let wide = SplitRequest::decode(&request.encode().replace("0.3", "7")).unwrap();
+        let wide = SplitRequest::decode(&split.encode().replace("0.3", "7")).unwrap();
         assert_eq!(wide.ratio, 0.9);
         assert_eq!(
-            SplitRequest::decode(&request.encode().replace("0.3", "NaN")),
+            SplitRequest::decode(&split.encode().replace("0.3", "NaN")),
             None
         );
 
@@ -252,5 +363,49 @@ mod tests {
         let late = submit(run, &request).expect("submit");
         assert!(withdraw(run, late));
         assert!(take(run).is_empty());
+    }
+
+    // SDTEST-3122 / SDUC-582. Focus, rename, zoom and unzoom travel the
+    // same way as a split. A name is one line of at most MAX_NAME
+    // characters, and a rename without a name is not a request.
+    #[test]
+    fn sdtest_3122_pane_actions_are_requests_with_a_clean_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = dir.path();
+        let pane = Uuid::from_u128(7);
+        for action in [Action::Focus, Action::Rename, Action::Zoom, Action::Unzoom] {
+            assert_eq!(Action::parse(action.word()), Some(action));
+            let request = Request::Act(ActRequest {
+                action,
+                pane,
+                text: if action == Action::Rename {
+                    "build".into()
+                } else {
+                    String::new()
+                },
+            });
+            let id = submit(run, &request).expect("submit");
+            assert_eq!(take(run), vec![(id, request)]);
+        }
+
+        let messy = ActRequest {
+            action: Action::Rename,
+            pane,
+            text: format!("  api\nserver\x1b[31m {}", "x".repeat(200)),
+        };
+        let decoded = ActRequest::decode(&messy.encode()).expect("decodes");
+        assert!(decoded.text.starts_with("api server [31m x"));
+        assert_eq!(decoded.text.chars().count(), MAX_NAME);
+        assert!(!decoded.text.chars().any(char::is_control));
+
+        assert_eq!(
+            ActRequest::decode(&format!("action=rename\npane={pane}\ntext=  \n")),
+            None
+        );
+        assert_eq!(ActRequest::decode("action=focus\npane=nope\n"), None);
+        assert_eq!(
+            Request::decode(&format!("action=quit\npane={pane}\n")),
+            None
+        );
     }
 }

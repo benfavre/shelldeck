@@ -41,11 +41,14 @@ older version have none of the three until that daemon has ended.
 | `ls [--json]` | List the panes: id, name, state, the status its program reported, size, attached clients, title. `--json` prints an array, one pane per line, for programs. |
 | `run [--name NAME] [--cwd DIR] [--rows N] [--cols N] [--json] [-- ARGV...]` | Start a pane and print its id. The login shell by default; the program after `--` otherwise. Starts in the caller's directory. Default size 40 x 120. Starts the daemon when none runs. |
 | `split [PANE] [--right\|--down] [--ratio R] [--name NAME] [--cwd DIR] [--json] [-- ARGV...]` | Start a pane and show it in the application beside PANE: at its right (default) or below it. Without PANE, beside the pane the command runs in. `R` is the share of the space the new pane takes, 0.1 to 0.9 (default 0.5). Prints the id of the new pane. |
-| `send PANE [--no-enter] [TEXT...]` | Type TEXT into the pane, then Enter. Without TEXT the text is read from stdin. Put `--` before text that starts with a dash. |
-| `send-key PANE KEY...` | Press keys, in order. See [Keys](#keys). |
+| `send PANE [--no-enter] [--force] [TEXT...]` | Type TEXT into the pane, then Enter. Without TEXT the text is read from stdin. Put `--` before text that starts with a dash. Refused while the pane's program waits for a permission, see [Notes](#notes). |
+| `send-key PANE [--force] KEY...` | Press keys, in order. See [Keys](#keys). Refused like `send`. |
 | `read PANE [--lines N] [--format text\|html]` | Print the last N lines of the pane (40 by default), history included, ending at the last line that has text. `html` prints one `<pre>` that keeps colours, bold, italic, underline, inverse video and links. |
 | `status PANE [--json]` | Print what the pane's program last reported about itself (`working 40%`, `blocked (permission): ...`), or `none`. |
 | `wait PANE [--until STATE] [--timeout SECONDS] [--json]` | Wait until the pane's program exits and exit with its status. With `--until`, return 0 as soon as the program reports STATE (`idle`, `working`, `done`, `blocked`, `error`), at once when that is already its status. Exit status 124 when the timeout runs out. |
+| `focus [PANE]` | Select the pane's tab in the application and give the pane the keyboard. |
+| `rename [PANE] NAME` | Name the pane's tab. Inside a pane, `rename NAME` names its own tab. |
+| `zoom [PANE]`, `unzoom [PANE]` | Show the pane alone in its tab, or the whole split again. |
 | `events [--timeout SECONDS]` | Print one JSON object per line for everything that exists, then for every change, until interrupted. See [Events](#events). |
 | `attach PANE` | Attach this terminal to the pane. `Ctrl-\` detaches. |
 | `kill PANE [1\|15\|9]` | Signal the pane's program (15 by default), or remove a pane that already ended. |
@@ -81,6 +84,24 @@ when the pane is not shown: no application runs, persistent sessions are off
 in Settings, or no tab shows the pane to split. The pane runs all the same,
 and `--json` reports it as `"shown": false`. Local panes only: a pane on an
 SSH server is started there, where no application reads the request.
+
+## Focus, rename, zoom
+
+These act on what the application shows, so the application does them: the
+command leaves the same kind of request as `split` and waits about three
+seconds for the answer. Without PANE they act on the pane the command runs
+in. Exit status 0 when done; 1 with the reason otherwise (no application
+runs, persistent sessions are off, no tab shows that pane, the pane is alone
+in its tab for `zoom`).
+
+- `focus` is the only one that changes the active tab. It moves the user's
+  keyboard: use it when asked to show something, not as a side effect.
+- `rename` names the tab, whichever pane of it is named. The name is kept
+  like one typed in the application: the program's own title no longer
+  replaces it. One line, 80 characters at most.
+- `zoom` on a pane of the active tab also gives it the keyboard there,
+  since the pane shown alone is the focused one. In a background tab
+  nothing visible changes until the user goes to it.
 
 ## Events
 
@@ -134,6 +155,11 @@ hook is installed: the agents load the skill by its description.
 - **Exit status.** `wait` exits with the pane's exit code, or 128 plus the
   signal number when a signal ended it. For a pane that already ended it
   answers at once.
+- **Permission prompts.** A program that reported `blocked` with the kind
+  `permission` (a coding agent asking to run a command) is waiting for its
+  user. `send` and `send-key` refuse to type into it and exit with 1;
+  `--force` types all the same. A daemon of an older version reports no
+  status, so nothing is refused there.
 - **In the application.** A pane started with `run` is a pane like the
   others: with persistent sessions enabled in Settings, it comes back as a
   tab the next time the application starts. A running application does not
@@ -141,9 +167,8 @@ hook is installed: the agents load the skill by its description.
 
 ## What is not there
 
-- `send` does not refuse to type into a program that reported `blocked`
-  on a permission question. Do not use it to answer one on the user's behalf.
-- No scripting language and no way to run application actions (focus a
-  pane, change tab, rename) from the command line.
+- No scripting language. The application actions are `split`, `focus`,
+  `rename`, `zoom` and `unzoom`; closing a tab, moving a pane and the rest
+  are not there.
 - `events` polls; it is not pushed by the daemon.
 - Windows: the daemon is Unix only.
