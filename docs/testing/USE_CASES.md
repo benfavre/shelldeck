@@ -5737,3 +5737,29 @@ machine that only accepts Tailscale SSH (the badge only says the machine
 offers it; the connection is an ordinary SSH one). Not done: a refresh
 while the list is open (close and reopen), choosing the user name per
 machine before saving, a "Tailscale" mark on the saved connection.
+
+#### Native walkthrough of SDUC-583, SDUC-584 and SDUC-585 (2026-11-13)
+
+Private headless desktop, throwaway profile, persistent sessions on, debug
+build of the three branches merged, Linux, 100% scale, light theme.
+
+- `run --name worker -- sh` then `show worker`: a tab named "worker" opened
+  behind the active tab, which kept the keyboard; a second `show` added no
+  tab. `events` running meanwhile printed the pane started, its viewer, and
+  the resizes, as they happened.
+- `split --down -- sh -c 'echo first-line; echo second-line; exec sh'`: both
+  lines are at the top of the new pane (the rough edge of SDUC-581).
+- Session list: the header button switched to grouping by project; a tab
+  whose shell is in a folder with `.git` is listed under that folder's name
+  with its parent path, the others under "Sans projet"; a project folds.
+  Seen: a shell that reports neither its folder nor a `user@host: path`
+  title stays in the project of the folder it started in.
+- New connection form: "Depuis Tailscale" said Tailscale is not installed;
+  with a stand-in program printing the test fixture it listed four machines,
+  online first, with "Hors ligne" and "Tailscale SSH" marks; a click saved
+  `build-box.tail1234.ts.net` as a connection.
+
+Not checked on screen: next and previous project, the grouping after a
+restart, `show` with a zoomed split, the Claude Code start hook with a real
+agent, a real tailnet.
+([`screenshots/2026-11-13-pane-commands/`](./screenshots/2026-11-13-pane-commands/), 03 and 04.)
