@@ -6,6 +6,7 @@ use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::components::toggle::Toggle;
 use adabraka_ui::prelude::*;
 use shelldeck_core::models::connection::Connection;
+use shelldeck_core::tailscale::{self, TailscalePeer, TailscaleRow, TailscaleUnavailable};
 use uuid::Uuid;
 
 use crate::overlay::{window_backdrop, InputEscape};
@@ -56,6 +57,25 @@ fn connection_form_error_field(err: ValidationError) -> FormField {
     }
 }
 
+/// The "From Tailscale" list under its button.
+enum TailscalePanel {
+    Closed,
+    Loading,
+    Unavailable(TailscaleUnavailable),
+    Machines(Vec<TailscaleRow>),
+}
+
+fn tailscale_unavailable_key(reason: TailscaleUnavailable) -> &'static str {
+    match reason {
+        TailscaleUnavailable::NotInstalled => "connection_form.tailscale.not_installed",
+        TailscaleUnavailable::NotRunning => "connection_form.tailscale.not_running",
+        TailscaleUnavailable::NeedsLogin => "connection_form.tailscale.needs_login",
+        TailscaleUnavailable::Stopped => "connection_form.tailscale.stopped",
+        TailscaleUnavailable::TimedOut => "connection_form.tailscale.timed_out",
+        TailscaleUnavailable::Unreadable => "connection_form.tailscale.unreadable",
+    }
+}
+
 pub struct ConnectionForm {
     /// Editing existing connection (Some) or creating new (None)
     editing_id: Option<Uuid>,
@@ -67,6 +87,12 @@ pub struct ConnectionForm {
     proxy_jump_state: Entity<InputState>,
     group_state: Entity<InputState>,
     forward_agent: bool,
+    /// The saved connections, to mark the Tailscale machines that have one.
+    existing_connections: Vec<Connection>,
+    tailscale: TailscalePanel,
+    /// Counts the lookups, so that the answer to a list the user closed
+    /// or asked again is dropped.
+    tailscale_request: u64,
     error: Option<String>,
     error_field: Option<FormField>,
     focus_handle: FocusHandle,
@@ -100,6 +126,9 @@ impl ConnectionForm {
             proxy_jump_state: new_input_state(cx, ""),
             group_state: new_input_state(cx, ""),
             forward_agent: false,
+            existing_connections: Vec::new(),
+            tailscale: TailscalePanel::Closed,
+            tailscale_request: 0,
             error: None,
             error_field: None,
             focus_handle: cx.focus_handle(),
@@ -123,11 +152,87 @@ impl ConnectionForm {
             proxy_jump_state: new_input_state(cx, conn.proxy_jump.as_deref().unwrap_or("")),
             group_state: new_input_state(cx, conn.group.as_deref().unwrap_or("")),
             forward_agent: conn.forward_agent,
+            existing_connections: Vec::new(),
+            tailscale: TailscalePanel::Closed,
+            tailscale_request: 0,
             error: None,
             error_field: None,
             focus_handle: cx.focus_handle(),
             needs_focus: true,
         }
+    }
+
+    /// The connections already saved; the Tailscale list marks the
+    /// machines one of them reaches.
+    pub fn set_existing_connections(&mut self, connections: Vec<Connection>) {
+        self.existing_connections = connections;
+    }
+
+    /// Opens the Tailscale list and asks the local program for the
+    /// machines, or closes the list.
+    fn toggle_tailscale(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.tailscale, TailscalePanel::Closed) {
+            self.tailscale = TailscalePanel::Closed;
+            self.tailscale_request += 1;
+            cx.notify();
+            return;
+        }
+        let request = self.begin_tailscale_lookup();
+        // The program is given a few seconds: never on the UI thread.
+        let lookup = cx
+            .background_executor()
+            .spawn(async move { tailscale::discover() });
+        cx.spawn(async move |this, cx| {
+            let result = lookup.await;
+            let _ = this.update(cx, |this, cx| {
+                this.show_tailscale_result(request, result, cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn begin_tailscale_lookup(&mut self) -> u64 {
+        self.tailscale = TailscalePanel::Loading;
+        self.tailscale_request += 1;
+        self.tailscale_request
+    }
+
+    fn show_tailscale_result(
+        &mut self,
+        request: u64,
+        result: Result<Vec<TailscalePeer>, TailscaleUnavailable>,
+        cx: &mut Context<Self>,
+    ) {
+        if request != self.tailscale_request {
+            return;
+        }
+        self.tailscale = match result {
+            Ok(peers) => {
+                TailscalePanel::Machines(tailscale::rows(peers, &self.existing_connections))
+            }
+            Err(reason) => TailscalePanel::Unavailable(reason),
+        };
+        cx.notify();
+    }
+
+    /// Saves a connection to the machine at `index` of the list, with the
+    /// user name of the form. It goes through `Save` like a filled form,
+    /// so it is stored and edited like any other.
+    fn create_from_tailscale(&mut self, index: usize, cx: &mut Context<Self>) {
+        let TailscalePanel::Machines(rows) = &self.tailscale else {
+            return;
+        };
+        let Some(row) = rows.get(index).filter(|row| !row.existing) else {
+            return;
+        };
+        let typed = Self::field_value(&self.user_state, cx);
+        let user = match typed.trim() {
+            "" => whoami().unwrap_or_else(|| "root".to_string()),
+            typed => typed.to_string(),
+        };
+        let connection = tailscale::connection_from_peer(&row.peer, &user);
+        cx.emit(ConnectionFormEvent::Save(connection));
     }
 
     pub fn focus(&self, window: &mut Window) {
@@ -264,6 +369,152 @@ impl ConnectionForm {
             });
         })
         .detach();
+    }
+
+    /// The "From Tailscale" button and, once opened, the machines or the
+    /// reason there are none.
+    fn render_tailscale(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let open = !matches!(self.tailscale, TailscalePanel::Closed);
+        let button = div()
+            .id("connection-form-tailscale")
+            .flex()
+            .items_center()
+            .justify_center()
+            .h(px(32.0))
+            .px(px(10.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(if open {
+                ShellDeckColors::selected_bg()
+            } else {
+                ShellDeckColors::bg_primary()
+            })
+            .text_size(px(12.0))
+            .text_color(ShellDeckColors::text_primary())
+            .cursor_pointer()
+            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+            .child(t!("connection_form.tailscale.open").to_string())
+            .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                this.toggle_tailscale(cx);
+            }));
+
+        let note = |text: String| {
+            div()
+                .text_size(px(12.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(text)
+        };
+        let mut panel = div().flex().flex_col().gap(px(6.0)).child(button);
+        match &self.tailscale {
+            TailscalePanel::Closed => {}
+            TailscalePanel::Loading => {
+                panel = panel.child(note(t!("connection_form.tailscale.loading").to_string()));
+            }
+            TailscalePanel::Unavailable(reason) => {
+                panel = panel.child(note(t!(tailscale_unavailable_key(*reason)).to_string()));
+            }
+            TailscalePanel::Machines(rows) if rows.is_empty() => {
+                panel = panel.child(note(t!("connection_form.tailscale.empty").to_string()));
+            }
+            TailscalePanel::Machines(rows) => {
+                panel = panel.child(note(t!("connection_form.tailscale.hint").to_string()));
+                let mut list = div()
+                    .flex()
+                    .flex_col()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .overflow_hidden();
+                for (index, row) in rows.iter().enumerate() {
+                    list = list.child(self.render_tailscale_row(index, row, cx));
+                }
+                panel = panel.child(list);
+            }
+        }
+        panel
+    }
+
+    fn render_tailscale_row(
+        &self,
+        index: usize,
+        row: &TailscaleRow,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let peer = &row.peer;
+        let mut detail = peer.dial_host().to_string();
+        if !peer.os.is_empty() {
+            detail = format!("{detail} · {}", peer.os);
+        }
+        let badge = |text: String| {
+            div()
+                .flex_shrink_0()
+                .px(px(6.0))
+                .py(px(1.0))
+                .rounded(px(4.0))
+                .bg(ShellDeckColors::badge_bg())
+                .text_size(px(11.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(text)
+        };
+        let mut element = div()
+            .id(("connection-form-tailscale-machine", index))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(10.0))
+            .py(px(6.0))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .size(px(8.0))
+                    .rounded_full()
+                    .bg(if peer.online {
+                        ShellDeckColors::status_connected()
+                    } else {
+                        ShellDeckColors::status_disconnected()
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(peer.display_name().to_string()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(detail),
+                    ),
+            );
+        if peer.ssh {
+            element = element.child(badge(t!("connection_form.tailscale.ssh").to_string()));
+        }
+        if !peer.online {
+            element = element.child(badge(t!("connection_form.tailscale.offline").to_string()));
+        }
+        if row.existing {
+            // Already reachable from the list: shown, not added twice.
+            element
+                .opacity(0.6)
+                .child(badge(t!("connection_form.tailscale.existing").to_string()))
+        } else {
+            element
+                .cursor_pointer()
+                .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    this.create_from_tailscale(index, cx);
+                }))
+        }
     }
 
     /// Same layout as `render_field`, plus a "Browse…" button that opens the
@@ -431,6 +682,10 @@ impl Render for ConnectionForm {
             .overflow_y_scroll()
             .gap(px(12.0))
             .p(px(20.0))
+            // A new connection can be taken from the Tailscale network.
+            .when(self.editing_id.is_none(), |fields| {
+                fields.child(self.render_tailscale(cx))
+            })
             // Row: Alias + Group
             .child(
                 div()
@@ -655,3 +910,7 @@ impl Render for ConnectionForm {
 fn whoami() -> Option<String> {
     shelldeck_core::util::current_username()
 }
+
+#[cfg(test)]
+#[path = "connection_form_tests.rs"]
+mod tests;

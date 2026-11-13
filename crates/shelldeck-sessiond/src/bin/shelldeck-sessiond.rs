@@ -73,14 +73,23 @@ pane commands, for scripts and agents (each takes --dir DIR):
   rename [PANE] NAME                  name the pane's tab
   zoom [PANE], unzoom [PANE]          show the pane alone in its tab, or
                                       the whole split again
+  show [PANE]                         open the pane as a new tab of the
+                                      application, without leaving the
+                                      active one (a pane started with run)
   events [--timeout SECONDS]          print one JSON line per change (panes
                                       started, ended, renamed, resized,
                                       status reported) until interrupted
   attach PANE                         attach this terminal (Ctrl-\\ detaches)
   kill PANE [1|15|9]                  signal a pane, or remove a dead one
-  skill setup [--agent NAME]...       teach these commands to the coding
+  skill setup [--agent NAME]... [--with-hook]
+                                      teach these commands to the coding
                                       agents found (claude, codex, opencode,
-                                      pi); `skill show` prints the skill
+                                      pi); `skill show` prints the skill.
+                                      --with-hook also makes Claude Code run
+                                      `skill context` when a session starts
+  skill context                       inside a pane, print which pane this
+                                      is and the other panes; nothing
+                                      outside one
 
   PANE is a pane id, the start of one, or a name given with --name. Inside
   a pane, $SHELLDECK_PANE is its own id.
@@ -127,6 +136,8 @@ debug commands:
         pub(crate) ratio: Option<f32>,
         pub(crate) down: bool,
         pub(crate) agents: Vec<String>,
+        pub(crate) with_hook: bool,
+        pub(crate) poll: bool,
         pub(crate) interval_ms: Option<u64>,
         pub(crate) positional: Vec<String>,
         pub(crate) trailing: Vec<String>,
@@ -171,7 +182,9 @@ debug commands:
                 "--right" => parsed.down = false,
                 "--down" => parsed.down = true,
                 "--agent" => parsed.agents.push(value("--agent")?),
+                "--with-hook" => parsed.with_hook = true,
                 // Not in the usage text: for tests of `events`.
+                "--poll" => parsed.poll = true,
                 "--interval-ms" => parsed.interval_ms = Some(number(&value("--interval-ms")?)?),
                 "--" => {
                     parsed.trailing = iter.collect();
@@ -238,7 +251,7 @@ debug commands:
             )),
             "debug-flood" => crate::flood::run(args.seed, args.bytes, args.pace_us),
             "ls" | "run" | "split" | "send" | "send-key" | "read" | "status" | "wait"
-            | "events" | "skill" | "focus" | "rename" | "zoom" | "unzoom" => {
+            | "events" | "skill" | "focus" | "rename" | "zoom" | "unzoom" | "show" => {
                 return crate::panes::main(&command, args)
             }
             "list" | "spawn" | "attach" | "kill" => debug_command(&command, args),
@@ -603,8 +616,9 @@ mod panes {
         SpawnOptions,
     };
     use shelldeck_sessiond::pane_cli::{
-        exit_status, json_string, key_bytes, observed_events, panes_json, panes_table,
-        resolve_pane, skill_markdown, status_json, status_line, Observed, SKILL_AGENTS, SKILL_NAME,
+        apply_change, exit_status, json_string, key_bytes, observed_events, panes_json,
+        panes_table, resolve_pane, settle, skill_context, skill_markdown, status_json, status_line,
+        with_session_start_hook, Observed, SKILL_AGENTS, SKILL_NAME,
     };
     use shelldeck_sessiond::paths;
     use shelldeck_sessiond::protocol::{env_name_allowed, PaneInfo};
@@ -653,6 +667,9 @@ mod panes {
     async fn run(command: &str, args: Args) -> Result<u8, String> {
         // Nothing of the daemon is needed to write a file for an agent.
         if command == "skill" {
+            if args.positional.first().map(String::as_str) == Some("context") {
+                return Ok(context(&args).await);
+            }
             return skill(&args);
         }
         let dir = paths::resolve_run_dir(args.dir.as_deref()).map_err(|e| e.to_string())?;
@@ -678,7 +695,7 @@ mod panes {
             }
             "split" => split(&client, &dir, &args).await,
             "events" => events(&client, &args).await,
-            "focus" | "rename" | "zoom" | "unzoom" => {
+            "focus" | "rename" | "zoom" | "unzoom" | "show" => {
                 let action = Action::parse(command).expect("matched above");
                 act(&client, &dir, action, &args).await
             }
@@ -873,8 +890,9 @@ mod panes {
     }
 
     /// `focus`, `rename`, `zoom`, `unzoom`: things only the application
-    /// can do with a pane it shows. The pane is the first argument, or the
-    /// pane the command runs in.
+    /// can do with a pane it shows, and `show` for one it does not show
+    /// yet. The pane is the first argument, or the pane the command runs
+    /// in.
     async fn act(client: &Client, dir: &Path, action: Action, args: &Args) -> Result<u8, String> {
         let own = std::env::var("SHELLDECK_PANE").unwrap_or_default();
         let words = &args.positional;
@@ -915,6 +933,20 @@ mod panes {
         };
         let panes = client.list_panes().await.map_err(|e| e.to_string())?;
         let pane = resolve_pane(selector, &panes)?;
+        let mut text = text;
+        if action == Action::Show {
+            let Some(info) = panes.iter().find(|info| info.pane == pane) else {
+                return Err(format!("no pane {pane}"));
+            };
+            // Nothing left to work in: `read` still prints what it left.
+            if !info.alive {
+                return Err(format!("pane {pane} has exited"));
+            }
+            // The tab opens under the name the pane was started with.
+            if info.label != APP_PANE_LABEL {
+                text = requests::clean_name(&info.label);
+            }
+        }
         let request = Request::Act(ActRequest { action, pane, text });
         match ask_application(dir, &request).await? {
             Some(Ok(())) => Ok(0),
@@ -951,11 +983,70 @@ mod panes {
         Ok(())
     }
 
+    /// One line per event. `false`: the reader went away, which is how
+    /// `events` ends.
+    fn print_events(out: &mut impl Write, before: &Observed, after: &Observed) -> bool {
+        observed_events(before, after)
+            .iter()
+            .all(|event| writeln!(out, "{event}").and_then(|_| out.flush()).is_ok())
+    }
+
+    /// `events`: the daemon pushes each change when it announces that it
+    /// can; an older one is looked at four times a second.
     async fn events(client: &Client, args: &Args) -> Result<u8, String> {
-        let interval = Duration::from_millis(args.interval_ms.unwrap_or(250).max(10));
         let deadline = args
             .timeout
             .map(|seconds| Instant::now() + Duration::from_secs(seconds));
+        let subscription = match args.poll {
+            true => None,
+            false => client.subscribe().map_err(|e| e.to_string())?,
+        };
+        let Some(mut changes) = subscription else {
+            return poll_events(client, args, deadline).await;
+        };
+        // What exists: the lists, asked after subscribing, brought up to
+        // date with the changes that crossed them. A change carries its
+        // new value, so one the lists already hold changes nothing.
+        let mut seen = Observed {
+            panes: client.list_panes().await.map_err(|e| e.to_string())?,
+            statuses: statuses(client).await?.unwrap_or_default(),
+        };
+        while let Some(change) = changes.try_next() {
+            apply_change(&mut seen, &change);
+        }
+        settle(&mut seen);
+        let mut out = std::io::stdout().lock();
+        if !print_events(&mut out, &Observed::default(), &seen) {
+            return Ok(0);
+        }
+        loop {
+            let change = match deadline {
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    match tokio::time::timeout(left, changes.next()).await {
+                        Ok(change) => change,
+                        Err(_) => return Ok(0),
+                    }
+                }
+                None => changes.next().await,
+            };
+            let Some(change) = change else {
+                return Err("the connection to the daemon closed".into());
+            };
+            let before = seen.clone();
+            apply_change(&mut seen, &change);
+            if !print_events(&mut out, &before, &seen) {
+                return Ok(0);
+            }
+        }
+    }
+
+    async fn poll_events(
+        client: &Client,
+        args: &Args,
+        deadline: Option<Instant>,
+    ) -> Result<u8, String> {
+        let interval = Duration::from_millis(args.interval_ms.unwrap_or(250).max(10));
         let mut before = Observed::default();
         let mut out = std::io::stdout().lock();
         loop {
@@ -963,11 +1054,8 @@ mod panes {
                 panes: client.list_panes().await.map_err(|e| e.to_string())?,
                 statuses: statuses(client).await?.unwrap_or_default(),
             };
-            for event in observed_events(&before, &after) {
-                // The reader went away: that is how this command ends.
-                if writeln!(out, "{event}").and_then(|_| out.flush()).is_err() {
-                    return Ok(0);
-                }
+            if !print_events(&mut out, &before, &after) {
+                return Ok(0);
             }
             before = after;
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -986,7 +1074,7 @@ mod panes {
                 return Ok(0);
             }
             Some("setup") => {}
-            _ => return Err("skill takes `setup` or `show`".into()),
+            _ => return Err("skill takes `setup` or `show` (`context` is for the hook)".into()),
         }
         for name in &args.agents {
             if !SKILL_AGENTS.iter().any(|(agent, _)| agent == name) {
@@ -1003,6 +1091,7 @@ mod panes {
             None => paths::home_dir().ok_or("no home directory")?,
         };
         let mut written = 0;
+        let mut claude = false;
         for (agent, skills) in SKILL_AGENTS {
             let skills = home.join(skills);
             let asked = args.agents.iter().any(|name| name == agent);
@@ -1019,13 +1108,103 @@ mod panes {
                 .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
             println!("{agent}: {}", file.display());
             written += 1;
+            claude |= agent == "claude";
         }
         if written == 0 {
             return Err(
                 "no coding agent found (claude, codex, opencode, pi): name one with --agent".into(),
             );
         }
+        if args.with_hook {
+            if !claude {
+                return Err(
+                    "no hook registered: --with-hook is for Claude Code, which is not set up \
+                     (name it with --agent claude)"
+                        .into(),
+                );
+            }
+            register_hook(&home.join(".claude").join("settings.json"))?;
+        }
         Ok(0)
+    }
+
+    /// `skill setup --with-hook`: make Claude Code run `skill context`
+    /// when a session starts, by adding one entry to the user's settings.
+    /// Everything else in the file stays; a file that cannot be read as
+    /// Claude Code documents it is left alone and the reason is given.
+    fn register_hook(settings: &Path) -> Result<(), String> {
+        // A settings file that is a link (dotfiles) is written through.
+        let target = std::fs::canonicalize(settings).unwrap_or_else(|_| settings.to_path_buf());
+        let text = match std::fs::read_to_string(&target) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return Err(format!(
+                    "no hook registered: cannot read {}: {e}",
+                    target.display()
+                ))
+            }
+        };
+        let merged = with_session_start_hook(&text).map_err(|reason| {
+            format!(
+                "no hook registered: {} was left as it is, {reason}. Add the hook by hand, \
+                 see docs/pane-cli.md",
+                target.display()
+            )
+        })?;
+        let Some(merged) = merged else {
+            println!("claude: hook already in {}", target.display());
+            return Ok(());
+        };
+        // All of it or none: a reader never sees half a settings file.
+        let partial = target.with_extension("json.shelldeck-tmp");
+        let written = std::fs::write(&partial, merged).and_then(|_| {
+            if let Ok(meta) = std::fs::metadata(&target) {
+                std::fs::set_permissions(&partial, meta.permissions())?;
+            }
+            std::fs::rename(&partial, &target)
+        });
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&partial);
+            return Err(format!(
+                "no hook registered: cannot write {}: {e}",
+                target.display()
+            ));
+        }
+        println!("claude: hook in {}", target.display());
+        Ok(())
+    }
+
+    /// `skill context`: what the start hook of an agent prints. Inside a
+    /// pane, which pane this is and the others; outside one, nothing.
+    /// Always succeeds: a hook that fails is shown to the user at every
+    /// start of their agent.
+    async fn context(args: &Args) -> u8 {
+        let own = std::env::var("SHELLDECK_PANE").unwrap_or_default();
+        if own.parse::<uuid::Uuid>().is_err() {
+            return 0;
+        }
+        let mut panes = Vec::new();
+        let mut reported = Vec::new();
+        // No daemon to ask (the pane of another directory, a daemon that
+        // ended): the first line is still true.
+        if let Ok(dir) = paths::resolve_run_dir(args.dir.as_deref()) {
+            if let Ok(client) = connect_unix(&dir, ClientOptions::default()).await {
+                panes = client.list_panes().await.unwrap_or_default();
+                reported = client
+                    .list_status()
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+            }
+        }
+        // A daemon that does not know this pane is not the one it runs in.
+        if !panes.iter().any(|info| info.pane.to_string() == own) {
+            panes.clear();
+        }
+        print!("{}", skill_context(&own, &panes, &reported));
+        0
     }
 
     async fn start(

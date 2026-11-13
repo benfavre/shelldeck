@@ -131,6 +131,18 @@ impl Workspace {
                     Box::new(PrevTab),
                 ),
                 PaletteAction::new(
+                    t!("palette.next_project").to_string(),
+                    shortcut_label(BindableAction::NextProject).as_deref(),
+                    "folder",
+                    Box::new(NextProject),
+                ),
+                PaletteAction::new(
+                    t!("palette.prev_project").to_string(),
+                    shortcut_label(BindableAction::PrevProject).as_deref(),
+                    "folder",
+                    Box::new(PrevProject),
+                ),
+                PaletteAction::new(
                     t!("palette.browse_templates").to_string(),
                     None,
                     "scroll-text",
@@ -367,6 +379,10 @@ impl Workspace {
             self.next_tab(cx);
         } else if action.as_any().is::<PrevTab>() {
             self.prev_tab(cx);
+        } else if action.as_any().is::<NextProject>() {
+            self.select_adjacent_project(true, cx);
+        } else if action.as_any().is::<PrevProject>() {
+            self.select_adjacent_project(false, cx);
         } else if action.as_any().is::<Quit>() {
             self.shutdown(cx);
             cx.quit();
@@ -551,6 +567,44 @@ mod tests {
         // the mode rows must not appear either.
         assert!(!contains_action::<SetAppMode>(&actions));
         assert_no_view_actions(&actions, "regular account");
+    }
+
+    // SDTEST-3153 / SDUC-584. Next and previous project have no built-in
+    // keys, so the palette is where they are found: offered with the other
+    // terminal commands in Dev, under their own names, and to nobody else.
+    #[test]
+    fn sdtest_3153_the_project_rows_are_offered_with_the_terminal_commands() {
+        use super::{NextProject, PrevProject};
+        let staff: &'static [AppMode] = &[AppMode::User, AppMode::Support, AppMode::Dev];
+        let dev = Workspace::base_palette_actions(staff, AppMode::Dev, true, true);
+        let label = |actions: &[PaletteAction], next: bool| {
+            actions
+                .iter()
+                .find(|entry| {
+                    let action = entry.action.as_any();
+                    if next {
+                        action.is::<NextProject>()
+                    } else {
+                        action.is::<PrevProject>()
+                    }
+                })
+                .map(|entry| entry.name.clone())
+        };
+        assert_eq!(
+            label(&dev, true),
+            Some(t!("palette.next_project").to_string())
+        );
+        assert_eq!(
+            label(&dev, false),
+            Some(t!("palette.prev_project").to_string())
+        );
+        assert_ne!(label(&dev, true), label(&dev, false));
+
+        for mode in [AppMode::User, AppMode::Support] {
+            let actions = Workspace::base_palette_actions(staff, mode, true, true);
+            assert_eq!(label(&actions, true), None, "{mode:?}");
+            assert_eq!(label(&actions, false), None, "{mode:?}");
+        }
     }
 
     fn assert_no_view_actions(actions: &[PaletteAction], context: &str) {

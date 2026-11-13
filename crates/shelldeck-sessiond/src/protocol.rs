@@ -45,6 +45,10 @@ pub const MAX_PANES: usize = 256;
 /// status the program of each pane reported (OSC 7501). A daemon without
 /// the bit closes the connection on that frame, so a client checks first.
 pub const FEATURE_PANE_STATUS: u32 = 1;
+/// `HelloAck::features` bit: the daemon takes `Subscribe` and then sends a
+/// `PaneEvent` frame for every change of a pane. A daemon without the bit
+/// closes the connection on `Subscribe`, so a client checks first.
+pub const FEATURE_PANE_EVENTS: u32 = 2;
 /// Limits of the strings of a `PaneStatus`.
 pub const MAX_STATUS_WORD: usize = 16;
 pub const MAX_STATUS_APP: usize = 64;
@@ -70,6 +74,8 @@ pub mod frame_type {
     pub const KILL: u8 = 0x08;
     /// Only to a daemon that announced `FEATURE_PANE_STATUS`.
     pub const LIST_STATUS: u8 = 0x09;
+    /// Only to a daemon that announced `FEATURE_PANE_EVENTS`.
+    pub const SUBSCRIBE: u8 = 0x0a;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const PANE_LIST: u8 = 0x82;
@@ -81,6 +87,7 @@ pub mod frame_type {
     pub const SCROLLBACK_CHUNK: u8 = 0x88;
     pub const EXITED: u8 = 0x89;
     pub const STATUS_LIST: u8 = 0x8a;
+    pub const PANE_EVENT: u8 = 0x8b;
     pub const ERROR: u8 = 0xff;
 }
 
@@ -216,12 +223,27 @@ pub enum ClientFrame {
     Hello(Hello),
     ListPanes,
     ListStatus,
+    /// From now on, send a `PaneEvent` for every change of a pane. There
+    /// is no reply and no way back: closing the connection ends it.
+    Subscribe,
     Spawn(Spawn),
     Attach(Attach),
-    Input { pane: Uuid, bytes: Vec<u8> },
-    Resize { pane: Uuid, rows: u16, cols: u16 },
-    Detach { pane: Uuid },
-    Kill { pane: Uuid, signal: u8 },
+    Input {
+        pane: Uuid,
+        bytes: Vec<u8>,
+    },
+    Resize {
+        pane: Uuid,
+        rows: u16,
+        cols: u16,
+    },
+    Detach {
+        pane: Uuid,
+    },
+    Kill {
+        pane: Uuid,
+        signal: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,12 +291,57 @@ pub struct PaneStatus {
     pub text: String,
 }
 
+/// One change of a pane, pushed to the connections that sent `Subscribe`.
+/// Each carries the new value, so applying one twice changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneChange {
+    /// A pane was started.
+    Started(PaneInfo),
+    /// Its program ended. The pane stays listed with its last screen.
+    Exited {
+        exit_code: i32,
+    },
+    /// The pane is no longer listed.
+    Removed,
+    Title(String),
+    /// The folder its program reported (OSC 7).
+    Cwd(String),
+    Size {
+        rows: u16,
+        cols: u16,
+    },
+    /// How many viewers are attached.
+    Clients(u16),
+    /// What its program reports about itself; `None` when it took the
+    /// report back.
+    Status(Option<PaneStatus>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneChangeEvent {
+    pub pane: Uuid,
+    pub change: PaneChange,
+}
+
+mod change_kind {
+    pub const STARTED: u8 = 1;
+    pub const EXITED: u8 = 2;
+    pub const REMOVED: u8 = 3;
+    pub const TITLE: u8 = 4;
+    pub const CWD: u8 = 5;
+    pub const SIZE: u8 = 6;
+    pub const CLIENTS: u8 = 7;
+    pub const STATUS: u8 = 8;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonFrame {
     HelloAck(HelloAck),
     PaneList(Vec<PaneInfo>),
     /// Reply to `ListStatus`: only the panes whose program reported.
     StatusList(Vec<PaneStatus>),
+    /// Only on a connection that sent `Subscribe`.
+    PaneEvent(PaneChangeEvent),
     Spawned {
         request_id: u32,
         pane: Uuid,
@@ -385,6 +452,39 @@ impl Encoder {
         Ok(())
     }
 
+    fn pane_info(&mut self, pane: &PaneInfo) -> Result<(), ProtocolError> {
+        self.uuid(&pane.pane);
+        self.uuid(&pane.group);
+        self.string(&pane.label, MAX_LABEL, "label")?;
+        self.string(truncated(&pane.title, MAX_TITLE), MAX_TITLE, "title")?;
+        self.string(truncated(&pane.cwd, MAX_LIST_CWD), MAX_LIST_CWD, "cwd")?;
+        self.u16(pane.rows);
+        self.u16(pane.cols);
+        self.u64(pane.created_at);
+        self.u8(u8::from(pane.alive));
+        self.i32(pane.exit_code);
+        self.u16(pane.clients);
+        self.u64(pane.offset);
+        Ok(())
+    }
+
+    fn pane_status(&mut self, status: &PaneStatus) -> Result<(), ProtocolError> {
+        self.uuid(&status.pane);
+        self.string(&status.state, MAX_STATUS_WORD, "state")?;
+        self.string(&status.kind, MAX_STATUS_WORD, "kind")?;
+        self.u8(status.progress as u8);
+        self.string(
+            truncated(&status.app, MAX_STATUS_APP),
+            MAX_STATUS_APP,
+            "app",
+        )?;
+        self.string(
+            truncated(&status.text, MAX_STATUS_TEXT),
+            MAX_STATUS_TEXT,
+            "text",
+        )
+    }
+
     fn finish(mut self, max_frame: usize) -> Result<Vec<u8>, ProtocolError> {
         let len = self.buf.len() - 4;
         if len > max_frame.min(MAX_FRAME_BYTES) {
@@ -464,6 +564,7 @@ impl ClientFrame {
             }
             Self::ListPanes => Encoder::new(frame_type::LIST_PANES, 0).finish(MIN_FRAME_BYTES),
             Self::ListStatus => Encoder::new(frame_type::LIST_STATUS, 0).finish(MIN_FRAME_BYTES),
+            Self::Subscribe => Encoder::new(frame_type::SUBSCRIBE, 0).finish(MIN_FRAME_BYTES),
             Self::Spawn(spawn) => {
                 spawn.validate()?;
                 let mut e = Encoder::new(frame_type::SPAWN, 256);
@@ -544,6 +645,7 @@ impl ClientFrame {
             }
             frame_type::LIST_PANES => Self::ListPanes,
             frame_type::LIST_STATUS => Self::ListStatus,
+            frame_type::SUBSCRIBE => Self::Subscribe,
             frame_type::SPAWN => {
                 d.limit(MAX_SPAWN_FRAME)?;
                 let request_id = d.u32()?;
@@ -654,18 +756,7 @@ impl DaemonFrame {
                 let mut e = Encoder::new(frame_type::PANE_LIST, panes.len() * 128);
                 e.u16(panes.len() as u16);
                 for pane in panes {
-                    e.uuid(&pane.pane);
-                    e.uuid(&pane.group);
-                    e.string(&pane.label, MAX_LABEL, "label")?;
-                    e.string(truncated(&pane.title, MAX_TITLE), MAX_TITLE, "title")?;
-                    e.string(truncated(&pane.cwd, MAX_LIST_CWD), MAX_LIST_CWD, "cwd")?;
-                    e.u16(pane.rows);
-                    e.u16(pane.cols);
-                    e.u64(pane.created_at);
-                    e.u8(u8::from(pane.alive));
-                    e.i32(pane.exit_code);
-                    e.u16(pane.clients);
-                    e.u64(pane.offset);
+                    e.pane_info(pane)?;
                 }
                 e.finish(MAX_FRAME_BYTES)
             }
@@ -676,20 +767,47 @@ impl DaemonFrame {
                 let mut e = Encoder::new(frame_type::STATUS_LIST, statuses.len() * 64);
                 e.u16(statuses.len() as u16);
                 for status in statuses {
-                    e.uuid(&status.pane);
-                    e.string(&status.state, MAX_STATUS_WORD, "state")?;
-                    e.string(&status.kind, MAX_STATUS_WORD, "kind")?;
-                    e.u8(status.progress as u8);
-                    e.string(
-                        truncated(&status.app, MAX_STATUS_APP),
-                        MAX_STATUS_APP,
-                        "app",
-                    )?;
-                    e.string(
-                        truncated(&status.text, MAX_STATUS_TEXT),
-                        MAX_STATUS_TEXT,
-                        "text",
-                    )?;
+                    e.pane_status(status)?;
+                }
+                e.finish(MAX_FRAME_BYTES)
+            }
+            Self::PaneEvent(event) => {
+                let mut e = Encoder::new(frame_type::PANE_EVENT, 128);
+                e.uuid(&event.pane);
+                match &event.change {
+                    PaneChange::Started(info) => {
+                        e.u8(change_kind::STARTED);
+                        e.pane_info(info)?;
+                    }
+                    PaneChange::Exited { exit_code } => {
+                        e.u8(change_kind::EXITED);
+                        e.i32(*exit_code);
+                    }
+                    PaneChange::Removed => e.u8(change_kind::REMOVED),
+                    PaneChange::Title(title) => {
+                        e.u8(change_kind::TITLE);
+                        e.string(truncated(title, MAX_TITLE), MAX_TITLE, "title")?;
+                    }
+                    PaneChange::Cwd(cwd) => {
+                        e.u8(change_kind::CWD);
+                        e.string(truncated(cwd, MAX_LIST_CWD), MAX_LIST_CWD, "cwd")?;
+                    }
+                    PaneChange::Size { rows, cols } => {
+                        e.u8(change_kind::SIZE);
+                        e.u16(*rows);
+                        e.u16(*cols);
+                    }
+                    PaneChange::Clients(clients) => {
+                        e.u8(change_kind::CLIENTS);
+                        e.u16(*clients);
+                    }
+                    PaneChange::Status(status) => {
+                        e.u8(change_kind::STATUS);
+                        e.u8(u8::from(status.is_some()));
+                        if let Some(status) = status {
+                            e.pane_status(status)?;
+                        }
+                    }
                 }
                 e.finish(MAX_FRAME_BYTES)
             }
@@ -831,20 +949,7 @@ impl DaemonFrame {
                 }
                 let mut panes = Vec::with_capacity(count);
                 for _ in 0..count {
-                    panes.push(PaneInfo {
-                        pane: d.uuid()?,
-                        group: d.uuid()?,
-                        label: d.string(MAX_LABEL, "label")?,
-                        title: d.string(MAX_TITLE, "title")?,
-                        cwd: d.string(MAX_LIST_CWD, "cwd")?,
-                        rows: d.u16()?,
-                        cols: d.u16()?,
-                        created_at: d.u64()?,
-                        alive: d.bool("alive")?,
-                        exit_code: d.i32()?,
-                        clients: d.u16()?,
-                        offset: d.u64()?,
-                    });
+                    panes.push(d.pane_info()?);
                 }
                 Self::PaneList(panes)
             }
@@ -855,16 +960,32 @@ impl DaemonFrame {
                 }
                 let mut statuses = Vec::with_capacity(count);
                 for _ in 0..count {
-                    statuses.push(PaneStatus {
-                        pane: d.uuid()?,
-                        state: d.string(MAX_STATUS_WORD, "state")?,
-                        kind: d.string(MAX_STATUS_WORD, "kind")?,
-                        progress: d.u8()? as i8,
-                        app: d.string(MAX_STATUS_APP, "app")?,
-                        text: d.string(MAX_STATUS_TEXT, "text")?,
-                    });
+                    statuses.push(d.pane_status()?);
                 }
                 Self::StatusList(statuses)
+            }
+            frame_type::PANE_EVENT => {
+                let pane = d.uuid()?;
+                let change = match d.u8()? {
+                    change_kind::STARTED => PaneChange::Started(d.pane_info()?),
+                    change_kind::EXITED => PaneChange::Exited {
+                        exit_code: d.i32()?,
+                    },
+                    change_kind::REMOVED => PaneChange::Removed,
+                    change_kind::TITLE => PaneChange::Title(d.string(MAX_TITLE, "title")?),
+                    change_kind::CWD => PaneChange::Cwd(d.string(MAX_LIST_CWD, "cwd")?),
+                    change_kind::SIZE => PaneChange::Size {
+                        rows: d.u16()?,
+                        cols: d.u16()?,
+                    },
+                    change_kind::CLIENTS => PaneChange::Clients(d.u16()?),
+                    change_kind::STATUS => PaneChange::Status(match d.bool("status")? {
+                        true => Some(d.pane_status()?),
+                        false => None,
+                    }),
+                    _ => return Err(ProtocolError::InvalidValue("pane change")),
+                };
+                Self::PaneEvent(PaneChangeEvent { pane, change })
             }
             frame_type::SPAWNED => Self::Spawned {
                 request_id: d.u32()?,
@@ -1026,6 +1147,34 @@ impl<'a> Decoder<'a> {
         let mut raw = [0u8; 16];
         raw.copy_from_slice(self.take(16)?);
         Ok(Uuid::from_bytes(raw))
+    }
+
+    fn pane_info(&mut self) -> Result<PaneInfo, ProtocolError> {
+        Ok(PaneInfo {
+            pane: self.uuid()?,
+            group: self.uuid()?,
+            label: self.string(MAX_LABEL, "label")?,
+            title: self.string(MAX_TITLE, "title")?,
+            cwd: self.string(MAX_LIST_CWD, "cwd")?,
+            rows: self.u16()?,
+            cols: self.u16()?,
+            created_at: self.u64()?,
+            alive: self.bool("alive")?,
+            exit_code: self.i32()?,
+            clients: self.u16()?,
+            offset: self.u64()?,
+        })
+    }
+
+    fn pane_status(&mut self) -> Result<PaneStatus, ProtocolError> {
+        Ok(PaneStatus {
+            pane: self.uuid()?,
+            state: self.string(MAX_STATUS_WORD, "state")?,
+            kind: self.string(MAX_STATUS_WORD, "kind")?,
+            progress: self.u8()? as i8,
+            app: self.string(MAX_STATUS_APP, "app")?,
+            text: self.string(MAX_STATUS_TEXT, "text")?,
+        })
     }
 
     fn string(&mut self, max: usize, what: &'static str) -> Result<String, ProtocolError> {
@@ -1243,6 +1392,7 @@ mod tests {
                 signal: SIGNAL_TERM,
             },
             ClientFrame::ListStatus,
+            ClientFrame::Subscribe,
         ]
     }
 
@@ -1343,7 +1493,47 @@ mod tests {
                     text: String::new(),
                 },
             ]),
+            event(PaneChange::Started(sample_info())),
+            event(PaneChange::Exited { exit_code: -1 }),
+            event(PaneChange::Removed),
+            event(PaneChange::Title("vim \u{e9}".into())),
+            event(PaneChange::Cwd("/srv/app".into())),
+            event(PaneChange::Size { rows: 30, cols: 90 }),
+            event(PaneChange::Clients(2)),
+            event(PaneChange::Status(Some(PaneStatus {
+                pane: Uuid::from_u128(0xabcdef),
+                state: "blocked".into(),
+                kind: "permission".into(),
+                progress: -1,
+                app: "claude-code".into(),
+                text: "Allow the edit?".into(),
+            }))),
+            event(PaneChange::Status(None)),
         ]
+    }
+
+    fn sample_info() -> PaneInfo {
+        PaneInfo {
+            pane: Uuid::from_u128(0xabcdef),
+            group: Uuid::from_u128(9),
+            label: "worker".into(),
+            title: "sh".into(),
+            cwd: "/tmp".into(),
+            rows: 24,
+            cols: 80,
+            created_at: 1_800_000_000,
+            alive: true,
+            exit_code: 0,
+            clients: 0,
+            offset: 12,
+        }
+    }
+
+    fn event(change: PaneChange) -> DaemonFrame {
+        DaemonFrame::PaneEvent(PaneChangeEvent {
+            pane: Uuid::from_u128(0xabcdef),
+            change,
+        })
     }
 
     // SDTEST-2966
@@ -1693,5 +1883,75 @@ mod tests {
             assert_eq!(proxy_command_at(bad, nonce), None, "{bad:?}");
         }
         assert_eq!(proxy_command_at("/opt/sessiond", "short"), None);
+    }
+
+    // SDTEST-3124 / SDUC-583. The subscription is one request without a
+    // body and one frame per change, both pinned byte for byte; a change
+    // of a kind this build does not know is refused, never guessed.
+    #[test]
+    fn sdtest_3124_a_subscription_and_its_events_have_a_fixed_layout() {
+        assert_eq!(FEATURE_PANE_EVENTS & FEATURE_PANE_STATUS, 0);
+        assert_eq!(
+            ClientFrame::Subscribe.encode().expect("encode"),
+            [0, 0, 0, 2, 1, 0x0a]
+        );
+        // A subscription is a client frame only.
+        assert_eq!(
+            DaemonFrame::decode(&[WIRE_VERSION, frame_type::SUBSCRIBE]),
+            Err(ProtocolError::UnknownType(frame_type::SUBSCRIBE))
+        );
+
+        let pane = Uuid::from_u128(1);
+        let size = DaemonFrame::PaneEvent(PaneChangeEvent {
+            pane,
+            change: PaneChange::Size { rows: 30, cols: 90 },
+        });
+        let mut expected = vec![0, 0, 0, 23, 1, 0x8b];
+        expected.extend_from_slice(&[0; 15]);
+        expected.extend_from_slice(&[1, 6, 0, 30, 0, 90]);
+        assert_eq!(size.encode().expect("encode"), expected);
+
+        let cleared = DaemonFrame::PaneEvent(PaneChangeEvent {
+            pane,
+            change: PaneChange::Status(None),
+        })
+        .encode()
+        .expect("encode");
+        assert_eq!(&cleared[cleared.len() - 2..], [8, 0]);
+
+        // Kind 0 and a kind from the future.
+        for kind in [0u8, 9, 0xff] {
+            let mut body = vec![WIRE_VERSION, frame_type::PANE_EVENT];
+            body.extend_from_slice(pane.as_bytes());
+            body.push(kind);
+            assert_eq!(
+                DaemonFrame::decode(&body),
+                Err(ProtocolError::InvalidValue("pane change")),
+                "{kind}"
+            );
+        }
+        // "Is there a status" is 0 or 1.
+        let mut body = payload(&cleared).to_vec();
+        *body.last_mut().expect("body") = 2;
+        assert_eq!(
+            DaemonFrame::decode(&body),
+            Err(ProtocolError::InvalidValue("status"))
+        );
+
+        // A title longer than the limit is cut on encode, on a character
+        // boundary, as in the pane list.
+        let long = DaemonFrame::PaneEvent(PaneChangeEvent {
+            pane,
+            change: PaneChange::Title("\u{e9}".repeat(MAX_TITLE)),
+        })
+        .encode()
+        .expect("encode");
+        match DaemonFrame::decode(payload(&long)).expect("decode") {
+            DaemonFrame::PaneEvent(PaneChangeEvent {
+                change: PaneChange::Title(title),
+                ..
+            }) => assert_eq!(title, "\u{e9}".repeat(MAX_TITLE / 2)),
+            other => panic!("{other:?}"),
+        }
     }
 }

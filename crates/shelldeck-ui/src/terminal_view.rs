@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use adabraka_ui::theme::use_theme;
@@ -15,6 +15,7 @@ use shelldeck_terminal::url::{detect_grid_urls, left_click_action, LeftClickActi
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use shelldeck_core::config::app_config::SessionGrouping;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::tmux::TmuxAction;
 
@@ -31,6 +32,7 @@ mod empty_state;
 pub(crate) use empty_state::trace_layout_for_preview;
 mod layout;
 mod palette;
+mod projects;
 
 use crate::view_attention::ViewAttention;
 use block_drawing::paint_block_char;
@@ -122,6 +124,9 @@ pub enum TerminalEvent {
     InputDropped {
         count: u32,
     },
+    /// The user switched what the session list groups the terminals by:
+    /// the workspace keeps the choice.
+    SessionGroupingChanged(SessionGrouping),
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -344,6 +349,19 @@ pub struct TerminalView {
     /// Width the session list takes this frame, in pixels: 0 when it is not
     /// drawn. Set at the start of each render, read by the geometry.
     session_list_width: f32,
+    /// What the session list groups the tabs by.
+    session_grouping: SessionGrouping,
+    /// Folder each tab works in, as last seen by the refresh loop. A tab
+    /// whose folder is not known has no entry.
+    tab_folders: HashMap<Uuid, String>,
+    /// Projects of the local folders, filled off the UI thread.
+    project_index: projects::ProjectIndex,
+    /// Projects whose tabs are hidden in the session list.
+    collapsed_projects: HashSet<projects::ProjectKey>,
+    /// Tabs in the order they were last in front, most recent first.
+    recent_tabs: Vec<Uuid>,
+    /// Home directory of this machine, read once.
+    home_dir: Option<String>,
     /// Whether the workspace is currently showing the application menu row
     /// above the content area (updated dynamically from the workspace).
     menu_bar_visible: bool,
@@ -496,6 +514,13 @@ impl TerminalView {
             full_width: false,
             session_list_visible: false,
             session_list_width: 0.0,
+            session_grouping: SessionGrouping::Machine,
+            tab_folders: HashMap::new(),
+            project_index: projects::ProjectIndex::default(),
+            collapsed_projects: HashSet::new(),
+            recent_tabs: Vec::new(),
+            home_dir: shelldeck_core::util::home_dir()
+                .and_then(|home| home.to_str().map(str::to_string)),
             menu_bar_visible: true,
             split_dragging: false,
             active_divider: None,
@@ -568,6 +593,124 @@ impl TerminalView {
 
     pub fn session_list_visible(&self) -> bool {
         self.session_list_visible
+    }
+
+    /// Group the session list by machine or by project.
+    pub fn set_session_grouping(&mut self, grouping: SessionGrouping) {
+        self.session_grouping = grouping;
+    }
+
+    pub fn session_grouping(&self) -> SessionGrouping {
+        self.session_grouping
+    }
+
+    /// Where each tab is, for the grouping by project. Reads what the
+    /// refresh loop and the lookups recorded: no filesystem work here.
+    fn tab_places(&self) -> Vec<projects::TabPlace> {
+        self.tabs
+            .iter()
+            .map(|tab| {
+                let folder = self.tab_folders.get(&tab.id);
+                let root = match (folder, tab.connection_id) {
+                    (Some(folder), Some(_)) => projects::remote_project_root(folder),
+                    (Some(folder), None) => self.project_index.root(folder).map(str::to_string),
+                    (None, _) => None,
+                };
+                projects::TabPlace {
+                    connection_id: tab.connection_id,
+                    host: tab.host.clone(),
+                    root,
+                }
+            })
+            .collect()
+    }
+
+    /// Record the folder each tab works in and, for a folder of this
+    /// machine seen for the first time or entered again, look for its
+    /// project on a background thread. `true` when a folder changed.
+    fn follow_tab_folders(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut changed = false;
+        let mut lookups = Vec::new();
+        for (session, tab) in self.pane.sessions.iter().zip(&self.tabs) {
+            let remote = tab.connection_id.is_some();
+            let folder = {
+                let grid = session.grid.lock();
+                projects::tab_folder(
+                    grid.working_directory.as_deref(),
+                    &grid.title,
+                    session.initial_cwd().and_then(|cwd| cwd.to_str()),
+                    // The home of another machine is not this one's.
+                    self.home_dir.as_deref().filter(|_| !remote),
+                )
+            };
+            if self.tab_folders.get(&tab.id) == folder.as_ref() {
+                continue;
+            }
+            changed = true;
+            match folder {
+                Some(folder) => {
+                    // A remote path is never looked for on this disk.
+                    if !remote && self.project_index.request(&folder) {
+                        lookups.push(folder.clone());
+                    }
+                    self.tab_folders.insert(tab.id, folder);
+                }
+                None => {
+                    self.tab_folders.remove(&tab.id);
+                }
+            }
+        }
+        for folder in lookups {
+            let home = self.home_dir.clone();
+            cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                let looked_up = folder.clone();
+                let root = cx
+                    .background_executor()
+                    .spawn(async move {
+                        projects::local_project_root(
+                            &looked_up,
+                            home.as_deref(),
+                            projects::has_git_entry,
+                        )
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.project_index.resolve(&folder, root) {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+        changed
+    }
+
+    /// Select the most recently used tab of the next (`forward`) or the
+    /// previous project. Returns the tab selected, `None` when every tab
+    /// is in the same project.
+    pub fn select_adjacent_project(&mut self, forward: bool) -> Option<Uuid> {
+        let groups = projects::project_groups(&self.tab_places());
+        let recent: Vec<usize> = self
+            .recent_tabs
+            .iter()
+            .filter_map(|id| self.tabs.iter().position(|tab| tab.id == *id))
+            .collect();
+        let index =
+            projects::adjacent_project_tab(&groups, self.pane.active_index, &recent, forward)?;
+        let id = self.tabs.get(index)?.id;
+        // The tab arrived at is shown in the list, whatever was folded.
+        if let Some(group) = groups.iter().find(|group| group.tabs.contains(&index)) {
+            self.collapsed_projects.remove(&group.key);
+        }
+        self.select_tab(id);
+        self.needs_focus = true;
+        Some(id)
+    }
+
+    /// `id` is the tab in front: the most recently used one.
+    fn mark_tab_recent(&mut self, id: Uuid) {
+        self.recent_tabs.retain(|tab| *tab != id);
+        self.recent_tabs.insert(0, id);
     }
 
     /// The session list is drawn: asked for, and there are terminals to list.
@@ -809,9 +952,56 @@ impl TerminalView {
         })
     }
 
-    /// Do what `shelldeck-sessiond focus|rename|zoom|unzoom` asked for the
-    /// session daemon pane `pane`. Only `focus` changes the active tab.
-    /// `Err` says why nothing was done.
+    /// Open the session daemon pane `pane` as a new tab
+    /// (`shelldeck-sessiond show`), named `name` when that is not empty.
+    /// The active tab and the keyboard stay where they are: like a split,
+    /// the request comes from a program working in the background. A pane
+    /// a tab already shows is left as it is.
+    fn show_daemon_pane(&mut self, pane: Uuid, name: &str) -> Result<(), String> {
+        if !self.restores_daemon_panes() {
+            return Err("persistent sessions are off".into());
+        }
+        if self.find_daemon_pane(pane).is_some() {
+            return Ok(());
+        }
+        let (rows, cols) = self.grid_size();
+        let title = if name.is_empty() { "Terminal" } else { name };
+        let session = daemon::attach(pane, title, rows, cols, self.configured_scrollback)?;
+        self.add_background_session(session, !name.is_empty());
+        Ok(())
+    }
+
+    /// Add a tab for `session` behind the active one: nothing the user
+    /// looks at or types into changes. With no tab open it is the first
+    /// one, and so the active one. `named`: the title was chosen by the
+    /// user, the program's own no longer replaces it.
+    fn add_background_session(&mut self, session: TerminalSession, named: bool) {
+        let Some(active) = self.tabs.get(self.pane.active_index).map(|tab| tab.id) else {
+            let id = session.id;
+            self.add_session(session);
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                tab.named = named;
+            }
+            return;
+        };
+        // `add_session` moves to the new tab and asks for the keyboard; go
+        // back, which also puts the layout of the tab that was active in
+        // place again, and leave the keyboard where it is.
+        let focused = self.layout.focused;
+        let wants_focus = self.needs_focus;
+        let id = session.id;
+        self.add_session(session);
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.named = named;
+        }
+        self.select_tab(active);
+        self.layout.focused = focused;
+        self.needs_focus = wants_focus;
+    }
+
+    /// Do what `shelldeck-sessiond focus|rename|zoom|unzoom|show` asked
+    /// for the session daemon pane `pane`. Only `focus` changes the active
+    /// tab. `Err` says why nothing was done.
     fn act_on_daemon_pane(
         &mut self,
         pane: Uuid,
@@ -820,6 +1010,9 @@ impl TerminalView {
     ) -> Result<(), String> {
         if !self.restores_daemon_panes() {
             return Err("persistent sessions are off".into());
+        }
+        if let daemon::PaneAction::Show(name) = action {
+            return self.show_daemon_pane(pane, name);
         }
         let Some((tab, leaf)) = self.find_daemon_pane(pane) else {
             return Err("no tab of the application shows that pane".into());
@@ -870,6 +1063,8 @@ impl TerminalView {
                     self.last_grid_cols = 0;
                 }
             }
+            // Done above: the pane has no tab to act in yet.
+            daemon::PaneAction::Show(_) => {}
         }
         Ok(())
     }
@@ -1307,6 +1502,7 @@ impl TerminalView {
             t.is_active = false;
         }
 
+        self.mark_tab_recent(tab.id);
         self.tabs.push(tab);
         self.pane.active_index = self.pane.sessions.len();
         self.pane.sessions.push(session);
@@ -1398,6 +1594,8 @@ impl TerminalView {
 
             self.tabs.remove(pos);
             self.pane.sessions.remove(pos);
+            self.tab_folders.remove(&id);
+            self.recent_tabs.retain(|tab| *tab != id);
 
             if self.pane.active_index >= self.pane.sessions.len() && !self.pane.sessions.is_empty()
             {
@@ -1416,6 +1614,8 @@ impl TerminalView {
 
             if let Some(tab) = self.tabs.get_mut(self.pane.active_index) {
                 tab.is_active = true;
+                let front = tab.id;
+                self.mark_tab_recent(front);
             }
 
             // Stop the refresh task when all sessions are closed (drop cancels the task)
@@ -1494,6 +1694,9 @@ impl TerminalView {
             .is_some_and(|active| active.id == id)
         {
             return;
+        }
+        if self.tabs.iter().any(|tab| tab.id == id) {
+            self.mark_tab_recent(id);
         }
         // Save the current tab's pane layout before switching away.
         if let Some(current_tab) = self.tabs.get(self.pane.active_index) {
@@ -1790,6 +1993,8 @@ impl TerminalView {
         self.layout = TabLayout::single();
         self.stored_layouts.clear();
         self.tabs.clear();
+        self.tab_folders.clear();
+        self.recent_tabs.clear();
         self.pane.sessions.clear();
         self.pane.active_index = 0;
         self._refresh_task = None;
@@ -2386,6 +2591,10 @@ impl TerminalView {
                                 }
                             }
                         }
+                        // Follow the folder each tab works in (projects).
+                        if this.follow_tab_folders(cx) {
+                            any_dirty = true;
+                        }
                         // Follow what each program says it is doing (OSC 7501).
                         let before = this.attention();
                         for index in 0..this.tabs.len() {
@@ -2550,9 +2759,288 @@ impl TerminalView {
         (color, size)
     }
 
-    /// The terminals as a list grouped by machine: what the tab strip shows,
-    /// with room for names and for many sessions. It replaces the strip
-    /// while it is shown.
+    /// One terminal in the session list: its dot, its name, a mark when it
+    /// is split, and its close button.
+    fn render_session_row(
+        &self,
+        index: usize,
+        scale: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<Stateful<Div>> {
+        let s = |v: f32| px(v * scale);
+        let tab = self.tabs.get(index)?;
+        let tab_id = tab.id;
+        let (dot_color, dot_size) = Self::tab_dot(tab, self.tab_pending(tab_id));
+        let split = if tab.is_active {
+            self.layout.is_split()
+        } else {
+            self.stored_layouts
+                .get(&tab_id)
+                .is_some_and(|layout| layout.is_split())
+        };
+        let mut row = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "session-row-{tab_id}"
+            ))))
+            .flex()
+            .items_center()
+            .gap(s(8.0))
+            .h(s(28.0))
+            .mx(s(6.0))
+            .pl(s(10.0))
+            .pr(s(4.0))
+            .rounded(s(6.0))
+            .cursor_pointer()
+            .overflow_hidden()
+            .on_click(cx.listener(move |this, _event: &ClickEvent, window, cx| {
+                this.select_tab(tab_id);
+                this.needs_focus = true;
+                this.focus_handle.focus(window);
+                cx.emit(TerminalEvent::TabSelected(tab_id));
+                cx.notify();
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                    this.context_menu = None;
+                    this.tab_context_menu = Some(TabMenuState {
+                        position: event.position,
+                        tab_id,
+                    });
+                    cx.notify();
+                }),
+            );
+        row = if tab.is_active {
+            row.bg(ShellDeckColors::primary().opacity(0.14))
+                .text_color(ShellDeckColors::text_primary())
+        } else {
+            row.text_color(ShellDeckColors::text_muted())
+                .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+        };
+        // The dot keeps one slot whatever its size, so titles align.
+        row = row.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .w(s(8.0))
+                .child(
+                    div()
+                        .w(s(dot_size))
+                        .h(s(dot_size))
+                        .rounded_full()
+                        .bg(dot_color),
+                ),
+        );
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(s(12.0))
+                .child(tab.display_title().to_string()),
+        );
+        if split {
+            row = row.child(
+                svg()
+                    .path("icons/lucide/columns-2.svg")
+                    .size(s(12.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
+            );
+        }
+        row = row.child(
+            div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "session-close-{tab_id}"
+                ))))
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .w(s(20.0))
+                .h(s(20.0))
+                .rounded(s(4.0))
+                .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                .child(
+                    svg()
+                        .path("icons/lucide/x.svg")
+                        .size(s(11.0))
+                        .text_color(ShellDeckColors::text_muted()),
+                )
+                .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                    cx.stop_propagation();
+                    this.close_tab(tab_id);
+                    cx.emit(TerminalEvent::TabClosed(tab_id));
+                    cx.notify();
+                })),
+        );
+        if let Some(status) = &tab.status {
+            let label: SharedString = layout::status_tooltip(status).into();
+            row = row.tooltip(move |_, cx| {
+                cx.new(|_| TerminalToolbarTooltip {
+                    label: label.clone(),
+                })
+                .into()
+            });
+        }
+        Some(row)
+    }
+
+    /// The button of the session list header that switches between the
+    /// grouping by machine and by project. It shows the grouping it leads to.
+    fn render_grouping_button(&self, scale: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let s = |v: f32| px(v * scale);
+        let (next, icon, label) = match self.session_grouping {
+            SessionGrouping::Machine => (
+                SessionGrouping::Project,
+                "icons/lucide/folder.svg",
+                t!("terminal.sessions.group_by_project"),
+            ),
+            SessionGrouping::Project => (
+                SessionGrouping::Machine,
+                "icons/lucide/server.svg",
+                t!("terminal.sessions.group_by_machine"),
+            ),
+        };
+        let label: SharedString = label.to_string().into();
+        div()
+            .id("session-list-grouping")
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(s(26.0))
+            .h(s(26.0))
+            .rounded(s(6.0))
+            .cursor_pointer()
+            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+            .child(
+                svg()
+                    .path(icon)
+                    .size(s(14.0))
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+            .tooltip(move |_, cx| {
+                cx.new(|_| TerminalToolbarTooltip {
+                    label: label.clone(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                this.session_grouping = next;
+                cx.emit(TerminalEvent::SessionGroupingChanged(next));
+                cx.notify();
+            }))
+    }
+
+    /// The header of one project in the session list: the folder name, the
+    /// path that holds it (after the machine, for a project on a server),
+    /// and how many terminals work there. A click folds its terminals.
+    fn render_project_header(
+        &self,
+        group: &projects::ProjectGroup,
+        collapsed: bool,
+        scale: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let s = |v: f32| px(v * scale);
+        let (id, name, place) = match &group.key {
+            projects::ProjectKey::None => (
+                "session-project-none".to_string(),
+                t!("terminal.sessions.no_project").to_string(),
+                None,
+            ),
+            projects::ProjectKey::Folder {
+                connection_id,
+                root,
+            } => {
+                let home = self.home_dir.as_deref().filter(|_| connection_id.is_none());
+                let (name, parent) = projects::project_label(root, home);
+                let machine = connection_id.map(|_| {
+                    group
+                        .host
+                        .clone()
+                        .unwrap_or_else(|| t!("terminal.sessions.remote").to_string())
+                });
+                let place = match (machine, parent) {
+                    (Some(machine), Some(parent)) => Some(format!("{machine} · {parent}")),
+                    (Some(machine), None) => Some(machine),
+                    (None, parent) => parent,
+                };
+                let owner = connection_id.map(|id| id.to_string()).unwrap_or_default();
+                (format!("session-project-{owner}-{root}"), name, place)
+            }
+        };
+        let chevron = if collapsed {
+            "icons/lucide/chevron-right.svg"
+        } else {
+            "icons/lucide/chevron-down.svg"
+        };
+        let key = group.key.clone();
+        let mut header = div()
+            .id(ElementId::from(SharedString::from(id)))
+            .flex()
+            .items_center()
+            .gap(s(6.0))
+            .h(s(26.0))
+            .mx(s(6.0))
+            .pl(s(6.0))
+            .pr(s(8.0))
+            .mt(s(4.0))
+            .rounded(s(6.0))
+            .cursor_pointer()
+            .overflow_hidden()
+            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+            .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                if !this.collapsed_projects.remove(&key) {
+                    this.collapsed_projects.insert(key.clone());
+                }
+                cx.notify();
+            }))
+            .child(
+                svg()
+                    .path(chevron)
+                    .size(s(12.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .max_w(s(120.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(s(12.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(name),
+            );
+        // The path takes what is left and is cut first: the name and the
+        // count stay readable.
+        header = header.child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(s(11.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(place.unwrap_or_default()),
+        );
+        header.child(
+            div()
+                .flex_shrink_0()
+                .text_size(s(11.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(group.tabs.len().to_string()),
+        )
+    }
+
+    /// The terminals as a list grouped by machine or by project: what the
+    /// tab strip shows, with room for names and for many sessions. It
+    /// replaces the strip while it is shown.
     fn render_session_list(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let scale = Self::ui_scale(window);
         let s = |v: f32| px(v * scale);
@@ -2579,6 +3067,7 @@ impl TerminalView {
                     .flex()
                     .items_center()
                     .gap(s(2.0))
+                    .child(self.render_grouping_button(scale, cx))
                     .child(self.render_actions_button(window, cx))
                     .child(
                         div()
@@ -2615,167 +3104,62 @@ impl TerminalView {
             .overflow_y_scroll()
             .py(s(4.0));
 
-        for group in layout::session_groups(&self.tabs) {
-            let (icon, name) = match (&group.connection_id, &group.host) {
-                (None, _) => (
-                    "icons/lucide/terminal.svg",
-                    t!("terminal.sessions.this_machine").to_string(),
-                ),
-                (Some(_), Some(host)) => ("icons/lucide/server.svg", host.clone()),
-                (Some(_), None) => (
-                    "icons/lucide/server.svg",
-                    t!("terminal.sessions.remote").to_string(),
-                ),
-            };
-            rows = rows.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(s(6.0))
-                    .h(s(26.0))
-                    .px(s(12.0))
-                    .mt(s(4.0))
-                    .overflow_hidden()
-                    .child(
-                        svg()
-                            .path(icon)
-                            .size(s(12.0))
-                            .flex_shrink_0()
-                            .text_color(ShellDeckColors::text_muted()),
-                    )
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_size(s(11.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(name),
-                    ),
-            );
-
-            for index in group.tabs {
-                let Some(tab) = self.tabs.get(index) else {
-                    continue;
-                };
-                let tab_id = tab.id;
-                let (dot_color, dot_size) = Self::tab_dot(tab, self.tab_pending(tab_id));
-                let split = if tab.is_active {
-                    self.layout.is_split()
-                } else {
-                    self.stored_layouts
-                        .get(&tab_id)
-                        .is_some_and(|layout| layout.is_split())
-                };
-                let mut row = div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "session-row-{tab_id}"
-                    ))))
-                    .flex()
-                    .items_center()
-                    .gap(s(8.0))
-                    .h(s(28.0))
-                    .mx(s(6.0))
-                    .pl(s(10.0))
-                    .pr(s(4.0))
-                    .rounded(s(6.0))
-                    .cursor_pointer()
-                    .overflow_hidden()
-                    .on_click(cx.listener(move |this, _event: &ClickEvent, window, cx| {
-                        this.select_tab(tab_id);
-                        this.needs_focus = true;
-                        this.focus_handle.focus(window);
-                        cx.emit(TerminalEvent::TabSelected(tab_id));
-                        cx.notify();
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                            this.context_menu = None;
-                            this.tab_context_menu = Some(TabMenuState {
-                                position: event.position,
-                                tab_id,
-                            });
-                            cx.notify();
-                        }),
-                    );
-                row = if tab.is_active {
-                    row.bg(ShellDeckColors::primary().opacity(0.14))
-                        .text_color(ShellDeckColors::text_primary())
-                } else {
-                    row.text_color(ShellDeckColors::text_muted())
-                        .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-                };
-                // The dot keeps one slot whatever its size, so titles align.
-                row = row.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .flex_shrink_0()
-                        .w(s(8.0))
-                        .child(
-                            div()
-                                .w(s(dot_size))
-                                .h(s(dot_size))
-                                .rounded_full()
-                                .bg(dot_color),
+        match self.session_grouping {
+            SessionGrouping::Machine => {
+                for group in layout::session_groups(&self.tabs) {
+                    let (icon, name) = match (&group.connection_id, &group.host) {
+                        (None, _) => (
+                            "icons/lucide/terminal.svg",
+                            t!("terminal.sessions.this_machine").to_string(),
                         ),
-                );
-                row = row.child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_size(s(12.0))
-                        .child(tab.display_title().to_string()),
-                );
-                if split {
-                    row = row.child(
-                        svg()
-                            .path("icons/lucide/columns-2.svg")
-                            .size(s(12.0))
-                            .flex_shrink_0()
-                            .text_color(ShellDeckColors::text_muted()),
+                        (Some(_), Some(host)) => ("icons/lucide/server.svg", host.clone()),
+                        (Some(_), None) => (
+                            "icons/lucide/server.svg",
+                            t!("terminal.sessions.remote").to_string(),
+                        ),
+                    };
+                    rows = rows.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(s(6.0))
+                            .h(s(26.0))
+                            .px(s(12.0))
+                            .mt(s(4.0))
+                            .overflow_hidden()
+                            .child(
+                                svg()
+                                    .path(icon)
+                                    .size(s(12.0))
+                                    .flex_shrink_0()
+                                    .text_color(ShellDeckColors::text_muted()),
+                            )
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(s(11.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(name),
+                            ),
                     );
+                    for index in group.tabs {
+                        rows = rows.children(self.render_session_row(index, scale, cx));
+                    }
                 }
-                row = row.child(
-                    div()
-                        .id(ElementId::from(SharedString::from(format!(
-                            "session-close-{tab_id}"
-                        ))))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .flex_shrink_0()
-                        .w(s(20.0))
-                        .h(s(20.0))
-                        .rounded(s(4.0))
-                        .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-                        .child(
-                            svg()
-                                .path("icons/lucide/x.svg")
-                                .size(s(11.0))
-                                .text_color(ShellDeckColors::text_muted()),
-                        )
-                        .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                            cx.stop_propagation();
-                            this.close_tab(tab_id);
-                            cx.emit(TerminalEvent::TabClosed(tab_id));
-                            cx.notify();
-                        })),
-                );
-                if let Some(status) = &tab.status {
-                    let label: SharedString = layout::status_tooltip(status).into();
-                    row = row.tooltip(move |_, cx| {
-                        cx.new(|_| TerminalToolbarTooltip {
-                            label: label.clone(),
-                        })
-                        .into()
-                    });
+            }
+            SessionGrouping::Project => {
+                for group in projects::project_groups(&self.tab_places()) {
+                    let collapsed = self.collapsed_projects.contains(&group.key);
+                    rows = rows.child(self.render_project_header(&group, collapsed, scale, cx));
+                    if collapsed {
+                        continue;
+                    }
+                    for index in group.tabs {
+                        rows = rows.children(self.render_session_row(index, scale, cx));
+                    }
                 }
-                rows = rows.child(row);
             }
         }
 
@@ -6951,6 +7335,108 @@ mod tests {
         });
     }
 
+    // SDTEST-3149 (SDUC-584): the view finds the project of each tab off
+    // the render path, never looks on this disk for the folder of a
+    // connection tab, and next/previous project selects the tab used last
+    // in the project arrived at.
+    #[test]
+    fn sdtest_3149_tabs_get_a_project_and_the_view_moves_between_projects() {
+        use super::projects::{project_groups, ProjectKey};
+        use shelldeck_terminal::session::TerminalSession;
+
+        let disk = tempfile::tempdir().unwrap();
+        let base = disk.path().canonicalize().unwrap();
+        let repo = base.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(base.join("plain")).unwrap();
+        let text = |path: std::path::PathBuf| path.to_str().unwrap().to_string();
+        let (repo_text, src, plain) = (
+            text(repo.clone()),
+            text(repo.join("src")),
+            text(base.join("plain")),
+        );
+
+        fn tab_in(folder: &str) -> TerminalSession {
+            let (session, _output, _input) =
+                TerminalSession::spawn_ssh("Terminal".into(), 24, 80).unwrap();
+            session.grid.lock().working_directory = Some(folder.to_string());
+            session
+        }
+
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        let connection = uuid::Uuid::from_u128(7);
+        let ids = terminal.update(&mut app, |terminal, cx| {
+            // Not the home of whoever runs the tests.
+            terminal.home_dir = None;
+            terminal.add_session(tab_in(&src));
+            terminal.add_session(tab_in(&repo_text));
+            terminal.add_session(tab_in(&plain));
+            // A server that happens to have the same path.
+            terminal.add_session_with_connection(tab_in(&src), Some(connection));
+            assert!(terminal.follow_tab_folders(cx));
+            assert!(!terminal.follow_tab_folders(cx), "nothing moved since");
+            // Nothing is read from the disk on this thread: until the
+            // lookups end, the local tabs have no project.
+            assert!(terminal.tab_places()[..3]
+                .iter()
+                .all(|place| place.root.is_none()));
+            terminal.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>()
+        });
+        app.run_until_parked();
+
+        terminal.update(&mut app, |terminal, _| {
+            let groups = project_groups(&terminal.tab_places());
+            let summary: Vec<(Option<&str>, bool, &[usize])> = groups
+                .iter()
+                .map(|group| match &group.key {
+                    ProjectKey::Folder {
+                        connection_id,
+                        root,
+                    } => (
+                        Some(root.as_str()),
+                        connection_id.is_some(),
+                        group.tabs.as_slice(),
+                    ),
+                    ProjectKey::None => (None, false, group.tabs.as_slice()),
+                })
+                .collect();
+            assert_eq!(
+                summary,
+                vec![
+                    (Some(repo_text.as_str()), false, &[0, 1][..]),
+                    (Some(plain.as_str()), false, &[2][..]),
+                    // The repository above it was not looked for here.
+                    (Some(src.as_str()), true, &[3][..]),
+                ]
+            );
+
+            // Use the second tab of the repository, then the plain folder.
+            terminal.select_tab(ids[1]);
+            terminal.select_tab(ids[2]);
+            assert_eq!(terminal.select_adjacent_project(true), Some(ids[3]));
+            // Round the end, onto the tab of the repository used last.
+            terminal.collapsed_projects.insert(groups[0].key.clone());
+            assert_eq!(terminal.select_adjacent_project(true), Some(ids[1]));
+            assert!(terminal.tabs[1].is_active);
+            assert!(
+                terminal.collapsed_projects.is_empty(),
+                "the project arrived at is unfolded"
+            );
+            assert_eq!(terminal.select_adjacent_project(false), Some(ids[3]));
+
+            // A closed tab is no longer the one a project comes back to.
+            terminal.close_tab(ids[1]);
+            assert_eq!(terminal.select_adjacent_project(true), Some(ids[0]));
+            // One project left: nowhere to go.
+            terminal.close_tab(ids[2]);
+            terminal.close_tab(ids[3]);
+            assert_eq!(terminal.select_adjacent_project(true), None);
+            terminal.close_all_sessions();
+        });
+    }
+
     // SDTEST-3022 (SDUC-574): an SSH tab whose host turns out to run the
     // session daemon is handed over to a daemon pane in place: same tab,
     // same position, the old session dropped and never terminated. Such a
@@ -7042,6 +7528,99 @@ mod tests {
             // local daemon: their panes live on the host.
             assert_eq!(terminal.daemon_tab_layouts(), vec![None, None]);
             assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 0);
+        });
+    }
+
+    // SDTEST-3134 (SDUC-583): a pane opened by `shelldeck-sessiond show`
+    // is a new tab behind the active one. The active tab, its split, its
+    // zoom, the focused pane and the keyboard stay where they were; the
+    // tab takes the name the pane was started with. A pane a tab already
+    // shows, as a tab or inside a split, is left alone.
+    #[test]
+    fn sdtest_3134_a_shown_pane_is_a_new_tab_behind_the_active_one() {
+        use super::daemon::PaneAction;
+        use super::{PaneId, SplitDirection};
+        use shelldeck_terminal::attached::AttachedPhase;
+        use shelldeck_terminal::session::TerminalSession;
+        use uuid::Uuid;
+
+        fn attached(pane: u128) -> TerminalSession {
+            let (session, feed, _input) =
+                TerminalSession::spawn_attached("Terminal".into(), 24, 80, 100, 1).unwrap();
+            feed.status().set_pane(Uuid::from_u128(pane));
+            feed.status().set_phase(AttachedPhase::Live);
+            session
+        }
+
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            // With persistent sessions off nothing is asked of the daemon.
+            assert_eq!(
+                terminal.act_on_daemon_pane(Uuid::from_u128(9), &PaneAction::Show("x".into()), cx),
+                Err("persistent sessions are off".into())
+            );
+            terminal.set_persistent_sessions(true);
+
+            // No tab yet: the pane is the first tab, and the active one.
+            terminal.add_background_session(attached(1), false);
+            assert_eq!(terminal.tabs.len(), 1);
+            assert_eq!(terminal.pane.active_index, 0);
+            assert!(terminal.tabs[0].is_active && !terminal.tabs[0].named);
+
+            // The active tab: two panes, the second focused, shown alone.
+            let split = attached(2);
+            let split_id = split.id;
+            terminal.install_split_pane(split, SplitDirection::Horizontal);
+            let focused = terminal.layout.focused;
+            assert!(matches!(focused, PaneId::Extra(_)));
+            terminal.layout.zoomed = true;
+            terminal.needs_focus = false;
+            let active = terminal.tabs[0].id;
+
+            let mut shown = attached(3);
+            shown.title = "worker".into();
+            let shown_id = shown.id;
+            terminal.add_background_session(shown, true);
+
+            assert_eq!(terminal.tabs.len(), 2);
+            assert_eq!(terminal.tabs[1].id, shown_id);
+            assert_eq!(terminal.tabs[1].title, "worker");
+            assert!(terminal.tabs[1].named && !terminal.tabs[1].is_active);
+            assert_eq!(terminal.pane.active_index, 0, "the active tab did not move");
+            assert!(terminal.tabs[0].is_active);
+            assert_eq!(terminal.tabs[0].id, active);
+            assert_eq!(terminal.layout.focused, focused, "nor the focused pane");
+            assert!(terminal.layout.zoomed && terminal.layout.is_split());
+            assert!(terminal.layout.extra.values().any(|s| s.id == split_id));
+            assert!(!terminal.needs_focus, "the keyboard is not taken");
+            assert_eq!(
+                terminal.pane.sessions[1].daemon_pane(),
+                Some(Uuid::from_u128(3))
+            );
+            // The new tab is a tab like the others.
+            terminal.select_tab(shown_id);
+            assert_eq!(terminal.pane.active_index, 1);
+            assert!(!terminal.layout.is_split());
+            terminal.select_tab(active);
+            assert!(terminal.layout.is_split() && terminal.layout.zoomed);
+
+            // Already shown, as a tab, as a background tab or in a split:
+            // done, and nothing is opened a second time.
+            for pane in [1, 2, 3] {
+                assert_eq!(
+                    terminal.act_on_daemon_pane(
+                        Uuid::from_u128(pane),
+                        &PaneAction::Show("again".into()),
+                        cx
+                    ),
+                    Ok(()),
+                    "pane {pane}"
+                );
+            }
+            assert_eq!(terminal.tabs.len(), 2);
+            assert_eq!(terminal.tabs[1].title, "worker");
+            assert_eq!(terminal.pane.active_index, 0);
         });
     }
 

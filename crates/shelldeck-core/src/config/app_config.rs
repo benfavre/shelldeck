@@ -174,6 +174,23 @@ pub struct TerminalConfig {
     /// strip. Toggled with the sidebar shortcut in the Terminal view.
     #[serde(default)]
     pub session_list: bool,
+    /// What the session list groups the terminals by. Switched from the
+    /// header of the list.
+    #[serde(default)]
+    pub session_grouping: SessionGrouping,
+}
+
+/// What the terminal session list groups its tabs by.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionGrouping {
+    /// By project: the repository, or the folder, each tab works in.
+    Project,
+    /// By machine. Also what a value written by a later version reads as,
+    /// so one unknown word never makes the whole file unreadable.
+    #[default]
+    #[serde(other)]
+    Machine,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -562,6 +579,7 @@ impl Default for TerminalConfig {
             cursor_blink: true,
             theme: "Dark".to_string(),
             session_list: false,
+            session_grouping: SessionGrouping::Machine,
         }
     }
 }
@@ -951,6 +969,28 @@ mod tests {
         let saved = toml::to_string_pretty(&config).expect("serialize");
         let reloaded: AppConfig = toml::from_str(&saved).expect("parse saved config");
         assert_eq!(reloaded.keybindings, config.keybindings, "{saved}");
+    }
+
+    // SDTEST-3150 / SDUC-584. The grouping of the session list is kept in
+    // the configuration file: an older file groups by machine, the choice
+    // survives a save, and a word this version does not know does not
+    // make the file unreadable.
+    #[test]
+    fn sdtest_3150_the_session_grouping_is_optional_and_survives_a_save() {
+        let older: AppConfig = toml::from_str("theme = \"Dark\"\n\n[terminal]\n\n[general]\n")
+            .expect("parse config without session_grouping");
+        assert_eq!(older.terminal.session_grouping, SessionGrouping::Machine);
+
+        let mut config = older;
+        config.terminal.session_grouping = SessionGrouping::Project;
+        let saved = toml::to_string_pretty(&config).expect("serialize");
+        assert!(saved.contains("session_grouping = \"project\""), "{saved}");
+        let reloaded: AppConfig = toml::from_str(&saved).expect("parse saved config");
+        assert_eq!(reloaded.terminal.session_grouping, SessionGrouping::Project);
+
+        let later = saved.replace("\"project\"", "\"workspace\"");
+        let read: AppConfig = toml::from_str(&later).expect("parse an unknown grouping");
+        assert_eq!(read.terminal.session_grouping, SessionGrouping::Machine);
     }
 
     #[test]

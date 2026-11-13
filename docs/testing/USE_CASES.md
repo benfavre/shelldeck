@@ -3367,6 +3367,9 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-13**: Added SDUC-583: `events` pushed by the daemon (`Subscribe`, `PaneEvent`, a second feature bit; an older daemon is still polled), `show` opens a pane as a tab behind the active one, `skill setup --with-hook` and `skill context` (Claude Code start hook). SDTEST-3124..3134.
+- **2026-11-13**: Added SDUC-584: projects in the terminal session list (the repository or the folder each tab works in), grouping by machine or by project remembered in the configuration, next and previous project from the palette or keys the user gives them. SDUC-577 amended (26 actions, two without built-in keys). A screen that loses rows keeps what was printed at its top (the split pane of SDUC-581 that looked empty), `EMULATOR_REV` 3. SDTEST-3140..3153.
+- **2026-11-13**: Added SDUC-585: machines of the Tailscale network offered as SSH connections in the new connection form, read from the local `tailscale status --json`. SDTEST-3156 to 3170.
 - **2026-11-13**: Added SDUC-582: `focus`, `rename`, `zoom`, `unzoom` from the command line; `send` and `send-key` refuse a pane that waits for a permission. SDTEST-3122, 3123.
 - **2026-11-13**: Added SDUC-581: pane commands for agents (`split`, `send-key`, `status`, `events`, `skill setup`, `read --format html`, `--json`), a pane knows its own id, the daemon keeps the reported status (`ListStatus`). SDUC-578 amended. SDTEST-3113..3121.
 - **2026-11-13**: Added SDUC-580: terminal panes drawn as cards, a name and a folder in pane headers and tabs, tabs as pills, the space between cards as the resize handle. SDUC-579 amended (the look of a header moved to SDUC-580). The context menu opens at the pointer (it was about 36 px lower); the scrollbar is grabbed on the active pane's own edge. The toolbar row is removed: its actions open from a "⋯" button, Claude and Codex are beside "+". SDTEST-3111, SDTEST-3112; SDTEST-3109 follows the card padding, SDTEST-3110 the rows above the panes.
@@ -5300,9 +5303,10 @@ The user can change or remove an application shortcut by adding a
 value removes the shortcut). The table is read at startup. Reference:
 [`keybindings.md`](../keybindings.md).
 
-- 24 actions can be changed (palette, views, sidebar, tabs, splits, maximize
+- 26 actions can be changed (palette, views, sidebar, tabs, projects, splits, maximize
   a pane, copy and paste, search, zoom, quit...). An action that is not listed keeps its
-  built-in keys; a removed one stays reachable from menus and the palette.
+  built-in keys; a removed one stays reachable from menus and the palette. Next
+  and previous project (SDUC-584) have no built-in keys: the table gives them some.
 - Menus, the command palette, tooltips, the terminal toolbar, the status bar
   and the shortcut lists show the keys in effect. A removed shortcut shows no
   keys, and its row leaves the shortcut lists.
@@ -5513,7 +5517,8 @@ Not done: a scripting language (application actions came with SDUC-582);
 for a pane on an SSH server; a start hook for agents. Not checked on
 screen: `split` aimed at a pane of a background tab; the skill loaded by
 each of the four agents. Seen and left: the first lines a split pane
-printed before the application sized it can be scrolled out of view.
+printed before the application sized it can be scrolled out of view
+(fixed with SDUC-584).
 
 ### SDUC-582: Application actions from the command line, and permission prompts left alone
 
@@ -5548,3 +5553,213 @@ to the second tab
 Not automated: what the view does with a request (`act_on_daemon_pane`)
 needs a daemon and a window; only the walkthrough covers it. Not done:
 closing tabs or moving panes from the command line, a scripting language.
+
+### SDUC-583: Pushed pane events, `show`, and a start hook for Claude Code
+
+Three things SDUC-581 and SDUC-582 listed as not done. Reference:
+[`pane-cli.md`](../pane-cli.md), and "Pane events" in
+[`session-daemon.md`](../design/session-daemon.md).
+
+- **`events` is pushed.** The daemon sends each change of a pane to the
+  connections that subscribed: started, exited, removed, title, folder,
+  size, viewers, status reported or taken back. A status that lasted an
+  instant, even one set and taken back by a single write of the program,
+  is two lines. The JSON lines are the ones `events` printed before, from
+  the same code.
+- **An older daemon keeps working.** The subscription is announced by a
+  feature bit; `events` never sends it to a daemon without the bit and
+  looks at that daemon four times a second, as before.
+- **A subscriber never slows a pane.** Queuing an event does not wait. A
+  subscriber that leaves more than 1 MiB of events unread is closed; its
+  panes and the other subscribers go on.
+- **`show [PANE]`** asks the running application to open a pane started
+  with `run` as a new tab, named after the pane's `--name`. The tab is
+  added behind the active one: the active tab, its split and zoom, the
+  focused pane and the keyboard do not move. A pane already shown answers
+  ok and nothing is opened twice. Exit status 1 with the reason when no
+  application answers, persistent sessions are off, or the pane's program
+  has ended.
+- **`skill setup --with-hook`** registers, for Claude Code only, a
+  `SessionStart` hook in `~/.claude/settings.json`. The entry is merged:
+  every existing key and hook stays in its order, a second run adds
+  nothing, and a file that is not JSON or whose `hooks` has another shape
+  is left untouched with the reason on stderr. Off unless asked for.
+- **`skill context`**, which the hook runs, prints nothing outside a pane.
+  Inside one: the pane's id, that the `inklura-panes` skill applies, and
+  the other panes with their id, name, whether they run and the status
+  word they reported. No title and no status text: those are written by
+  programs in other panes and would go straight into an agent's context.
+- The hook command does nothing and succeeds outside a pane, whether or
+  not the binary is on the `PATH`.
+
+Verified by SDTEST-3124 (frame layout), SDTEST-3125 (a pushed change prints
+the line a polled one printed), SDTEST-3126 (a subscriber that does not
+read is closed, not waited for), SDTEST-3127 (a real daemon and PTY: every
+kind of change, in order, a status set and taken back in one write),
+SDTEST-3128 (the real binary: `events` pushed, polled on request, and a
+daemon without the bit polled and never sent the request), SDTEST-3129 and
+SDTEST-3130 (`show` as a request and from the binary), SDTEST-3131 (the
+context text), SDTEST-3132 and SDTEST-3133 (the merge, and the real binary
+on a temporary home) and SDTEST-3134 (the tab behind the active one, in the
+view). The hook format was taken from the Claude Code hooks reference,
+<https://code.claude.com/docs/en/hooks>, read on 2026-11-13.
+
+Not checked on screen: `show` in the running application (the new tab in
+the tab strip and the session list, the active tab and the keyboard left
+alone, the tab coming back at the next start); the hook in a real Claude
+Code session. Not automated: the application taking the `show` request
+from the run directory and attaching to the daemon (`show_daemon_pane`
+needs a daemon and a window; SDTEST-3134 covers what it does with the
+session). Not done: `show` while the application has no terminal open (it
+reads requests from the loop that repaints terminals, so nobody answers);
+`show` and `split` for a pane on an SSH server; a hook for Codex, OpenCode
+or Pi; removing the hook with a command; settings files with comments are
+refused, not edited. Known limit: two status reports in one chunk are told
+apart only when written with `ESC ]`, and a client that subscribes learns
+what already exists from the lists, so a status that came and went before
+its first line is not reported.
+
+### SDUC-584: Projects above terminal tabs
+
+The session list (SDUC-579) can show the terminals by project as well as by
+machine. Reference for the idea: a terminal that groups work as project,
+tab, pane.
+
+- **The project of a tab** is the git repository that holds the folder the
+  tab works in, else that folder. The folder is what the terminal reported
+  (OSC 7, its `%XX` escapes decoded), else the path in a shell title
+  (`user@host: ~/folder`; a title that does not start with `user@host` is a
+  program's and is not read), else the folder the terminal was started in. The repository is the nearest folder
+  going up that holds a `.git` entry (a directory in a clone, a file in a
+  worktree); git is never run. The home directory, the root and a tab whose
+  folder is not known have no project.
+- **A tab on a server** is in the project of its folder as written: a path
+  of another machine is never looked for on this disk. What reads as a home
+  directory there (`~`, `/root`, `/home/name`, `/Users/name`) is no project.
+  The same path on two machines is two projects.
+- **Looking for a repository** reads the disk, so it is done on a background
+  thread when a tab enters a folder, and again each time a tab comes back to
+  it. Rendering reads the answers already found.
+- **The header of the list** has a button that switches between the
+  grouping by machine and by project. The choice is kept in
+  `[terminal] session_grouping` of the configuration file (`machine` or
+  `project`), beside `session_list`.
+- **By project**, each project is a header: the folder name in bold, the
+  path that holds it in a quieter colour with the home directory as `~`
+  (after the machine's name for a project on a server), and the number of
+  its terminals. A click folds or unfolds its terminals. Projects come in
+  the order their first tab was opened; the terminals without a project are
+  last.
+- **Next project** and **Previous project** select, in the next or the
+  previous project of that order, the terminal that was used last there.
+  They are in the command palette and are the actions `next_project` and
+  `previous_project` of `[keybindings]` (SDUC-577). They have no built-in
+  keys: the chords still free are ones a program in a terminal may want.
+  They work whatever the list groups by, and whether it is shown or not.
+- **A split pane keeps its first lines** (the rough edge noted in
+  SDUC-581). `shelldeck-sessiond split` starts its pane at about the size it
+  will have (half of the pane beside it); the application then shows it a
+  few rows smaller (the pane header, a ratio other than a half). A screen
+  that lost rows moved them from its top to the history whatever they held,
+  so the pane lost as many of its first lines, all of them with a small
+  ratio. It now gives up the blank rows under the cursor first. The change is in the terminal grid, for every
+  terminal; `EMULATOR_REV` is 3, so an application and a daemon of
+  different revisions refresh from the daemon's screen at each resize, as
+  designed.
+
+Verified by SDTEST-3140 to SDTEST-3148 (the rules, without a window; 3147 on
+a temporary directory), SDTEST-3149 (the view: lookups off the UI thread, no
+lookup for a connection tab, next and previous project), SDTEST-3150 (the
+configuration file), SDTEST-3151 (actions without built-in keys),
+SDTEST-3152 (the screen that loses rows) and SDTEST-3153 (the palette
+rows).
+
+Not checked on screen, the application was not started for this change:
+the look of the project headers and of the grouping button in the built-in
+themes and at several font sizes, long names and paths in the 232 px list,
+the tooltip of the button, folding, the two palette rows, the choice coming
+back after a restart, and a real `shelldeck-sessiond split` keeping its
+first lines.
+
+Not done: a default shortcut; the folded state of a project is not kept
+across restarts; a project cannot be renamed, pinned or reordered; no
+"new terminal in this project" action; on Windows a folder that is not
+written with `/` has no project. Limits: a remote tab has no repository
+lookup, so two folders of one repository on a server are two projects; a
+local tab in which `ssh` was typed by hand is seen as a local tab, and the
+path its remote shell puts in the title is looked for on this disk (one
+`.git` lookup per folder going up, nothing is opened); a daemon started by
+an earlier version still moves the first lines of a shrunk pane to the
+history until that daemon has ended.
+
+### SDUC-585: Machines of the Tailscale network offered as SSH connections
+
+For a user whose machines are on a Tailscale network: no host name to
+type for each of them.
+
+- **Where**: the new connection form has a **From Tailscale** button above
+  its fields. The form that edits a connection does not.
+- **What is read**: the output of the local `tailscale status --json`, run
+  off the UI thread and stopped after three seconds. Nothing is sent
+  anywhere, no network code was added, and machine names are not written to
+  the log.
+- **The list**: the other machines, online first then by name, each with its
+  MagicDNS name, its system, **Offline** when it is, and **Tailscale SSH**
+  when it offers it. On a network with MagicDNS turned off
+  (`CurrentTailnet.MagicDNSEnabled`), the names do not resolve and the
+  machines are shown and dialled by address. This machine, the exit nodes
+  of the Mullvad add-on and the machines of people this one is shared with
+  (`ShareeNode`, hidden by `tailscale status` too) are left out. A machine
+  that a saved connection already reaches (by MagicDNS name, short name or
+  address) is marked **Already added** and cannot be added twice.
+- **Choosing a machine** saves a normal manual SSH connection: the machine's
+  name, its MagicDNS name (or its address, see above) as host, the user
+  name of the form (the user's own by default), port 22. It is edited and removed like any other.
+- **No list**: without the `tailscale` program, when its daemon does not
+  answer, when the machine is not signed in, when Tailscale is stopped, on a
+  timeout or on an answer that is not a status listing, the form shows one
+  sentence under the button. No dialog, and the form stays usable.
+
+Verified by SDTEST-3156 to 3161 (the listing, written as a fixture from the
+`Status` and `PeerStatus` structures of `ipn/ipnstate/ipnstate.go` in the
+Tailscale source; the order, the mark, the connection), SDTEST-3162 to 3166
+(looking for the program, and a stand-in script as the program: its
+arguments, failures, the timeout, a listing larger than a pipe buffer; Unix
+only), SDTEST-3167 to 3169 (the form: the list or the reason, a late answer
+dropped, the saved connection, the sentences in both languages), SDTEST-3170
+(MagicDNS turned off, sharee machines).
+Not automated: the painting of the button and of the list, the click, and
+the saved connection appearing in the sidebar. Not verified: the real
+`tailscale` program (none on the development machine), a machine started
+with `--accept-dns=false` (the listing does not say so, and the MagicDNS
+name is used although it does not resolve there), and connecting to a
+machine that only accepts Tailscale SSH (the badge only says the machine
+offers it; the connection is an ordinary SSH one). Not done: a refresh
+while the list is open (close and reopen), choosing the user name per
+machine before saving, a "Tailscale" mark on the saved connection.
+
+#### Native walkthrough of SDUC-583, SDUC-584 and SDUC-585 (2026-11-13)
+
+Private headless desktop, throwaway profile, persistent sessions on, debug
+build of the three branches merged, Linux, 100% scale, light theme.
+
+- `run --name worker -- sh` then `show worker`: a tab named "worker" opened
+  behind the active tab, which kept the keyboard; a second `show` added no
+  tab. `events` running meanwhile printed the pane started, its viewer, and
+  the resizes, as they happened.
+- `split --down -- sh -c 'echo first-line; echo second-line; exec sh'`: both
+  lines are at the top of the new pane (the rough edge of SDUC-581).
+- Session list: the header button switched to grouping by project; a tab
+  whose shell is in a folder with `.git` is listed under that folder's name
+  with its parent path, the others under "Sans projet"; a project folds.
+  Seen: a shell that reports neither its folder nor a `user@host: path`
+  title stays in the project of the folder it started in.
+- New connection form: "Depuis Tailscale" said Tailscale is not installed;
+  with a stand-in program printing the test fixture it listed four machines,
+  online first, with "Hors ligne" and "Tailscale SSH" marks; a click saved
+  `build-box.tail1234.ts.net` as a connection.
+
+Not checked on screen: next and previous project, the grouping after a
+restart, `show` with a zoomed split, the Claude Code start hook with a real
+agent, a real tailnet.
+([`screenshots/2026-11-13-pane-commands/`](./screenshots/2026-11-13-pane-commands/), 03 and 04.)

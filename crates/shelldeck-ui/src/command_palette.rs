@@ -14,10 +14,11 @@ use crate::overlay::window_backdrop;
 use crate::t;
 use crate::theme::ShellDeckColors;
 use crate::workspace::{
-    CaptureAndShare, CloseTab, CyclePresentation, NewRequest, NewScript, NewTerminal, NextTab,
-    OpenAgents, OpenAiAssistant, OpenBextCloud, OpenBoatConsole, OpenFileEditorView, OpenFleet,
-    OpenLogin, OpenMoniqueConsole, OpenQuickConnect, OpenRecent, OpenSettings, OpenSupportRequests,
-    OpenTemplateBrowser, PrevTab, ShareFiles, SwitchSite, ToggleMenuBar, ToggleSidebar,
+    CaptureAndShare, CloseTab, CyclePresentation, NewRequest, NewScript, NewTerminal, NextProject,
+    NextTab, OpenAgents, OpenAiAssistant, OpenBextCloud, OpenBoatConsole, OpenFileEditorView,
+    OpenFleet, OpenLogin, OpenMoniqueConsole, OpenQuickConnect, OpenRecent, OpenSettings,
+    OpenSupportRequests, OpenTemplateBrowser, PrevProject, PrevTab, ShareFiles, SwitchSite,
+    ToggleMenuBar, ToggleSidebar,
 };
 
 actions!(shelldeck, [ToggleCommandPalette]);
@@ -141,6 +142,8 @@ pub fn action_opens_main_window(action: &dyn Action) -> bool {
         || action.as_any().is::<CloseTab>()
         || action.as_any().is::<NextTab>()
         || action.as_any().is::<PrevTab>()
+        || action.as_any().is::<NextProject>()
+        || action.as_any().is::<PrevProject>()
         || action.as_any().is::<OpenTemplateBrowser>()
         || action.as_any().is::<OpenAgents>()
         || action.as_any().is::<NewScript>()

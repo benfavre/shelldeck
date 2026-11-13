@@ -732,6 +732,20 @@ impl Workspace {
         });
     }
 
+    /// Go to the next (`forward`) or the previous project: the terminal
+    /// last used there comes to the front.
+    pub fn select_adjacent_project(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
+        self.terminal.update(cx, |terminal, cx| {
+            if let Some(tab) = terminal.select_adjacent_project(forward) {
+                cx.emit(TerminalEvent::TabSelected(tab));
+            }
+            cx.notify();
+        });
+    }
+
     pub fn close_active_tab(&mut self, cx: &mut Context<Self>) {
         if !self.enter_dev_mode(cx) {
             return;

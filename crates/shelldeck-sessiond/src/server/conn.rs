@@ -26,7 +26,7 @@ const READ_TICK: Duration = Duration::from_millis(100);
 /// Outbound side of a connection, shared with the panes it is attached to.
 pub(super) struct ConnOut {
     pub(super) id: u64,
-    control: Mutex<(VecDeque<Vec<u8>>, usize)>,
+    control: Mutex<ControlQueue>,
     attachments: Mutex<Vec<Arc<Attachment>>>,
     wake: Mutex<bool>,
     wake_cv: Condvar,
@@ -36,11 +36,22 @@ pub(super) struct ConnOut {
     bulk_bytes: AtomicUsize,
 }
 
+/// Replies and pane events, in the order they were queued: a client
+/// relies on an event queued after a reply being newer than that reply.
+#[derive(Default)]
+struct ControlQueue {
+    /// Each frame with whether it is a pane event.
+    frames: VecDeque<(Vec<u8>, bool)>,
+    bytes: usize,
+    /// The part of `bytes` that is pane events, which has its own cap.
+    event_bytes: usize,
+}
+
 impl ConnOut {
-    fn new(id: u64) -> Self {
+    pub(super) fn new(id: u64) -> Self {
         Self {
             id,
-            control: Mutex::new((VecDeque::new(), 0)),
+            control: Mutex::new(ControlQueue::default()),
             attachments: Mutex::new(Vec::new()),
             wake: Mutex::new(false),
             wake_cv: Condvar::new(),
@@ -81,14 +92,69 @@ impl ConnOut {
             return;
         };
         let mut control = self.control.lock();
-        control.1 += bytes.len();
-        control.0.push_back(bytes);
-        let overflow = control.1 > MAX_CONTROL_BYTES;
+        control.bytes += bytes.len();
+        control.frames.push_back((bytes, false));
+        let overflow = control.bytes > MAX_CONTROL_BYTES;
         drop(control);
         if overflow {
             self.closed.store(true, Ordering::Relaxed);
         }
         self.notify();
+    }
+
+    /// Queue an encoded pane event, without ever waiting. `false`: the
+    /// connection is closed, or is closed now because its client left more
+    /// than `cap` bytes of events unread; nothing more is queued for it.
+    pub(super) fn send_event(&self, bytes: Vec<u8>, cap: usize) -> bool {
+        if self.is_closed() {
+            return false;
+        }
+        let mut control = self.control.lock();
+        if control.event_bytes + bytes.len() > cap {
+            // The reader and the writer of the connection see `closed` and
+            // end it. The client connects again and lists the panes.
+            control.frames.clear();
+            control.bytes = 0;
+            control.event_bytes = 0;
+            drop(control);
+            tracing::info!(conn = self.id, "event subscriber too slow, closed");
+            self.closed.store(true, Ordering::Relaxed);
+            self.notify();
+            return false;
+        }
+        control.bytes += bytes.len();
+        control.event_bytes += bytes.len();
+        control.frames.push_back((bytes, true));
+        drop(control);
+        self.notify();
+        true
+    }
+
+    fn pop_control(&self) -> Option<Vec<u8>> {
+        let mut control = self.control.lock();
+        let (frame, event) = control.frames.pop_front()?;
+        control.bytes -= frame.len();
+        if event {
+            control.event_bytes -= frame.len();
+        }
+        Some(frame)
+    }
+
+    /// What waits in the control queue, oldest first.
+    #[cfg(test)]
+    pub(super) fn queued_frames(&self) -> Vec<Vec<u8>> {
+        let control = self.control.lock();
+        control
+            .frames
+            .iter()
+            .map(|(frame, _)| frame.clone())
+            .collect()
+    }
+
+    /// Stand in for the writer thread: take everything that waits.
+    #[cfg(test)]
+    pub(super) fn drain(&self) {
+        while self.pop_control().is_some() {}
     }
 
     fn error(&self, request_id: u32, pane: Uuid, code: ErrorCode, retryable: bool) {
@@ -100,7 +166,7 @@ impl ConnOut {
         });
     }
 
-    fn is_closed(&self) -> bool {
+    pub(super) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed)
     }
 }
@@ -144,6 +210,7 @@ pub(super) fn run(shared: Arc<Shared>, stream: UnixStream, slot: ConnSlot) {
         tracing::error!(conn = out.id, "connection reader panicked");
     }
 
+    shared.events.unsubscribe(out.id);
     for (_, attachment) in attached.drain() {
         if let Some(pane) = attachment.pane.upgrade() {
             pane.detach(out.id);
@@ -258,7 +325,7 @@ fn handshake(shared: &Shared, out: &ConnOut, frame: ClientFrame) -> bool {
     }
     out.send(&DaemonFrame::HelloAck(HelloAck {
         proto: PROTOCOL_VERSION,
-        features: crate::protocol::FEATURE_PANE_STATUS,
+        features: shared.config.features,
         daemon_version: shared.config.daemon_version.clone(),
         instance: shared.instance,
         max_frame: MAX_FRAME_BYTES as u32,
@@ -294,6 +361,15 @@ fn handle(
         }
         ClientFrame::ListStatus => {
             out.send(&DaemonFrame::StatusList(shared.list_status()));
+        }
+        // No reply: the events are the answer. The client lists the panes
+        // after this, and applies to that list the events that come after
+        // it (and those that came before, which carry their new value).
+        ClientFrame::Subscribe => {
+            if shared.config.features & crate::protocol::FEATURE_PANE_EVENTS == 0 {
+                return false;
+            }
+            shared.events.subscribe(out);
         }
         ClientFrame::Spawn(spawn) => {
             let request_id = spawn.request_id;
@@ -459,7 +535,7 @@ fn spawn_pane(shared: &Arc<Shared>, spawn: Spawn) -> Result<(Arc<Pane>, String),
         spawn.rows,
         spawn.cols,
         scrollback,
-        shared.config.clone(),
+        shared,
     )
     .map_err(|_| ErrorCode::SpawnFailed)?;
     if !shared.insert_pane(pane.clone()) {
@@ -467,6 +543,7 @@ fn spawn_pane(shared: &Arc<Shared>, spawn: Spawn) -> Result<(Arc<Pane>, String),
         pane.kill_group();
         return Err(ErrorCode::LimitExceeded);
     }
+    pane.announce();
     tracing::info!(pane = %pane.id, pid, rows = spawn.rows, cols = spawn.cols, "pane spawned");
     Ok((pane, cwd_text))
 }
@@ -478,16 +555,7 @@ fn write_loop(shared: &Shared, out: &ConnOut, mut stream: UnixStream) {
     let mut next = 0usize;
     'outer: loop {
         let mut wrote = false;
-        loop {
-            let frame = {
-                let mut control = out.control.lock();
-                let frame = control.0.pop_front();
-                if let Some(frame) = &frame {
-                    control.1 -= frame.len();
-                }
-                frame
-            };
-            let Some(frame) = frame else { break };
+        while let Some(frame) = out.pop_control() {
             if stream.write_all(&frame).is_err() {
                 break 'outer;
             }

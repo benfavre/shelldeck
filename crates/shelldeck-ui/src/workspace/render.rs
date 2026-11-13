@@ -202,6 +202,8 @@ impl Render for Workspace {
         let h7 = handle.clone();
         let h8 = handle.clone();
         let h9 = handle.clone();
+        let next_project = handle.clone();
+        let prev_project = handle.clone();
         let h10 = handle.clone();
         let h11 = handle.clone();
         let h14 = handle.clone();
@@ -279,6 +281,16 @@ impl Render for Workspace {
             .on_action(move |_: &PrevTab, _window, cx| {
                 if let Some(ws) = h8.upgrade() {
                     ws.update(cx, |ws, cx| ws.prev_tab(cx));
+                }
+            })
+            .on_action(move |_: &NextProject, _window, cx| {
+                if let Some(ws) = next_project.upgrade() {
+                    ws.update(cx, |ws, cx| ws.select_adjacent_project(true, cx));
+                }
+            })
+            .on_action(move |_: &PrevProject, _window, cx| {
+                if let Some(ws) = prev_project.upgrade() {
+                    ws.update(cx, |ws, cx| ws.select_adjacent_project(false, cx));
                 }
             })
             .on_action(move |_: &CloseTab, _window, cx| {

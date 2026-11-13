@@ -418,13 +418,15 @@ pub(super) struct SplitAsk {
     pub(super) ratio: f32,
 }
 
-/// What `shelldeck-sessiond focus|rename|zoom|unzoom` asks for a pane.
+/// What `shelldeck-sessiond focus|rename|zoom|unzoom|show` asks for a pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PaneAction {
     Focus,
     Rename(String),
     Zoom,
     Unzoom,
+    /// Open the pane as a tab, under this name when it is not empty.
+    Show(String),
 }
 
 /// Something a command asked of the application.
@@ -458,6 +460,7 @@ pub(super) fn take_requests() -> Vec<(Uuid, PaneAsk)> {
                             Action::Rename => PaneAction::Rename(act.text),
                             Action::Zoom => PaneAction::Zoom,
                             Action::Unzoom => PaneAction::Unzoom,
+                            Action::Show => PaneAction::Show(act.text),
                         },
                     },
                 };

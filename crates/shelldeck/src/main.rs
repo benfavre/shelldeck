@@ -2495,6 +2495,22 @@ fn main() -> Result<()> {
                 });
                 cx.on_action({
                     let w = w.clone();
+                    move |_: &NextProject, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.select_adjacent_project(true, cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
+                    move |_: &PrevProject, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.select_adjacent_project(false, cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
                     move |_: &CloseTab, cx| {
                         if let Some(ws) = w.upgrade() {
                             ws.update(cx, |ws, cx| ws.close_active_tab(cx));
