@@ -4,9 +4,9 @@ use shelldeck_ui::shortcut_reference::BindableAction;
 // Re-export workspace actions for keybinding registration
 pub use shelldeck_ui::workspace::{
     CheckForUpdates, CloseTab, CloudSyncNow, ConnectBextCloud, CyclePresentation, NewRequest,
-    NewTerminal, NextTab, OpenAiAssistant, OpenBextCloud, OpenFileEditorView, OpenFleet,
-    OpenMoniqueConsole, OpenQuickConnect, OpenSettings, OpenSupportRequests, PrevTab, Quit,
-    SwitchSite, ToggleMenuBar, ToggleSidebar,
+    NewTerminal, NextProject, NextTab, OpenAiAssistant, OpenBextCloud, OpenFileEditorView,
+    OpenFleet, OpenMoniqueConsole, OpenQuickConnect, OpenSettings, OpenSupportRequests,
+    PrevProject, PrevTab, Quit, SwitchSite, ToggleMenuBar, ToggleSidebar,
 };
 
 // Re-export terminal view actions
@@ -51,6 +51,9 @@ pub fn register_keybindings(cx: &mut App) {
     bind(B::Settings, &|k| KeyBinding::new(k, OpenSettings, None));
     bind(B::NextTab, &|k| KeyBinding::new(k, NextTab, None));
     bind(B::PrevTab, &|k| KeyBinding::new(k, PrevTab, None));
+    // No built-in keys: bound only when the user gave some.
+    bind(B::NextProject, &|k| KeyBinding::new(k, NextProject, None));
+    bind(B::PrevProject, &|k| KeyBinding::new(k, PrevProject, None));
     bind(B::CloseTab, &|k| KeyBinding::new(k, CloseTab, None));
     bind(B::ClearTerminal, &|k| {
         KeyBinding::new(k, ClearTerminal, None)

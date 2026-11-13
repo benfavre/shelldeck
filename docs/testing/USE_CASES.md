@@ -3367,6 +3367,7 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-13**: Added SDUC-584: projects in the terminal session list (the repository or the folder each tab works in), grouping by machine or by project remembered in the configuration, next and previous project from the palette or keys the user gives them. SDUC-577 amended (26 actions, two without built-in keys). A screen that loses rows keeps what was printed at its top (the split pane of SDUC-581 that looked empty), `EMULATOR_REV` 3. SDTEST-3140..3153.
 - **2026-11-13**: Added SDUC-582: `focus`, `rename`, `zoom`, `unzoom` from the command line; `send` and `send-key` refuse a pane that waits for a permission. SDTEST-3122, 3123.
 - **2026-11-13**: Added SDUC-581: pane commands for agents (`split`, `send-key`, `status`, `events`, `skill setup`, `read --format html`, `--json`), a pane knows its own id, the daemon keeps the reported status (`ListStatus`). SDUC-578 amended. SDTEST-3113..3121.
 - **2026-11-13**: Added SDUC-580: terminal panes drawn as cards, a name and a folder in pane headers and tabs, tabs as pills, the space between cards as the resize handle. SDUC-579 amended (the look of a header moved to SDUC-580). The context menu opens at the pointer (it was about 36 px lower); the scrollbar is grabbed on the active pane's own edge. The toolbar row is removed: its actions open from a "⋯" button, Claude and Codex are beside "+". SDTEST-3111, SDTEST-3112; SDTEST-3109 follows the card padding, SDTEST-3110 the rows above the panes.
@@ -5300,9 +5301,10 @@ The user can change or remove an application shortcut by adding a
 value removes the shortcut). The table is read at startup. Reference:
 [`keybindings.md`](../keybindings.md).
 
-- 24 actions can be changed (palette, views, sidebar, tabs, splits, maximize
+- 26 actions can be changed (palette, views, sidebar, tabs, projects, splits, maximize
   a pane, copy and paste, search, zoom, quit...). An action that is not listed keeps its
-  built-in keys; a removed one stays reachable from menus and the palette.
+  built-in keys; a removed one stays reachable from menus and the palette. Next
+  and previous project (SDUC-584) have no built-in keys: the table gives them some.
 - Menus, the command palette, tooltips, the terminal toolbar, the status bar
   and the shortcut lists show the keys in effect. A removed shortcut shows no
   keys, and its row leaves the shortcut lists.
@@ -5513,7 +5515,8 @@ Not done: a scripting language (application actions came with SDUC-582);
 for a pane on an SSH server; a start hook for agents. Not checked on
 screen: `split` aimed at a pane of a background tab; the skill loaded by
 each of the four agents. Seen and left: the first lines a split pane
-printed before the application sized it can be scrolled out of view.
+printed before the application sized it can be scrolled out of view
+(fixed with SDUC-584).
 
 ### SDUC-582: Application actions from the command line, and permission prompts left alone
 
@@ -5548,3 +5551,75 @@ to the second tab
 Not automated: what the view does with a request (`act_on_daemon_pane`)
 needs a daemon and a window; only the walkthrough covers it. Not done:
 closing tabs or moving panes from the command line, a scripting language.
+
+### SDUC-584: Projects above terminal tabs
+
+The session list (SDUC-579) can show the terminals by project as well as by
+machine. Reference for the idea: a terminal that groups work as project,
+tab, pane.
+
+- **The project of a tab** is the git repository that holds the folder the
+  tab works in, else that folder. The folder is what the terminal reported
+  (OSC 7), else the path in a shell title (`user@host: ~/folder`), else the
+  folder the terminal was started in. The repository is the nearest folder
+  going up that holds a `.git` entry (a directory in a clone, a file in a
+  worktree); git is never run. The home directory, the root and a tab whose
+  folder is not known have no project.
+- **A tab on a server** is in the project of its folder as written: a path
+  of another machine is never looked for on this disk. What reads as a home
+  directory there (`~`, `/root`, `/home/name`, `/Users/name`) is no project.
+  The same path on two machines is two projects.
+- **Looking for a repository** reads the disk, so it is done on a background
+  thread when a tab enters a folder, and again each time a tab comes back to
+  it. Rendering reads the answers already found.
+- **The header of the list** has a button that switches between the
+  grouping by machine and by project. The choice is kept in
+  `[terminal] session_grouping` of the configuration file (`machine` or
+  `project`), beside `session_list`.
+- **By project**, each project is a header: the folder name in bold, the
+  path that holds it in a quieter colour with the home directory as `~`
+  (after the machine's name for a project on a server), and the number of
+  its terminals. A click folds or unfolds its terminals. Projects come in
+  the order their first tab was opened; the terminals without a project are
+  last.
+- **Next project** and **Previous project** select, in the next or the
+  previous project of that order, the terminal that was used last there.
+  They are in the command palette and are the actions `next_project` and
+  `previous_project` of `[keybindings]` (SDUC-577). They have no built-in
+  keys: the chords still free are ones a program in a terminal may want.
+  They work whatever the list groups by, and whether it is shown or not.
+- **A split pane keeps its first lines** (the rough edge noted in
+  SDUC-581). `shelldeck-sessiond split` starts its pane at about the size it
+  will have (half of the pane beside it); the application then shows it a
+  few rows smaller (the pane header, a ratio other than a half). A screen
+  that lost rows moved them from its top to the history whatever they held,
+  so the pane lost as many of its first lines, all of them with a small
+  ratio. It now gives up the blank rows under the cursor first. The change is in the terminal grid, for every
+  terminal; `EMULATOR_REV` is 3, so an application and a daemon of
+  different revisions refresh from the daemon's screen at each resize, as
+  designed.
+
+Verified by SDTEST-3140 to SDTEST-3148 (the rules, without a window; 3147 on
+a temporary directory), SDTEST-3149 (the view: lookups off the UI thread, no
+lookup for a connection tab, next and previous project), SDTEST-3150 (the
+configuration file), SDTEST-3151 (actions without built-in keys),
+SDTEST-3152 (the screen that loses rows) and SDTEST-3153 (the palette
+rows).
+
+Not checked on screen, the application was not started for this change:
+the look of the project headers and of the grouping button in the built-in
+themes and at several font sizes, long names and paths in the 232 px list,
+the tooltip of the button, folding, the two palette rows, the choice coming
+back after a restart, and a real `shelldeck-sessiond split` keeping its
+first lines.
+
+Not done: a default shortcut; the folded state of a project is not kept
+across restarts; a project cannot be renamed, pinned or reordered; no
+"new terminal in this project" action; on Windows a folder that is not
+written with `/` has no project. Limits: a remote tab has no repository
+lookup, so two folders of one repository on a server are two projects; a
+local tab in which `ssh` was typed by hand is seen as a local tab, and the
+path its remote shell puts in the title is looked for on this disk (one
+`.git` lookup per folder going up, nothing is opened); a daemon started by
+an earlier version still moves the first lines of a shrunk pane to the
+history until that daemon has ended.

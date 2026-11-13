@@ -258,6 +258,14 @@ impl Workspace {
             }
             // The view switcher shows which view needs the user.
             TerminalEvent::AttentionChanged => cx.notify(),
+            // Kept like the visibility of the list (`toggle_sidebar`).
+            TerminalEvent::SessionGroupingChanged(grouping) => {
+                self.app_config.terminal.session_grouping = *grouping;
+                if let Err(error) = self.app_config.save() {
+                    tracing::error!("Failed to save the session grouping: {error}");
+                }
+                self.sync_settings_config(cx);
+            }
             TerminalEvent::InputDropped { count } => {
                 self.show_toast(
                     t!("toast.terminal.input_dropped", count = count).to_string(),

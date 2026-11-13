@@ -332,6 +332,18 @@ pub struct Cell {
     pub wide: CellWidth,
 }
 
+/// A row nothing was written on: spaces in the default colours.
+fn row_is_blank(row: &[Cell]) -> bool {
+    let plain = CellAttributes::default();
+    row.iter().all(|cell| {
+        cell.c == ' '
+            && cell.combining.is_empty()
+            && cell.bg == TermColor::Default
+            && cell.wide == CellWidth::Normal
+            && cell.attrs == plain
+    })
+}
+
 impl Default for Cell {
     fn default() -> Self {
         Self {
@@ -1405,8 +1417,21 @@ impl TerminalGrid {
                 self.cells.push(vec![Cell::default(); new_cols]);
             }
         } else if new_rows < self.rows {
-            // Move excess top rows to scrollback.
-            let excess = self.rows - new_rows;
+            // Blank rows under the cursor go first: a pane that printed
+            // three lines and is then shown with fewer rows keeps them on
+            // screen. Taking the rows from the top whatever they held sent
+            // those lines to the history.
+            let mut trimmed = 0;
+            while self.cells.len() > new_rows
+                && self.cells.len() > self.cursor.row + 1
+                && self.cells.last().is_some_and(|row| row_is_blank(row))
+            {
+                self.cells.pop();
+                self.line_flags.truncate(self.cells.len());
+                trimmed += 1;
+            }
+            // Move the rows still in excess, from the top, to scrollback.
+            let excess = (self.rows - new_rows).saturating_sub(trimmed);
             let cursor_excess = if self.cursor.row >= new_rows {
                 self.cursor.row - new_rows + 1
             } else {
@@ -3070,6 +3095,44 @@ mod tests {
         g.resize(3, 12);
         assert_eq!(g.cells.len(), 3);
         g.erase_display(2);
+    }
+
+    // SDTEST-3152 (SDUC-584): a screen that loses rows keeps what was
+    // printed at its top when the rows under the cursor are blank. Found
+    // with `shelldeck-sessiond split`: the pane starts at about the size
+    // it will have, prints, and is then shown a few rows smaller (its
+    // header, the ratio); as many of its first lines went to the history.
+    #[test]
+    fn sdtest_3152_losing_rows_takes_the_blank_ones_under_the_cursor_first() {
+        let mut g = TerminalGrid::new(40, 20);
+        for (row, line) in ["ready", "listening", "$ "].iter().enumerate() {
+            g.cursor_to(row, 0);
+            write_str(&mut g, line);
+        }
+        g.resize(12, 20);
+        assert_eq!(g.cells.len(), 12);
+        assert_eq!(g.line_flags.len(), 12);
+        assert_eq!(row_text(&g, 0).trim_end(), "ready");
+        assert_eq!(row_text(&g, 2).trim_end(), "$");
+        assert_eq!((g.cursor.row, g.cursor.col), (2, 2));
+        assert_eq!(g.scrollback_len(), 0, "nothing was sent to the history");
+
+        // Fewer rows than what is written: the oldest lines go to the
+        // history and the cursor stays on its line.
+        g.resize(2, 20);
+        assert_eq!(g.scrollback_len(), 1);
+        assert_eq!(row_text(&g, 0).trim_end(), "listening");
+        assert_eq!(row_text(&g, 1).trim_end(), "$");
+        assert_eq!(g.cursor.row, 1);
+
+        // Text under the cursor is not blank: it is never dropped.
+        let mut g = TerminalGrid::new(6, 20);
+        g.cursor_to(5, 0);
+        write_str(&mut g, "status line");
+        g.cursor_to(0, 0);
+        g.resize(3, 20);
+        assert_eq!(row_text(&g, 2).trim_end(), "status line");
+        assert_eq!(g.scrollback_len(), 3);
     }
 
     // ---- index / reverse_index ----

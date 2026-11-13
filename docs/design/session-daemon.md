@@ -1792,6 +1792,13 @@ What the run changed:
 | `TerminalGrid::resize` left the screen with fewer rows than its row count after merging soft-wrapped lines on a widening. The next whole-screen erase or scroll indexed past the end and panicked. In the daemon that is a parser panic, which closes the pane (section 12): a tab opened from a narrow split and then `clear` lost its shell. The defect predates the daemon; an in-process terminal loses its reader thread the same way. | The screen is padded back to its row count. Because the grid state for the same input changed, `EMULATOR_REV` is 2. SDTEST-3038. |
 | The description of the setting did not fit the two lines a Settings row shows. | Shorter text, English and French. |
 
+Later (SDUC-584): a screen that lost rows moved them from its top to the
+history whatever they held, so a pane started by `shelldeck-sessiond split`
+at about its size and then shown a few rows smaller (its header, the ratio)
+lost as many of its first lines. The
+grid now gives up the blank rows under the cursor first. `EMULATOR_REV` is 3.
+SDTEST-3152.
+
 What the run confirmed about the design: the daemon and its shells keep
 their process ids across an app quit and across `kill -9` of the app; the
 layout comes back by pane id with ratios, active tab and focused pane; a

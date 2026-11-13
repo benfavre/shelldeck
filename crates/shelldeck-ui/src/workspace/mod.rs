@@ -387,6 +387,8 @@ actions!(
         OpenSettings,
         NextTab,
         PrevTab,
+        NextProject,
+        PrevProject,
         Quit,
         OpenTemplateBrowser,
         NewScript,
@@ -1087,8 +1089,10 @@ impl Workspace {
 
         let terminal = cx.new(TerminalView::new);
         let session_list = config.terminal.session_list;
+        let session_grouping = config.terminal.session_grouping;
         terminal.update(cx, |terminal, _| {
             terminal.set_session_list_visible(session_list);
+            terminal.set_session_grouping(session_grouping);
         });
         let workspace_catalog = shelldeck_core::config::workspace_catalog::ProjectCatalog::load()
             .map_err(|error| error.to_string());

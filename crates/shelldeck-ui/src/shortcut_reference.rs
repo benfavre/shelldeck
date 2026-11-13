@@ -57,10 +57,12 @@ pub enum BindableAction {
     MaximizePane,
     Copy,
     Paste,
+    NextProject,
+    PrevProject,
 }
 
 impl BindableAction {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 26] = [
         Self::QuickConnect,
         Self::AiAssistant,
         Self::NewTerminal,
@@ -85,6 +87,8 @@ impl BindableAction {
         Self::MaximizePane,
         Self::Copy,
         Self::Paste,
+        Self::NextProject,
+        Self::PrevProject,
     ];
 
     /// The key of this action in `[keybindings]`. Part of the configuration
@@ -115,6 +119,8 @@ impl BindableAction {
             Self::MaximizePane => "maximize_pane",
             Self::Copy => "copy",
             Self::Paste => "paste",
+            Self::NextProject => "next_project",
+            Self::PrevProject => "previous_project",
         }
     }
 
@@ -124,7 +130,9 @@ impl BindableAction {
 
     /// The built-in keys. Split, copy and paste differ by platform: with
     /// Ctrl they would collide with terminal control characters on Linux
-    /// and Windows.
+    /// and Windows. Empty: the action has no keys until the user gives it
+    /// some (next and previous project: every free chord left is one a
+    /// program in the terminal may want).
     fn default_keys_for(self, macos: bool) -> &'static str {
         match self {
             Self::QuickConnect => "secondary-k",
@@ -155,6 +163,7 @@ impl BindableAction {
             Self::Copy => OTHER_COPY_BINDING,
             Self::Paste if macos => MACOS_PASTE_BINDING,
             Self::Paste => OTHER_PASTE_BINDING,
+            Self::NextProject | Self::PrevProject => "",
         }
     }
 }
@@ -263,8 +272,8 @@ pub fn resolve_keybindings(
             });
             continue;
         }
-        let unchanged = !keys.is_empty()
-            && normalize_keys(keys, macos) == normalize_keys(action.default_keys_for(macos), macos);
+        let unchanged =
+            normalize_keys(keys, macos) == normalize_keys(action.default_keys_for(macos), macos);
         if !unchanged {
             overrides.insert(action, keys.to_string());
         }
@@ -277,6 +286,7 @@ pub fn resolve_keybindings(
             let keys = overrides
                 .get(&action)
                 .map_or(action.default_keys_for(macos), String::as_str);
+            // Unbound, by the user or from the start: shares nothing.
             if !keys.is_empty() {
                 by_keys
                     .entry(normalize_keys(keys, macos))
@@ -338,7 +348,7 @@ fn keys_for(action: BindableAction, macos: bool) -> Option<String> {
     match overrides.get(&action) {
         Some(keys) if keys.is_empty() => None,
         Some(keys) => Some(keys.clone()),
-        None => Some(action.default_keys_for(macos).to_string()),
+        None => Some(action.default_keys_for(macos).to_string()).filter(|keys| !keys.is_empty()),
     }
 }
 
@@ -663,6 +673,10 @@ mod tests {
             let mut seen = BTreeMap::new();
             for action in BindableAction::ALL {
                 let keys = normalize_keys(action.default_keys_for(macos), macos);
+                // An action without built-in keys shares none.
+                if keys.is_empty() {
+                    continue;
+                }
                 if let Some(other) = seen.insert(keys.clone(), action) {
                     panic!("{other:?} and {action:?} share {keys} (macos: {macos})");
                 }
@@ -760,6 +774,46 @@ mod tests {
         assert_eq!(overrides.len(), 2);
         assert_eq!(normalize_keys("secondary--", false), "ctrl--");
         assert_eq!(normalize_keys("Shift-Secondary-P", true), "cmd-shift-p");
+    }
+
+    // SDTEST-3151 / SDUC-584. Next and previous project have no built-in
+    // keys: nothing is registered for them until the table gives them
+    // some, and those keys obey the same rule as every other change.
+    #[test]
+    fn sdtest_3151_the_project_actions_have_no_keys_until_the_table_gives_some() {
+        let resolve =
+            |entries: &[(&str, &str)]| resolve_keybindings(&table(entries), false, |_| true);
+        for macos in [false, true] {
+            assert_eq!(super::keys_for(BindableAction::NextProject, macos), None);
+            assert_eq!(super::keys_for(BindableAction::PrevProject, macos), None);
+        }
+
+        let (overrides, problems) = resolve(&[
+            ("next_project", "ctrl-alt-]"),
+            ("previous_project", "ctrl-alt-["),
+        ]);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            overrides.get(&BindableAction::NextProject).unwrap(),
+            "ctrl-alt-]"
+        );
+        assert_eq!(overrides.len(), 2);
+
+        // Leaving them without keys is not a change, and not a conflict
+        // between the two.
+        let (overrides, problems) = resolve(&[("next_project", ""), ("previous_project", "")]);
+        assert!(overrides.is_empty() && problems.is_empty(), "{problems:?}");
+
+        // Keys in use stay with their action.
+        let (overrides, problems) = resolve(&[("next_project", "ctrl-tab")]);
+        assert!(overrides.is_empty());
+        assert_eq!(
+            problems,
+            vec![KeybindingProblem::Conflict {
+                keys: "ctrl-tab".into(),
+                actions: vec!["next_tab", "next_project"],
+            }]
+        );
     }
 
     // SDTEST-1720 — the two full Dev references are identical, onboarding is
