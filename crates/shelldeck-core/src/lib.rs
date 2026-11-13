@@ -16,6 +16,7 @@ pub mod config;
 pub mod error;
 pub mod git;
 pub mod models;
+pub mod tailscale;
 pub mod tmux;
 pub mod util;
 pub mod workspace_navigation;

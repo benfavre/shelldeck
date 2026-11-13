@@ -103,6 +103,8 @@ cargo run --example hello_world
 ### shelldeck-core
 Models (Connection, PortForward, Script, ExecutionRecord), SSH config parser, app config (TOML), connection store (JSON), keychain wrapper, config file watcher.
 
+Tailscale machines (SDUC-585): `tailscale.rs` reads the local `tailscale status --json` (three-second timeout, call it off the UI thread), and the new connection form (`connection_form.rs`, "From Tailscale") turns a machine into a normal manual connection through its `Save` event. No network code, and machine names never go to the log.
+
 ### shelldeck-ssh
 SSH client (russh), session management, port forwarding tunnels (local/remote/SOCKS), remote command execution with streaming output, connection pool. russh ≥ 0.63: a channel the other side opens (forwarded-tcpip on the client, every channel in test servers) exists only if the handler calls `reply.accept()` on its `ChannelOpenHandle`; dropping the handle refuses it. `check_server_key` receives a key or a host certificate; a certificate is checked through the key it certifies, against known_hosts. `sessiond.rs` is the remote transport of the session daemon: an exec channel running `shelldeck-sessiond proxy`, handed to the `shelldeck-sessiond` client library (depends on `shelldeck-sessiond`). `sessiond_install.rs` probes for the remote binary, uploads it (fixed scripts, SHA-256 verified, only under `$HOME/.shelldeck`, only with the per-host consent of `[general.session_daemon_hosts]`) and holds the fallback decision table. `sessiond_host.rs` (`RemoteHost`, Unix) owns the one SSH connection per host that carries its daemon panes and a `Supervisor` on top of it.
 

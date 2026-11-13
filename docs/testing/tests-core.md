@@ -819,3 +819,20 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-2951 | `agent_local_sessions::tests::sdtest_2951_local_history_paging_rewrite_and_native_reconnect` | SDUC-572, SDUC-563 | Green | Real JSONL covers canonical/event duplicate suppression, immutable older pages through appends, rewrite/directory mismatch refusal, exact local native resume, read-only context and loss of resume authority after serialization. |
 
 | SDTEST-2953 | `agent_local_sessions::large_history_tests::sdtest_2953_local_large_attachment_history_is_passive_and_chunked` | SDUC-572 | Green | Real >3 MiB JSONL attachment record, passive marker, UTF-8 chunk joining and ambiguous-source refusal. |
+
+## Tailscale machines (2026-11-13)
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3156 | `tailscale::tests::sdtest_3156_a_status_listing_gives_each_machine_its_name_addresses_and_state` | SDUC-585 | Green | Fixture `tests/fixtures/tailscale-status.json`, written from the `Status`/`PeerStatus` structures of the Tailscale source with invented names. Host name, MagicDNS name without the final dot, addresses, system, online, Tailscale SSH from `sshHostKeys`. |
+| SDTEST-3157 | `tailscale::tests::sdtest_3157_this_machine_exit_nodes_and_undialable_machines_are_left_out` | SDUC-585 | Green | This machine (also when repeated among the peers), a Mullvad exit node and a peer without name or address are not listed; a peer without MagicDNS name is dialled by address. |
+| SDTEST-3158 | `tailscale::tests::sdtest_3158_a_listing_without_machines_says_why` | SDUC-585 | Green | Each backend state gives its reason; text that is not a listing is unreadable; a network with no other machine is an empty list; unknown and missing fields are tolerated. |
+| SDTEST-3159 | `tailscale::tests::sdtest_3159_the_list_shows_online_machines_first_then_by_name` | SDUC-585 | Green | Same order whatever the order of the listing. |
+| SDTEST-3160 | `tailscale::tests::sdtest_3160_a_machine_that_already_has_a_connection_is_marked` | SDUC-585 | Green | Matched by MagicDNS name (case, final dot), short name and either address; not by a prefix, another domain or an empty host. |
+| SDTEST-3161 | `tailscale::tests::sdtest_3161_a_machine_becomes_a_normal_manual_connection` | SDUC-585 | Green | MagicDNS name as host, port 22, manual source, no key or jump host; the address without MagicDNS; the machine is then marked. |
+| SDTEST-3162 | `tailscale::tests::sdtest_3162_the_program_is_looked_for_in_the_given_directories_only` | SDUC-585 | Green | Temporary directories. A directory of that name is not the program; a program that is gone is "not installed". |
+| SDTEST-3163 | `tailscale::tests::with_a_program::sdtest_3163_the_local_program_is_asked_for_its_status_as_json` | SDUC-585 | Green | Unix only. A shell script in a temporary directory stands for the program and refuses any other arguments than `status --json`. |
+| SDTEST-3164 | `tailscale::tests::with_a_program::sdtest_3164_a_program_that_fails_or_answers_something_else_is_a_reason_not_an_error` | SDUC-585 | Green | Unix only. No daemon, no output, plain text, not signed in, stopped, bytes that are not text. |
+| SDTEST-3165 | `tailscale::tests::with_a_program::sdtest_3165_a_program_that_does_not_answer_is_stopped_after_the_timeout` | SDUC-585 | Green | Unix only. A program that hangs is killed; one that leaves a child holding its output does not hold the caller. Takes about a second. |
+| SDTEST-3166 | `tailscale::tests::with_a_program::sdtest_3166_a_listing_larger_than_a_pipe_buffer_is_read_whole` | SDUC-585 | Green | Unix only. 3000 machines, more than 256 KiB. |
+| SDTEST-3170 | `tailscale::tests::sdtest_3170_names_that_do_not_resolve_and_sharee_machines_are_not_offered` | SDUC-585 | Green | With `CurrentTailnet.MagicDNSEnabled` false the peers lose their name: dialled, saved and marked by address, and one without an address is dropped. A listing that does not say keeps the names. A `ShareeNode` peer is not listed. |

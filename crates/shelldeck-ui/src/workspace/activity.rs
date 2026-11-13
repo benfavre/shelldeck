@@ -136,18 +136,22 @@ impl Workspace {
         if !self.enter_dev_mode(cx) {
             return;
         }
+        let existing = self.connections.clone();
         let form = cx.new(|form_cx| {
             if let Some(ref c) = conn {
                 ConnectionForm::from_connection(c, form_cx)
             } else {
-                ConnectionForm::new(form_cx)
+                let mut form = ConnectionForm::new(form_cx);
+                form.set_existing_connections(existing);
+                form
             }
         });
 
         let sub = cx.subscribe(&form, |this, _form, event: &ConnectionFormEvent, cx| {
             match event {
                 ConnectionFormEvent::Save(conn) => {
-                    tracing::info!("Connection saved: {}", conn.display_name());
+                    // The id, not the name: a machine name is not for the log.
+                    tracing::info!("Connection saved: {}", conn.id);
                     // Add to connections list
                     if let Some(idx) = this.connections.iter().position(|c| c.id == conn.id) {
                         this.connections[idx] = conn.clone();
