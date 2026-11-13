@@ -379,7 +379,7 @@ impl Workspace {
                         if let Some(session_id) = visible_session {
                             view.select_session(session_id, cx);
                         }
-                        view.set_surface_visible(visible_session.is_some(), cx);
+                        view.set_surface_visible(visible_session.is_some() && !self.pro_open, cx);
                     });
                 }
             }

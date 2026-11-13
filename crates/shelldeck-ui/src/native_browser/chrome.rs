@@ -9,6 +9,9 @@ impl NativeBrowserView {
     }
 
     pub(super) fn switch_engine(&mut self, chrome: bool, cx: &mut Context<Self>) {
+        if self.dedicated_workspace {
+            return;
+        }
         if self.chrome_wrapper == chrome {
             return;
         }

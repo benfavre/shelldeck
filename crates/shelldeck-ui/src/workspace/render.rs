@@ -137,6 +137,8 @@ impl Render for Workspace {
                 main_area.child(self.render_welcome_screen(is_maximized, compact_height, _cx));
             // Fall through to render titlebar + status bar chrome around
             // the welcome — no sidebar, no mode-specific children.
+        } else if self.pro_open {
+            main_area = main_area.child(self.render_pro_workspace(_cx));
         } else {
             // The app mode selects the whole surface. User/Support are full-pane
             // manage surfaces (no sidebar); Dev is the classic terminal workspace.
@@ -548,6 +550,7 @@ impl Render for Workspace {
         // Custom titlebar with drag area + window controls
         let compact_titlebar = logical_width < 760.0;
         let inklura_bell = self.render_inklura_bell(_cx);
+        let pro_button = self.render_pro_button(compact_titlebar, _cx);
         let titlebar = Self::render_titlebar(
             is_maximized,
             compact_titlebar,
@@ -560,7 +563,7 @@ impl Render for Workspace {
             self.account_status,
             self.site_menu_open,
             self.app_config.cloud_sync.active_site_label.clone(),
-            self.site_directory.is_some(),
+            self.site_directory.is_some() && !self.pro_open,
             if self.can_switch_mode() {
                 Some((self.effective_mode(), self.allowed_modes()))
             } else {
@@ -569,6 +572,7 @@ impl Render for Workspace {
             self.app_config.general.menu_bar_visible,
             self.menu_bar.clone(),
             if !self.show_welcome()
+                && !self.pro_open
                 && self.effective_mode() == AppMode::Dev
                 && presentation.has_sidebar_toggle()
             {
@@ -576,7 +580,7 @@ impl Render for Workspace {
             } else {
                 None
             },
-            self.ai_available_for_current_surface(_cx),
+            !self.pro_open && self.ai_available_for_current_surface(_cx),
             self.can_access_mode(AppMode::Dev) || self.ai_available_for_current_surface(_cx),
             self.ai_dock_open,
             self.ai_tasks
@@ -587,6 +591,7 @@ impl Render for Workspace {
                 })
                 .count(),
             inklura_bell,
+            pro_button,
             &handle,
             _cx,
         );
