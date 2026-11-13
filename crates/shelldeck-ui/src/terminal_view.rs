@@ -809,9 +809,56 @@ impl TerminalView {
         })
     }
 
-    /// Do what `shelldeck-sessiond focus|rename|zoom|unzoom` asked for the
-    /// session daemon pane `pane`. Only `focus` changes the active tab.
-    /// `Err` says why nothing was done.
+    /// Open the session daemon pane `pane` as a new tab
+    /// (`shelldeck-sessiond show`), named `name` when that is not empty.
+    /// The active tab and the keyboard stay where they are: like a split,
+    /// the request comes from a program working in the background. A pane
+    /// a tab already shows is left as it is.
+    fn show_daemon_pane(&mut self, pane: Uuid, name: &str) -> Result<(), String> {
+        if !self.restores_daemon_panes() {
+            return Err("persistent sessions are off".into());
+        }
+        if self.find_daemon_pane(pane).is_some() {
+            return Ok(());
+        }
+        let (rows, cols) = self.grid_size();
+        let title = if name.is_empty() { "Terminal" } else { name };
+        let session = daemon::attach(pane, title, rows, cols, self.configured_scrollback)?;
+        self.add_background_session(session, !name.is_empty());
+        Ok(())
+    }
+
+    /// Add a tab for `session` behind the active one: nothing the user
+    /// looks at or types into changes. With no tab open it is the first
+    /// one, and so the active one. `named`: the title was chosen by the
+    /// user, the program's own no longer replaces it.
+    fn add_background_session(&mut self, session: TerminalSession, named: bool) {
+        let Some(active) = self.tabs.get(self.pane.active_index).map(|tab| tab.id) else {
+            let id = session.id;
+            self.add_session(session);
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                tab.named = named;
+            }
+            return;
+        };
+        // `add_session` moves to the new tab and asks for the keyboard; go
+        // back, which also puts the layout of the tab that was active in
+        // place again, and leave the keyboard where it is.
+        let focused = self.layout.focused;
+        let wants_focus = self.needs_focus;
+        let id = session.id;
+        self.add_session(session);
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.named = named;
+        }
+        self.select_tab(active);
+        self.layout.focused = focused;
+        self.needs_focus = wants_focus;
+    }
+
+    /// Do what `shelldeck-sessiond focus|rename|zoom|unzoom|show` asked
+    /// for the session daemon pane `pane`. Only `focus` changes the active
+    /// tab. `Err` says why nothing was done.
     fn act_on_daemon_pane(
         &mut self,
         pane: Uuid,
@@ -820,6 +867,9 @@ impl TerminalView {
     ) -> Result<(), String> {
         if !self.restores_daemon_panes() {
             return Err("persistent sessions are off".into());
+        }
+        if let daemon::PaneAction::Show(name) = action {
+            return self.show_daemon_pane(pane, name);
         }
         let Some((tab, leaf)) = self.find_daemon_pane(pane) else {
             return Err("no tab of the application shows that pane".into());
@@ -870,6 +920,8 @@ impl TerminalView {
                     self.last_grid_cols = 0;
                 }
             }
+            // Done above: the pane has no tab to act in yet.
+            daemon::PaneAction::Show(_) => {}
         }
         Ok(())
     }
@@ -7042,6 +7094,99 @@ mod tests {
             // local daemon: their panes live on the host.
             assert_eq!(terminal.daemon_tab_layouts(), vec![None, None]);
             assert_eq!(ENDED.load(std::sync::atomic::Ordering::Relaxed), 0);
+        });
+    }
+
+    // SDTEST-3134 (SDUC-583): a pane opened by `shelldeck-sessiond show`
+    // is a new tab behind the active one. The active tab, its split, its
+    // zoom, the focused pane and the keyboard stay where they were; the
+    // tab takes the name the pane was started with. A pane a tab already
+    // shows, as a tab or inside a split, is left alone.
+    #[test]
+    fn sdtest_3134_a_shown_pane_is_a_new_tab_behind_the_active_one() {
+        use super::daemon::PaneAction;
+        use super::{PaneId, SplitDirection};
+        use shelldeck_terminal::attached::AttachedPhase;
+        use shelldeck_terminal::session::TerminalSession;
+        use uuid::Uuid;
+
+        fn attached(pane: u128) -> TerminalSession {
+            let (session, feed, _input) =
+                TerminalSession::spawn_attached("Terminal".into(), 24, 80, 100, 1).unwrap();
+            feed.status().set_pane(Uuid::from_u128(pane));
+            feed.status().set_phase(AttachedPhase::Live);
+            session
+        }
+
+        let mut app = TestAppContext::single();
+        let terminal = app.update(|cx| cx.new(TerminalView::new));
+        terminal.update(&mut app, |terminal, cx| {
+            // With persistent sessions off nothing is asked of the daemon.
+            assert_eq!(
+                terminal.act_on_daemon_pane(Uuid::from_u128(9), &PaneAction::Show("x".into()), cx),
+                Err("persistent sessions are off".into())
+            );
+            terminal.set_persistent_sessions(true);
+
+            // No tab yet: the pane is the first tab, and the active one.
+            terminal.add_background_session(attached(1), false);
+            assert_eq!(terminal.tabs.len(), 1);
+            assert_eq!(terminal.pane.active_index, 0);
+            assert!(terminal.tabs[0].is_active && !terminal.tabs[0].named);
+
+            // The active tab: two panes, the second focused, shown alone.
+            let split = attached(2);
+            let split_id = split.id;
+            terminal.install_split_pane(split, SplitDirection::Horizontal);
+            let focused = terminal.layout.focused;
+            assert!(matches!(focused, PaneId::Extra(_)));
+            terminal.layout.zoomed = true;
+            terminal.needs_focus = false;
+            let active = terminal.tabs[0].id;
+
+            let mut shown = attached(3);
+            shown.title = "worker".into();
+            let shown_id = shown.id;
+            terminal.add_background_session(shown, true);
+
+            assert_eq!(terminal.tabs.len(), 2);
+            assert_eq!(terminal.tabs[1].id, shown_id);
+            assert_eq!(terminal.tabs[1].title, "worker");
+            assert!(terminal.tabs[1].named && !terminal.tabs[1].is_active);
+            assert_eq!(terminal.pane.active_index, 0, "the active tab did not move");
+            assert!(terminal.tabs[0].is_active);
+            assert_eq!(terminal.tabs[0].id, active);
+            assert_eq!(terminal.layout.focused, focused, "nor the focused pane");
+            assert!(terminal.layout.zoomed && terminal.layout.is_split());
+            assert!(terminal.layout.extra.values().any(|s| s.id == split_id));
+            assert!(!terminal.needs_focus, "the keyboard is not taken");
+            assert_eq!(
+                terminal.pane.sessions[1].daemon_pane(),
+                Some(Uuid::from_u128(3))
+            );
+            // The new tab is a tab like the others.
+            terminal.select_tab(shown_id);
+            assert_eq!(terminal.pane.active_index, 1);
+            assert!(!terminal.layout.is_split());
+            terminal.select_tab(active);
+            assert!(terminal.layout.is_split() && terminal.layout.zoomed);
+
+            // Already shown, as a tab, as a background tab or in a split:
+            // done, and nothing is opened a second time.
+            for pane in [1, 2, 3] {
+                assert_eq!(
+                    terminal.act_on_daemon_pane(
+                        Uuid::from_u128(pane),
+                        &PaneAction::Show("again".into()),
+                        cx
+                    ),
+                    Ok(()),
+                    "pane {pane}"
+                );
+            }
+            assert_eq!(terminal.tabs.len(), 2);
+            assert_eq!(terminal.tabs[1].title, "worker");
+            assert_eq!(terminal.pane.active_index, 0);
         });
     }
 

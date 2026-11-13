@@ -4,11 +4,12 @@
 //! (docs/design/session-daemon.md, sections 5 and 7).
 
 use super::conn::ConnOut;
-use super::ServerConfig;
+use super::events::EventHub;
+use super::{ServerConfig, Shared};
 use crate::protocol::{
-    self, Attach, DaemonFrame, ErrorCode, PaneInfo, ATTACH_READ_ONLY, FLAG_LAST,
-    MAX_ATTACHMENTS_PER_PANE, MAX_OUTPUT_BYTES, MAX_SCROLLBACK_CHUNK, MAX_SNAPSHOT_CHUNK,
-    MAX_SNAPSHOT_TOTAL,
+    self, Attach, DaemonFrame, ErrorCode, PaneChange, PaneInfo, PaneStatus, ATTACH_READ_ONLY,
+    FLAG_LAST, MAX_ATTACHMENTS_PER_PANE, MAX_OUTPUT_BYTES, MAX_SCROLLBACK_CHUNK,
+    MAX_SNAPSHOT_CHUNK, MAX_SNAPSHOT_TOTAL,
 };
 use parking_lot::{Condvar, Mutex};
 use shelldeck_terminal::boundary::StreamBoundary;
@@ -387,6 +388,60 @@ struct PaneState {
     owner: Option<u64>,
     pending_resize: Option<(u16, u16)>,
     last_resize: Option<Instant>,
+    events: Arc<EventHub>,
+    /// What the subscribers of pane events were last told, or would have
+    /// been: kept up to date with nobody listening too, so the first
+    /// change after someone subscribes is compared with the truth.
+    told: Told,
+}
+
+#[derive(Default)]
+struct Told {
+    title: String,
+    cwd: String,
+    status: Option<PaneStatus>,
+    clients: u16,
+}
+
+/// Start of the OSC a program reports its status with (OSC 7501).
+const STATUS_OSC: &[u8] = b"\x1b]7501;";
+
+/// Where to cut a chunk of output so that each piece holds at most one
+/// status report: just before every report but the first. Looking at the
+/// status between the pieces is how a report taken back in the same chunk
+/// is still seen.
+fn status_cuts(bytes: &[u8]) -> Vec<usize> {
+    if bytes.len() < STATUS_OSC.len() {
+        return Vec::new();
+    }
+    let mut cuts: Vec<usize> = bytes
+        .windows(STATUS_OSC.len())
+        .enumerate()
+        .filter(|(_, window)| *window == STATUS_OSC)
+        .map(|(at, _)| at)
+        .collect();
+    if !cuts.is_empty() {
+        cuts.remove(0);
+    }
+    cuts
+}
+
+fn status_of(grid: &TerminalGrid, pane: Uuid) -> Option<PaneStatus> {
+    if grid.program_status.is_empty() {
+        return None;
+    }
+    let headline = grid.program_status.headline()?;
+    Some(PaneStatus {
+        pane,
+        state: headline.state.word().to_string(),
+        kind: headline
+            .kind
+            .map(|kind| kind.word().to_string())
+            .unwrap_or_default(),
+        progress: headline.progress.map(|p| p.min(100) as i8).unwrap_or(-1),
+        app: headline.app,
+        text: headline.text,
+    })
 }
 
 pub(super) struct Pane {
@@ -419,8 +474,10 @@ impl Pane {
         rows: u16,
         cols: u16,
         scrollback: usize,
-        config: Arc<ServerConfig>,
+        shared: &Shared,
     ) -> std::io::Result<Arc<Self>> {
+        let config = shared.config.clone();
+        let events = shared.events.clone();
         let raw = pty
             .master
             .as_raw_fd()
@@ -484,6 +541,8 @@ impl Pane {
                 owner: None,
                 pending_resize: None,
                 last_resize: None,
+                events,
+                told: Told::default(),
             }),
             input: InputQueue::new(config.input_queue_cap),
             config,
@@ -627,13 +686,25 @@ impl Pane {
         let mut guard = self.state.lock();
         let state = &mut *guard;
         let fault = self.config.fault_parser_panic.as_deref();
+        let id = self.id;
         let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if let Some(marker) = fault.filter(|marker| !marker.is_empty()) {
                 if bytes.windows(marker.len()).any(|window| window == marker) {
                     panic!("injected parser fault");
                 }
             }
-            state.processor.process_bytes(&mut state.parser, bytes);
+            let mut from = 0;
+            for cut in status_cuts(bytes).into_iter().chain([bytes.len()]) {
+                state
+                    .processor
+                    .process_bytes(&mut state.parser, &bytes[from..cut]);
+                from = cut;
+                let status = status_of(&state.grid.lock(), id);
+                if status != state.told.status {
+                    state.told.status.clone_from(&status);
+                    state.events.publish(id, PaneChange::Status(status));
+                }
+            }
         }));
         if parsed.is_err() {
             // Panic isolation: this pane is dead, the others are not.
@@ -653,8 +724,8 @@ impl Pane {
         while let Ok(reply) = state.replies.try_recv() {
             self.input.push_reply(reply);
         }
+        Self::tell_title_and_cwd(state, id);
         let cap = self.config.output_queue_cap;
-        let id = self.id;
         let mut dropped = false;
         for sub in state.subscribers.iter().filter(|sub| !sub.suspended) {
             let frame = protocol::encode_output(&id, sub.attach_id, offset, bytes);
@@ -675,8 +746,67 @@ impl Pane {
                     sub.backfill = None;
                 }
             }
+            Self::tell_clients(state, id);
         }
         true
+    }
+
+    // -- Pane events --------------------------------------------------------
+    //
+    // Every change is published under the pane lock, so the events of one
+    // pane reach a subscriber in the order the changes happened.
+
+    /// Publish the title and the folder when the last output changed them.
+    fn tell_title_and_cwd(state: &mut PaneState, id: Uuid) {
+        let grid = state.grid.lock();
+        if grid.title != state.told.title {
+            state.told.title.clone_from(&grid.title);
+            state
+                .events
+                .publish(id, PaneChange::Title(grid.title.clone()));
+        }
+        let cwd = grid.working_directory.as_deref().unwrap_or_default();
+        if cwd != state.told.cwd {
+            state.told.cwd = cwd.to_string();
+            state.events.publish(id, PaneChange::Cwd(cwd.to_string()));
+        }
+    }
+
+    /// Publish the number of viewers when it changed.
+    fn tell_clients(state: &mut PaneState, id: Uuid) {
+        let clients = Self::clients(state);
+        if clients != state.told.clients {
+            state.told.clients = clients;
+            state.events.publish(id, PaneChange::Clients(clients));
+        }
+    }
+
+    fn clients(state: &PaneState) -> u16 {
+        state
+            .subscribers
+            .iter()
+            .filter(|sub| !sub.suspended)
+            .count() as u16
+    }
+
+    /// Tell the subscribers of pane events that this pane exists, once it
+    /// is listed.
+    pub(super) fn announce(&self) {
+        let state = self.state.lock();
+        if state.events.is_watched() {
+            state
+                .events
+                .publish(self.id, PaneChange::Started(self.info_of(&state)));
+            // The reader runs since the pane was created: a status its
+            // program reported before this line was told for a pane the
+            // subscribers did not know yet, and `Started` does not carry
+            // it. Said again, it is not lost.
+            if let Some(status) = &state.told.status {
+                state
+                    .events
+                    .publish(self.id, PaneChange::Status(Some(status.clone())));
+            }
+        }
     }
 
     /// The child exited: queue `Exited` after the final output and close the
@@ -695,6 +825,12 @@ impl Pane {
             "pane ended"
         );
         state.pending_resize = None;
+        state.events.publish(
+            self.id,
+            PaneChange::Exited {
+                exit_code: info.exit_code,
+            },
+        );
         let frame = self.exited_frame(state.offset, info);
         for sub in &state.subscribers {
             sub.attachment.push(
@@ -753,6 +889,7 @@ impl Pane {
         state.rows = rows;
         state.cols = cols;
         state.last_resize = Some(Instant::now());
+        state.events.publish(id, PaneChange::Size { rows, cols });
         for sub in &state.subscribers {
             if let Ok(frame) = (DaemonFrame::Resized {
                 pane: id,
@@ -953,6 +1090,7 @@ impl Pane {
                 suspended: false,
             }),
         }
+        Self::tell_clients(state, self.id);
         Ok(attachment)
     }
 
@@ -971,6 +1109,7 @@ impl Pane {
         });
         if state.subscribers.len() != before {
             Self::reassign_owner(&mut state, self.id, self.config.output_queue_cap);
+            Self::tell_clients(&mut state, self.id);
         }
     }
 
@@ -1207,24 +1346,17 @@ impl Pane {
     }
 
     /// What the pane's program last reported about itself, if it did.
-    pub(super) fn status(&self) -> Option<crate::protocol::PaneStatus> {
+    pub(super) fn status(&self) -> Option<PaneStatus> {
         let state = self.state.lock();
-        let headline = state.grid.lock().program_status.headline()?;
-        Some(crate::protocol::PaneStatus {
-            pane: self.id,
-            state: headline.state.word().to_string(),
-            kind: headline
-                .kind
-                .map(|kind| kind.word().to_string())
-                .unwrap_or_default(),
-            progress: headline.progress.map(|p| p.min(100) as i8).unwrap_or(-1),
-            app: headline.app,
-            text: headline.text,
-        })
+        let grid = state.grid.lock();
+        status_of(&grid, self.id)
     }
 
     pub(super) fn info(&self) -> PaneInfo {
-        let state = self.state.lock();
+        self.info_of(&self.state.lock())
+    }
+
+    fn info_of(&self, state: &PaneState) -> PaneInfo {
         let (title, cwd) = {
             let grid = state.grid.lock();
             (
@@ -1243,11 +1375,7 @@ impl Pane {
             created_at: self.created_at,
             alive: state.exit.is_none(),
             exit_code: state.exit.map(|e| e.exit_code).unwrap_or(0),
-            clients: state
-                .subscribers
-                .iter()
-                .filter(|sub| !sub.suspended)
-                .count() as u16,
+            clients: Self::clients(state),
             offset: state.offset,
         }
     }

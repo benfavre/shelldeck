@@ -3367,6 +3367,7 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-13**: Added SDUC-583: `events` pushed by the daemon (`Subscribe`, `PaneEvent`, a second feature bit; an older daemon is still polled), `show` opens a pane as a tab behind the active one, `skill setup --with-hook` and `skill context` (Claude Code start hook). SDTEST-3124..3134.
 - **2026-11-13**: Added SDUC-582: `focus`, `rename`, `zoom`, `unzoom` from the command line; `send` and `send-key` refuse a pane that waits for a permission. SDTEST-3122, 3123.
 - **2026-11-13**: Added SDUC-581: pane commands for agents (`split`, `send-key`, `status`, `events`, `skill setup`, `read --format html`, `--json`), a pane knows its own id, the daemon keeps the reported status (`ListStatus`). SDUC-578 amended. SDTEST-3113..3121.
 - **2026-11-13**: Added SDUC-580: terminal panes drawn as cards, a name and a folder in pane headers and tabs, tabs as pills, the space between cards as the resize handle. SDUC-579 amended (the look of a header moved to SDUC-580). The context menu opens at the pointer (it was about 36 px lower); the scrollbar is grabbed on the active pane's own edge. The toolbar row is removed: its actions open from a "⋯" button, Claude and Codex are beside "+". SDTEST-3111, SDTEST-3112; SDTEST-3109 follows the card padding, SDTEST-3110 the rows above the panes.
@@ -5548,3 +5549,68 @@ to the second tab
 Not automated: what the view does with a request (`act_on_daemon_pane`)
 needs a daemon and a window; only the walkthrough covers it. Not done:
 closing tabs or moving panes from the command line, a scripting language.
+
+### SDUC-583: Pushed pane events, `show`, and a start hook for Claude Code
+
+Three things SDUC-581 and SDUC-582 listed as not done. Reference:
+[`pane-cli.md`](../pane-cli.md), and "Pane events" in
+[`session-daemon.md`](../design/session-daemon.md).
+
+- **`events` is pushed.** The daemon sends each change of a pane to the
+  connections that subscribed: started, exited, removed, title, folder,
+  size, viewers, status reported or taken back. A status that lasted an
+  instant, even one set and taken back by a single write of the program,
+  is two lines. The JSON lines are the ones `events` printed before, from
+  the same code.
+- **An older daemon keeps working.** The subscription is announced by a
+  feature bit; `events` never sends it to a daemon without the bit and
+  looks at that daemon four times a second, as before.
+- **A subscriber never slows a pane.** Queuing an event does not wait. A
+  subscriber that leaves more than 1 MiB of events unread is closed; its
+  panes and the other subscribers go on.
+- **`show [PANE]`** asks the running application to open a pane started
+  with `run` as a new tab, named after the pane's `--name`. The tab is
+  added behind the active one: the active tab, its split and zoom, the
+  focused pane and the keyboard do not move. A pane already shown answers
+  ok and nothing is opened twice. Exit status 1 with the reason when no
+  application answers, persistent sessions are off, or the pane's program
+  has ended.
+- **`skill setup --with-hook`** registers, for Claude Code only, a
+  `SessionStart` hook in `~/.claude/settings.json`. The entry is merged:
+  every existing key and hook stays in its order, a second run adds
+  nothing, and a file that is not JSON or whose `hooks` has another shape
+  is left untouched with the reason on stderr. Off unless asked for.
+- **`skill context`**, which the hook runs, prints nothing outside a pane.
+  Inside one: the pane's id, that the `inklura-panes` skill applies, and
+  the other panes with their id, name, whether they run and the status
+  word they reported. No title and no status text: those are written by
+  programs in other panes and would go straight into an agent's context.
+- The hook command does nothing and succeeds outside a pane, whether or
+  not the binary is on the `PATH`.
+
+Verified by SDTEST-3124 (frame layout), SDTEST-3125 (a pushed change prints
+the line a polled one printed), SDTEST-3126 (a subscriber that does not
+read is closed, not waited for), SDTEST-3127 (a real daemon and PTY: every
+kind of change, in order, a status set and taken back in one write),
+SDTEST-3128 (the real binary: `events` pushed, polled on request, and a
+daemon without the bit polled and never sent the request), SDTEST-3129 and
+SDTEST-3130 (`show` as a request and from the binary), SDTEST-3131 (the
+context text), SDTEST-3132 and SDTEST-3133 (the merge, and the real binary
+on a temporary home) and SDTEST-3134 (the tab behind the active one, in the
+view). The hook format was taken from the Claude Code hooks reference,
+<https://code.claude.com/docs/en/hooks>, read on 2026-11-13.
+
+Not checked on screen: `show` in the running application (the new tab in
+the tab strip and the session list, the active tab and the keyboard left
+alone, the tab coming back at the next start); the hook in a real Claude
+Code session. Not automated: the application taking the `show` request
+from the run directory and attaching to the daemon (`show_daemon_pane`
+needs a daemon and a window; SDTEST-3134 covers what it does with the
+session). Not done: `show` while the application has no terminal open (it
+reads requests from the loop that repaints terminals, so nobody answers);
+`show` and `split` for a pane on an SSH server; a hook for Codex, OpenCode
+or Pi; removing the hook with a command; settings files with comments are
+refused, not edited. Known limit: two status reports in one chunk are told
+apart only when written with `ESC ]`, and a client that subscribes learns
+what already exists from the lists, so a status that came and went before
+its first line is not reported.

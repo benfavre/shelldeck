@@ -13,6 +13,7 @@ shelldeck-sessiond wait reviewer --until done --timeout 900
 shelldeck-sessiond read reviewer --lines 80
 
 shelldeck-sessiond split --right -- npm run dev          # a pane beside this one
+shelldeck-sessiond show reviewer                         # open it as a tab of the application
 shelldeck-sessiond skill setup                           # teach all this to coding agents
 ```
 
@@ -49,10 +50,12 @@ older version have none of the three until that daemon has ended.
 | `focus [PANE]` | Select the pane's tab in the application and give the pane the keyboard. |
 | `rename [PANE] NAME` | Name the pane's tab. Inside a pane, `rename NAME` names its own tab. |
 | `zoom [PANE]`, `unzoom [PANE]` | Show the pane alone in its tab, or the whole split again. |
+| `show [PANE]` | Open the pane as a new tab of the application, behind the active one. For a pane started with `run`. See [Show](#show). |
 | `events [--timeout SECONDS]` | Print one JSON object per line for everything that exists, then for every change, until interrupted. See [Events](#events). |
 | `attach PANE` | Attach this terminal to the pane. `Ctrl-\` detaches. |
 | `kill PANE [1\|15\|9]` | Signal the pane's program (15 by default), or remove a pane that already ended. |
-| `skill setup [--agent NAME]...` | Write the skill that teaches these commands to coding agents. See [Agents](#agents). `skill show` prints it. |
+| `skill setup [--agent NAME]... [--with-hook]` | Write the skill that teaches these commands to coding agents. See [Agents](#agents). `skill show` prints it. |
+| `skill context` | Inside a pane, print which pane this is and the other panes; nothing outside one. What the start hook runs. |
 
 `PANE` is a pane id, the start of one (at least 4 characters) or a name given
 with `--name`. A selector that matches several panes is refused: these
@@ -103,6 +106,22 @@ in its tab for `zoom`).
   since the pane shown alone is the focused one. In a background tab
   nothing visible changes until the user goes to it.
 
+## Show
+
+A pane started with `run` runs without a tab. `show` asks the running
+application to open it as a new tab, named after the pane's `--name`. The
+tab is added behind the active one: the active tab, the focused pane and
+the keyboard stay where they are; `focus` is the command that moves them.
+A pane a tab already shows, alone or in a split, answers ok and nothing is
+opened twice.
+
+It travels like `split` and the actions below: a request the application
+takes and answers within about three seconds. Exit status 1 with the reason
+when no application answers, persistent sessions are off, or the pane's
+program has ended (`read` still prints what it left). The application
+reads requests while it has at least one terminal open. An application
+older than this command does not answer it. Local panes only.
+
 ## Events
 
 `events` prints JSON lines. Each has `event` and `pane`:
@@ -118,9 +137,17 @@ in its tab for `zoom`).
 | `clients` | `clients` (how many viewers are attached) |
 | `status` | `state` (null when cleared), `kind`, `progress`, `app`, `text` |
 
-The first lines describe every pane that exists. The command looks at the
-daemon four times a second: a status that came and went between two looks
-is not reported.
+The first lines describe every pane that exists. After them the daemon
+pushes each change as it happens, so a status that lasted an instant is
+two lines: the status, then `status` with `"state": null`. `send`, `read`
+and `status` attach for a moment and show up as two `clients` lines.
+
+A daemon started by a version before this one does not push. `events` then
+looks at it four times a second, as it did, and a status that came and
+went between two looks is not reported; the lines are the same. When the
+reader of `events` falls more than about a megabyte of lines behind, the
+daemon closes that connection rather than slow a pane down, and the command
+ends with status 1: start it again.
 
 ## Agents
 
@@ -135,8 +162,47 @@ each coding agent set up for the user:
 | Pi | `~/.pi/agent/skills` |
 
 `--agent NAME` (`claude`, `codex`, `opencode`, `pi`) writes it for that agent
-whether its directory exists or not. Running it again replaces the file. No
-hook is installed: the agents load the skill by its description.
+whether its directory exists or not. Running it again replaces the file.
+Without `--with-hook` no hook is installed: the agents load the skill by
+its description.
+
+### Start hook (Claude Code)
+
+`skill setup --with-hook` also registers a `SessionStart` hook in
+`~/.claude/settings.json`, so a Claude Code session that starts inside a
+pane is told so without having to look:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$SHELLDECK_PANE\" ] || \"${SHELLDECK_SESSIOND:-shelldeck-sessiond}\" skill context"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Outside a pane the command does nothing and succeeds, with or without the
+binary. Inside one it runs `skill context`, whose output Claude Code adds
+to the session: the id of the pane, that the `inklura-panes` skill applies,
+and one line per other pane with its id, its `--name`, whether it runs and
+the status it reported. Titles and status texts are left out: they are
+whatever a program in another pane printed.
+
+The entry is added to what the file holds. Every other key and hook stays,
+in its order (the file is written again with two-space indentation); a
+second run finds the entry and changes nothing; a file that is not JSON
+(comments included), or whose `hooks` has another shape, is left byte for
+byte and the command says why with status 1. A settings file that is a
+link is written through. Remove the hook by deleting the entry. The other
+agents get no hook.
 
 ## Notes
 
@@ -163,12 +229,18 @@ hook is installed: the agents load the skill by its description.
 - **In the application.** A pane started with `run` is a pane like the
   others: with persistent sessions enabled in Settings, it comes back as a
   tab the next time the application starts. A running application does not
-  show it until then; `split` is how a pane is shown at once.
+  show it until then, or until `show` asks it to; `split` starts a pane
+  that is shown at once.
 
 ## What is not there
 
-- No scripting language. The application actions are `split`, `focus`,
-  `rename`, `zoom` and `unzoom`; closing a tab, moving a pane and the rest
-  are not there.
-- `events` polls; it is not pushed by the daemon.
+- No scripting language. The application actions are `split`, `show`,
+  `focus`, `rename`, `zoom` and `unzoom`; closing a tab, moving a pane and
+  the rest are not there.
+- `events` is pushed by the daemon of this version only; an older daemon
+  is polled. Two status reports inside one terminal sequence other than
+  `ESC ]` (the 8-bit OSC) are seen as one change.
+- A start hook for Claude Code only; Codex, OpenCode and Pi load the skill
+  by its description.
+- `show` and `split` for a pane on an SSH server.
 - Windows: the daemon is Unix only.

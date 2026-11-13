@@ -10,9 +10,10 @@
 //! All methods must be called from within a Tokio runtime.
 
 use crate::protocol::{
-    self, Attach, ClientFrame, DaemonFrame, ErrorCode, FrameBuffer, Hello, HelloAck, PaneInfo,
-    PaneStatus, ProtocolError, Spawn, ATTACH_READ_ONLY, FEATURE_PANE_STATUS, FLAG_LAST,
-    MAX_INPUT_BYTES, MAX_SNAPSHOT_TOTAL, PROTOCOL_VERSION,
+    self, Attach, ClientFrame, DaemonFrame, ErrorCode, FrameBuffer, Hello, HelloAck,
+    PaneChangeEvent, PaneInfo, PaneStatus, ProtocolError, Spawn, ATTACH_READ_ONLY,
+    FEATURE_PANE_EVENTS, FEATURE_PANE_STATUS, FLAG_LAST, MAX_INPUT_BYTES, MAX_SNAPSHOT_TOTAL,
+    PROTOCOL_VERSION,
 };
 use parking_lot::Mutex;
 use shelldeck_terminal::grid::{SnapshotError, TerminalGrid};
@@ -99,6 +100,24 @@ pub struct SpawnedPane {
     pub pid: u32,
     /// Canonical working directory the daemon opened.
     pub cwd: String,
+}
+
+/// The changes of every pane, as the daemon pushes them
+/// ([`Client::subscribe`]).
+pub struct PaneChanges {
+    rx: mpsc::UnboundedReceiver<PaneChangeEvent>,
+}
+
+impl PaneChanges {
+    /// The next change. `None`: the connection is closed.
+    pub async fn next(&mut self) -> Option<PaneChangeEvent> {
+        self.rx.recv().await
+    }
+
+    /// A change that already arrived, without waiting.
+    pub fn try_next(&mut self) -> Option<PaneChangeEvent> {
+        self.rx.try_recv().ok()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -297,6 +316,8 @@ struct State {
     spawns: HashMap<u32, oneshot::Sender<Result<SpawnedPane, ClientError>>>,
     lists: VecDeque<oneshot::Sender<Vec<PaneInfo>>>,
     statuses: VecDeque<oneshot::Sender<Vec<PaneStatus>>>,
+    /// Where pushed pane changes go, once `subscribe` was called.
+    changes: Option<mpsc::UnboundedSender<PaneChangeEvent>>,
     panes: HashMap<Uuid, PaneCtl>,
 }
 
@@ -406,6 +427,7 @@ impl Inner {
         }
         state.lists.clear();
         state.statuses.clear();
+        state.changes = None;
         for (_, ctl) in state.panes.drain() {
             ctl.queue.push(PaneEvent::Closed);
             ctl.queue.close();
@@ -426,6 +448,12 @@ impl Inner {
             DaemonFrame::StatusList(statuses) => {
                 if let Some(waiter) = state.statuses.pop_front() {
                     let _ = waiter.send(statuses);
+                }
+            }
+            DaemonFrame::PaneEvent(event) => {
+                // Nobody asked, or the receiver is gone: dropped.
+                if let Some(changes) = &state.changes {
+                    let _ = changes.send(event);
                 }
             }
             DaemonFrame::Spawned {
@@ -766,6 +794,7 @@ impl Client {
                 spawns: HashMap::new(),
                 lists: VecDeque::new(),
                 statuses: VecDeque::new(),
+                changes: None,
                 panes: HashMap::new(),
             }),
             options,
@@ -870,6 +899,25 @@ impl Client {
             state.statuses.push_back(tx);
         }
         rx.await.map(Some).map_err(|_| ClientError::Closed)
+    }
+
+    /// Ask the daemon to push every change of a pane from now on (started,
+    /// exited, removed, title, folder, size, viewers, status). `None`: the
+    /// daemon is older than this request and is not asked; poll it.
+    ///
+    /// The stream says nothing about what already exists. List the panes
+    /// after subscribing and apply to that list every change received,
+    /// those that arrived before the list included: a change carries its
+    /// new value, and a change queued after the list is newer than it.
+    pub fn subscribe(&self) -> Result<Option<PaneChanges>, ClientError> {
+        if self.hello().features & FEATURE_PANE_EVENTS == 0 {
+            return Ok(None);
+        }
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut state = self.inner.state.lock();
+        self.inner.send(&ClientFrame::Subscribe)?;
+        state.changes = Some(tx);
+        Ok(Some(PaneChanges { rx }))
     }
 
     pub async fn spawn(&self, options: SpawnOptions) -> Result<SpawnedPane, ClientError> {

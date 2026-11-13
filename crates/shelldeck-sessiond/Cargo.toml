@@ -27,6 +27,9 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
+# Only `skill setup --with-hook`, which adds one entry to a settings file
+# of Claude Code and must keep the rest of it as it is, key order included.
+serde_json = { workspace = true, features = ["preserve_order"] }
 tracing-subscriber = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
