@@ -1212,3 +1212,27 @@ sidebar entry reflects that list. Not automated: the
 painting of the list and of the headers, the pane buttons, the saved
 preference and the tab menu layer.
 
+## Terminal projects (2026-11-13)
+
+| ID | Test | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3140 | `terminal_view::projects::tests::sdtest_3140_a_folder_belongs_to_the_nearest_repository_above_it` | SDUC-584 | Green | No GPUI, no disk (the `.git` probe is a closure). The repository itself, a folder deep inside it, a nested repository (the inner one inside it, the outer one beside it), and folders outside any repository, which are their own project. |
+| SDTEST-3141 | `terminal_view::projects::tests::sdtest_3141_the_home_directory_and_unknown_folders_are_no_project` | SDUC-584 | Green | No GPUI, no disk. The home directory with and without a trailing slash, the root, an empty and a relative path are no project; a home that is a repository does not become the project of the folders under it; the root is never a project. |
+| SDTEST-3142 | `terminal_view::projects::tests::sdtest_3142_a_remote_folder_is_its_own_project_without_any_lookup` | SDUC-584 | Green | No GPUI. The function for remote folders takes no probe at all: the folder as written (absolute or under `~`), nothing for `~`, `/root`, `/home/name`, `/Users/name`, the root and what is not a path. |
+| SDTEST-3143 | `terminal_view::projects::tests::sdtest_3143_the_folder_of_a_tab_comes_from_the_report_the_title_or_the_start` | SDUC-584 | Green | No GPUI. The reported folder wins over the title, the title over the start folder; `~` is the local home; a program title with a colon is not a folder, even with a path after it (`Fix: /login page`); a reported `%20` or `%C3%A9` is the character on disk and a malformed escape is left as written; a remote `~/path` stays as written. |
+| SDTEST-3144 | `terminal_view::projects::tests::sdtest_3144_tabs_are_grouped_by_project_in_tab_order` | SDUC-584 | Green | No GPUI. Projects in the order of their first tab, tab order kept, the same path locally and on a connection as two projects, the machine name from whichever tab has one, tabs without a project last and together whatever their machine. |
+| SDTEST-3145 | `terminal_view::projects::tests::sdtest_3145_a_project_is_shown_as_a_name_and_the_path_that_holds_it` | SDUC-584 | Green | No GPUI. Name and parent path, the home as `~`, a folder directly under the root, a remote path left as written, `/home/annabel` not taken for a folder of `/home/ann`. |
+| SDTEST-3146 | `terminal_view::projects::tests::sdtest_3146_moving_to_a_project_selects_its_most_recently_used_tab` | SDUC-584 | Green | No GPUI. Forward and back, round both ends, the most recently used tab of the project arrived at, its first tab when none was used, nothing with one project or an unknown active tab. |
+| SDTEST-3147 | `terminal_view::projects::tests::sdtest_3147_a_git_directory_or_file_on_disk_marks_the_project` | SDUC-584 | Green | Temporary directory. The real probe: a `.git` directory (clone) and a `.git` file (worktree) both mark the project, the walk stops at the repository (three lookups), a folder that no longer exists is still its own project. |
+| SDTEST-3148 | `terminal_view::projects::tests::sdtest_3148_a_folder_is_looked_up_off_the_render_path_and_refreshed_on_return` | SDUC-584 | Green | No GPUI. One lookup at a time per folder, nothing known before the answer, the answer kept while the folder is looked at again, a change of answer reported. |
+| SDTEST-3149 | `terminal_view::tests::sdtest_3149_tabs_get_a_project_and_the_view_moves_between_projects` | SDUC-584 | Green | GPUI test context, temporary directory, sessions without a process. The local tabs have no project until the background lookups end; a connection tab with the same path as a local repository folder keeps its own folder as project (it was not looked for on this disk); next and previous project select the tab used last, unfold the project arrived at, forget a closed tab and do nothing with one project. |
+| SDTEST-3151 | `shortcut_reference::tests::sdtest_3151_the_project_actions_have_no_keys_until_the_table_gives_some` | SDUC-584, SDUC-577 | Green | No GPUI. `next_project` and `previous_project` have no keys on either platform, take the keys the table gives them, are not a change or a conflict when left empty, and are refused keys in use. |
+| SDTEST-3153 | `workspace::palette::tests::sdtest_3153_the_project_rows_are_offered_with_the_terminal_commands` | SDUC-584 | Green | No window. « Next Project » and « Previous Project » are in the Dev block of the palette under their own labels, and are not offered in User or Support mode. |
+
+SDTEST-3100 now skips the actions without built-in keys (26 actions).
+SDTEST-3150 (the configuration key) is in `tests-core.md`, SDTEST-3152 (the
+screen that loses rows) in `tests-terminal.md`. Not automated: the painting
+of the project headers and of the grouping button, folding by click, what
+a palette row does once chosen, the registration of user keys for the two actions with GPUI,
+and the workspace writing the choice to the configuration file
+(`TerminalEvent::SessionGroupingChanged`).

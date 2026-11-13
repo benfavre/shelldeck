@@ -20,4 +20,6 @@ pub use error::{Result, TerminalError};
 ///
 /// 2: a resize that merges soft-wrapped lines keeps the row count (blank
 /// rows at the bottom) instead of leaving a short screen.
-pub const EMULATOR_REV: u16 = 2;
+/// 3: a screen that loses rows gives up the blank ones under the cursor
+/// before it moves rows from the top to the history.
+pub const EMULATOR_REV: u16 = 3;

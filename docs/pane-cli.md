@@ -80,7 +80,8 @@ them (application cursor keys), as a terminal does.
 application to show it. The application places the pane beside the one
 named, in whichever tab that one is, without changing the active tab or the
 keyboard focus: the request usually comes from a program working in the
-background.
+background. The pane starts at about the size it will have and takes the
+real one once it is shown; what it printed before that stays on screen.
 
 The command waits about three seconds for the answer and says on stderr
 when the pane is not shown: no application runs, persistent sessions are off

@@ -13,7 +13,8 @@ toggle_sidebar = ""             # remove one (here: leaves Ctrl+B to tmux)
 
 Each entry is `action = "keys"`. An empty value removes the shortcut; the
 action stays available from the menus and the command palette. An action that
-is not listed keeps its built-in keys.
+is not listed keeps its built-in keys. Two actions have none until you give
+them some: `next_project` and `previous_project`.
 
 ## Writing keys
 
@@ -38,6 +39,8 @@ The order of the modifiers and upper or lower case do not matter.
 | `close_tab` | `secondary-w` | Close the terminal tab |
 | `next_tab` | `ctrl-tab` | Next terminal tab |
 | `previous_tab` | `ctrl-shift-tab` | Previous terminal tab |
+| `next_project` | none | Next project: the terminal used last in the next project of the session list |
+| `previous_project` | none | Previous project |
 | `split_horizontal` | `ctrl-shift-d` (`cmd-d` on macOS) | Split the terminal |
 | `split_vertical` | `ctrl-shift-alt-d` (`cmd-shift-d` on macOS) | Split the terminal the other way |
 | `toggle_split_focus` | `alt-[` | Move between the panes of a split |
