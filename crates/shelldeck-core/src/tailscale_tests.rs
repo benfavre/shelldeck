@@ -56,7 +56,7 @@ fn sdtest_3157_this_machine_exit_nodes_and_undialable_machines_are_left_out() {
         ["Ana's MacBook Pro", "Atelier-PC", "build-box", "nas"]
     );
 
-    // A network without MagicDNS is dialled by address.
+    // A machine without a name is dialled by address.
     let nas = peer(&peers, "nas");
     assert_eq!(nas.dns_name, "");
     assert_eq!(nas.dial_host(), "100.64.0.6");
@@ -231,6 +231,57 @@ fn sdtest_3162_the_program_is_looked_for_in_the_given_directories_only() {
         discover_with(&empty.path().join("gone"), Duration::from_secs(1)),
         Err(TailscaleUnavailable::NotInstalled)
     );
+}
+
+// SDTEST-3170 (SDUC-585)
+#[test]
+fn sdtest_3170_names_that_do_not_resolve_and_sharee_machines_are_not_offered() {
+    // Peers keep their `DNSName` when MagicDNS is turned off for the
+    // network: the name must not become the host of a connection.
+    let listing = |tailnet: &str| {
+        format!(
+            r#"{{"BackendState":"Running",{tailnet}
+            "Peer":{{"a":{{"ID":"n2","HostName":"build-box",
+                "DNSName":"build-box.tail1234.ts.net.",
+                "TailscaleIPs":["100.64.0.2","fd7a:115c:a1e0::2"]}},
+              "b":{{"ID":"n3","HostName":"no-address",
+                "DNSName":"no-address.tail1234.ts.net."}},
+              "c":{{"ID":"n4","HostName":"theirs","ShareeNode":true,
+                "DNSName":"theirs.other.ts.net.","TailscaleIPs":["100.64.0.4"]}}}}}}"#
+        )
+    };
+    let off = parse_status(&listing(
+        r#""CurrentTailnet":{"Name":"example.com","MagicDNSSuffix":"tail1234.ts.net","MagicDNSEnabled":false},"#,
+    ))
+    .unwrap();
+    // "no-address" has nothing left to dial; "theirs" is a sharee machine.
+    assert_eq!(off.len(), 1);
+    assert_eq!(off[0].dns_name, "");
+    assert_eq!(off[0].dial_host(), "100.64.0.2");
+    let connection = connection_from_peer(&off[0], "deploy");
+    assert_eq!(connection.alias, "build-box");
+    assert_eq!(connection.hostname, "100.64.0.2");
+    // The mark follows what resolves: the address, not the name.
+    let marked = |hostname: &str| rows(off.clone(), &[connection_to(hostname)])[0].existing;
+    assert!(marked("100.64.0.2"));
+    assert!(!marked("build-box"));
+
+    // MagicDNS on, or a listing that does not say: the name is the host.
+    for tailnet in [
+        r#""CurrentTailnet":{"MagicDNSEnabled":true},"#,
+        r#""CurrentTailnet":null,"#,
+        r#""CurrentTailnet":{},"#,
+        "",
+    ] {
+        let mut on = parse_status(&listing(tailnet)).unwrap();
+        on.sort_by(|a, b| a.host_name.cmp(&b.host_name));
+        let hosts: Vec<&str> = on.iter().map(|peer| peer.dial_host()).collect();
+        assert_eq!(
+            hosts,
+            ["build-box.tail1234.ts.net", "no-address.tail1234.ts.net"],
+            "{tailnet:?}"
+        );
+    }
 }
 
 #[cfg(unix)]

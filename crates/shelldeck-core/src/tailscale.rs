@@ -90,10 +90,18 @@ pub struct TailscaleRow {
 struct RawStatus {
     #[serde(rename = "BackendState")]
     backend_state: Option<String>,
+    #[serde(rename = "CurrentTailnet")]
+    tailnet: Option<RawTailnet>,
     #[serde(rename = "Self")]
     this_machine: Option<RawPeer>,
     #[serde(rename = "Peer")]
     peers: Option<HashMap<String, RawPeer>>,
+}
+
+#[derive(Deserialize)]
+struct RawTailnet {
+    #[serde(rename = "MagicDNSEnabled")]
+    magic_dns: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -114,10 +122,14 @@ struct RawPeer {
     online: bool,
     #[serde(rename = "sshHostKeys", default)]
     ssh_host_keys: Option<Vec<String>>,
+    #[serde(rename = "ShareeNode", default)]
+    sharee: bool,
 }
 
 /// Reads the output of `tailscale status --json`. This machine is left out,
-/// and so is a peer with nothing to dial. The order is the listing's, which
+/// and so is a peer with nothing to dial. On a network with MagicDNS turned
+/// off the names do not resolve, so the peers come without one and are
+/// dialled by address. The order is the listing's, which
 /// is a map: sort with [`rows`] before showing.
 pub fn parse_status(json: &str) -> Result<Vec<TailscalePeer>, TailscaleUnavailable> {
     let status: RawStatus =
@@ -130,6 +142,12 @@ pub fn parse_status(json: &str) -> Result<Vec<TailscalePeer>, TailscaleUnavailab
         Some("Stopped" | "Starting") => return Err(TailscaleUnavailable::Stopped),
         _ => return Err(TailscaleUnavailable::Unreadable),
     }
+    // Every peer has a `DNSName` whether or not MagicDNS is on; only this
+    // says the name resolves. A listing too old to say so is trusted.
+    let magic_dns = status
+        .tailnet
+        .and_then(|tailnet| tailnet.magic_dns)
+        .unwrap_or(true);
     let this_id = status
         .this_machine
         .map(|machine| machine.id)
@@ -141,6 +159,9 @@ pub fn parse_status(json: &str) -> Result<Vec<TailscalePeer>, TailscaleUnavailab
         // The listing keeps this machine apart, but a shared node list is
         // not ours to trust on that.
         .filter(|peer| this_id.is_empty() || peer.id != this_id)
+        // Machines of the people this one is shared with: `tailscale
+        // status` hides them too.
+        .filter(|peer| !peer.sharee)
         .filter(|peer| {
             !peer
                 .tags
@@ -151,7 +172,11 @@ pub fn parse_status(json: &str) -> Result<Vec<TailscalePeer>, TailscaleUnavailab
         })
         .map(|peer| TailscalePeer {
             host_name: peer.host_name.trim().to_string(),
-            dns_name: normalize_host(&peer.dns_name),
+            dns_name: if magic_dns {
+                normalize_host(&peer.dns_name)
+            } else {
+                String::new()
+            },
             addresses: peer.addresses.unwrap_or_default(),
             os: peer.os,
             online: peer.online,

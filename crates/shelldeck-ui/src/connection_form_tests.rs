@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{AppContext as _, TestAppContext};
+use gpui::TestAppContext;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -26,7 +26,7 @@ fn listed(form: &ConnectionForm) -> Vec<(String, bool)> {
 
 // SDTEST-3167 (SDUC-585): the answers are given by hand, the local
 // `tailscale` program is never run.
-#[test]
+#[::core::prelude::v1::test]
 fn sdtest_3167_the_tailscale_list_shows_the_machines_or_the_reason() {
     let mut app = TestAppContext::single();
     let form = app.update(|cx| {
@@ -81,7 +81,7 @@ fn sdtest_3167_the_tailscale_list_shows_the_machines_or_the_reason() {
 }
 
 // SDTEST-3168 (SDUC-585)
-#[test]
+#[::core::prelude::v1::test]
 fn sdtest_3168_choosing_a_tailscale_machine_saves_a_normal_connection() {
     let mut app = TestAppContext::single();
     let form = app.update(|cx| {
@@ -152,7 +152,7 @@ fn sdtest_3168_choosing_a_tailscale_machine_saves_a_normal_connection() {
 }
 
 // SDTEST-3169 (SDUC-585)
-#[test]
+#[::core::prelude::v1::test]
 fn sdtest_3169_every_tailscale_reason_has_its_own_sentence_in_both_languages() {
     let reasons = [
         TailscaleUnavailable::NotInstalled,

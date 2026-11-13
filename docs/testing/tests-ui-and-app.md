@@ -1221,4 +1221,4 @@ preference and the tab menu layer.
 
 Not automated for SDUC-585: the painting of the button and the list, the
 click on a row, and the workspace storing the connection (the existing
-`Save` path). SDTEST-3170 was allocated to this use case and is not used.
+`Save` path).
