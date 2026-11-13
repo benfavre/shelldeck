@@ -134,8 +134,8 @@ impl EventEmitter<TerminalEvent> for TerminalView {}
 const TITLEBAR_HEIGHT: f32 = 40.0;
 /// Base height of the terminal tab bar in pixels (before UI scaling).
 const TAB_BAR_HEIGHT: f32 = 38.0;
-/// Base height of the toolbar row below the tab bar (before UI scaling).
-const TOOLBAR_HEIGHT: f32 = 32.0;
+/// Base height of the header of the session list (before UI scaling).
+const SESSION_LIST_HEADER_HEIGHT: f32 = 32.0;
 /// Minimum / maximum per-tab width (before UI scaling). Tabs shrink toward the
 /// minimum as more are opened, then the tab strip scrolls.
 const MIN_TAB_WIDTH: f32 = 104.0;
@@ -160,20 +160,20 @@ fn content_left(sidebar_width: f32, full_width: bool, session_list_width: f32) -
     sidebar + session_list_width
 }
 
-/// Height of the rows above the panes, before UI scaling: the toolbar, and
-/// the tab strip unless the session list replaces it.
+/// Height of the rows above the panes, before UI scaling: the tab strip,
+/// unless the session list replaces it. There is no toolbar row: its
+/// actions open from a button (`render_actions_button`).
 fn chrome_rows_height(session_list: bool) -> f32 {
     if session_list {
-        TOOLBAR_HEIGHT
+        0.0
     } else {
-        TAB_BAR_HEIGHT + TOOLBAR_HEIGHT
+        TAB_BAR_HEIGHT
     }
 }
-/// Width of the split-pane divider bar.
-const SPLIT_DIVIDER_SIZE: f32 = 6.0;
-/// Total vertical offset from the window top to the terminal grid
-/// (tab bar + toolbar).
-const GRID_TOP_OFFSET: f32 = TAB_BAR_HEIGHT + TOOLBAR_HEIGHT;
+/// Width of the space between two pane cards, which resizes them.
+const SPLIT_DIVIDER_SIZE: f32 = layout::PANE_GAP;
+/// Vertical offset from the top of the view to the pane area (tab bar).
+const GRID_TOP_OFFSET: f32 = TAB_BAR_HEIGHT;
 /// Scrollbar track width.
 const SCROLLBAR_WIDTH: f32 = 6.0;
 /// Right margin of the scrollbar from the grid edge.
@@ -322,6 +322,18 @@ pub struct TerminalView {
     /// Dynamic pixel offsets for the active grid (set during render).
     grid_x_offset: f32,
     grid_y_offset: f32,
+    /// Window-space right and bottom edges of the focused grid, recorded
+    /// with its origin when it is painted. 0 until the first paint.
+    grid_right: f32,
+    grid_bottom: f32,
+    /// Size of the pane layer as it was last laid out. The cards are placed
+    /// from it so their margins are the same on every side; until the first
+    /// layout the size is worked out from the window.
+    pane_layer_size: Option<(f32, f32)>,
+    /// Window-space origin of the pane layer, recorded with its size.
+    pane_layer_origin: Option<(f32, f32)>,
+    /// Whether the terminal actions are shown, over the pane area.
+    actions_open: bool,
     /// Sidebar width in pixels (updated dynamically from workspace).
     sidebar_width: f32,
     /// The focused Terminal presentation renders no sidebar beside the view:
@@ -475,6 +487,11 @@ impl TerminalView {
             stored_layouts: HashMap::new(),
             grid_x_offset: 260.0 + SIDEBAR_HANDLE_WIDTH,
             grid_y_offset: GRID_TOP_OFFSET,
+            grid_right: 0.0,
+            grid_bottom: 0.0,
+            pane_layer_size: None,
+            pane_layer_origin: None,
+            actions_open: false,
             sidebar_width: 260.0,
             full_width: false,
             session_list_visible: false,
@@ -1970,6 +1987,9 @@ impl TerminalView {
         let viewport = window.viewport_size();
         let x = self.content_left();
         let y = self.chrome_top_offset(window);
+        if let Some((w, h)) = self.pane_layer_size {
+            return PaneRect { x, y, w, h };
+        }
         let w = (viewport.width.to_f64() as f32 - x - SIDEBAR_HANDLE_WIDTH).max(1.0);
         let h = (viewport.height.to_f64() as f32
             - TITLEBAR_HEIGHT * Self::ui_scale(window)
@@ -1977,6 +1997,20 @@ impl TerminalView {
             - STATUS_BAR_HEIGHT)
             .max(1.0);
         PaneRect { x, y, w, h }
+    }
+
+    /// The surface the tab strip, the toolbar and the pane cards sit on: the
+    /// chrome colour, a shade toward the text colour so a card stands out
+    /// on it in a light theme as in a dark one. Painted over the view's
+    /// own `bg_sidebar` background.
+    fn canvas_tint() -> Hsla {
+        ShellDeckColors::text_primary().opacity(0.06)
+    }
+
+    /// The rectangle the pane cards are laid out in: the content area
+    /// without the margin kept around the cards.
+    fn panes_area(&self, window: &Window) -> PaneRect {
+        layout::inset_rect(self.content_area(window), layout::PANE_MARGIN)
     }
 
     /// Convert a pixel rect into grid (rows, cols).
@@ -1989,7 +2023,7 @@ impl TerminalView {
 
     /// Recompute every pane's grid size and resize its session to match.
     fn resize_if_needed(&mut self, window: &Window) {
-        let area = self.content_area(window);
+        let area = self.panes_area(window);
         let header = self.pane_header_height(window);
         let (leaves, _) = self.layout.compute(area, SPLIT_DIVIDER_SIZE);
 
@@ -2375,8 +2409,7 @@ impl TerminalView {
             .items_center()
             .justify_between()
             .flex_shrink_0()
-            // The toolbar's height: their bottom borders form one line.
-            .h(s(TOOLBAR_HEIGHT))
+            .h(s(SESSION_LIST_HEADER_HEIGHT))
             .pl(s(12.0))
             .pr(s(6.0))
             .border_b_1()
@@ -2390,27 +2423,34 @@ impl TerminalView {
             )
             .child(
                 div()
-                    .id("session-list-new")
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .w(s(26.0))
-                    .h(s(26.0))
-                    .rounded(s(6.0))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                    .gap(s(2.0))
+                    .child(self.render_actions_button(window, cx))
                     .child(
-                        svg()
-                            .path("icons/lucide/plus.svg")
-                            .size(s(14.0))
-                            .text_color(ShellDeckColors::text_muted()),
-                    )
-                    .on_click(cx.listener(|this, _event: &ClickEvent, window, cx| {
-                        this.spawn_local_terminal(cx);
-                        this.focus_handle.focus(window);
-                        cx.emit(TerminalEvent::NewTabRequested);
-                        cx.notify();
-                    })),
+                        div()
+                            .id("session-list-new")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(s(26.0))
+                            .h(s(26.0))
+                            .rounded(s(6.0))
+                            .cursor_pointer()
+                            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                            .child(
+                                svg()
+                                    .path("icons/lucide/plus.svg")
+                                    .size(s(14.0))
+                                    .text_color(ShellDeckColors::text_muted()),
+                            )
+                            .on_click(cx.listener(|this, _event: &ClickEvent, window, cx| {
+                                this.spawn_local_terminal(cx);
+                                this.focus_handle.focus(window);
+                                cx.emit(TerminalEvent::NewTabRequested);
+                                cx.notify();
+                            })),
+                    ),
             );
 
         let mut rows = div()
@@ -2601,9 +2641,8 @@ impl TerminalView {
             .child(rows)
     }
 
-    /// The header of one pane of a split tab: what runs there, and on the
-    /// focused pane what can be done with it. Its colour is how the focused
-    /// pane is told apart.
+    /// The header of one pane of a split tab: what runs there (a name and
+    /// its folder), and on the focused pane what can be done with it.
     fn render_pane_header(
         &self,
         id: PaneId,
@@ -2613,7 +2652,7 @@ impl TerminalView {
     ) -> impl IntoElement {
         let scale = Self::ui_scale(window);
         let s = |v: f32| px(v * scale);
-        let (title, dot) = match self.session_for(id) {
+        let (title, cwd, dot) = match self.session_for(id) {
             Some(session) => {
                 let grid = session.grid.lock();
                 let program = grid.title.trim();
@@ -2622,19 +2661,30 @@ impl TerminalView {
                 } else {
                     program.to_string()
                 };
+                // A dot only for a status the program reported.
                 let dot = match grid.program_status.headline().map(|h| h.state) {
-                    Some(ProgramState::Blocked) => ShellDeckColors::warning(),
-                    Some(ProgramState::Error) => ShellDeckColors::error(),
-                    Some(ProgramState::Working) => ShellDeckColors::primary(),
-                    Some(ProgramState::Done | ProgramState::Idle) | None => {
-                        ShellDeckColors::text_muted().opacity(0.6)
-                    }
+                    Some(ProgramState::Blocked) => Some(ShellDeckColors::warning()),
+                    Some(ProgramState::Error) => Some(ShellDeckColors::error()),
+                    Some(ProgramState::Working) => Some(ShellDeckColors::primary()),
+                    Some(ProgramState::Done) => Some(ShellDeckColors::success()),
+                    Some(ProgramState::Idle) | None => None,
                 };
-                (title, dot)
+                (title, grid.working_directory.clone(), dot)
             }
-            None => (String::new(), ShellDeckColors::text_muted()),
+            None => (String::new(), None, None),
         };
+        let home = shelldeck_core::util::home_dir();
+        let home = home.as_deref().and_then(|home| home.to_str());
+        let (name, folder) = layout::title_parts(&title, cwd.as_deref(), home);
         let focus = self.focus_handle.clone();
+        // The header is drawn on the card, which has the terminal theme's
+        // background: its ink comes from that theme, not from the app's,
+        // or a dark terminal in a light app would hide it.
+        let foreground = self.palette.foreground_color();
+        let quiet = foreground.opacity(0.6);
+        let ink = if focused { foreground } else { quiet };
+        // No background of its own: the card shows through, and its border
+        // tells the focused pane apart.
         let mut header = div()
             .id(ElementId::from(SharedString::from(format!(
                 "pane-header-{id:?}"
@@ -2642,13 +2692,13 @@ impl TerminalView {
             .flex()
             .items_center()
             .flex_shrink_0()
-            .gap(s(6.0))
+            .gap(s(8.0))
             .w_full()
             .h(px(self.pane_header_height(window)))
-            .pl(s(8.0))
-            .pr(s(4.0))
-            .border_b_1()
+            .pl(s(12.0))
+            .pr(s(8.0))
             .overflow_hidden()
+            .text_color(ink)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
@@ -2659,36 +2709,46 @@ impl TerminalView {
                 }),
             )
             .child(
-                div()
-                    .w(s(6.0))
-                    .h(s(6.0))
-                    .rounded_full()
+                svg()
+                    .path("icons/lucide/terminal.svg")
+                    .size(s(13.0))
                     .flex_shrink_0()
-                    .bg(dot),
+                    .text_color(ink),
             )
             .child(
                 div()
-                    .flex_1()
+                    .flex_shrink_0()
+                    .max_w(relative(0.6))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(s(12.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(name),
+            );
+        if let Some(folder) = folder {
+            header = header.child(
+                div()
                     .min_w(px(0.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_size(s(11.0))
-                    .child(title),
+                    .text_size(s(12.0))
+                    .text_color(quiet)
+                    .child(folder),
             );
-        header = if focused {
-            header
-                .bg(ShellDeckColors::primary().opacity(0.14))
-                .border_color(ShellDeckColors::primary())
-                .text_color(ShellDeckColors::text_primary())
-        } else {
-            header
-                .bg(ShellDeckColors::bg_sidebar())
-                .border_color(ShellDeckColors::border())
-                .text_color(ShellDeckColors::text_muted())
-                .cursor_pointer()
-        };
+        }
+        if let Some(dot) = dot {
+            header = header.child(
+                div()
+                    .w(s(7.0))
+                    .h(s(7.0))
+                    .rounded_full()
+                    .flex_shrink_0()
+                    .bg(dot),
+            );
+        }
+        header = header.child(div().flex_1().min_w(px(0.0)));
         if !focused {
-            return header;
+            return header.cursor_pointer();
         }
 
         let zoomed = self.layout.is_zoomed();
@@ -2700,23 +2760,18 @@ impl TerminalView {
                 .items_center()
                 .justify_center()
                 .flex_shrink_0()
-                .w(s(20.0))
-                .h(s(20.0))
-                .rounded(s(4.0))
+                .w(s(22.0))
+                .h(s(22.0))
+                .rounded(s(6.0))
                 .cursor_pointer()
-                .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                .hover(move |el| el.bg(foreground.opacity(0.12)))
                 .tooltip(move |_, cx| {
                     cx.new(|_| TerminalToolbarTooltip {
                         label: label.clone(),
                     })
                     .into()
                 })
-                .child(
-                    svg()
-                        .path(icon)
-                        .size(s(12.0))
-                        .text_color(ShellDeckColors::text_primary()),
-                )
+                .child(svg().path(icon).size(s(13.0)).text_color(quiet))
         };
         let with_keys = |label: String, action: BindableAction| match shortcut_label(action) {
             Some(keys) => format!("{label} ({keys})"),
@@ -2797,20 +2852,20 @@ impl TerminalView {
         // open; once at the minimum, the strip scrolls (overflow_x_scroll).
         let n = self.tabs.len().max(1) as f32;
         let content_w = (window.viewport_size().width.to_f64() as f32) - self.content_left();
-        let reserve = 44.0 * scale; // new-tab button + bar padding
+        // New-tab button, agent launchers, actions button and paddings.
+        let launchers = self.claude_available as u8 + self.codex_available as u8;
+        let reserve = (92.0 + 32.0 * f32::from(launchers)) * scale;
         let usable = (content_w - reserve).max(MIN_TAB_WIDTH * scale);
         let tab_w = (usable / n).clamp(MIN_TAB_WIDTH * scale, MAX_TAB_WIDTH * scale);
 
         let mut tab_bar = div()
             .flex()
             .items_center()
-            .w_full()
-            .h(s(TAB_BAR_HEIGHT))
-            .bg(ShellDeckColors::bg_sidebar())
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .px(s(4.0))
-            .gap(s(1.0))
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full()
+            .pl(s(8.0))
+            .gap(s(4.0))
             .id("terminal-tab-bar")
             .overflow_x_scroll();
 
@@ -2833,30 +2888,34 @@ impl TerminalView {
                 .items_center()
                 .flex_shrink_0()
                 .w(px(tab_w))
-                .h(s(TAB_BAR_HEIGHT - 6.0))
-                .rounded_t(s(6.0));
+                .h(s(TAB_BAR_HEIGHT - 10.0))
+                .rounded(s(8.0))
+                .border_1();
 
+            // A tab is a pill; the active one is a small card like the
+            // panes below it. The border is always there so a tab does not
+            // move when it becomes active.
             if is_active {
                 tab_el = tab_el
                     .bg(ShellDeckColors::terminal_bg())
-                    .border_1()
-                    .border_b_0()
                     .border_color(ShellDeckColors::border())
+                    .shadow_sm()
                     .text_color(ShellDeckColors::text_primary());
             } else {
                 tab_el = tab_el
+                    .border_color(gpui::transparent_black())
                     .text_color(ShellDeckColors::text_muted())
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()).rounded_t(s(6.0)));
+                    .hover(|el| el.bg(ShellDeckColors::hover_bg()));
             }
 
             // Coarse char cap; the flex layout + overflow clip handles the rest.
             let max_chars = 28;
-            let label = tab.display_title();
-            let display_title = if label.chars().count() > max_chars {
-                let truncated: String = label.chars().take(max_chars).collect();
+            let (name, folder) = layout::title_parts(tab.display_title(), None, None);
+            let name = if name.chars().count() > max_chars {
+                let truncated: String = name.chars().take(max_chars).collect();
                 format!("{}\u{2026}", truncated) // ellipsis
             } else {
-                label.to_string()
+                name
             };
 
             // Clickable content area (dot + title) — selects the tab. Grows to
@@ -2928,16 +2987,35 @@ impl TerminalView {
                 );
             }
 
-            // Title — grows, clips when narrow.
-            let tab_content = tab_content.child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .text_size(s(12.0))
-                    .whitespace_nowrap()
-                    .child(display_title),
-            );
+            // Title — the name, then its folder in a quieter colour. The
+            // folder gives way first when the tab is narrow.
+            let mut title = div()
+                .flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .items_center()
+                .gap(s(6.0))
+                .overflow_hidden()
+                .text_size(s(12.0))
+                .whitespace_nowrap()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .max_w_full()
+                        .overflow_hidden()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(name),
+                );
+            if let Some(folder) = folder {
+                title = title.child(
+                    div()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(folder),
+                );
+            }
+            let tab_content = tab_content.child(title);
 
             tab_el = tab_el.child(tab_content);
 
@@ -3023,10 +3101,108 @@ impl TerminalView {
                 })),
         );
 
-        tab_bar
+        // New tab running an agent, beside the new-tab button.
+        let launcher = |id: &'static str, label: String, accent: Hsla, logo: AnyElement| {
+            let label: SharedString = label.into();
+            div()
+                .id(id)
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .w(s(28.0))
+                .h(s(28.0))
+                .rounded(s(6.0))
+                .cursor_pointer()
+                .hover(move |el| el.bg(accent.opacity(0.16)))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| TerminalToolbarTooltip {
+                        label: label.clone(),
+                    })
+                    .into()
+                })
+                .child(logo)
+        };
+        if self.claude_available {
+            tab_bar = tab_bar.child(
+                launcher(
+                    "tab-launch-claude",
+                    t!("terminal.toolbar.claude").to_string(),
+                    Self::claude_orange(),
+                    Self::claude_logo(16.0 * scale).into_any_element(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.launch_claude(cx))),
+            );
+        }
+        if self.codex_available {
+            tab_bar = tab_bar.child(
+                launcher(
+                    "tab-launch-codex",
+                    t!("terminal.toolbar.codex").to_string(),
+                    Self::codex_green(),
+                    Self::codex_logo(16.0 * scale).into_any_element(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.launch_codex(cx))),
+            );
+        }
+
+        // The strip scrolls; the actions button stays at the right edge.
+        div()
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .w_full()
+            .h(s(TAB_BAR_HEIGHT))
+            .bg(Self::canvas_tint())
+            .gap(s(6.0))
+            .pr(s(8.0))
+            .child(tab_bar)
+            .child(self.render_actions_button(window, cx))
     }
 
-    /// Render the toolbar with action buttons between tab bar and terminal grid.
+    /// The button that shows or hides the terminal actions. It sits at the
+    /// end of the tab strip, or in the header of the session list.
+    fn render_actions_button(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let scale = Self::ui_scale(window);
+        let s = |v: f32| px(v * scale);
+        let label: SharedString = t!("terminal.toolbar.more").to_string().into();
+        let open = self.actions_open;
+        div()
+            .id("terminal-actions-btn")
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .w(s(28.0))
+            .h(s(28.0))
+            .rounded(s(6.0))
+            .cursor_pointer()
+            .when(open, |el| el.bg(ShellDeckColors::selected_bg()))
+            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+            .tooltip(move |_, cx| {
+                cx.new(|_| TerminalToolbarTooltip {
+                    label: label.clone(),
+                })
+                .into()
+            })
+            .child(
+                svg()
+                    .path("icons/lucide/ellipsis.svg")
+                    .size(s(14.0))
+                    .text_color(if open {
+                        ShellDeckColors::text_primary()
+                    } else {
+                        ShellDeckColors::text_muted()
+                    }),
+            )
+            .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                this.actions_open = !this.actions_open;
+                cx.notify();
+            }))
+    }
+
+    /// The terminal actions (agents, search, clipboard, splits, zoom,
+    /// scripts, clear): a floating card, shown from `render_actions_button`.
     fn render_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Scale the whole toolbar with the UI size: shadow `px` with a
         // scale-multiplying version so every dimension below tracks the setting.
@@ -3034,7 +3210,8 @@ impl TerminalView {
         let scale = Self::ui_scale(window);
         let px = |v: f32| gpui::px(v * scale);
         let available_width = window.viewport_size().width.to_f64() as f32 - self.content_left();
-        let compact = available_width < 940.0 * scale;
+        // Always icons with tooltips: the actions are a small floating card.
+        let compact = true;
         let show_pinned_scripts = available_width >= 1400.0 * scale;
 
         let zoom = self
@@ -3196,13 +3373,9 @@ impl TerminalView {
         let mut toolbar = div()
             .flex()
             .items_center()
-            .w_full()
-            .h(px(32.0))
+            .h(px(36.0))
             .px(px(8.0))
-            .gap(px(6.0))
-            .bg(ShellDeckColors::bg_sidebar())
-            .border_b_1()
-            .border_color(ShellDeckColors::border());
+            .gap(px(6.0));
 
         if self.claude_available {
             let button = cli_button(
@@ -4542,6 +4715,8 @@ impl TerminalView {
                         view.update(cx, |this, _| {
                             this.grid_x_offset = origin.0;
                             this.grid_y_offset = origin.1;
+                            this.grid_right = origin.0 + bounds.size.width.to_f64() as f32;
+                            this.grid_bottom = origin.1 + bounds.size.height.to_f64() as f32;
                         });
                     }
                 }
@@ -4977,7 +5152,8 @@ impl TerminalView {
 
                     window.paint_quad(fill(
                         Bounds::new(point(track_x, track_y), size(scrollbar_w, track_height)),
-                        hsla(0.0, 0.0, 0.2, 0.3),
+                        // Faint: the track sits inside a pane card.
+                        hsla(0.0, 0.0, 0.5, 0.12),
                     ));
 
                     let ratio = visible_lines as f32 / total_lines as f32;
@@ -5057,19 +5233,23 @@ impl TerminalView {
     }
 
     /// Check if a window-relative position falls on the scrollbar track
-    /// (rightmost ~10px of the grid area).
-    fn is_in_scrollbar_area(&self, position: Point<Pixels>, window: &Window) -> bool {
-        let viewport = window.viewport_size();
-        let scrollbar_start = viewport.width - px(SCROLLBAR_WIDTH + SCROLLBAR_MARGIN + 2.0);
-        position.x >= scrollbar_start && position.y >= px(self.grid_y_offset)
+    /// (rightmost ~10px of the focused grid, as it was last painted).
+    fn is_in_scrollbar_area(&self, position: Point<Pixels>, _window: &Window) -> bool {
+        if self.grid_right <= 0.0 {
+            return false;
+        }
+        let scrollbar_start = px(self.grid_right - (SCROLLBAR_WIDTH + SCROLLBAR_MARGIN + 2.0));
+        position.x >= scrollbar_start
+            && position.x <= px(self.grid_right + layout::PANE_INSET_X)
+            && position.y >= px(self.grid_y_offset)
+            && position.y <= px(self.grid_bottom)
     }
 
     /// Scroll the active session's grid to a position based on the mouse y
     /// coordinate within the scrollbar track.
-    fn scrollbar_scroll_to_y(&mut self, y: Pixels, window: &Window) {
-        let viewport = window.viewport_size();
+    fn scrollbar_scroll_to_y(&mut self, y: Pixels, _window: &Window) {
         let track_top = px(self.grid_y_offset);
-        let track_height = viewport.height - track_top - px(STATUS_BAR_HEIGHT);
+        let track_height = px(self.grid_bottom) - track_top;
         if track_height <= px(0.0) {
             return;
         }
@@ -5282,13 +5462,15 @@ impl TerminalView {
     fn render_context_menu(
         &self,
         state: &ContextMenuState,
+        // Window-space origin of the element the menu is placed in.
+        origin: (f32, f32),
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let mut menu = div()
             .id("context-menu")
             .absolute()
-            .left(state.position.x - px(self.grid_x_offset))
-            .top(state.position.y - px(self.grid_y_offset))
+            .left(state.position.x - px(origin.0))
+            .top(state.position.y - px(origin.1))
             .min_w(px(180.0))
             .bg(ShellDeckColors::bg_surface())
             .border_1()
@@ -6131,7 +6313,12 @@ impl Render for TerminalView {
         } else {
             0.0
         };
-        let mut container = div().relative().flex().flex_col().size_full();
+        let mut container = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(ShellDeckColors::bg_sidebar());
 
         if self.pane.sessions.is_empty() {
             container = container.child(self.render_empty_state(window, cx));
@@ -6199,7 +6386,6 @@ impl Render for TerminalView {
             if !self.session_list_shown() {
                 container = container.child(self.render_tab_bar(window, cx));
             }
-            container = container.child(self.render_toolbar(window, cx));
 
             // Ensure glyph cache is ready
             self.ensure_glyph_cache(window);
@@ -6210,7 +6396,9 @@ impl Render for TerminalView {
                 .clone();
 
             // ---- Pane layout rendering (recursive split tree) ----
-            let area = self.content_area(window);
+            // Cards are placed inside `outer`, the layer's own rectangle.
+            let outer = self.content_area(window);
+            let area = self.panes_area(window);
             let (leaves, dividers) = self.layout.compute(area, SPLIT_DIVIDER_SIZE);
 
             // The focused pane drives the interactive coordinate offsets.
@@ -6220,8 +6408,9 @@ impl Render for TerminalView {
                 .map(|(_, r)| *r)
                 .unwrap_or(area);
             let header_height = self.pane_header_height(window);
-            self.grid_x_offset = focused_rect.x;
-            self.grid_y_offset = focused_rect.y + header_height;
+            let focused_grid = layout::grid_rect(focused_rect, header_height);
+            self.grid_x_offset = focused_grid.x;
+            self.grid_y_offset = focused_grid.y;
 
             // Clear dirty flags on every visible pane this frame, noting whether
             // the focused pane changed (so URL detection can be skipped on
@@ -6246,6 +6435,7 @@ impl Render for TerminalView {
                 .relative()
                 .flex_grow()
                 .size_full()
+                .bg(Self::canvas_tint())
                 .overflow_hidden();
 
             for (id, rect) in &leaves {
@@ -6255,10 +6445,13 @@ impl Render for TerminalView {
                     Some(s) => s.grid.clone(),
                     None => continue,
                 };
-                let local_x = rect.x - area.x;
-                let local_y = rect.y - area.y;
+                let local_x = rect.x - outer.x;
+                let local_y = rect.y - outer.y;
                 let is_focused = id == self.layout.focused;
 
+                // A pane is a card on the pane area. The focused card of a
+                // split is told apart by its border; the grid paints the
+                // same background, inset from the rounded corners.
                 let mut pane = div()
                     .absolute()
                     .left(px(local_x))
@@ -6267,19 +6460,33 @@ impl Render for TerminalView {
                     .h(px(rect.h))
                     .flex()
                     .flex_col()
+                    .rounded(px(layout::PANE_RADIUS))
+                    .bg(self.palette.background_color())
+                    .border_1()
+                    .border_color(if split && is_focused {
+                        ShellDeckColors::primary().opacity(0.55)
+                    } else {
+                        ShellDeckColors::border()
+                    })
+                    .shadow_sm()
                     .overflow_hidden();
 
-                // A header only when split, so the single-pane layout stays
-                // pixel-identical to the unsplit grid. The grid below it is
-                // sized from `layout::grid_rect` with the same height.
+                // A header only when split: the tab already names the only
+                // pane. The grid below it is sized from `layout::grid_rect`
+                // with the same height and the same padding as `wrapper`.
                 if split {
                     pane = pane.child(self.render_pane_header(id, is_focused, window, cx));
                 }
+                // The grid element pads itself by 4px on every side.
+                let grid_own_padding = 4.0;
                 let mut wrapper = div()
                     .relative()
                     .flex_1()
                     .min_h(px(0.0))
                     .w_full()
+                    .px(px(layout::PANE_INSET_X - grid_own_padding))
+                    .pt(px(layout::pane_inset_top(header_height) - grid_own_padding))
+                    .pb(px(layout::PANE_INSET_BOTTOM - grid_own_padding))
                     .overflow_hidden();
 
                 if is_focused {
@@ -6309,7 +6516,20 @@ impl Render for TerminalView {
                         wrapper = wrapper.child(self.render_search_bar(cx));
                     }
                     if let Some(state) = self.context_menu.clone() {
-                        wrapper = wrapper.child(self.render_context_menu(&state, cx));
+                        // The menu is placed inside `wrapper`, from a
+                        // pointer position given in window space.
+                        let wrapper_origin = match self.pane_layer_origin {
+                            Some((x, y)) => (
+                                x + local_x + layout::PANE_BORDER,
+                                y + local_y + layout::PANE_BORDER + header_height,
+                            ),
+                            None => (
+                                self.grid_x_offset - layout::PANE_INSET_X,
+                                self.grid_y_offset - layout::pane_inset_top(header_height),
+                            ),
+                        };
+                        wrapper =
+                            wrapper.child(self.render_context_menu(&state, wrapper_origin, cx));
                     }
                 } else {
                     wrapper = wrapper.child(self.render_split_passive_grid(
@@ -6325,8 +6545,8 @@ impl Render for TerminalView {
 
             // Draggable dividers (each carries the path to its split node).
             for d in &dividers {
-                let local_x = d.rect.x - area.x;
-                let local_y = d.rect.y - area.y;
+                let local_x = d.rect.x - outer.x;
+                let local_y = d.rect.y - outer.y;
                 let is_h = matches!(d.direction, SplitDirection::Horizontal);
                 let path = d.path.clone();
                 let mut div_el = div()
@@ -6339,15 +6559,15 @@ impl Render for TerminalView {
                     .top(px(local_y))
                     .w(px(d.rect.w))
                     .h(px(d.rect.h))
-                    .bg(ShellDeckColors::border())
-                    .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.5)));
+                    .rounded_full()
+                    .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.35)));
                 div_el = if is_h {
                     div_el.cursor_col_resize()
                 } else {
                     div_el.cursor_row_resize()
                 };
                 if self.split_dragging {
-                    div_el = div_el.bg(ShellDeckColors::primary().opacity(0.5));
+                    div_el = div_el.bg(ShellDeckColors::primary().opacity(0.35));
                 }
                 div_el = div_el.on_mouse_down(
                     MouseButton::Left,
@@ -6366,7 +6586,7 @@ impl Render for TerminalView {
                     pane_layer = pane_layer
                         .on_mouse_move(cx.listener(
                             move |this, event: &MouseMoveEvent, window, cx| {
-                                let area = this.content_area(window);
+                                let area = this.panes_area(window);
                                 if let Some(nr) =
                                     this.layout.node_rect(&path, area, SPLIT_DIVIDER_SIZE)
                                 {
@@ -6392,7 +6612,65 @@ impl Render for TerminalView {
                 }
             }
 
+            // Record the layer's real size; a change lays the cards out
+            // again on the next frame.
+            let measure = cx.entity().downgrade();
+            pane_layer = pane_layer.child(
+                canvas(
+                    move |bounds, _, cx| {
+                        let size = (
+                            (bounds.size.width.to_f64() as f32).max(1.0),
+                            (bounds.size.height.to_f64() as f32).max(1.0),
+                        );
+                        let origin = (
+                            bounds.origin.x.to_f64() as f32,
+                            bounds.origin.y.to_f64() as f32,
+                        );
+                        cx.defer(move |cx| {
+                            let _ = measure.update(cx, |this, cx| {
+                                this.pane_layer_origin = Some(origin);
+                                let changed = this.pane_layer_size.is_none_or(|(w, h)| {
+                                    (w - size.0).abs() > 0.5 || (h - size.1).abs() > 0.5
+                                });
+                                if changed {
+                                    this.pane_layer_size = Some(size);
+                                    cx.notify();
+                                }
+                            });
+                        });
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            );
+
             container = container.child(pane_layer);
+
+            // The actions float over the top of the pane area, under their
+            // button: no row is taken from the panes and no grid is resized.
+            if self.actions_open {
+                let top = px(self.chrome_top_offset(window) + layout::PANE_MARGIN / 2.0);
+                let mut card = div()
+                    .id("terminal-actions")
+                    .absolute()
+                    .top(top)
+                    .rounded(px(layout::PANE_RADIUS))
+                    .bg(ShellDeckColors::bg_surface())
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .shadow_lg()
+                    .occlude()
+                    .child(self.render_toolbar(window, cx));
+                card = if self.session_list_shown() {
+                    card.left(px(layout::PANE_MARGIN))
+                } else {
+                    card.right(px(layout::PANE_MARGIN))
+                };
+                container = container.child(card);
+            }
 
             // Tab context menu overlays the whole terminal view.
             if let Some(state) = self.tab_context_menu.clone() {
@@ -6442,11 +6720,10 @@ mod tests {
             super::content_left(48.0, false, 232.0),
             48.0 + super::SIDEBAR_HANDLE_WIDTH + 232.0
         );
-        assert_eq!(
-            super::chrome_rows_height(false),
-            super::TAB_BAR_HEIGHT + super::TOOLBAR_HEIGHT
-        );
-        assert_eq!(super::chrome_rows_height(true), super::TOOLBAR_HEIGHT);
+        // No toolbar row: the tab strip is the only row above the panes,
+        // and the session list leaves none.
+        assert_eq!(super::chrome_rows_height(false), super::TAB_BAR_HEIGHT);
+        assert_eq!(super::chrome_rows_height(true), 0.0);
     }
 
     // SDTEST-1333 / SDTEST-1334 retired 2026-08-06: command_available now

@@ -1194,7 +1194,15 @@ real window.
 |---|---|---|---|---|
 | SDTEST-3108 | `terminal_view::layout::title_tests::sdtest_3108_the_session_list_groups_terminals_by_machine_in_tab_order` | SDUC-579 | Green | No GPUI. This machine first, connections in the order of their first tab, tab order kept inside a group, the machine name taken from whichever tab of the connection has one, no group for an empty list. |
 | SDTEST-3109 | `terminal_view::layout::daemon_layout_tests::sdtest_3109_a_maximized_pane_is_laid_out_alone_and_the_tree_is_kept` | SDUC-579 | Green | No GPUI. A maximized pane gets the whole area with no divider; it follows the focus; a single pane cannot be maximized; restoring gives back the exact rectangles; the header height comes off the top of a pane and never exceeds it. |
-| SDTEST-3110 | `terminal_view::tests::sdtest_3110_the_session_list_moves_the_content_and_replaces_the_tab_strip` | SDUC-579 | Green | No GPUI. The content starts right of the session list, with and without the application sidebar; the rows above the panes lose the tab strip while the list is shown. |
+| SDTEST-3110 | `terminal_view::tests::sdtest_3110_the_session_list_moves_the_content_and_replaces_the_tab_strip` | SDUC-579 | Green | No GPUI. The content starts right of the session list, with and without the application sidebar; the tab strip is the only row above the panes (no toolbar row, SDUC-580) and the session list leaves none. |
+
+| SDTEST-3111 | `terminal_view::layout::daemon_layout_tests::sdtest_3111_the_grid_is_sized_inside_the_card` | SDUC-580 | Green | No GPUI. The cards are laid out inside the margin; the grid is what is left inside the border and the padding, without a header; a card smaller than its padding has an empty grid, never a negative one. |
+| SDTEST-3112 | `terminal_view::layout::daemon_layout_tests::sdtest_3112_a_title_is_split_into_a_name_and_a_folder` | SDUC-580 | Green | No GPUI. `user@host: ~/folder` is split at the colon; another title is completed by the reported folder with the home shortened, another user's folder left whole; a colon not followed by a folder splits nothing; a folder already in the title is not repeated. |
+
+SDTEST-3109 now expects the grid under the header inside the card's border
+and padding (SDUC-580). Not automated: the painting of the cards, headers
+and tabs, the resize handle, the scrollbar and the context menu position
+(native walkthrough of 2026-11-13 in SDUC-580).
 
 SDTEST-3100 now also covers `maximize_pane` (24 actions). SDTEST-2945 toggles
 the session list for its "sidebar" input: in the Terminal view the menu's

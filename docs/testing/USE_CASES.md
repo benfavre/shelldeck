@@ -3367,6 +3367,7 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-13**: Added SDUC-580: terminal panes drawn as cards, a name and a folder in pane headers and tabs, tabs as pills, the space between cards as the resize handle. SDUC-579 amended (the look of a header moved to SDUC-580). The context menu opens at the pointer (it was about 36 px lower); the scrollbar is grabbed on the active pane's own edge. The toolbar row is removed: its actions open from a "⋯" button, Claude and Codex are beside "+". SDTEST-3111, SDTEST-3112; SDTEST-3109 follows the card padding, SDTEST-3110 the rows above the panes.
 - **2026-11-12**: Added SDUC-579: terminal session list grouped by machine, headers on split panes with their actions, maximize a pane. SDUC-575 amended (the sidebar button and shortcut now act in the Terminal view), SDUC-577 amended (24 actions, `maximize_pane`). The tab context menu is drawn again. SDTEST-3108..3110.
 
 - **2026-11-12**: Added SDUC-578: pane commands of `shelldeck-sessiond` for scripts and agents (`ls`, `run`, `send`, `read`, `wait`). SDTEST-3104..3107.
@@ -5374,12 +5375,11 @@ panes with their own header and actions, sessions listed by machine).
   once. The choice is saved (`[terminal] session_list`) and applies to the
   full application and to the focused Terminal view. Without any terminal the
   welcome screen is shown alone.
-- **Pane headers.** In a split tab, each pane has a header with a status dot
-  and the title its program set. The header of the active pane is tinted and
-  underlined in the accent colour, which is how the active pane is told
-  apart, and carries four buttons: split side by side, split top and bottom,
-  maximize or restore, close the pane. Clicking a header makes its pane the
-  active one. A tab that is not split has no header.
+- **Pane headers.** In a split tab, each pane has a header with the title
+  its program set. The header of the active pane carries four buttons: split
+  side by side, split top and bottom, maximize or restore, close the pane.
+  Clicking a header makes its pane the active one. A tab that is not split
+  has no header. How a header and the active pane look is SDUC-580.
 - **Maximize.** The header button, `Ctrl+Shift+Enter` (`maximize_pane` in
   `[keybindings]`) or the Terminal menu show the active pane alone over the
   whole tab; the same brings the split back as it was. The other panes keep
@@ -5403,3 +5403,56 @@ restart; the tab menu from a tab and from a list row. Not checked: connection
 (SSH) groups, which need a server; session daemon tabs; macOS and Windows.
 Not done: the list cannot be resized or reordered; a pane's context menu is
 still clipped at the edge of its pane.
+
+
+### SDUC-580: Terminal panes as cards
+
+How the Terminal view is drawn: panes as rounded cards on a quiet surface, a
+name and a folder in each header, tabs as pills.
+
+- **Cards.** Every pane is a rounded card with the background of the terminal
+  theme, a thin border and a light shadow. The cards sit on one tinted
+  surface shared with the tab strip, with the same margin on
+  the four sides and the same space between two cards. A tab that is not
+  split is one card. In a split, the border of the active card takes the
+  accent colour: that is how the active pane is told apart.
+- **Resizing.** The space between two cards is the handle: it is highlighted
+  under the pointer and while it is dragged. There is no divider line.
+- **Text inside a card.** The grid keeps a padding from the border on every
+  side and is sized for what is left: no row or column is cut, none is drawn
+  under a rounded corner.
+- **Headers.** The header of a pane has no background of its own. It shows a
+  terminal icon, the name in bold and, in a quieter colour, the folder: a
+  title of the form `user@host: ~/folder` is split at the colon; any other
+  title is the name, completed by the folder the terminal reported (OSC 7,
+  home shortened to `~`) unless the title already shows it. A dot follows
+  only when the program reported a status (working, blocked, error, done).
+  The ink comes from the terminal theme, so a dark terminal in a light
+  application stays readable.
+- **Tabs.** A tab is a pill; the active one is a small card. The name and the
+  folder are told apart as in a header, and the folder gives way first when
+  the tab is narrow.
+- **No toolbar row.** The row of buttons under the tab strip is gone: the
+  tab strip is the only row above the cards, and the session list leaves
+  none. A "⋯" button at the right end of the tab strip, or in the header of
+  the session list, shows and hides the same actions (agents, AI, search,
+  copy, paste, splits or tmux, terminal text size, scripts, clear) as a
+  floating card over the top of the pane area: no pane is resized. Claude
+  and Codex, when installed, also have a button each beside "+" in the tab
+  strip, which opens a tab running the agent.
+- **Scrollbar and context menu.** The scrollbar is drawn and grabbed at the
+  right edge of the grid of the active pane, wherever that pane is. The
+  context menu opens at the pointer.
+
+Verified by SDTEST-3111 (grid inside the card) and SDTEST-3112 (name and
+folder). Checked in a native walkthrough on 2026-11-13 (private headless
+desktop, throwaway profile, local `bash` terminals, 1200 x 800 window; in
+[`screenshots/2026-11-13-terminal-cards/`](./screenshots/2026-11-13-terminal-cards/)):
+three panes in the Light and Dark terminal themes, margins measured at 8 px
+on the four sides, a tab that is not split, a maximized pane, the context
+menu at the pointer, a split resized by dragging the space between two
+cards, the focused Terminal view and the full application, the actions
+card opened and closed from its button in the tab strip, the session list
+with its own button and no row above the cards. Not checked on
+screen: dragging the scrollbar, a UI scale other than 100 %, macOS and
+Windows.

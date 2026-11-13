@@ -1212,6 +1212,7 @@ sync.progress.percent = "%{pct}%"
 # Terminal
 terminal.toolbar.claude = "Claude"
 terminal.toolbar.codex = "Codex"
+terminal.toolbar.more = "Terminal actions"
 terminal.toolbar.search = "Search"
 terminal.toolbar.copy = "Copy"
 terminal.toolbar.paste = "Paste"

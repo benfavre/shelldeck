@@ -72,18 +72,90 @@ pub fn session_groups(tabs: &[TerminalTab]) -> Vec<SessionGroup> {
 
 /// Height of the header drawn above each pane of a split tab, before UI
 /// scaling.
-pub(super) const PANE_HEADER_HEIGHT: f32 = 24.0;
+pub(super) const PANE_HEADER_HEIGHT: f32 = 30.0;
 
-/// The part of a pane's rectangle left to its grid under a header of
-/// `header` pixels. The grid is sized from this, so the last rows are never
-/// drawn under the bottom edge.
-pub(super) fn grid_rect(rect: PaneRect, header: f32) -> PaneRect {
-    let header = header.clamp(0.0, rect.h);
-    PaneRect {
-        y: rect.y + header,
-        h: rect.h - header,
-        ..rect
+/// Space between the pane cards and the edges of the pane area.
+pub(super) const PANE_MARGIN: f32 = 8.0;
+/// Space between two pane cards. It is also the handle that resizes them.
+pub(super) const PANE_GAP: f32 = 8.0;
+/// Corner radius of a pane card.
+pub(super) const PANE_RADIUS: f32 = 10.0;
+/// Border of a pane card.
+pub(super) const PANE_BORDER: f32 = 1.0;
+/// Space between the border of a card and its grid, left and right.
+pub(super) const PANE_INSET_X: f32 = 10.0;
+/// Space between the bottom border of a card and its grid.
+pub(super) const PANE_INSET_BOTTOM: f32 = 8.0;
+/// Space above the grid: under the top border of a card without a header.
+pub(super) const PANE_INSET_TOP: f32 = 8.0;
+/// Space above the grid under a header, which brings its own height.
+pub(super) const PANE_INSET_UNDER_HEADER: f32 = 4.0;
+
+/// Space above the grid inside a card, below its border and its header.
+pub(super) fn pane_inset_top(header: f32) -> f32 {
+    if header > 0.0 {
+        PANE_INSET_UNDER_HEADER
+    } else {
+        PANE_INSET_TOP
     }
+}
+
+/// `rect` with `margin` taken off each side, never negative in size.
+pub(super) fn inset_rect(rect: PaneRect, margin: f32) -> PaneRect {
+    let dx = margin.clamp(0.0, rect.w / 2.0);
+    let dy = margin.clamp(0.0, rect.h / 2.0);
+    PaneRect {
+        x: rect.x + dx,
+        y: rect.y + dy,
+        w: rect.w - 2.0 * dx,
+        h: rect.h - 2.0 * dy,
+    }
+}
+
+/// The part of a pane card left to its grid under a header of `header`
+/// pixels: inside the border, the header and the padding. The grid is sized
+/// from this, so the last rows and columns are never drawn under an edge.
+pub(super) fn grid_rect(rect: PaneRect, header: f32) -> PaneRect {
+    let side = (PANE_BORDER + PANE_INSET_X).min(rect.w / 2.0);
+    let top = (PANE_BORDER + header.max(0.0) + pane_inset_top(header)).min(rect.h);
+    let bottom = (PANE_BORDER + PANE_INSET_BOTTOM).min(rect.h - top);
+    PaneRect {
+        x: rect.x + side,
+        y: rect.y + top,
+        w: rect.w - 2.0 * side,
+        h: rect.h - top - bottom,
+    }
+}
+
+/// A terminal title as a name and, when the title carries one, the folder
+/// shown beside it in a quieter colour. Shells commonly set
+/// `user@host: ~/folder`; any other title is a name alone, completed by the
+/// folder the terminal reported (OSC 7) when the title does not show it.
+pub(super) fn title_parts(
+    title: &str,
+    cwd: Option<&str>,
+    home: Option<&str>,
+) -> (String, Option<String>) {
+    let title = title.trim();
+    if let Some((name, path)) = title.split_once(": ") {
+        let path = path.trim();
+        if !name.trim().is_empty() && (path.starts_with('/') || path.starts_with('~')) {
+            return (name.trim().to_string(), Some(path.to_string()));
+        }
+    }
+    let folder = cwd
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+        .map(|cwd| match home.map(|h| h.trim_end_matches('/')) {
+            Some(home) if !home.is_empty() && cwd == home => "~".to_string(),
+            Some(home) if !home.is_empty() => match cwd.strip_prefix(home) {
+                Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+                _ => cwd.to_string(),
+            },
+            _ => cwd.to_string(),
+        })
+        .filter(|folder| !title.contains(folder.as_str()));
+    (title.to_string(), folder)
 }
 
 /// How the tab dot shows a reported status.
@@ -608,6 +680,7 @@ mod daemon_layout_tests {
         attached_tab_state, daemon_tree_of, grid_rect, pane_tree_from_daemon, PaneId, PaneNode,
         PaneRect, SplitDirection, TabLayout, PANE_HEADER_HEIGHT,
     };
+    use super::{inset_rect, title_parts};
     use shelldeck_terminal::attached::AttachedPhase;
     use shelldeck_terminal::session::SessionState;
     use std::collections::HashMap;
@@ -691,11 +764,94 @@ mod daemon_layout_tests {
         let grid = grid_rect(area, PANE_HEADER_HEIGHT);
         assert_eq!(
             (grid.y, grid.h),
-            (50.0 + PANE_HEADER_HEIGHT, 600.0 - PANE_HEADER_HEIGHT)
+            (
+                50.0 + 1.0 + PANE_HEADER_HEIGHT + 4.0,
+                600.0 - 1.0 - PANE_HEADER_HEIGHT - 4.0 - 8.0 - 1.0
+            )
         );
-        assert_eq!((grid.x, grid.w), (area.x, area.w));
         let tiny = grid_rect(PaneRect { h: 10.0, ..area }, PANE_HEADER_HEIGHT);
         assert_eq!((tiny.y, tiny.h), (60.0, 0.0));
+    }
+
+    // SDTEST-3111 / SDUC-580. A pane is a card: the grid is sized inside
+    // its border and padding, so no cell is drawn under an edge or a
+    // rounded corner, with and without a header.
+    #[test]
+    fn sdtest_3111_the_grid_is_sized_inside_the_card() {
+        let area = PaneRect {
+            x: 100.0,
+            y: 50.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        let cards = inset_rect(area, 8.0);
+        assert_eq!(
+            [cards.x, cards.y, cards.w, cards.h],
+            [108.0, 58.0, 784.0, 584.0]
+        );
+        // Without a header: border and padding on the four sides.
+        let grid = grid_rect(cards, 0.0);
+        assert_eq!(
+            [grid.x, grid.y, grid.w, grid.h],
+            [119.0, 67.0, 762.0, 566.0]
+        );
+        // A card too small for its padding has an empty grid, not a
+        // negative one.
+        let small = grid_rect(
+            PaneRect {
+                x: 0.0,
+                y: 0.0,
+                w: 12.0,
+                h: 12.0,
+            },
+            0.0,
+        );
+        assert_eq!((small.w, small.h), (0.0, 0.0));
+        let none = inset_rect(
+            PaneRect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 4.0,
+            },
+            8.0,
+        );
+        assert_eq!((none.w, none.h), (0.0, 0.0));
+    }
+
+    // SDTEST-3112 / SDUC-580. The name and the folder of a terminal are
+    // told apart from its title; the reported folder completes a title
+    // that does not show one, with the home directory shortened.
+    #[test]
+    fn sdtest_3112_a_title_is_split_into_a_name_and_a_folder() {
+        let parts = |title, cwd| title_parts(title, cwd, Some("/home/ana"));
+        assert_eq!(
+            parts("ana@box: ~/dev/app", Some("/home/ana/dev/app")),
+            ("ana@box".to_string(), Some("~/dev/app".to_string()))
+        );
+        assert_eq!(
+            parts("vim", Some("/home/ana/dev/app")),
+            ("vim".to_string(), Some("~/dev/app".to_string()))
+        );
+        assert_eq!(
+            parts("vim", Some("/home/ana")),
+            ("vim".to_string(), Some("~".to_string()))
+        );
+        // Another user's folder is not this home.
+        assert_eq!(
+            parts("vim", Some("/home/anabel/x")),
+            ("vim".to_string(), Some("/home/anabel/x".to_string()))
+        );
+        // Not a folder after the colon, no folder reported: a name alone.
+        assert_eq!(
+            parts("build: done", None),
+            ("build: done".to_string(), None)
+        );
+        // The title already shows the folder.
+        assert_eq!(
+            parts("~/dev/app — fish", Some("/home/ana/dev/app")),
+            ("~/dev/app — fish".to_string(), None)
+        );
     }
 
     // SDTEST-3011 (SDUC-574): the native split tree is saved by daemon
