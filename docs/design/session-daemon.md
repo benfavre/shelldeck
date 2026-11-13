@@ -376,7 +376,9 @@ and missed a status that came and went between two looks.
   list, those that arrived before the reply included. An event is queued
   under the lock of its pane, in the same queue as the replies, so an event
   queued after a reply is newer than what the reply says; one queued before
-  it carries a value the list already has or a newer one. Events for a pane
+  it carries the value the list has or an older one, and the last of those
+  for a field is the value of the list, so applying them in order ends on
+  the list. Events for a pane
   the client does not know (removed since) are dropped.
 - **Order.** The events of one pane reach a subscriber in the order the
   changes happened. Nothing is promised between two panes.

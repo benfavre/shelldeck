@@ -2954,6 +2954,8 @@ fn pane_cli(dir: &RunDir, args: &[&str]) -> (i32, String, String) {
             .arg("--dir")
             .arg(&dir.path)
             .args(&args[1..])
+            // The suite may itself run inside a pane.
+            .env_remove("SHELLDECK_PANE")
             .stdin(std::process::Stdio::null())
             .output()
             .expect("run the pane command")

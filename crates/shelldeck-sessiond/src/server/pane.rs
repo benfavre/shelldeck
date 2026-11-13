@@ -797,6 +797,15 @@ impl Pane {
             state
                 .events
                 .publish(self.id, PaneChange::Started(self.info_of(&state)));
+            // The reader runs since the pane was created: a status its
+            // program reported before this line was told for a pane the
+            // subscribers did not know yet, and `Started` does not carry
+            // it. Said again, it is not lost.
+            if let Some(status) = &state.told.status {
+                state
+                    .events
+                    .publish(self.id, PaneChange::Status(Some(status.clone())));
+            }
         }
     }
 
