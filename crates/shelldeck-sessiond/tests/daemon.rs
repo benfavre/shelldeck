@@ -3187,11 +3187,13 @@ async fn sdtest_3118_status_keys_html_and_events_from_the_command_line() {
         .display()
         .to_string();
     let probe = format!(
-        "case \":$PATH:\" in *\":{bin_dir}:\"*) echo path-$((1+1))-$SHELLDECK_SESSIOND;; esac"
+        "case \":$PATH:\" in *\":{bin_dir}:\"*) \
+         [ \"$SHELLDECK_SESSIOND\" = \"{BIN}\" ] && echo path-$((1+1))-ok;; esac"
     );
     let (code, _, err) = pane_cli(&dir, &["send", "agent", "--", &probe]);
     assert_eq!(code, 0, "{err}");
-    pane_shows(&dir, "agent", "10", &format!("path-2-{BIN}"));
+    // A short answer: the path itself wraps in the pane when it is long.
+    pane_shows(&dir, "agent", "10", "path-2-ok");
 
     // Nothing reported yet.
     let (code, out, err) = pane_cli(&dir, &["status", "agent"]);
