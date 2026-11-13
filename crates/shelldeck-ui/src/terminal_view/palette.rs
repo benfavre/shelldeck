@@ -77,6 +77,13 @@ impl TerminalPalette {
         rgb_to_hsla(self.background)
     }
 
+    /// The theme's default text colour as an opaque `Hsla`: what is drawn
+    /// on a pane card outside the grid must be readable on its background.
+    #[inline]
+    pub(super) fn foreground_color(&self) -> Hsla {
+        rgb_to_hsla(self.foreground)
+    }
+
     /// Resolve a `TermColor` to an HSLA value using this palette.
     #[inline]
     pub(super) fn resolve(&self, color: &TermColor, is_foreground: bool) -> Hsla {

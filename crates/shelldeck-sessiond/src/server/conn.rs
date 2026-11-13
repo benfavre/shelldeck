@@ -258,7 +258,7 @@ fn handshake(shared: &Shared, out: &ConnOut, frame: ClientFrame) -> bool {
     }
     out.send(&DaemonFrame::HelloAck(HelloAck {
         proto: PROTOCOL_VERSION,
-        features: 0,
+        features: crate::protocol::FEATURE_PANE_STATUS,
         daemon_version: shared.config.daemon_version.clone(),
         instance: shared.instance,
         max_frame: MAX_FRAME_BYTES as u32,
@@ -291,6 +291,9 @@ fn handle(
         ClientFrame::ListPanes => {
             let panes = shared.list_panes();
             out.send(&DaemonFrame::PaneList(panes));
+        }
+        ClientFrame::ListStatus => {
+            out.send(&DaemonFrame::StatusList(shared.list_status()));
         }
         ClientFrame::Spawn(spawn) => {
             let request_id = spawn.request_id;
@@ -424,7 +427,16 @@ fn spawn_pane(shared: &Arc<Shared>, spawn: Spawn) -> Result<(Arc<Pane>, String),
         }
         None => &spawn.argv,
     };
-    let (pty, _reader) = LocalPty::spawn_command(argv, &spawn.env, &cwd, spawn.rows, spawn.cols)
+    // The pane knows itself: its id, and where the pane commands are
+    // (`docs/pane-cli.md`), whatever the client asked for.
+    let id = Uuid::new_v4();
+    let mut env = spawn.env.clone();
+    env.extend(
+        shared
+            .config
+            .pane_identity_env(id, std::env::var_os("PATH")),
+    );
+    let (pty, _reader) = LocalPty::spawn_command(argv, &env, &cwd, spawn.rows, spawn.cols)
         .map_err(|e| {
             tracing::warn!(error = %e, "spawn failed");
             ErrorCode::SpawnFailed
@@ -440,6 +452,7 @@ fn spawn_pane(shared: &Arc<Shared>, spawn: Spawn) -> Result<(Arc<Pane>, String),
             master,
             writer,
             pid,
+            id,
         },
         spawn.group,
         spawn.label,

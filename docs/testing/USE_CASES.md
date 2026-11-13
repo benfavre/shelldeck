@@ -3367,6 +3367,9 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-13**: Added SDUC-582: `focus`, `rename`, `zoom`, `unzoom` from the command line; `send` and `send-key` refuse a pane that waits for a permission. SDTEST-3122, 3123.
+- **2026-11-13**: Added SDUC-581: pane commands for agents (`split`, `send-key`, `status`, `events`, `skill setup`, `read --format html`, `--json`), a pane knows its own id, the daemon keeps the reported status (`ListStatus`). SDUC-578 amended. SDTEST-3113..3121.
+- **2026-11-13**: Added SDUC-580: terminal panes drawn as cards, a name and a folder in pane headers and tabs, tabs as pills, the space between cards as the resize handle. SDUC-579 amended (the look of a header moved to SDUC-580). The context menu opens at the pointer (it was about 36 px lower); the scrollbar is grabbed on the active pane's own edge. The toolbar row is removed: its actions open from a "⋯" button, Claude and Codex are beside "+". SDTEST-3111, SDTEST-3112; SDTEST-3109 follows the card padding, SDTEST-3110 the rows above the panes.
 - **2026-11-12**: Added SDUC-579: terminal session list grouped by machine, headers on split panes with their actions, maximize a pane. SDUC-575 amended (the sidebar button and shortcut now act in the Terminal view), SDUC-577 amended (24 actions, `maximize_pane`). The tab context menu is drawn again. SDTEST-3108..3110.
 
 - **2026-11-12**: Added SDUC-578: pane commands of `shelldeck-sessiond` for scripts and agents (`ls`, `run`, `send`, `read`, `wait`). SDTEST-3104..3107.
@@ -5352,11 +5355,11 @@ outlives it and steer it. Reference: [`pane-cli.md`](../pane-cli.md).
 
 Verified by SDTEST-3104 and SDTEST-3105 (selection, JSON list, exit status)
 and by SDTEST-3106 and SDTEST-3107, which run the real binary against a real
-daemon in a private temporary directory. Not done: a pane does not know its
-own id; `send` does not refuse a program blocked on a permission question; a
-status reached before `wait --until` started is not known (the daemon keeps
-no status); a running application does not show a pane started here until it
-restarts. Windows has no daemon.
+daemon in a private temporary directory. Not done: `send` does not refuse a
+program blocked on a permission question; a running application does not
+show a pane started with `run` until it restarts. Windows has no daemon.
+What SDUC-581 added: a pane knows its own id, the daemon keeps the reported
+status, `split` shows a pane at once.
 
 ### SDUC-579: Terminal session list, pane headers and maximizing a pane
 
@@ -5374,12 +5377,11 @@ panes with their own header and actions, sessions listed by machine).
   once. The choice is saved (`[terminal] session_list`) and applies to the
   full application and to the focused Terminal view. Without any terminal the
   welcome screen is shown alone.
-- **Pane headers.** In a split tab, each pane has a header with a status dot
-  and the title its program set. The header of the active pane is tinted and
-  underlined in the accent colour, which is how the active pane is told
-  apart, and carries four buttons: split side by side, split top and bottom,
-  maximize or restore, close the pane. Clicking a header makes its pane the
-  active one. A tab that is not split has no header.
+- **Pane headers.** In a split tab, each pane has a header with the title
+  its program set. The header of the active pane carries four buttons: split
+  side by side, split top and bottom, maximize or restore, close the pane.
+  Clicking a header makes its pane the active one. A tab that is not split
+  has no header. How a header and the active pane look is SDUC-580.
 - **Maximize.** The header button, `Ctrl+Shift+Enter` (`maximize_pane` in
   `[keybindings]`) or the Terminal menu show the active pane alone over the
   whole tab; the same brings the split back as it was. The other panes keep
@@ -5403,3 +5405,146 @@ restart; the tab menu from a tab and from a list row. Not checked: connection
 (SSH) groups, which need a server; session daemon tabs; macOS and Windows.
 Not done: the list cannot be resized or reordered; a pane's context menu is
 still clipped at the edge of its pane.
+
+
+### SDUC-580: Terminal panes as cards
+
+How the Terminal view is drawn: panes as rounded cards on a quiet surface, a
+name and a folder in each header, tabs as pills.
+
+- **Cards.** Every pane is a rounded card with the background of the terminal
+  theme, a thin border and a light shadow. The cards sit on one tinted
+  surface shared with the tab strip, with the same margin on
+  the four sides and the same space between two cards. A tab that is not
+  split is one card. In a split, the border of the active card takes the
+  accent colour: that is how the active pane is told apart.
+- **Resizing.** The space between two cards is the handle: it is highlighted
+  under the pointer and while it is dragged. There is no divider line.
+- **Text inside a card.** The grid keeps a padding from the border on every
+  side and is sized for what is left: no row or column is cut, none is drawn
+  under a rounded corner.
+- **Headers.** The header of a pane has no background of its own. It shows a
+  terminal icon, the name in bold and, in a quieter colour, the folder: a
+  title of the form `user@host: ~/folder` is split at the colon; any other
+  title is the name, completed by the folder the terminal reported (OSC 7,
+  home shortened to `~`) unless the title already shows it. A dot follows
+  only when the program reported a status (working, blocked, error, done).
+  The ink comes from the terminal theme, so a dark terminal in a light
+  application stays readable.
+- **Tabs.** A tab is a pill; the active one is a small card. The name and the
+  folder are told apart as in a header, and the folder gives way first when
+  the tab is narrow.
+- **No toolbar row.** The row of buttons under the tab strip is gone: the
+  tab strip is the only row above the cards, and the session list leaves
+  none. A "⋯" button at the right end of the tab strip, or in the header of
+  the session list, shows and hides the same actions (agents, AI, search,
+  copy, paste, splits or tmux, terminal text size, scripts, clear) as a
+  floating card over the top of the pane area: no pane is resized. Claude
+  and Codex, when installed, also have a button each beside "+" in the tab
+  strip, which opens a tab running the agent.
+- **Scrollbar and context menu.** The scrollbar is drawn and grabbed at the
+  right edge of the grid of the active pane, wherever that pane is. The
+  context menu opens at the pointer.
+
+Verified by SDTEST-3111 (grid inside the card) and SDTEST-3112 (name and
+folder). Checked in a native walkthrough on 2026-11-13 (private headless
+desktop, throwaway profile, local `bash` terminals, 1200 x 800 window; in
+[`screenshots/2026-11-13-terminal-cards/`](./screenshots/2026-11-13-terminal-cards/)):
+three panes in the Light and Dark terminal themes, margins measured at 8 px
+on the four sides, a tab that is not split, a maximized pane, the context
+menu at the pointer, a split resized by dragging the space between two
+cards, the focused Terminal view and the full application, the actions
+card opened and closed from its button in the tab strip, the session list
+with its own button and no row above the cards. Not checked on
+screen: dragging the scrollbar, a UI scale other than 100 %, macOS and
+Windows.
+
+### SDUC-581: Pane commands for agents: split, keys, status, events, skill
+
+What the pane commands of SDUC-578 lacked for a coding agent to work beside
+itself: open a pane next to its own, press keys, know what another program is
+doing without having watched it, follow changes, and be taught all of it.
+Reference: [`pane-cli.md`](../pane-cli.md).
+
+- **A pane knows itself.** Every pane the daemon starts has `SHELLDECK_PANE`
+  (its id) and `SHELLDECK_SESSIOND` (the binary), and a `PATH` that ends
+  with the binary's directory.
+- **`split [PANE] [--right|--down] [--ratio R] [-- ARGV...]`** starts a pane
+  and shows it in the running application beside PANE (beside its own pane
+  when none is named), at the right or below, taking the share R. The active
+  tab and the keyboard focus do not change. The split is saved with the
+  layout. When no application shows it (none runs, persistent sessions off,
+  no tab shows that pane), the command says so and the pane runs all the
+  same. A bad ratio or an unknown pane starts nothing.
+- **`send-key PANE KEY...`** presses named keys (Enter, Esc, Tab, arrows,
+  function keys, one character) with Ctrl, Alt and Shift. A name that is not
+  a key types nothing.
+- **Status.** The daemon keeps what each program last reported (OSC 7501).
+  `status PANE` prints it, `ls` lists it, and `wait --until STATE` returns at
+  once when it is already the status. A daemon of an older version is not
+  asked: `status` says so.
+- **`read --format html`** prints the lines with their colours, bold, italic,
+  underline, inverse video and links, the program's text escaped.
+- **`events`** prints one JSON line per pane that exists, then per change:
+  started, exited, removed, title, folder, size, viewers, status.
+- **`--json`** on `run`, `split`, `status` and `wait`.
+- **`skill setup`** writes a skill describing these commands into the skills
+  directory of Claude Code, Codex, OpenCode and Pi, for the agents set up
+  for the user or those named with `--agent`.
+- The wire protocol gains one request and its reply (`ListStatus`,
+  `StatusList`), announced by a feature bit; nothing else changes on the
+  wire. The split request does not travel on it: it is a file in the user's
+  private run directory that the application takes and answers.
+
+Verified by SDTEST-3113 (keys), SDTEST-3114 (status and events), SDTEST-3115
+(skill text), SDTEST-3116 (split request), SDTEST-3117 (HTML), SDTEST-3118
+and SDTEST-3119 (the real binary against a real daemon: identity, status
+kept, keys, HTML, events, split with and without an application),
+SDTEST-3120 (skill setup) and SDTEST-3121 (placement in the tab). Checked in
+a native walkthrough on 2026-11-13 (private headless desktop, throwaway
+profile, persistent sessions on, debug build): `split --right` and
+`split --down --ratio 0.3` typed in a pane opened a pane at its right and
+one below it, the focus stayed, both panes took input and reported their
+size (32 x 67 and 7 rows), `workspace.json` held the two splits with the
+ratio 0.7
+([`screenshots/2026-11-13-pane-commands/`](./screenshots/2026-11-13-pane-commands/)).
+Not done: a scripting language (application actions came with SDUC-582);
+`events` pushed by the daemon (it polls four times a second); `split`
+for a pane on an SSH server; a start hook for agents. Not checked on
+screen: `split` aimed at a pane of a background tab; the skill loaded by
+each of the four agents. Seen and left: the first lines a split pane
+printed before the application sized it can be scrolled out of view.
+
+### SDUC-582: Application actions from the command line, and permission prompts left alone
+
+What SDUC-581 left out for a program that organises its own panes.
+Reference: [`pane-cli.md`](../pane-cli.md).
+
+- **`focus [PANE]`** selects the pane's tab in the running application and
+  gives the pane the keyboard.
+- **`rename [PANE] NAME`** names the pane's tab; the name stays like one
+  typed in the application. One line, 80 characters at most; control
+  characters are removed.
+- **`zoom [PANE]`** shows the pane alone in its tab, **`unzoom [PANE]`**
+  brings the split back. A pane alone in its tab is refused with the reason.
+- Without PANE, each acts on the pane the command runs in.
+- They travel like a split request: a file in the private run directory the
+  application takes and answers. Exit status 1 with the reason when nothing
+  was done, including when no application answers.
+- **`send` and `send-key`** refuse to type into a pane whose program
+  reported `blocked` with the kind `permission`; `--force` types anyway.
+
+Verified by SDTEST-3122 (the requests and the name) and SDTEST-3123 (the
+real binary against a real daemon: refusals before asking, the three
+requests as the application receives them, its refusal reported, no
+application, a permission prompt refused then forced). Checked in a native
+walkthrough on 2026-11-13 (private headless desktop, throwaway profile,
+persistent sessions on, debug build), one tab of three panes and a second
+tab: `rename` gave the second tab its name, `zoom` showed the top right pane
+alone and `unzoom` brought the three back, `zoom` on the pane of the second
+tab was refused, `focus` moved the keyboard to the bottom right pane, then
+to the second tab
+([`screenshots/2026-11-13-pane-commands/02-focus-and-rename.png`](./screenshots/2026-11-13-pane-commands/02-focus-and-rename.png)).
+Not automated: what the view does with a request (`act_on_daemon_pane`)
+needs a daemon and a window; only the walkthrough covers it. Not done:
+closing tabs or moving panes from the command line, a scripting language.

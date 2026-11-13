@@ -257,6 +257,8 @@ The auto-start through the real daemon binary is SDTEST-2996 in
 | SDTEST-3095 | `program_status::tests::sdtest_3095_records_replace_clear_by_subtree_and_pick_the_urgent_headline` | SDUC-576 | Green | One record per id; a report replaces its record completely; `clear` removes a record and its children but not a sibling with the same prefix; the headline is the most urgent record (blocked, error, working, done, idle), the root between equals, with the `app` of the nearest ancestor; at most 256 records. |
 | SDTEST-3096 | `parser::tests::sdtest_3096_program_status_reaches_the_grid_and_leaves_with_the_program` | SDUC-576 | Green | Bytes through the real parser: the query is answered with the terminator it used (ST and BEL), a report reaches the grid and prints nothing, a bad report changes nothing and gets no reply, OSC 133;A (shell prompt) and RIS remove every record. |
 
+SDTEST-3117 (`parser.rs::sdtest_3117_the_html_of_a_pane_keeps_colours_and_escapes_text`, SDUC-581, Green): `TerminalGrid::tail_html` keeps a named and an RGB colour, bold, underline, a background, inverse video with the defaults made explicit and an OSC 8 link, escapes `<`, `&` and quotes, ends at the last line with text and is bounded like `tail_text`.
+
 ## 7. `error.rs`
 
 No behaviour to test — pure `thiserror` enums. **Do not** write tests

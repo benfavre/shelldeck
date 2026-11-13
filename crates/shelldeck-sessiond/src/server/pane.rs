@@ -405,6 +405,8 @@ pub(super) struct SpawnedPty {
     pub(super) master: PtyMaster,
     pub(super) writer: Box<dyn Write + Send>,
     pub(super) pid: u32,
+    /// The id the pane was told it has (`SHELLDECK_PANE`).
+    pub(super) id: Uuid,
 }
 
 impl Pane {
@@ -457,7 +459,7 @@ impl Pane {
         let grid = Arc::new(Mutex::new(grid));
 
         let pane = Arc::new(Self {
-            id: Uuid::new_v4(),
+            id: pty.id,
             pid: pty.pid,
             group,
             label,
@@ -1202,6 +1204,23 @@ impl Pane {
         let keep = (grid.scrollback_len() / 2).max(1);
         grid.set_max_scrollback(keep);
         grid.scrollback_len()
+    }
+
+    /// What the pane's program last reported about itself, if it did.
+    pub(super) fn status(&self) -> Option<crate::protocol::PaneStatus> {
+        let state = self.state.lock();
+        let headline = state.grid.lock().program_status.headline()?;
+        Some(crate::protocol::PaneStatus {
+            pane: self.id,
+            state: headline.state.word().to_string(),
+            kind: headline
+                .kind
+                .map(|kind| kind.word().to_string())
+                .unwrap_or_default(),
+            progress: headline.progress.map(|p| p.min(100) as i8).unwrap_or(-1),
+            app: headline.app,
+            text: headline.text,
+        })
     }
 
     pub(super) fn info(&self) -> PaneInfo {

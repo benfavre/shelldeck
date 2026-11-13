@@ -11,8 +11,8 @@
 
 use crate::protocol::{
     self, Attach, ClientFrame, DaemonFrame, ErrorCode, FrameBuffer, Hello, HelloAck, PaneInfo,
-    ProtocolError, Spawn, ATTACH_READ_ONLY, FLAG_LAST, MAX_INPUT_BYTES, MAX_SNAPSHOT_TOTAL,
-    PROTOCOL_VERSION,
+    PaneStatus, ProtocolError, Spawn, ATTACH_READ_ONLY, FEATURE_PANE_STATUS, FLAG_LAST,
+    MAX_INPUT_BYTES, MAX_SNAPSHOT_TOTAL, PROTOCOL_VERSION,
 };
 use parking_lot::Mutex;
 use shelldeck_terminal::grid::{SnapshotError, TerminalGrid};
@@ -296,6 +296,7 @@ struct State {
     next_attach: u32,
     spawns: HashMap<u32, oneshot::Sender<Result<SpawnedPane, ClientError>>>,
     lists: VecDeque<oneshot::Sender<Vec<PaneInfo>>>,
+    statuses: VecDeque<oneshot::Sender<Vec<PaneStatus>>>,
     panes: HashMap<Uuid, PaneCtl>,
 }
 
@@ -404,6 +405,7 @@ impl Inner {
             let _ = waiter.send(Err(ClientError::Closed));
         }
         state.lists.clear();
+        state.statuses.clear();
         for (_, ctl) in state.panes.drain() {
             ctl.queue.push(PaneEvent::Closed);
             ctl.queue.close();
@@ -419,6 +421,11 @@ impl Inner {
             DaemonFrame::PaneList(panes) => {
                 if let Some(waiter) = state.lists.pop_front() {
                     let _ = waiter.send(panes);
+                }
+            }
+            DaemonFrame::StatusList(statuses) => {
+                if let Some(waiter) = state.statuses.pop_front() {
+                    let _ = waiter.send(statuses);
                 }
             }
             DaemonFrame::Spawned {
@@ -758,6 +765,7 @@ impl Client {
                 next_attach: 1,
                 spawns: HashMap::new(),
                 lists: VecDeque::new(),
+                statuses: VecDeque::new(),
                 panes: HashMap::new(),
             }),
             options,
@@ -846,6 +854,22 @@ impl Client {
             state.lists.push_back(tx);
         }
         rx.await.map_err(|_| ClientError::Closed)
+    }
+
+    /// What the programs of the panes last reported about themselves
+    /// (OSC 7501), for the panes that reported. `None`: the daemon is older
+    /// than this request and is not asked.
+    pub async fn list_status(&self) -> Result<Option<Vec<PaneStatus>>, ClientError> {
+        if self.hello().features & FEATURE_PANE_STATUS == 0 {
+            return Ok(None);
+        }
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut state = self.inner.state.lock();
+            self.inner.send(&ClientFrame::ListStatus)?;
+            state.statuses.push_back(tx);
+        }
+        rx.await.map(Some).map_err(|_| ClientError::Closed)
     }
 
     pub async fn spawn(&self, options: SpawnOptions) -> Result<SpawnedPane, ClientError> {

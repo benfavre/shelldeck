@@ -23,6 +23,7 @@
 pub mod client;
 pub mod pane_cli;
 pub mod protocol;
+pub mod requests;
 
 #[cfg(all(unix, feature = "app"))]
 pub mod attached;

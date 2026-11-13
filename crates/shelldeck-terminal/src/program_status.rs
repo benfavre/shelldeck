@@ -75,6 +75,17 @@ impl ProgramState {
         })
     }
 
+    /// The protocol word of the state, as `parse` reads it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Done => "done",
+            Self::Blocked => "blocked",
+            Self::Error => "error",
+        }
+    }
+
     /// Which record speaks for the terminal when several exist: the one a
     /// person most needs to know about.
     pub fn urgency(self) -> u8 {
@@ -100,6 +111,15 @@ pub enum BlockedKind {
 }
 
 impl BlockedKind {
+    /// The protocol word of the kind, as `parse` reads it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Permission => "permission",
+            Self::Question => "question",
+            Self::Auth => "auth",
+        }
+    }
+
     fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "permission" => Self::Permission,

@@ -66,6 +66,9 @@ pub struct ServerConfig {
     /// the descriptor limit first. Set when the daemon raised its own
     /// limit; `None` starts them directly.
     pub pane_launcher: Option<PaneLauncher>,
+    /// The daemon's own executable as a path that stays valid for the
+    /// panes (not `/proc/self/exe`): where the pane commands are.
+    pub cli_exe: Option<std::path::PathBuf>,
     /// Version announced in `HelloAck`.
     pub daemon_version: String,
     /// Fault injection for tests: PTY output that contains these bytes
@@ -90,6 +93,44 @@ impl std::fmt::Debug for TestHook {
     }
 }
 
+impl ServerConfig {
+    /// What every pane is told about itself, on top of the environment its
+    /// client asked for: its id (`SHELLDECK_PANE`), and, when the daemon
+    /// knows its own executable, that path (`SHELLDECK_SESSIOND`) and a
+    /// `PATH` that ends with its directory, so the pane commands of
+    /// `docs/pane-cli.md` work from inside a pane. `path` is the daemon's
+    /// own `PATH`; a directory already in it is not added twice, and it is
+    /// added last so it shadows nothing.
+    pub fn pane_identity_env(
+        &self,
+        pane: uuid::Uuid,
+        path: Option<std::ffi::OsString>,
+    ) -> Vec<(String, String)> {
+        let mut env = vec![("SHELLDECK_PANE".to_string(), pane.to_string())];
+        let Some(exe) = self.cli_exe.as_deref().and_then(|exe| exe.to_str()) else {
+            return env;
+        };
+        env.push(("SHELLDECK_SESSIOND".to_string(), exe.to_string()));
+        let Some(dir) = self.cli_exe.as_deref().and_then(|exe| exe.parent()) else {
+            return env;
+        };
+        let mut dirs: Vec<std::path::PathBuf> = path
+            .as_deref()
+            .map(|path| std::env::split_paths(path).collect())
+            .unwrap_or_default();
+        if !dirs.iter().any(|known| known == dir) {
+            dirs.push(dir.to_path_buf());
+            if let Some(joined) = std::env::join_paths(dirs)
+                .ok()
+                .and_then(|joined| joined.into_string().ok())
+            {
+                env.push(("PATH".to_string(), joined));
+            }
+        }
+        env
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -109,6 +150,7 @@ impl Default for ServerConfig {
             history_budget: DEFAULT_HISTORY_BUDGET,
             history_check: Duration::from_secs(1),
             pane_launcher: None,
+            cli_exe: None,
             daemon_version: env!("CARGO_PKG_VERSION").to_string(),
             fault_parser_panic: None,
             before_leaving: None,
@@ -217,6 +259,21 @@ impl Shared {
                 "history over budget, trimmed"
             );
         }
+    }
+
+    /// The reported status of the panes that are still running, in the
+    /// order of `list_panes`.
+    fn list_status(&self) -> Vec<crate::protocol::PaneStatus> {
+        let mut panes: Vec<Arc<Pane>> = self.panes.lock().values().cloned().collect();
+        panes.sort_by_key(|pane| {
+            let info = pane.info();
+            (info.created_at, info.pane)
+        });
+        panes
+            .iter()
+            .filter(|pane| pane.info().alive)
+            .filter_map(|pane| pane.status())
+            .collect()
     }
 
     fn list_panes(&self) -> Vec<PaneInfo> {

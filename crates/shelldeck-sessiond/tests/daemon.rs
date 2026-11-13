@@ -3125,3 +3125,485 @@ async fn sdtest_3107_only_run_starts_a_daemon() {
     let (code, _, err) = pane_cli(&dir, &["kill", &id, "9"]);
     assert_eq!(code, 0, "{err}");
 }
+
+/// Poll a pane command until its output contains `needle`.
+fn cli_shows(dir: &RunDir, args: &[&str], needle: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, text, err) = pane_cli(dir, args);
+        assert_eq!(code, 0, "{err}");
+        if text.contains(needle) {
+            return text;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{needle:?} never showed:\n{text}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+// SDTEST-3118 (SDUC-581): what the pane commands add for agents, with the
+// shipped binary: a pane knows its own id and finds the commands, the
+// status its program reported is kept by the daemon (so it is known to a
+// command that starts later), keys are pressed, the screen is read with
+// its colours, and the changes are listed as events.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3118_status_keys_html_and_events_from_the_command_line() {
+    let dir = run_dir();
+    let config = ServerConfig {
+        cli_exe: Some(PathBuf::from(BIN)),
+        ..test_config()
+    };
+    let _daemon = start(&dir, config);
+
+    let (code, out, err) = pane_cli(
+        &dir,
+        &[
+            "run", "--name", "agent", "--rows", "10", "--cols", "70", "--json", "--", "/bin/sh",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let id = out
+        .split("\"id\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("run --json prints the id")
+        .to_string();
+    id.parse::<Uuid>().expect("an id");
+    assert!(
+        out.contains("\"pid\":") && out.contains("\"cwd\":\""),
+        "{out}"
+    );
+
+    // The pane is told its id and where the commands are. The shell
+    // expands the variables, so the echo of the typed line cannot match.
+    let (code, _, err) = pane_cli(&dir, &["send", "agent", "--", "echo", "me-$SHELLDECK_PANE"]);
+    assert_eq!(code, 0, "{err}");
+    pane_shows(&dir, "agent", "10", &format!("me-{id}"));
+    let bin_dir = Path::new(BIN)
+        .parent()
+        .expect("bin dir")
+        .display()
+        .to_string();
+    let probe = format!(
+        "case \":$PATH:\" in *\":{bin_dir}:\"*) \
+         [ \"$SHELLDECK_SESSIOND\" = \"{BIN}\" ] && echo path-$((1+1))-ok;; esac"
+    );
+    let (code, _, err) = pane_cli(&dir, &["send", "agent", "--", &probe]);
+    assert_eq!(code, 0, "{err}");
+    // A short answer: the path itself wraps in the pane when it is long.
+    pane_shows(&dir, "agent", "10", "path-2-ok");
+
+    // Nothing reported yet.
+    let (code, out, err) = pane_cli(&dir, &["status", "agent"]);
+    assert_eq!((code, out.as_str()), (0, "none\n"), "{err}");
+
+    // Reported once; every later command knows it, without having been
+    // attached when it was said.
+    let (code, _, err) = pane_cli(
+        &dir,
+        &[
+            "send",
+            "agent",
+            "--",
+            "printf '\\033]7501;state=blocked:kind=permission:app=tool\\033\\\\'",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let json = cli_shows(
+        &dir,
+        &["status", "agent", "--json"],
+        "\"state\":\"blocked\"",
+    );
+    assert!(json.contains("\"kind\":\"permission\""), "{json}");
+    assert!(json.contains("\"app\":\"tool\""), "{json}");
+    let (_, line, _) = pane_cli(&dir, &["status", "agent"]);
+    assert_eq!(line, "blocked (permission)\n");
+    let (_, table, _) = pane_cli(&dir, &["ls"]);
+    assert!(table.contains("blocked"), "{table}");
+    let (_, list, _) = pane_cli(&dir, &["ls", "--json"]);
+    assert!(
+        list.contains("\"state\":\"blocked\",\"kind\":\"permission\""),
+        "{list}"
+    );
+    let (code, out, err) = pane_cli(
+        &dir,
+        &[
+            "wait",
+            "agent",
+            "--until",
+            "blocked",
+            "--timeout",
+            "5",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("\"result\":\"state\",\"state\":\"blocked\""),
+        "{out}"
+    );
+
+    // The program still waits for a permission: typing is forced (the
+    // refusal is SDTEST-3123).
+    // Keys: Enter runs what was typed without it, Ctrl-C ends a program
+    // that would otherwise hold the shell far longer than this test waits.
+    let (code, _, err) = pane_cli(
+        &dir,
+        &[
+            "send",
+            "agent",
+            "--force",
+            "--no-enter",
+            "--",
+            "echo",
+            "key-$((3*3))",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = pane_cli(&dir, &["send-key", "agent", "--force", "enter"]);
+    assert_eq!(code, 0, "{err}");
+    pane_shows(&dir, "agent", "10", "key-9");
+    let (code, _, err) = pane_cli(&dir, &["send", "agent", "--force", "--", "sleep", "300"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = pane_cli(&dir, &["send-key", "agent", "--force", "ctrl-c"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = pane_cli(
+        &dir,
+        &["send", "agent", "--force", "--", "echo", "after-$((2+2))"],
+    );
+    assert_eq!(code, 0, "{err}");
+    pane_shows(&dir, "agent", "10", "after-4");
+    let (code, _, err) = pane_cli(&dir, &["send-key", "agent", "--force", "entre"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("unknown key"), "{err}");
+    let (code, _, err) = pane_cli(&dir, &["send-key", "agent"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("needs a key"), "{err}");
+
+    // The screen with its colours.
+    let (code, _, err) = pane_cli(
+        &dir,
+        &[
+            "send",
+            "agent",
+            "--force",
+            "--",
+            "printf '\\033[31mcolo''red\\033[0m\\n'",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let html = cli_shows(
+        &dir,
+        &["read", "agent", "--lines", "3", "--format", "html"],
+        "<span style=\"color:#cd0000;\">colored</span>",
+    );
+    assert!(html.starts_with("<pre class=\"terminal\">"), "{html}");
+    assert!(html.trim_end().ends_with("</pre>"), "{html}");
+    let (code, _, err) = pane_cli(&dir, &["read", "agent", "--format", "pdf"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--format takes"), "{err}");
+
+    // One look at the daemon, as events: the pane and its status.
+    let (code, events, err) = pane_cli(&dir, &["events", "--timeout", "0", "--interval-ms", "20"]);
+    assert_eq!(code, 0, "{err}");
+    let lines: Vec<&str> = events.lines().collect();
+    assert_eq!(lines.len(), 2, "{events}");
+    assert!(lines[0].contains("\"event\":\"pane-started\""), "{events}");
+    assert!(
+        lines[0].contains(&id) && lines[0].contains("\"name\":\"agent\""),
+        "{events}"
+    );
+    assert!(lines[1].contains("\"event\":\"status\""), "{events}");
+    assert!(lines[1].contains("\"state\":\"blocked\""), "{events}");
+}
+
+// SDTEST-3119 (SDUC-581): `split` starts a pane and asks the application
+// to show it beside another one. The pane runs whatever the answer is;
+// the command says what happened and never starts a pane it cannot place
+// on a bad request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3119_split_starts_a_pane_and_asks_the_application_to_show_it() {
+    use shelldeck_sessiond::requests::{self, Side};
+    let dir = run_dir();
+    let _daemon = start(&dir, test_config());
+    let client = connect(&dir).await;
+
+    let (code, out, err) = pane_cli(&dir, &["run", "--name", "base", "--", "/bin/sh"]);
+    assert_eq!(code, 0, "{err}");
+    let base: Uuid = out.trim().parse().expect("id");
+
+    // Refused before anything is started.
+    let (code, _, err) = pane_cli(&dir, &["split", "base", "--ratio", "2", "--", "/bin/sh"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--ratio takes"), "{err}");
+    let (code, _, err) = pane_cli(&dir, &["split", "nobody", "--", "/bin/sh"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no pane matches"), "{err}");
+    let (code, _, err) = pane_cli(&dir, &["split", "--", "/bin/sh"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("split needs a pane"), "{err}");
+    assert_eq!(client.list_panes().await.expect("list").len(), 1);
+
+    // An application that shows it: the request names both panes, the
+    // side and the share; the command prints the id of the new pane.
+    let run = dir.path.clone();
+    let application = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some((id, request)) = requests::take(&run).into_iter().next() {
+                requests::answer(&run, id, Ok(()));
+                return request;
+            }
+            assert!(Instant::now() < deadline, "no request arrived");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+    // No pane named: the pane the command runs in.
+    let output = tokio::task::block_in_place(|| {
+        std::process::Command::new(BIN)
+            .args(["split", "--dir"])
+            .arg(&dir.path)
+            .args(["--down", "--ratio", "0.3", "--", "/bin/sh"])
+            .env("SHELLDECK_PANE", base.to_string())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run split")
+    });
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{err}");
+    assert!(err.is_empty(), "{err}");
+    let shown: Uuid = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .expect("split prints the pane id");
+    let requests::Request::Split(request) = application.join().expect("application thread") else {
+        panic!("not a split request");
+    };
+    assert_eq!(
+        (request.pane, request.beside, request.side, request.ratio),
+        (shown, base, Side::Down, 0.3)
+    );
+    let info = pane_info(&client, shown).await.expect("the pane runs");
+    assert!(info.alive);
+    // Without a name it is a pane like those the application starts.
+    assert_eq!(info.label, "shelldeck-local");
+
+    // An application that cannot show it says why; the pane runs.
+    let run = dir.path.clone();
+    let application = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some((id, _)) = requests::take(&run).into_iter().next() {
+                requests::answer(&run, id, Err("no tab of the application shows that pane"));
+                return;
+            }
+            assert!(Instant::now() < deadline, "no request arrived");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+    let (code, out, err) = pane_cli(
+        &dir,
+        &["split", "base", "--name", "side", "--json", "--", "/bin/sh"],
+    );
+    application.join().expect("application thread");
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("\"shown\":false"), "{out}");
+    assert!(
+        err.contains("no tab of the application shows that pane"),
+        "{err}"
+    );
+
+    // No application at all: said after a short wait, the request is
+    // withdrawn so nobody does it later, and the pane runs.
+    let (code, out, err) = pane_cli(&dir, &["split", "base", "--json", "--", "/bin/sh"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("\"shown\":false"), "{out}");
+    assert!(err.contains("no application showed it"), "{err}");
+    assert!(requests::take(&dir.path).is_empty());
+    assert_eq!(client.list_panes().await.expect("list").len(), 4);
+}
+
+// SDTEST-3120 (SDUC-581): `skill setup` writes the skill where each coding
+// agent reads its skills: for the agents set up for this user when none is
+// named, for the named ones otherwise, and for nobody it does not know.
+#[test]
+fn sdtest_3120_skill_setup_writes_the_skill_for_the_agents_found() {
+    let home = tempfile::tempdir().expect("home");
+    let skill = |args: &[&str]| {
+        let output = std::process::Command::new(BIN)
+            .args(["skill", "--dir"])
+            .arg(home.path())
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run skill");
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    // Nobody is set up: nothing is written.
+    let (code, _, err) = skill(&["setup"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no coding agent found"), "{err}");
+    assert!(std::fs::read_dir(home.path())
+        .expect("home")
+        .next()
+        .is_none());
+
+    std::fs::create_dir_all(home.path().join(".claude")).expect("claude");
+    std::fs::create_dir_all(home.path().join(".config/opencode")).expect("opencode");
+    let (code, out, err) = skill(&["setup"]);
+    assert_eq!(code, 0, "{err}");
+    let claude = home.path().join(".claude/skills/inklura-panes/SKILL.md");
+    let opencode = home
+        .path()
+        .join(".config/opencode/skills/inklura-panes/SKILL.md");
+    assert!(
+        out.contains(&format!("claude: {}", claude.display())),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("opencode: {}", opencode.display())),
+        "{out}"
+    );
+    assert!(!home.path().join(".codex").exists(), "codex is not set up");
+    let (_, shown, _) = skill(&["show"]);
+    assert_eq!(std::fs::read_to_string(&claude).expect("skill"), shown);
+    assert_eq!(std::fs::read_to_string(&opencode).expect("skill"), shown);
+    assert!(shown.starts_with("---\nname: inklura-panes\n"), "{shown}");
+
+    // Named: written even where the agent has no directory yet.
+    let (code, out, err) = skill(&["setup", "--agent", "codex"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.lines().count(), 1, "{out}");
+    assert!(home
+        .path()
+        .join(".codex/skills/inklura-panes/SKILL.md")
+        .is_file());
+    let (code, _, err) = skill(&["setup", "--agent", "hal"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("unknown agent"), "{err}");
+    let (code, _, err) = skill(&[]);
+    assert_eq!(code, 1);
+    assert!(err.contains("`setup` or `show`"), "{err}");
+}
+
+// SDTEST-3123 (SDUC-582): `focus`, `rename`, `zoom` and `unzoom` ask the
+// application and say when it did not do it; `send` and `send-key` leave
+// a pane alone while its program waits for a permission, unless forced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3123_pane_actions_ask_the_application_and_send_respects_permission_prompts() {
+    use shelldeck_sessiond::requests::{self, ActRequest, Action, Request};
+    let dir = run_dir();
+    let _daemon = start(&dir, test_config());
+
+    let (code, out, err) = pane_cli(&dir, &["run", "--name", "base", "--", "/bin/sh"]);
+    assert_eq!(code, 0, "{err}");
+    let base: Uuid = out.trim().parse().expect("id");
+
+    // Refused before anything is asked.
+    let (code, _, err) = pane_cli(&dir, &["rename", "base"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("rename needs a name"), "{err}");
+    let (code, _, err) = pane_cli(&dir, &["focus", "nobody"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no pane matches"), "{err}");
+    let (code, _, err) = pane_cli(&dir, &["zoom"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("zoom needs a pane"), "{err}");
+    assert!(requests::take(&dir.path).is_empty());
+
+    // An application that answers each request in turn.
+    let answering = |answers: Vec<Result<(), &'static str>>| {
+        let run = dir.path.clone();
+        std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for answer in answers {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    if let Some((id, request)) = requests::take(&run).into_iter().next() {
+                        requests::answer(&run, id, answer);
+                        seen.push(request);
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "no request arrived");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            seen
+        })
+    };
+    let act = |action, text: &str| {
+        Request::Act(ActRequest {
+            action,
+            pane: base,
+            text: text.into(),
+        })
+    };
+
+    let application = answering(vec![Ok(()), Ok(()), Err("that pane is alone in its tab")]);
+    let (code, out, err) = pane_cli(&dir, &["focus", "base"]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    // Inside a pane, `rename NAME` names that pane.
+    let output = tokio::task::block_in_place(|| {
+        std::process::Command::new(BIN)
+            .args(["rename", "--dir"])
+            .arg(&dir.path)
+            .arg("api server")
+            .env("SHELLDECK_PANE", base.to_string())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run rename")
+    });
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (code, _, err) = pane_cli(&dir, &["zoom", "base"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("that pane is alone in its tab"), "{err}");
+    assert_eq!(
+        application.join().expect("application thread"),
+        vec![
+            act(Action::Focus, ""),
+            act(Action::Rename, "api server"),
+            act(Action::Zoom, "")
+        ]
+    );
+
+    // No application: said after a short wait, and nothing is left behind.
+    let (code, _, err) = pane_cli(&dir, &["unzoom", "base"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no application answered"), "{err}");
+    assert!(requests::take(&dir.path).is_empty());
+
+    // A program that waits for a permission is not typed into.
+    let (code, _, err) = pane_cli(
+        &dir,
+        &[
+            "send",
+            "base",
+            "printf '\\033]7501;state=blocked:kind=permission:app=tool\\033\\\\'",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    cli_shows(&dir, &["status", "base"], "blocked");
+    let (code, _, err) = pane_cli(&dir, &["send", "base", "echo typed-anyway"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("waits for its user to allow"), "{err}");
+    let (code, _, err) = pane_cli(&dir, &["send-key", "base", "enter"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--force"), "{err}");
+    let (code, text, _) = pane_cli(&dir, &["read", "base"]);
+    assert_eq!(code, 0);
+    assert!(!text.contains("typed-anyway"), "{text}");
+    let (code, _, err) = pane_cli(&dir, &["send", "base", "--force", "echo typed-anyway"]);
+    assert_eq!(code, 0, "{err}");
+    cli_shows(&dir, &["read", "base"], "typed-anyway");
+}
