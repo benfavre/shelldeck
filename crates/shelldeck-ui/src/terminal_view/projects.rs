@@ -20,12 +20,18 @@ pub(super) fn tab_folder(
     started_in: Option<&str>,
     home: Option<&str>,
 ) -> Option<String> {
+    // Only a shell title: a program title such as `Fix: /login page` has
+    // a colon and a slash too, and would move the tab to a project.
     let from_title = title
         .trim()
         .split_once(": ")
+        .filter(|(who, _)| who.contains('@') && !who.contains(char::is_whitespace))
         .map(|(_, path)| path.trim())
         .filter(|path| path.starts_with('/') || *path == "~" || path.starts_with("~/"));
-    let folder = [reported, from_title, started_in]
+    // OSC 7 carries a URL: shells write a space or an accent as `%20`,
+    // `%C3%A9`, and the folder on disk has the character itself.
+    let reported = reported.map(percent_decoded);
+    let folder = [reported.as_deref(), from_title, started_in]
         .into_iter()
         .flatten()
         .map(str::trim)
@@ -39,6 +45,35 @@ pub(super) fn tab_folder(
         }
         _ => folder.to_string(),
     })
+}
+
+/// `path` with its `%XX` escapes replaced by the bytes they stand for. Left
+/// as written when an escape is malformed or the result is not UTF-8.
+fn percent_decoded(path: &str) -> String {
+    if !path.contains('%') {
+        return path.to_string();
+    }
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'%' {
+            decoded.push(bytes[at]);
+            at += 1;
+            continue;
+        }
+        let byte = bytes
+            .get(at + 1..at + 3)
+            .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match byte {
+            Some(byte) => decoded.push(byte),
+            None => return path.to_string(),
+        }
+        at += 3;
+    }
+    String::from_utf8(decoded).unwrap_or_else(|_| path.to_string())
 }
 
 /// A path without its trailing slashes (`/` stays `/`).
@@ -394,7 +429,20 @@ mod tests {
             tab_folder(None, "vim: notes.md", Some("/tmp"), home).as_deref(),
             Some("/tmp")
         );
+        assert_eq!(
+            tab_folder(None, "Fix: /login page", Some("/tmp"), home).as_deref(),
+            Some("/tmp")
+        );
         assert_eq!(tab_folder(None, "Terminal", None, home), None);
+        // The report is a URL path: escapes are the characters on disk.
+        assert_eq!(
+            tab_folder(Some("/srv/Mes%20sites/caf%C3%A9"), "", None, home).as_deref(),
+            Some("/srv/Mes sites/café")
+        );
+        // Not an escape, or not text once decoded: left as written.
+        for odd in ["/srv/100%", "/srv/50%zz", "/srv/%FF"] {
+            assert_eq!(tab_folder(Some(odd), "", None, home).as_deref(), Some(odd));
+        }
         assert_eq!(tab_folder(Some("  "), "", None, home), None);
         // Remote: the home is not known here.
         assert_eq!(

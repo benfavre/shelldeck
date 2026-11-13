@@ -1941,6 +1941,8 @@ impl TerminalView {
         self.layout = TabLayout::single();
         self.stored_layouts.clear();
         self.tabs.clear();
+        self.tab_folders.clear();
+        self.recent_tabs.clear();
         self.pane.sessions.clear();
         self.pane.active_index = 0;
         self._refresh_task = None;

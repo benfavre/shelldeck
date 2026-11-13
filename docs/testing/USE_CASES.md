@@ -5560,8 +5560,9 @@ tab, pane.
 
 - **The project of a tab** is the git repository that holds the folder the
   tab works in, else that folder. The folder is what the terminal reported
-  (OSC 7), else the path in a shell title (`user@host: ~/folder`), else the
-  folder the terminal was started in. The repository is the nearest folder
+  (OSC 7, its `%XX` escapes decoded), else the path in a shell title
+  (`user@host: ~/folder`; a title that does not start with `user@host` is a
+  program's and is not read), else the folder the terminal was started in. The repository is the nearest folder
   going up that holds a `.git` entry (a directory in a clone, a file in a
   worktree); git is never run. The home directory, the root and a tab whose
   folder is not known have no project.
