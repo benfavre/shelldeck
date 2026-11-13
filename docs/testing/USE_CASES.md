@@ -3367,6 +3367,7 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+- **2026-11-13**: Added SDUC-585: machines of the Tailscale network offered as SSH connections in the new connection form, read from the local `tailscale status --json`. SDTEST-3156 to 3169.
 - **2026-11-13**: Added SDUC-582: `focus`, `rename`, `zoom`, `unzoom` from the command line; `send` and `send-key` refuse a pane that waits for a permission. SDTEST-3122, 3123.
 - **2026-11-13**: Added SDUC-581: pane commands for agents (`split`, `send-key`, `status`, `events`, `skill setup`, `read --format html`, `--json`), a pane knows its own id, the daemon keeps the reported status (`ListStatus`). SDUC-578 amended. SDTEST-3113..3121.
 - **2026-11-13**: Added SDUC-580: terminal panes drawn as cards, a name and a folder in pane headers and tabs, tabs as pills, the space between cards as the resize handle. SDUC-579 amended (the look of a header moved to SDUC-580). The context menu opens at the pointer (it was about 36 px lower); the scrollbar is grabbed on the active pane's own edge. The toolbar row is removed: its actions open from a "⋯" button, Claude and Codex are beside "+". SDTEST-3111, SDTEST-3112; SDTEST-3109 follows the card padding, SDTEST-3110 the rows above the panes.
@@ -5548,3 +5549,43 @@ to the second tab
 Not automated: what the view does with a request (`act_on_daemon_pane`)
 needs a daemon and a window; only the walkthrough covers it. Not done:
 closing tabs or moving panes from the command line, a scripting language.
+
+### SDUC-585: Machines of the Tailscale network offered as SSH connections
+
+For a user whose machines are on a Tailscale network: no host name to
+type for each of them.
+
+- **Where**: the new connection form has a **From Tailscale** button above
+  its fields. The form that edits a connection does not.
+- **What is read**: the output of the local `tailscale status --json`, run
+  off the UI thread and stopped after three seconds. Nothing is sent
+  anywhere, no network code was added, and machine names are not written to
+  the log.
+- **The list**: the other machines, online first then by name, each with its
+  MagicDNS name (or its address on a network without MagicDNS), its system,
+  **Offline** when it is, and **Tailscale SSH** when it offers it. This
+  machine and the exit nodes of the Mullvad add-on are left out. A machine
+  that a saved connection already reaches (by MagicDNS name, short name or
+  address) is marked **Already added** and cannot be added twice.
+- **Choosing a machine** saves a normal manual SSH connection: the machine's
+  name, its MagicDNS name as host, the user name of the form (the user's
+  own by default), port 22. It is edited and removed like any other.
+- **No list**: without the `tailscale` program, when its daemon does not
+  answer, when the machine is not signed in, when Tailscale is stopped, on a
+  timeout or on an answer that is not a status listing, the form shows one
+  sentence under the button. No dialog, and the form stays usable.
+
+Verified by SDTEST-3156 to 3161 (the listing, written as a fixture from the
+`Status` and `PeerStatus` structures of `ipn/ipnstate/ipnstate.go` in the
+Tailscale source; the order, the mark, the connection), SDTEST-3162 to 3166
+(looking for the program, and a stand-in script as the program: its
+arguments, failures, the timeout, a listing larger than a pipe buffer; Unix
+only), SDTEST-3167 to 3169 (the form: the list or the reason, a late answer
+dropped, the saved connection, the sentences in both languages).
+Not automated: the painting of the button and of the list, the click, and
+the saved connection appearing in the sidebar. Not verified: the real
+`tailscale` program (none on the development machine), and connecting to a
+machine that only accepts Tailscale SSH (the badge only says the machine
+offers it; the connection is an ordinary SSH one). Not done: a refresh
+while the list is open (close and reopen), choosing the user name per
+machine before saving, a "Tailscale" mark on the saved connection.

@@ -1211,3 +1211,14 @@ sidebar entry reflects that list. Not automated: the
 painting of the list and of the headers, the pane buttons, the saved
 preference and the tab menu layer.
 
+## Tailscale machines in the connection form (2026-11-13)
+
+| ID | Test | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-3167 | `connection_form::tests::sdtest_3167_the_tailscale_list_shows_the_machines_or_the_reason` | SDUC-585 | Green | `TestAppContext`, no window; the answers are given by hand and the local program is never run. Ordered rows with the saved machine marked; the answer to an earlier question, or to a list closed meanwhile, is dropped; a reason replaces the list. |
+| SDTEST-3168 | `connection_form::tests::sdtest_3168_choosing_a_tailscale_machine_saves_a_normal_connection` | SDUC-585 | Green | `TestAppContext`. The `Save` event carries the MagicDNS host, the form's user name and port 22; nothing is saved for a marked machine, a row that does not exist or a list not yet shown; an emptied user field falls back to a name. |
+| SDTEST-3169 | `connection_form::tests::sdtest_3169_every_tailscale_reason_has_its_own_sentence_in_both_languages` | SDUC-585 | Green | Every reason and label has a distinct sentence in `fr` and `en`. |
+
+Not automated for SDUC-585: the painting of the button and the list, the
+click on a row, and the workspace storing the connection (the existing
+`Save` path). SDTEST-3170 was allocated to this use case and is not used.
