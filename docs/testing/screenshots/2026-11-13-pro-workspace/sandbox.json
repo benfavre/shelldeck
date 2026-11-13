@@ -1,0 +1,122 @@
+[
+  {
+    "pid": 2739246,
+    "type": "main",
+    "no_sandbox": false,
+    "apparmor": "shelldeck-browser-dev (unconfined)",
+    "status": [
+      "NSpid:\t2739246",
+      "NoNewPrivs:\t0",
+      "Seccomp:\t0",
+      "Seccomp_filters:\t0"
+    ]
+  },
+  {
+    "pid": 2739264,
+    "type": "--type=zygote",
+    "no_sandbox": false,
+    "apparmor": "shelldeck-browser-dev (unconfined)",
+    "status": [
+      "NSpid:\t2739264",
+      "NoNewPrivs:\t1",
+      "Seccomp:\t0",
+      "Seccomp_filters:\t0"
+    ]
+  },
+  {
+    "pid": 2739265,
+    "type": "--type=zygote",
+    "no_sandbox": false,
+    "apparmor": "shelldeck-browser-dev (unconfined)",
+    "status": [
+      "NSpid:\t2739265\t1",
+      "NoNewPrivs:\t1",
+      "Seccomp:\t0",
+      "Seccomp_filters:\t0"
+    ]
+  },
+  {
+    "pid": 2739267,
+    "type": "--type=zygote",
+    "no_sandbox": false,
+    "apparmor": "shelldeck-browser-dev (unconfined)",
+    "status": [
+      "NSpid:\t2739267\t3",
+      "NoNewPrivs:\t1",
+      "Seccomp:\t0",
+      "Seccomp_filters:\t0"
+    ]
+  },
+  {
+    "pid": 2739292,
+    "type": "--type=zygote",
+    "no_sandbox": false,
+    "apparmor": "shelldeck-browser-dev (unconfined)",
+    "status": [
+      "NSpid:\t2739292",
+      "NoNewPrivs:\t1",
+      "Seccomp:\t2",
+      "Seccomp_filters:\t1"
+    ]
+  },
+  {
+    "pid": 2739295,
+    "type": "--type=zygote",
+    "no_sandbox": false,
+    "apparmor": "shelldeck-browser-dev (unconfined)",
+    "status": [
+      "NSpid:\t2739295",
+      "NoNewPrivs:\t1",
+      "Seccomp:\t2",
+      "Seccomp_filters:\t1"
+    ]
+  },
+  {
+    "pid": 2739464,
+    "type": "--type=utility",
+    "no_sandbox": false,
+    "apparmor": "shelldeck-browser-dev (unconfined)",
+    "status": [
+      "NSpid:\t2739464",
+      "NoNewPrivs:\t1",
+      "Seccomp:\t0",
+      "Seccomp_filters:\t0"
+    ]
+  },
+  {
+    "pid": 2739507,
+    "type": "--type=zygote",
+    "no_sandbox": false,
+    "apparmor": "shelldeck-browser-dev (unconfined)",
+    "status": [
+      "NSpid:\t2739507\t4\t1",
+      "NoNewPrivs:\t1",
+      "Seccomp:\t2",
+      "Seccomp_filters:\t1"
+    ]
+  },
+  {
+    "pid": 2739565,
+    "type": "--type=zygote",
+    "no_sandbox": false,
+    "apparmor": "shelldeck-browser-dev (unconfined)",
+    "status": [
+      "NSpid:\t2739565\t12\t1",
+      "NoNewPrivs:\t1",
+      "Seccomp:\t2",
+      "Seccomp_filters:\t1"
+    ]
+  },
+  {
+    "pid": 2739566,
+    "type": "--type=zygote",
+    "no_sandbox": false,
+    "apparmor": "shelldeck-browser-dev (unconfined)",
+    "status": [
+      "NSpid:\t2739566\t13\t1",
+      "NoNewPrivs:\t1",
+      "Seccomp:\t2",
+      "Seccomp_filters:\t1"
+    ]
+  }
+]

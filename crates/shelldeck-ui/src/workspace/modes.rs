@@ -75,6 +75,7 @@ impl Workspace {
         if !self.can_access_mode(AppMode::Dev) {
             return false;
         }
+        self.pro_open = false;
         let was_settings_open = self.settings_open;
         if !self.focused_presentation_active() {
             self.set_mode(AppMode::Dev, cx);
@@ -112,7 +113,8 @@ impl Workspace {
         if !self.can_access_mode(mode) || self.mode_transition.is_some() {
             return;
         }
-        let restored_main = self.presentation != WorkspacePresentation::Main;
+        let restored_main = self.presentation != WorkspacePresentation::Main || self.pro_open;
+        self.pro_open = false;
         self.presentation = WorkspacePresentation::Main;
         self.presentation_focus_pending = false;
         if self.app_config.cloud_sync.mode == mode {

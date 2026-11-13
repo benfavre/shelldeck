@@ -21,6 +21,7 @@ pub mod platform_attention;
 pub mod platform_review;
 mod platform_task_journal;
 pub mod platform_tasks;
+pub mod pro_web;
 pub mod share;
 pub mod share_intent;
 pub mod single_instance;
