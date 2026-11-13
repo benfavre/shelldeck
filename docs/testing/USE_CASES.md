@@ -3367,7 +3367,7 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
-2026-11-13: Added SDUC-586 for the dedicated Pro web workspace, account isolation and retained desktop tools.
+2026-11-13: Added SDUC-586 for the dedicated Pro web workspace, account isolation, retained desktop tools and the user-selected pro.inklura.fr default.
 
 - **2026-11-13**: Added SDUC-583: `events` pushed by the daemon (`Subscribe`, `PaneEvent`, a second feature bit; an older daemon is still polled), `show` opens a pane as a tab behind the active one, `skill setup --with-hook` and `skill context` (Claude Code start hook). SDTEST-3124..3134.
 - **2026-11-13**: Added SDUC-584: projects in the terminal session list (the repository or the folder each tab works in), grouping by machine or by project remembered in the configuration, next and previous project from the palette or keys the user gives them. SDUC-577 amended (26 actions, two without built-in keys). A screen that loses rows keeps what was printed at its top (the split pane of SDUC-581 that looked empty), `EMULATOR_REV` 3. SDTEST-3140..3153.
@@ -5768,7 +5768,7 @@ agent, a real tailnet.
 
 ## SDUC-586 — Dedicated Inklura Pro web workspace
 
-A signed-in account can open a dedicated Pro browser workspace and return to its running tools. Only HTTPS or loopback origins are accepted. The browser profile is scoped by Manage origin, account and Pro origin, is never granted to agents, and is closed on account invalidation or replacement. Pro retains independent web authentication. No hosted origin is assumed before deployment.
+A signed-in account can open a dedicated Pro browser workspace and return to its running tools. Only HTTPS or loopback origins are accepted. The browser profile is scoped by Manage origin, account and Pro origin, is never granted to agents, and is closed on account invalidation or replacement. Pro retains independent web authentication. The user-selected `https://pro.inklura.fr` is the default for missing or blank saved configuration; explicit custom HTTPS and loopback origins are retained.
 
 Selecting a native tool, presentation or mode reveals that destination while
 retaining Pro. Background Agents replies remain unread while Pro covers them.

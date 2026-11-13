@@ -837,3 +837,4 @@ execution evidence. Native UI acceptance remains separate in tests-ui-and-app.md
 | SDTEST-3166 | `tailscale::tests::with_a_program::sdtest_3166_a_listing_larger_than_a_pipe_buffer_is_read_whole` | SDUC-585 | Green | Unix only. 3000 machines, more than 256 KiB. |
 | SDTEST-3170 | `tailscale::tests::sdtest_3170_names_that_do_not_resolve_and_sharee_machines_are_not_offered` | SDUC-585 | Green | With `CurrentTailnet.MagicDNSEnabled` false the peers lose their name: dialled, saved and marked by address, and one without an address is dropped. A listing that does not say keeps the names. A `ShareeNode` peer is not listed. |
 | SDTEST-3171 | Pro origin validation and account/profile isolation | SDUC-586 | Green | `config/pro_web.rs` |
+| SDTEST-3176 | User-selected Pro default for new, missing and blank config; preserve explicit custom and loopback origins | SDUC-586 | Green | `config/pro_web.rs`; both Pro config tests and all 19 AppConfig tests pass |

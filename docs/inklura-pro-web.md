@@ -1,13 +1,15 @@
 # Dedicated Inklura Pro web workspace
 
 A signed-in account opens **Inklura Pro** from the titlebar and returns to its
-retained desktop tools with **Back to tools**. This is an integration preview;
-the selected production origin is `https://pro.inklura.fr`. Its deployment and
-dedicated web OAuth registration are separate from this desktop change; the
-desktop address stays empty until explicitly configured.
+retained desktop tools with **Back to tools**. The default origin is
+`https://pro.inklura.fr`, explicitly selected by the user. New configurations and
+older files with a missing, empty or whitespace-only `general.pro_web_url` use
+that origin. Explicit custom HTTPS and loopback development addresses are
+preserved. This default does not deploy or publish the service; backend and
+hosting release checks remain separate.
 
-The first visit asks for the administrator-provided Pro web origin, saved in
-`general.pro_web_url`. HTTPS is required, except loopback development servers.
+Pro opens the configured origin directly. **Change address** edits
+`general.pro_web_url`; HTTPS is required except for loopback development servers.
 Only an origin is accepted, without credentials, query parameters or fragments.
 The synthetic local demo uses `http://127.0.0.1:8096`.
 
@@ -30,8 +32,8 @@ form scrolls at short window heights, supports Enter to submit, and retains edit
 when switching away without submitting them.
 
 Source: `workspace/pro_web.rs` (surface/lifecycle), `config/pro_web.rs` (origin
-validation and profile identity). The optional address defaults to empty in
-`GeneralConfig`. Native User/Support/Dev authorization remains authoritative.
+validation, selected default and profile identity). Native User/Support/Dev
+authorization remains authoritative.
 
 Web app source is prepared in the company-manager worktree
 `/home/pc1/dev/inklura-pro-web-integration/apps/app-inklura-pro`; its `README.web.md` documents
@@ -46,9 +48,15 @@ central logout, missing account identity, same-account refresh, replacement,
 hidden-Agent unread state, and rendered controls at 600×400 through 1280×400,
 French/English and 10/14/20px UI fonts. Core origin/account isolation passed in
 the initial integration. After the dedicated browser mode change, all three
-final targeted tests (SDTEST-3172/3174/3175) passed in 4.79 seconds; the native
+targeted tests (SDTEST-3172/3174/3175) passed in 4.79 seconds; the native
 Linux executable built successfully. The independent CEF fixture verifies the
 web flow, separately from this native host.
+
+The user-selected default follow-up passed both Pro config tests, all 19
+AppConfig tests and all three targeted UI tests (6.00 seconds). Those checks
+cover missing/blank saved configuration, preservation of explicit addresses and
+workspace default submission without launching a browser or contacting the
+public service.
 
 The full Workspace walkthrough uses private Xvfb with a compositor, disposable
 XDG directories, a private D-Bus session and synthetic Manage data. Its test-only
@@ -89,7 +97,7 @@ No installed app or approved helper was replaced. A matching-bundle runtime
 check needs a Linux host where that new executable is already permitted to use
 Chromium's namespace sandbox, or separately authorized host setup.
 
-SDUC-586 and SDTEST-3171/3172/3174/3175 record the contracts. SDTEST-3173 remains
+SDUC-586 and SDTEST-3171/3172/3174/3175/3176 record the contracts. SDTEST-3173 remains
 partial for the full Workspace with a live matching packaged helper; macOS and
 Windows runtime QA are also unverified. Production hosting/OAuth and the real
 Manage handoff are separate release checks.

@@ -25,6 +25,9 @@ fn fixture(cx: &mut Context<Workspace>) -> Workspace {
         )
     });
     let mut config = AppConfig::default();
+    // Deliberately invalid: these tests exercise the address form without
+    // launching a browser or contacting the hosted default.
+    config.general.pro_web_url = "invalid-fixture-origin".into();
     config.account = Some(AccountInfo {
         email: "fixture@example.test".into(),
         name: "Fixture".into(),
@@ -59,13 +62,38 @@ fn sdtest_3172_pro_workspace_retains_tools_and_closes_its_session() {
     let mut app = TestAppContext::single();
     let workspace = app.update(|cx| cx.new(fixture));
     workspace.update(&mut app, |view, cx| {
+        let fixture_origin = view.app_config.general.pro_web_url.clone();
+        view.app_config.general.pro_web_url = AppConfig::default().general.pro_web_url;
+        view.app_config.account.as_mut().unwrap().email.clear();
+        view.toggle_pro(cx);
+        assert_eq!(
+            view.pro_url_input
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .content()
+                .to_string(),
+            shelldeck_core::config::pro_web::DEFAULT_URL,
+            "opening Pro uses the chosen default instead of asking for an address"
+        );
+        assert!(
+            view.pro_error,
+            "the chosen address is submitted immediately"
+        );
+        assert!(
+            view.pro_browser.is_none(),
+            "missing identity stops browser launch"
+        );
+        view.close_pro_session(cx);
+        view.app_config.account.as_mut().unwrap().email = "fixture@example.test".into();
+        view.app_config.general.pro_web_url = fixture_origin;
         let terminal = view.terminal.entity_id();
         let agents = view.agent_console.entity_id();
         view.toggle_pro(cx);
         assert!(view.pro_open);
         assert!(
             view.pro_browser.is_none(),
-            "unconfigured apps are not opened"
+            "invalid configured origins are not opened"
         );
         view.toggle_pro(cx);
         assert!(!view.pro_open);
