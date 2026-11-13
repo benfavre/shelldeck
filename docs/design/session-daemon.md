@@ -332,6 +332,7 @@ range (only 1 exists). Anything else before `HelloAck` closes the connection.
 | 0x01 | Hello | magic `SDSD` (4 bytes), `proto_min` u16, `proto_max` u16, `features` u32, `client_version` string | string 64; frame 128 |
 | 0x02 | ListPanes | none | frame 2 |
 | 0x09 | ListStatus | none. Only to a daemon whose `HelloAck.features` has bit 0 (`FEATURE_PANE_STATUS`): an older daemon closes the connection on an unknown type | frame 2 |
+| 0x0a | Subscribe | none. From then on the daemon sends a PaneEvent for every change of a pane; no reply, and closing the connection is the only way to end it. Only to a daemon whose `HelloAck.features` has bit 1 (`FEATURE_PANE_EVENTS`) | frame 2 |
 | 0x03 | Spawn | `request_id` u32, `group` uuid, `label` string, `rows` u16, `cols` u16, `scrollback_max` u32, `cwd` string (empty = home), `argv` (u8 count + strings, empty = login shell), `env` (u8 count + name/value strings) | label 255; cwd 4096; argv 64 x 4096; env 32 entries, name 64, value 1024; rows and cols 1..=1000; scrollback at most 100000; frame 64 KiB |
 | 0x04 | Attach | `pane` uuid, `attach_id` u32 (unique per connection, increasing), `rows` u16, `cols` u16, `scrollback_rows` u32, `flags` u8 (bit 0 = read only) | frame 64; on a pane this connection already has attached it replaces that attachment (refresh, section 5); `rows` = `cols` = 0 means "keep the pane's current size" (section 7), any other value outside 1..1000 is refused |
 | 0x05 | Input | `pane` uuid, `bytes` blob | blob 64 KiB |
@@ -346,6 +347,7 @@ range (only 1 exists). Anything else before `HelloAck` closes the connection.
 | 0x81 | HelloAck | `proto` u16, `features` u32, `daemon_version` string, `instance` uuid, `max_frame` u32, `emulator_rev` u16 | string 64 |
 | 0x82 | PaneList | u16 count, then per pane: `pane`, `group`, `label`, `title` (OSC 0/2), `cwd` (OSC 7), `rows`, `cols`, `created_at` u64 (unix seconds), `alive` u8, `exit_code` i32, `clients` u16, `offset` u64 | at most 256 panes; title 255; cwd truncated to 1024 (so 256 panes always fit); frame 1 MiB |
 | 0x8a | StatusList | reply to ListStatus. u16 count, then per pane whose program reported (OSC 7501) and still runs: `pane`, `state` string (`idle`, `working`, `done`, `blocked`, `error`), `kind` string (`permission`, `question`, `auth` or empty), `progress` i8 (-1 = none), `app` string, `text` string. Words, not codes: a client passes on a state it does not know | at most 256; state and kind 16, app 64, text 255 (truncated) |
+| 0x8b | PaneEvent | only on a connection that sent Subscribe. `pane` uuid, `kind` u8, then by kind: 1 started (the fields of one PaneList entry), 2 exited (`exit_code` i32), 3 removed (nothing), 4 title (string), 5 folder (string), 6 size (`rows` u16, `cols` u16), 7 viewers (u16), 8 status (u8 0 or 1, then with 1 the fields of one StatusList entry; 0 = the report was taken back). Each carries the new value, so applying one twice changes nothing. An unknown kind is a bad frame | title 255, folder 1024 (truncated); queued events per connection 1 MiB (`ServerConfig::event_queue_cap`), beyond which the connection is closed |
 | 0x83 | Spawned | `request_id` u32, `pane` uuid, `pid` u32, `cwd` string (canonical path the daemon opened) | cwd 4096 |
 | 0x84 | Snapshot | `pane`, `attach_id` u32, `seq` u32, `flags` u8 (bit 0 = last), `bytes` blob | blob 256 KiB; whole snapshot 32 MiB |
 | 0x85 | Ready | `pane`, `attach_id`, `offset` u64, `rows` u16, `cols` u16 | |
@@ -361,6 +363,34 @@ daemon announcing the size it applied, positioned in the output stream.
 Error codes: 1 BadFrame, 2 UnsupportedVersion, 3 NoSuchPane, 4 SpawnFailed,
 5 Resync, 6 Busy, 7 LimitExceeded, 8 NotAttached, 9 ReadOnly, 10 Internal.
 An unknown code received by a client is treated as fatal for the connection.
+
+### Pane events
+
+A connection that sent `Subscribe` (feature bit 1) is told every change of
+a pane with one `PaneEvent`: started, exited, removed, title, folder, size,
+viewers, status. Added for `shelldeck-sessiond events`, which polled before
+and missed a status that came and went between two looks.
+
+- **What exists is not sent.** The client lists the panes (and their
+  status) after subscribing and applies every event it received to that
+  list, those that arrived before the reply included. An event is queued
+  under the lock of its pane, in the same queue as the replies, so an event
+  queued after a reply is newer than what the reply says; one queued before
+  it carries a value the list already has or a newer one. Events for a pane
+  the client does not know (removed since) are dropped.
+- **Order.** The events of one pane reach a subscriber in the order the
+  changes happened. Nothing is promised between two panes.
+- **Status.** The daemon compares the status its own terminal holds after
+  each OSC 7501 of a chunk of output, not once per chunk: a report set and
+  taken back by one `write` is two events. Only the `ESC ]` form is cut
+  this way.
+- **Slow subscribers.** Queuing an event never waits: the PTY reader
+  publishes while it holds the pane lock. A connection whose queued events
+  pass 1 MiB is closed, its queue freed; its panes and the other
+  subscribers are not affected. The client connects again and lists.
+- **Nobody subscribed.** Publishing is one atomic load. The daemon still
+  keeps what it would have said last (title, folder, status, viewers), so
+  the first change after a subscription is compared with the truth.
 
 Daemon limits: 256 panes, 32 client connections, 16 attachments per pane.
 Exceeding one returns `Error(LimitExceeded)`. Memory per connection: 4 MiB

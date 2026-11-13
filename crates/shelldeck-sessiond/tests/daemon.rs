@@ -3607,3 +3607,621 @@ async fn sdtest_3123_pane_actions_ask_the_application_and_send_respects_permissi
     assert_eq!(code, 0, "{err}");
     cli_shows(&dir, &["read", "base"], "typed-anyway");
 }
+
+/// The next pushed change that `wanted` accepts, with every change that
+/// came before it.
+async fn change_where(
+    changes: &mut shelldeck_sessiond::client::PaneChanges,
+    wanted: impl Fn(&shelldeck_sessiond::protocol::PaneChange) -> bool,
+) -> (
+    shelldeck_sessiond::protocol::PaneChange,
+    Vec<shelldeck_sessiond::protocol::PaneChange>,
+) {
+    let mut skipped = Vec::new();
+    loop {
+        let event = tokio::time::timeout(STEP, changes.next())
+            .await
+            .unwrap_or_else(|_| panic!("no such change; got {skipped:?}"))
+            .expect("the connection stays open");
+        if wanted(&event.change) {
+            return (event.change, skipped);
+        }
+        skipped.push(event.change);
+    }
+}
+
+// SDTEST-3127 (SDUC-583): a connection that subscribed is sent every
+// change of a pane as it happens, by a real daemon with a real PTY: the
+// pane started, a viewer, a status reported and taken back in one write
+// (which two looks at the daemon would both have missed), the title, the
+// folder, the size, the exit and the removal, each once and in order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3127_the_daemon_pushes_every_change_of_a_pane() {
+    use shelldeck_sessiond::protocol::{PaneChange, FEATURE_PANE_EVENTS};
+    let dir = run_dir();
+    let daemon = start(&dir, test_config());
+    let watcher = connect(&dir).await;
+    assert_ne!(watcher.hello().features & FEATURE_PANE_EVENTS, 0);
+    let mut changes = watcher.subscribe().expect("subscribe").expect("pushed");
+    // The connection still answers requests.
+    assert!(watcher.list_panes().await.expect("list").is_empty());
+
+    let actor = connect(&dir).await;
+    let spawned = actor
+        .spawn(SpawnOptions {
+            label: "worker".into(),
+            rows: 10,
+            cols: 40,
+            argv: vec!["/bin/sh".into()],
+            env: vec![("TERM".into(), "dumb".into())],
+            ..SpawnOptions::default()
+        })
+        .await
+        .expect("spawn");
+    let pane = spawned.pane;
+    let event = tokio::time::timeout(STEP, changes.next())
+        .await
+        .expect("in time")
+        .expect("open");
+    assert_eq!(event.pane, pane);
+    match event.change {
+        PaneChange::Started(info) => {
+            assert_eq!(info.pane, pane);
+            assert_eq!(info.label, "worker");
+            assert_eq!((info.rows, info.cols, info.alive), (10, 40, true));
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let _events = actor
+        .attach(
+            pane,
+            AttachOptions {
+                rows: 0,
+                cols: 0,
+                scrollback_rows: 0,
+                read_only: false,
+            },
+        )
+        .expect("attach");
+    let (viewers, _) = change_where(&mut changes, |c| matches!(c, PaneChange::Clients(_))).await;
+    assert_eq!(viewers, PaneChange::Clients(1));
+
+    // Reported and taken back by one `printf`, so in one write.
+    actor
+        .input(
+            pane,
+            b"printf '\\033]7501;state=working:progress=40\\033\\\\\\033]7501;state=clear\\033\\\\'\n",
+        )
+        .expect("input");
+    let (set, _) = change_where(&mut changes, |c| matches!(c, PaneChange::Status(_))).await;
+    match set {
+        PaneChange::Status(Some(status)) => {
+            assert_eq!(status.pane, pane);
+            assert_eq!((status.state.as_str(), status.progress), ("working", 40));
+        }
+        other => panic!("{other:?}"),
+    }
+    let (cleared, between) =
+        change_where(&mut changes, |c| matches!(c, PaneChange::Status(_))).await;
+    assert_eq!(cleared, PaneChange::Status(None));
+    assert!(between.is_empty(), "{between:?}");
+    // Neither is in the daemon's list any more: only the push told it.
+    assert_eq!(actor.list_status().await.expect("status"), Some(Vec::new()));
+
+    actor
+        .input(pane, b"printf '\\033]0;hello\\007'\n")
+        .expect("input");
+    let (title, _) = change_where(&mut changes, |c| matches!(c, PaneChange::Title(_))).await;
+    assert_eq!(title, PaneChange::Title("hello".into()));
+    actor
+        .input(pane, b"printf '\\033]7;file://host/tmp\\007'\n")
+        .expect("input");
+    let (cwd, _) = change_where(&mut changes, |c| matches!(c, PaneChange::Cwd(_))).await;
+    assert_eq!(cwd, PaneChange::Cwd("/tmp".into()));
+
+    actor.resize(pane, 12, 50).expect("resize");
+    let (size, skipped) =
+        change_where(&mut changes, |c| matches!(c, PaneChange::Size { .. })).await;
+    assert_eq!(size, PaneChange::Size { rows: 12, cols: 50 });
+    assert!(
+        !skipped
+            .iter()
+            .any(|c| matches!(c, PaneChange::Title(_) | PaneChange::Cwd(_))),
+        "told once: {skipped:?}"
+    );
+
+    actor.input(pane, b"exit 3\n").expect("input");
+    let (exited, _) = change_where(&mut changes, |c| matches!(c, PaneChange::Exited { .. })).await;
+    assert_eq!(exited, PaneChange::Exited { exit_code: 3 });
+    actor.detach(pane).expect("detach");
+    let (viewers, _) = change_where(&mut changes, |c| matches!(c, PaneChange::Clients(_))).await;
+    assert_eq!(viewers, PaneChange::Clients(0));
+    // `Kill` on a pane that ended removes it.
+    actor.kill(pane, SIGNAL_TERM).expect("kill");
+    let (removed, skipped) = change_where(&mut changes, |c| *c == PaneChange::Removed).await;
+    assert_eq!(removed, PaneChange::Removed);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert!(changes.try_next().is_none());
+
+    // The daemon going away ends the stream instead of leaving it silent.
+    drop(daemon);
+    assert!(tokio::time::timeout(STEP, changes.next())
+        .await
+        .expect("in time")
+        .is_none());
+}
+
+// SDTEST-3128 (SDUC-583): `events` of the shipped binary prints a status
+// that was reported and taken back at once, in the same JSON lines as
+// before, when the daemon pushes. A daemon that does not announce the
+// subscription is never sent it and is looked at as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3128_events_are_pushed_and_an_older_daemon_is_still_polled() {
+    use shelldeck_sessiond::protocol::FEATURE_PANE_STATUS;
+    use std::io::BufRead;
+    let dir = run_dir();
+    let daemon = start(&dir, test_config());
+    let (code, out, err) = pane_cli(&dir, &["run", "--name", "agent", "--", "/bin/sh"]);
+    assert_eq!(code, 0, "{err}");
+    let id = out.trim().to_string();
+
+    let mut child = std::process::Command::new(BIN)
+        .args(["events", "--timeout", "20", "--dir"])
+        .arg(&dir.path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run events");
+    let stdout = child.stdout.take().expect("stdout");
+    let (lines_tx, lines_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if lines_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let next_line = |what: &str| {
+        tokio::task::block_in_place(|| lines_rx.recv_timeout(Duration::from_secs(15)))
+            .unwrap_or_else(|_| panic!("no line: {what}"))
+    };
+    // What exists is described first; from then on `events` listens.
+    let first = next_line("the pane that exists");
+    assert!(
+        first.starts_with("{\"event\":\"pane-started\",\"pane\":\"") && first.contains(&id),
+        "{first}"
+    );
+    assert!(first.contains("\"name\":\"agent\""), "{first}");
+
+    let (code, _, err) = pane_cli(
+        &dir,
+        &[
+            "send",
+            "agent",
+            "--",
+            "printf '\\033]7501;state=working:app=tool\\033\\\\\\033]7501;state=clear\\033\\\\'",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    // `send` attaches for a moment: those lines come as they did.
+    let mut seen = Vec::new();
+    let status_at = loop {
+        let line = next_line("the status");
+        seen.push(line);
+        if seen
+            .last()
+            .is_some_and(|line| line.contains("\"event\":\"status\""))
+        {
+            break seen.len() - 1;
+        }
+    };
+    assert_eq!(
+        seen[status_at],
+        format!(
+            "{{\"event\":\"status\",\"pane\":\"{id}\",\"state\":\"working\",\"kind\":null,\
+             \"progress\":null,\"app\":\"tool\",\"text\":\"\"}}"
+        )
+    );
+    let cleared = loop {
+        let line = next_line("the status taken back");
+        if line.contains("\"event\":\"status\"") {
+            break line;
+        }
+    };
+    assert_eq!(
+        cleared,
+        format!(
+            "{{\"event\":\"status\",\"pane\":\"{id}\",\"state\":null,\"kind\":null,\
+             \"progress\":null,\"app\":\"\",\"text\":\"\"}}"
+        )
+    );
+    assert!(
+        seen.iter()
+            .any(|line| line.contains("\"event\":\"clients\"")),
+        "{seen:?}"
+    );
+    let _ = child.kill();
+    let _ = tokio::task::block_in_place(|| child.wait());
+
+    // Asked to poll, the same daemon answers with the same first lines.
+    let (code, polled, err) = pane_cli(
+        &dir,
+        &["events", "--poll", "--timeout", "0", "--interval-ms", "20"],
+    );
+    assert_eq!(code, 0, "{err}");
+    let (code, pushed, err) = pane_cli(&dir, &["events", "--timeout", "0"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(polled, pushed);
+    assert_eq!(pushed.lines().count(), 1, "{pushed}");
+    drop(daemon);
+
+    // A daemon from before the subscription: the bit is not announced.
+    // Sending the request would end the connection, so it is not sent.
+    let old_dir = run_dir();
+    let old = ServerConfig {
+        features: FEATURE_PANE_STATUS,
+        ..test_config()
+    };
+    let _old_daemon = start(&old_dir, old);
+    let client = connect(&old_dir).await;
+    assert!(client.subscribe().expect("not asked").is_none());
+    assert!(client
+        .list_panes()
+        .await
+        .expect("still connected")
+        .is_empty());
+    let (code, out, err) = pane_cli(&old_dir, &["run", "--name", "old", "--", "/bin/sh"]);
+    assert_eq!(code, 0, "{err}");
+    let old_id = out.trim().to_string();
+    let (code, events, err) = pane_cli(&old_dir, &["events", "--timeout", "0"]);
+    assert_eq!((code, err.as_str()), (0, ""), "{events}");
+    assert_eq!(events.lines().count(), 1, "{events}");
+    assert!(
+        events.contains("\"event\":\"pane-started\"") && events.contains(&old_id),
+        "{events}"
+    );
+    // And what such a daemon does with the request, were it sent.
+    let mut raw = std::os::unix::net::UnixStream::connect(paths::socket_path(&old_dir.path))
+        .expect("connect");
+    raw.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let hello = ClientFrame::Hello(Hello {
+        proto_min: 1,
+        proto_max: 1,
+        features: 0,
+        client_version: "test".into(),
+    });
+    raw.write_all(&hello.encode().unwrap()).unwrap();
+    raw.write_all(&ClientFrame::Subscribe.encode().unwrap())
+        .unwrap();
+    let mut frames = FrameBuffer::new();
+    let mut answers = Vec::new();
+    let mut buf = [0u8; 4096];
+    while answers.len() < 2 {
+        let n = raw.read(&mut buf).expect("read");
+        assert_ne!(n, 0, "closed before the refusal: {answers:?}");
+        frames.push(&buf[..n]);
+        while let Some(payload) = frames.next_frame().expect("frame") {
+            answers.push(DaemonFrame::decode(payload).expect("decode"));
+        }
+    }
+    assert!(
+        matches!(answers[0], DaemonFrame::HelloAck(_)),
+        "{answers:?}"
+    );
+    assert!(
+        matches!(
+            answers[1],
+            DaemonFrame::Error {
+                code: ErrorCode::BadFrame,
+                ..
+            }
+        ),
+        "{answers:?}"
+    );
+}
+
+// SDTEST-3130 (SDUC-583): `show` asks the application to open a pane
+// started with `run` as a tab, under the name it was started with. It
+// says so when nobody answers, and asks nothing for a pane that ended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3130_show_asks_the_application_to_open_a_pane_as_a_tab() {
+    use shelldeck_sessiond::requests::{self, ActRequest, Action, Request};
+    let dir = run_dir();
+    let _daemon = start(&dir, test_config());
+    let (code, out, err) = pane_cli(&dir, &["run", "--name", "worker", "--", "/bin/sh"]);
+    assert_eq!(code, 0, "{err}");
+    let worker: Uuid = out.trim().parse().expect("id");
+    let (code, out, err) = pane_cli(&dir, &["run", "--", "/bin/sh"]);
+    assert_eq!(code, 0, "{err}");
+    let unnamed: Uuid = out.trim().parse().expect("id");
+
+    let (code, _, err) = pane_cli(&dir, &["show"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("show needs a pane"), "{err}");
+    let (code, _, err) = pane_cli(&dir, &["show", "nobody"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no pane matches"), "{err}");
+    assert!(requests::take(&dir.path).is_empty());
+
+    // The application: answers two requests, then refuses one.
+    let run = dir.path.clone();
+    let application = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        for answer in [Ok(()), Ok(()), Err("persistent sessions are off")] {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some((id, request)) = requests::take(&run).into_iter().next() {
+                    requests::answer(&run, id, answer);
+                    seen.push(request);
+                    break;
+                }
+                assert!(Instant::now() < deadline, "no request arrived");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        seen
+    });
+    let (code, out, err) = pane_cli(&dir, &["show", "worker"]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    // Inside a pane, `show` is about that pane.
+    let output = tokio::task::block_in_place(|| {
+        std::process::Command::new(BIN)
+            .args(["show", "--dir"])
+            .arg(&dir.path)
+            .env("SHELLDECK_PANE", unnamed.to_string())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run show")
+    });
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (code, _, err) = pane_cli(&dir, &["show", "worker"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("persistent sessions are off"), "{err}");
+    let show = |pane, text: &str| {
+        Request::Act(ActRequest {
+            action: Action::Show,
+            pane,
+            text: text.into(),
+        })
+    };
+    assert_eq!(
+        application.join().expect("application thread"),
+        vec![
+            show(worker, "worker"),
+            show(unnamed, ""),
+            show(worker, "worker")
+        ]
+    );
+
+    // No application: said after a short wait, the pane runs all the same.
+    let (code, _, err) = pane_cli(&dir, &["show", "worker"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no application answered"), "{err}");
+    assert!(requests::take(&dir.path).is_empty());
+
+    // A pane whose program ended has nothing to show a tab for.
+    let (code, _, err) = pane_cli(&dir, &["send", "worker", "exit 0"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = pane_cli(&dir, &["wait", "worker", "--timeout", "10"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = pane_cli(&dir, &["show", "worker"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("has exited"), "{err}");
+    assert!(requests::take(&dir.path).is_empty());
+}
+
+// SDTEST-3133 (SDUC-583): `skill setup --with-hook` adds the start hook
+// to the Claude Code settings of a temporary home and keeps what is
+// there; `skill context` prints what the hook gives an agent: nothing
+// outside a pane, its pane and the others inside one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdtest_3133_the_start_hook_is_registered_once_and_prints_the_pane_context() {
+    use shelldeck_sessiond::pane_cli::HOOK_COMMAND;
+    let home = tempfile::tempdir().expect("home");
+    let skill = |args: &[&str]| {
+        let output = tokio::task::block_in_place(|| {
+            std::process::Command::new(BIN)
+                .args(["skill", "--dir"])
+                .arg(home.path())
+                .args(args)
+                .env_remove("SHELLDECK_PANE")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("run skill")
+        });
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let settings = home.path().join(".claude/settings.json");
+    let skill_file = home.path().join(".claude/skills/inklura-panes/SKILL.md");
+
+    // The hook is for Claude Code: without it, none, and it is said.
+    let (code, out, err) = skill(&["setup", "--agent", "codex", "--with-hook"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("codex: "), "the skill is written: {out}");
+    assert!(err.contains("--with-hook is for Claude Code"), "{err}");
+    assert!(!home.path().join(".claude").exists());
+
+    // Without the option the settings are not touched.
+    std::fs::create_dir_all(home.path().join(".claude")).expect("claude");
+    let (code, _, err) = skill(&["setup"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(skill_file.is_file() && !settings.exists());
+
+    // No settings file yet: one with the hook alone.
+    let (code, out, err) = skill(&["setup", "--with-hook"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains(&format!("claude: hook in {}", settings.display())),
+        "{out}"
+    );
+    let written = std::fs::read_to_string(&settings).expect("settings");
+    assert!(written.contains("\"SessionStart\""), "{written}");
+    assert!(written.contains("skill context"), "{written}");
+    let (code, out, err) = skill(&["setup", "--with-hook"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("claude: hook already in"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(&settings).expect("settings"),
+        written
+    );
+
+    // Settings the user wrote: everything stays, the hook is added once.
+    let users = "{\n  \"model\": \"opus\",\n  \"hooks\": {\n    \"Stop\": [{\"hooks\": \
+                 [{\"type\": \"command\", \"command\": \"notify-send done\"}]}]\n  },\n  \
+                 \"env\": {\"A\": \"1\"}\n}\n";
+    std::fs::write(&settings, users).expect("write");
+    std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).expect("mode");
+    let (code, _, err) = skill(&["setup", "--with-hook"]);
+    assert_eq!(code, 0, "{err}");
+    let merged = std::fs::read_to_string(&settings).expect("settings");
+    for kept in [
+        "\"model\": \"opus\"",
+        "notify-send done",
+        "\"A\": \"1\"",
+        "\"Stop\"",
+    ] {
+        assert!(merged.contains(kept), "{kept} lost:\n{merged}");
+    }
+    assert_eq!(merged.matches("skill context").count(), 1, "{merged}");
+    assert!(
+        merged.find("\"model\"").unwrap() < merged.find("\"hooks\"").unwrap()
+            && merged.find("\"hooks\"").unwrap() < merged.find("\"env\"").unwrap(),
+        "the order of the keys is kept:\n{merged}"
+    );
+    assert_eq!(
+        std::fs::metadata(&settings)
+            .expect("meta")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let (code, _, _) = skill(&["setup", "--with-hook"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        std::fs::read_to_string(&settings).expect("settings"),
+        merged
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(home.path().join(".claude"))
+        .expect("dir")
+        .flatten()
+        .map(|entry| entry.file_name())
+        .filter(|name| name != "settings.json" && name != "skills")
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+
+    // Settings that cannot be read as JSON are left byte for byte.
+    let broken = "{ \"model\": \"opus\", // mine\n";
+    std::fs::write(&settings, broken).expect("write");
+    let (code, _, err) = skill(&["setup", "--with-hook"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no hook registered"), "{err}");
+    assert!(err.contains("was left as it is"), "{err}");
+    assert!(err.contains("not valid JSON"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&settings).expect("settings"),
+        broken
+    );
+
+    // The command the hook runs, as a shell runs it: silent and
+    // successful outside a pane, even with no binary to find.
+    let outside = tokio::task::block_in_place(|| {
+        std::process::Command::new("/bin/sh")
+            .args(["-c", HOOK_COMMAND])
+            .env_remove("SHELLDECK_PANE")
+            .env_remove("SHELLDECK_SESSIOND")
+            .env("PATH", "/nonexistent")
+            .output()
+            .expect("sh")
+    });
+    assert_eq!(outside.status.code(), Some(0));
+    assert!(outside.stdout.is_empty() && outside.stderr.is_empty());
+    let (code, out, err) = skill(&["context"]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+
+    // Inside a pane: this pane, the skill, the other panes.
+    let dir = run_dir();
+    let _daemon = start(&dir, test_config());
+    let (code, out, err) = pane_cli(&dir, &["run", "--name", "me", "--", "/bin/sh"]);
+    assert_eq!(code, 0, "{err}");
+    let me = out.trim().to_string();
+    let (code, out, err) = pane_cli(&dir, &["run", "--name", "tests", "--", "/bin/sh"]);
+    assert_eq!(code, 0, "{err}");
+    let other = out.trim().to_string();
+    let (code, _, err) = pane_cli(
+        &dir,
+        &[
+            "send",
+            "tests",
+            "--",
+            "printf '\\033]7501;state=working\\033\\\\'",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    cli_shows(&dir, &["status", "tests"], "working");
+    let output = tokio::task::block_in_place(|| {
+        std::process::Command::new(BIN)
+            .args(["skill", "context", "--dir"])
+            .arg(&dir.path)
+            .env("SHELLDECK_PANE", &me)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run skill context")
+    });
+    assert_eq!(output.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert!(
+        lines[0].contains(&me) && lines[0].contains("inklura-panes"),
+        "{text}"
+    );
+    assert_eq!(lines[1], "Other panes:");
+    assert_eq!(
+        lines[2],
+        format!("- {other} \"tests\" running, status working")
+    );
+
+    // A pane of another daemon is not told about the panes of this one.
+    let output = tokio::task::block_in_place(|| {
+        std::process::Command::new(BIN)
+            .args(["skill", "context", "--dir"])
+            .arg(&dir.path)
+            .env("SHELLDECK_PANE", Uuid::from_u128(5).to_string())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run skill context")
+    });
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
+
+    // A pane whose daemon cannot be reached is still told where it is.
+    let nowhere = run_dir();
+    let output = tokio::task::block_in_place(|| {
+        std::process::Command::new(BIN)
+            .args(["skill", "context", "--dir"])
+            .arg(&nowhere.path)
+            .env("SHELLDECK_PANE", &me)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run skill context")
+    });
+    assert_eq!(output.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains(&me), "{text}");
+}

@@ -7716,6 +7716,7 @@ version = "0.24.0"
 dependencies = [
  "libc",
  "parking_lot",
+ "serde_json",
  "sha2 0.10.9",
  "shelldeck-terminal",
  "tempfile",

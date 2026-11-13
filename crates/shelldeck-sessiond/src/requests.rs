@@ -10,7 +10,8 @@
 //! daemon panes: nobody answers, and the pane runs all the same.
 //!
 //! The other requests act on a pane the application already shows: give
-//! it the keyboard, name it, show it alone ([`ActRequest`]).
+//! it the keyboard, name it, show it alone ([`ActRequest`]). One of them
+//! is for a pane it does not show yet: open it as a tab.
 //!
 //! A request is a few `key=value` lines: the crate has no JSON parser and
 //! the values are ids, words, a number and one line of text.
@@ -106,6 +107,10 @@ pub enum Action {
     Zoom,
     /// Show the whole split of its tab again.
     Unzoom,
+    /// Open the pane as a new tab, unless a tab shows it already. An
+    /// application older than this request does not know the word and
+    /// leaves the request unanswered.
+    Show,
 }
 
 impl Action {
@@ -115,6 +120,7 @@ impl Action {
             Self::Rename => "rename",
             Self::Zoom => "zoom",
             Self::Unzoom => "unzoom",
+            Self::Show => "show",
         }
     }
 
@@ -124,13 +130,15 @@ impl Action {
             "rename" => Some(Self::Rename),
             "zoom" => Some(Self::Zoom),
             "unzoom" => Some(Self::Unzoom),
+            "show" => Some(Self::Show),
             _ => None,
         }
     }
 }
 
-/// Do `action` on `pane`. `text` is the name for [`Action::Rename`] and
-/// empty otherwise.
+/// Do `action` on `pane`. `text` is the name for [`Action::Rename`], the
+/// name of the new tab for [`Action::Show`] (empty: the application's own)
+/// and empty otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActRequest {
     pub action: Action,
@@ -407,5 +415,36 @@ mod tests {
             Request::decode(&format!("action=quit\npane={pane}\n")),
             None
         );
+    }
+
+    // SDTEST-3129 / SDUC-583. `show` travels like the other actions. The
+    // name of the pane goes with it for the tab and may be missing; a
+    // word an application does not know is not a request for it.
+    #[test]
+    fn sdtest_3129_show_is_a_request_with_an_optional_tab_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = dir.path();
+        let pane = Uuid::from_u128(7);
+        assert_eq!(Action::parse("show"), Some(Action::Show));
+        assert_eq!(Action::Show.word(), "show");
+        for text in ["", "worker"] {
+            let request = Request::Act(ActRequest {
+                action: Action::Show,
+                pane,
+                text: text.into(),
+            });
+            let id = submit(run, &request).expect("submit");
+            assert_eq!(take(run), vec![(id, request)]);
+        }
+        let named = ActRequest::decode(&format!("action=show\npane={pane}\ntext= a\tb\x07 \n"))
+            .expect("decodes");
+        assert_eq!(named.text, "a b", "one clean line, as for rename");
+        assert_eq!(
+            ActRequest::decode(&format!("action=show\npane={pane}\n")).map(|r| r.text),
+            Some(String::new())
+        );
+        assert_eq!(ActRequest::decode("action=show\npane=nope\n"), None);
+        // What an older application does with it: nothing.
+        assert_eq!(Action::parse("reveal"), None);
     }
 }

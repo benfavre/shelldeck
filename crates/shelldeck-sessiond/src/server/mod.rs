@@ -2,6 +2,7 @@
 //! (docs/design/session-daemon.md, section 3).
 
 mod conn;
+mod events;
 pub mod launch;
 pub mod log;
 mod pane;
@@ -42,6 +43,8 @@ pub struct ServerConfig {
     pub output_queue_cap: usize,
     /// Queued snapshot and scrollback bytes per connection.
     pub bulk_queue_cap: usize,
+    /// Queued pane events per subscribed connection before it is closed.
+    pub event_queue_cap: usize,
     /// Queued input bytes per pane.
     pub input_queue_cap: usize,
     /// PTY input stall after which a pane's queued input is discarded.
@@ -71,6 +74,11 @@ pub struct ServerConfig {
     pub cli_exe: Option<std::path::PathBuf>,
     /// Version announced in `HelloAck`.
     pub daemon_version: String,
+    /// Feature bits announced in `HelloAck`. Tests clear one to stand for
+    /// a daemon of a version that did not have it; such a daemon also
+    /// refuses the request the bit announces.
+    #[doc(hidden)]
+    pub features: u32,
     /// Fault injection for tests: PTY output that contains these bytes
     /// makes the pane's parser panic. Never set in production.
     #[doc(hidden)]
@@ -141,6 +149,7 @@ impl Default for ServerConfig {
             dead_pane_ttl: Duration::from_secs(3600),
             output_queue_cap: 4 * 1024 * 1024,
             bulk_queue_cap: 64 * 1024 * 1024,
+            event_queue_cap: 1024 * 1024,
             input_queue_cap: 1024 * 1024,
             input_stall: Duration::from_secs(10),
             term_grace: Duration::from_secs(3),
@@ -152,6 +161,7 @@ impl Default for ServerConfig {
             pane_launcher: None,
             cli_exe: None,
             daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+            features: crate::protocol::FEATURE_PANE_STATUS | crate::protocol::FEATURE_PANE_EVENTS,
             fault_parser_panic: None,
             before_leaving: None,
         }
@@ -183,6 +193,7 @@ pub(crate) struct Shared {
     pub(crate) config: Arc<ServerConfig>,
     pub(crate) instance: Uuid,
     panes: Mutex<HashMap<Uuid, Arc<Pane>>>,
+    events: Arc<events::EventHub>,
     connections: AtomicUsize,
     next_conn: AtomicU64,
     shutting_down: AtomicBool,
@@ -218,6 +229,8 @@ impl Shared {
         let pane = self.panes.lock().remove(id);
         if let Some(pane) = pane {
             pane.close();
+            self.events
+                .publish(*id, crate::protocol::PaneChange::Removed);
         }
     }
 
@@ -425,6 +438,7 @@ impl Server {
 
         Ok(Some(Self {
             shared: Arc::new(Shared {
+                events: Arc::new(events::EventHub::new(config.event_queue_cap)),
                 config: Arc::new(config),
                 instance: Uuid::new_v4(),
                 panes: Mutex::new(HashMap::new()),
