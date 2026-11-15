@@ -390,6 +390,7 @@ impl Workspace {
         // or let an in-flight capture/upload publish under the new UI session.
         self.personal_share.update(cx, |view, cx| view.clear(cx));
         self.user_home_tab = UserHomeTab::Home;
+        self.close_pro_session(cx);
         self.manage_requests.change_session();
         if let Err(error) = shelldeck_core::config::keychain::store_manage_token(&token) {
             tracing::error!("Failed to store AI Operations token in OS keychain: {error}");
@@ -652,6 +653,7 @@ impl Workspace {
 
 impl Workspace {
     fn sync_agent_browser_account(&mut self, cx: &mut Context<Self>) {
+        self.reconcile_pro_account(cx);
         let origin = self.app_config.cloud_sync.base_url.clone();
         let email = self
             .app_config

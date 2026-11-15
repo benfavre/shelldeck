@@ -239,6 +239,7 @@ impl Workspace {
     /// Stop runtime resources that must never survive an account boundary.
     /// Unlike `shutdown`, this keeps the Workspace itself alive for login.
     pub(super) fn stop_authenticated_runtime(&mut self, cx: &mut Context<Self>) {
+        self.close_pro_session(cx);
         self.ai_dock_assistant
             .update(cx, |view, cx| view.set_shared_agent_console(None, cx));
         self.personal_share.update(cx, |view, cx| view.clear(cx));
@@ -279,6 +280,7 @@ impl Workspace {
         if view.is_retired() {
             return;
         }
+        self.pro_open = false;
         self.close_titlebar_menus();
         self.active_view = view;
         self.on_active_view_changed(cx);
@@ -681,6 +683,7 @@ impl Workspace {
         let agent_visible = (companion_owns_agents
             && self.ai_dock_assistant.read(cx).shared_agent_chat_visible())
             || (!companion_owns_agents
+                && !self.pro_open
                 && super::presentation::agent_surface_visible(
                     workflows_authorized,
                     self.effective_mode(),

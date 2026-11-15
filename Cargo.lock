@@ -7793,6 +7793,7 @@ dependencies = [
  "cpal",
  "futures-lite 2.6.1",
  "image",
+ "keyring",
  "lopdf",
  "once_cell",
  "open",

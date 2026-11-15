@@ -1248,3 +1248,12 @@ and the workspace writing the choice to the configuration file
 Not automated for SDUC-585: the painting of the button and the list, the
 click on a row, and the workspace storing the connection (the existing
 `Save` path).
+
+## Inklura Pro web workspace
+
+| ID | Test | Use case | Status | Notes |
+| --- | --- | --- | --- | --- |
+| SDTEST-3172 | Selected default, retained tools, native navigation, hidden-agent unread state, account refresh/replacement and central logout teardown | SDUC-586 | Green | `workspace/pro_web_tests.rs`; default-address auto-submit is exercised behind the missing-identity guard, without launching a browser; OS credential store replaced with in-process mock |
+| SDTEST-3173 | Pro workspace native GPU visual walkthrough and embedded page input | SDUC-586 | Yellow | P1 partial: full native shell/form/logout pass; dedicated production browser preview now passes real CEF sign-in, CRM keyboard/mouse/scroll input, 600×600 resize, page dialog and web logout; the web compact-height fix passes at 600×400 plus client details/return at 600×320. Full Workspace + matching helper remains blocked by the extra test sandbox/host userns policy; macOS and Windows remain open. Manage fixture evidence covers route navigation only. [Evidence](screenshots/2026-11-13-pro-workspace/README.md) |
+| SDTEST-3174 | Rendered Pro controls, compact titlebar, UI scaling and full-app navigation | SDUC-586 | Green | `workspace/pro_web_tests.rs`; final targeted run passes in French/English, 600–1280px widths and 10/14/20px fonts; includes hidden shared-Chrome selector |
+| SDTEST-3175 | Dedicated web workspace refuses shared Chrome engine and agent grants | SDUC-586 | Green | `native_browser.rs`; final targeted run passes; dedicated workspace refuses Chrome launch, observation/control grants and control handle |

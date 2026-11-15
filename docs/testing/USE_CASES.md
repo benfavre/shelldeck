@@ -3367,6 +3367,8 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+2026-11-13: Added SDUC-586 for the dedicated Pro web workspace, account isolation, retained desktop tools and the user-selected pro.inklura.fr default.
+
 - **2026-11-13**: Added SDUC-583: `events` pushed by the daemon (`Subscribe`, `PaneEvent`, a second feature bit; an older daemon is still polled), `show` opens a pane as a tab behind the active one, `skill setup --with-hook` and `skill context` (Claude Code start hook). SDTEST-3124..3134.
 - **2026-11-13**: Added SDUC-584: projects in the terminal session list (the repository or the folder each tab works in), grouping by machine or by project remembered in the configuration, next and previous project from the palette or keys the user gives them. SDUC-577 amended (26 actions, two without built-in keys). A screen that loses rows keeps what was printed at its top (the split pane of SDUC-581 that looked empty), `EMULATOR_REV` 3. SDTEST-3140..3153.
 - **2026-11-13**: Added SDUC-585: machines of the Tailscale network offered as SSH connections in the new connection form, read from the local `tailscale status --json`. SDTEST-3156 to 3170.
@@ -5763,3 +5765,14 @@ Not checked on screen: next and previous project, the grouping after a
 restart, `show` with a zoomed split, the Claude Code start hook with a real
 agent, a real tailnet.
 ([`screenshots/2026-11-13-pane-commands/`](./screenshots/2026-11-13-pane-commands/), 03 and 04.)
+
+## SDUC-586 — Dedicated Inklura Pro web workspace
+
+A signed-in account can open a dedicated Pro browser workspace and return to its running tools. Only HTTPS or loopback origins are accepted. The browser profile is scoped by Manage origin, account and Pro origin, is never granted to agents, and is closed on account invalidation or replacement. Pro retains independent web authentication. The user-selected `https://pro.inklura.fr` is the default for missing or blank saved configuration; explicit custom HTTPS and loopback origins are retained.
+
+Selecting a native tool, presentation or mode reveals that destination while
+retaining Pro. Background Agents replies remain unread while Pro covers them.
+Same-account refresh keeps Pro open; central logout and shutdown dispose it.
+Pro has its own site selection, so the native site chip and contextual sidebar/AI
+controls are hidden while Pro is shown. On narrow windows the tool shortcuts
+scroll independently of the always-visible minimize/maximize/close controls.

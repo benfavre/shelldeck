@@ -219,6 +219,12 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GeneralConfig {
+    /// User-selected hosted Pro origin; explicit custom origins remain supported.
+    #[serde(
+        default = "super::pro_web::default_url",
+        deserialize_with = "super::pro_web::deserialize_url"
+    )]
+    pub pro_web_url: String,
     pub auto_connect_on_startup: bool,
     pub show_notifications: bool,
     pub confirm_before_close: bool,
@@ -587,6 +593,7 @@ impl Default for TerminalConfig {
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
+            pro_web_url: super::pro_web::default_url(),
             auto_connect_on_startup: false,
             show_notifications: true,
             confirm_before_close: true,

@@ -58,6 +58,7 @@ impl Workspace {
         ai_dock_open: bool,
         ai_task_count: usize,
         inklura_bell: Option<AnyElement>,
+        pro_workspace_button: Option<AnyElement>,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -533,6 +534,7 @@ impl Workspace {
         let divider = || div().w(px(1.0)).h(px(16.0)).mx(px(4.0)).bg(titlebar_border);
 
         let mut titlebar = div()
+            .debug_selector(|| "workspace-titlebar".into())
             .flex()
             .items_center()
             .w_full()
@@ -552,12 +554,15 @@ impl Workspace {
             .child(title_area)
             .child(
                 div()
+                    .id("titlebar-actions")
+                    .debug_selector(|| "titlebar-actions".into())
                     .flex()
                     .items_center()
                     .h_full()
-                    .flex_shrink_0()
+                    .min_w_0()
+                    .overflow_x_scroll()
                     .gap(px(6.0))
-                    .pr(px(8.0))
+                    .children(pro_workspace_button)
                     .children(presentation_switcher)
                     .children(restore_menu_button)
                     .children(ai_button)
@@ -566,7 +571,19 @@ impl Workspace {
                     .child(divider())
                     .child(account_btn)
                     .children(mode_switcher)
-                    .children(site_chip)
+                    .children(site_chip),
+            )
+            // Keep native window controls reachable even when the tool
+            // shortcuts need horizontal scrolling in a narrow window.
+            .child(
+                div()
+                    .debug_selector(|| "titlebar-window-controls".into())
+                    .flex()
+                    .items_center()
+                    .h_full()
+                    .flex_shrink_0()
+                    .gap(px(6.0))
+                    .pr(px(8.0))
                     .child(divider())
                     .child(minimize_btn)
                     .child(maximize_btn)

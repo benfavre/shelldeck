@@ -94,6 +94,7 @@ struct PageContextMenu {
 
 pub struct NativeBrowserView {
     scope: String,
+    dedicated_workspace: bool,
     chrome_wrapper: bool,
     copy_requested: bool,
     client: Option<BrowserClient>,
@@ -160,6 +161,7 @@ impl NativeBrowserView {
         });
         Self {
             scope,
+            dedicated_workspace: false,
             chrome_wrapper: false,
             copy_requested: false,
             client: None,
@@ -209,9 +211,19 @@ impl NativeBrowserView {
         &self.scope
     }
 
+    /// An independent app workspace must not switch to the shared Chrome
+    /// profile or expose conversation/agent controls.
+    pub fn new_workspace(scope: String, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::new(scope, cx);
+        view.dedicated_workspace = true;
+        view.agent_observation_available = false;
+        view.agent_control_available = false;
+        view
+    }
+
     pub fn control(&self) -> Option<BrowserClient> {
         // A whole personal Chrome UI must never become a page-scoped agent grant.
-        if self.chrome_wrapper {
+        if self.chrome_wrapper || self.dedicated_workspace {
             return None;
         }
         self.client.clone()
@@ -252,11 +264,12 @@ impl NativeBrowserView {
     }
 
     pub fn set_agent_observation_available(&mut self, available: bool, cx: &mut Context<Self>) {
-        self.agent_observation_available = available;
+        self.agent_observation_available = available && !self.dedicated_workspace;
         cx.notify();
     }
 
     pub fn set_agent_control_available(&mut self, available: bool, cx: &mut Context<Self>) {
+        let available = available && !self.dedicated_workspace;
         if self.agent_control_available != available {
             self.agent_control_available = available;
             if !available {
@@ -1121,7 +1134,7 @@ impl NativeBrowserView {
     }
 
     fn share_screenshot(&mut self, cx: &mut Context<Self>) {
-        if self.sharing {
+        if self.sharing || self.dedicated_workspace {
             return;
         }
         let Some(client) = &self.client else {
@@ -1363,26 +1376,34 @@ impl Render for NativeBrowserView {
                     view.focus_address(window, cx);
                 })),
         );
-        strip = strip.child(
-            Button::new(
-                "native-browser-use-chrome",
-                t!("native_browser.use_chrome").to_string(),
-            )
-            .debug_selector(|| "native-browser-use-chrome".into())
-            .size(ButtonSize::Sm)
-            .variant(ButtonVariant::Ghost)
-            .disabled(!cfg!(target_os = "linux") || self.launching)
-            .tooltip(t!("native_browser.chrome_info").to_string())
-            .on_click(cx.listener(|view, _, _, cx| view.use_chrome_preview(cx))),
-        );
-        strip = strip.child(div().flex_1()).child(
-            Button::new("native-browser-close-pane", "")
-                .icon("x")
-                .tooltip(t!("agents.live_browser.close").to_string())
+        strip = strip.when(!self.dedicated_workspace, |strip| {
+            strip.child(
+                Button::new(
+                    "native-browser-use-chrome",
+                    t!("native_browser.use_chrome").to_string(),
+                )
+                .debug_selector(|| "native-browser-use-chrome".into())
                 .size(ButtonSize::Sm)
                 .variant(ButtonVariant::Ghost)
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(NativeBrowserEvent::CloseRequested))),
-        );
+                .disabled(!cfg!(target_os = "linux") || self.launching)
+                .tooltip(t!("native_browser.chrome_info").to_string())
+                .on_click(cx.listener(|view, _, _, cx| view.use_chrome_preview(cx))),
+            )
+        });
+        strip = strip
+            .child(div().flex_1())
+            .when(!self.dedicated_workspace, |strip| {
+                strip.child(
+                    Button::new("native-browser-close-pane", "")
+                        .icon("x")
+                        .tooltip(t!("agents.live_browser.close").to_string())
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Ghost)
+                        .on_click(
+                            cx.listener(|_, _, _, cx| cx.emit(NativeBrowserEvent::CloseRequested)),
+                        ),
+                )
+            });
         if self.chrome_wrapper {
             strip = self.chrome_toolbar(cx);
         }
@@ -1556,6 +1577,8 @@ impl Render for NativeBrowserView {
                                     "native_browser.chrome_empty"
                                 } else if self.launching {
                                     "native_browser.starting"
+                                } else if self.dedicated_workspace {
+                                    "native_browser.workspace_empty"
                                 } else {
                                     "native_browser.empty"
                                 })
@@ -1710,6 +1733,8 @@ impl Render for NativeBrowserView {
                         } else {
                             t!(if loading {
                                 "native_browser.loading"
+                            } else if self.dedicated_workspace {
+                                "native_browser.workspace_session"
                             } else if !self.agent_observation_available {
                                 "native_browser.manual_only"
                             } else {
@@ -1759,15 +1784,17 @@ impl Render for NativeBrowserView {
                         )
                     },
                 )
-                .child(
-                    Button::new("native-browser-share", "")
-                        .icon("paperclip")
-                        .tooltip(t!("native_browser.share_screenshot").to_string())
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Ghost)
-                        .disabled(!has_frame || self.sharing || self.chrome_wrapper)
-                        .on_click(cx.listener(|view, _, _, cx| view.share_screenshot(cx))),
-                ),
+                .when(!self.dedicated_workspace, |footer| {
+                    footer.child(
+                        Button::new("native-browser-share", "")
+                            .icon("paperclip")
+                            .tooltip(t!("native_browser.share_screenshot").to_string())
+                            .size(ButtonSize::Sm)
+                            .variant(ButtonVariant::Ghost)
+                            .disabled(!has_frame || self.sharing || self.chrome_wrapper)
+                            .on_click(cx.listener(|view, _, _, cx| view.share_screenshot(cx))),
+                    )
+                }),
         );
         if let Some(dialog) = &self.page_dialog {
             let mut content = div()
@@ -1863,6 +1890,31 @@ impl Render for NativeBrowserView {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+
+    // SDTEST-3175 / SDUC-586: independent app workspaces cannot opt into
+    // a shared Chrome profile or agent grants through later UI changes.
+    #[test]
+    fn sdtest_3175_dedicated_workspace_refuses_shared_engine_and_agent_grants() {
+        let mut app = TestAppContext::single();
+        let browser = app.update(|cx| {
+            cx.new(|cx| NativeBrowserView::new_workspace("account-specific".into(), cx))
+        });
+        browser.update(&mut app, |view, cx| {
+            view.set_agent_observation_available(true, cx);
+            view.set_agent_control_available(true, cx);
+            view.use_chrome_preview(cx);
+            assert!(!view.agent_observation_available);
+            assert!(!view.agent_control_available);
+            assert!(!view.agent_control_allowed());
+            assert!(!view.chrome_wrapper);
+            assert!(
+                !view.launching,
+                "a shared-profile browser must never be started"
+            );
+            assert!(view.pending_urls.is_empty());
+            assert!(view.control().is_none());
+        });
+    }
 
     fn frame(width: u32, height: u32, bgra: Vec<u8>) -> BrowserFrame {
         BrowserFrame {

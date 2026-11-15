@@ -167,6 +167,7 @@ impl Workspace {
         presentation: WorkspacePresentation,
         cx: &mut Context<Self>,
     ) {
+        self.pro_open = false;
         if !presentation.is_focused() {
             self.show_main_presentation(cx);
             return;
@@ -183,6 +184,7 @@ impl Workspace {
 
     /// Restore the full shell on Agents without changing the saved app mode.
     pub fn show_main_presentation(&mut self, cx: &mut Context<Self>) {
+        self.pro_open = false;
         self.presentation = WorkspacePresentation::Main;
         self.presentation_focus_pending = false;
         self.settings_open = false;
@@ -207,11 +209,16 @@ impl Workspace {
         if !self.can_access_mode(AppMode::Dev) {
             return;
         }
+        let was_pro_open = std::mem::replace(&mut self.pro_open, false);
         if presentation.is_focused() {
             self.request_presentation(presentation, cx);
             return;
         }
         if !self.presentation.is_focused() {
+            if was_pro_open {
+                self.on_active_view_changed(cx);
+                cx.notify();
+            }
             return;
         }
         self.presentation = WorkspacePresentation::Main;
@@ -371,6 +378,7 @@ impl Workspace {
             let workspace = handle.clone();
             let mut segment = div()
                 .id(presentation.switcher_id())
+                .debug_selector(move || presentation.switcher_id().into())
                 .relative()
                 .flex()
                 .items_center()

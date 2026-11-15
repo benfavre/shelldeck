@@ -151,6 +151,7 @@ mod polling;
 mod presentation;
 pub use presentation::WorkspacePresentation;
 mod agent_project_repair;
+mod pro_web;
 #[cfg(unix)]
 mod remote_daemon;
 mod remote_project;
@@ -464,6 +465,10 @@ pub struct Workspace {
     workspace_hub: Entity<workspaces::WorkspaceHubView>,
     terminal: Entity<TerminalView>,
     agent_console: Entity<AgentConsoleView>,
+    pro_open: bool,
+    pro_browser: Option<Entity<crate::native_browser::NativeBrowserView>>,
+    pro_url_input: Option<Entity<InputState>>,
+    pro_error: bool,
     scripts: Entity<ScriptEditorView>,
     port_forwards: Entity<PortForwardView>,
     server_sync: Entity<ServerSyncView>,
@@ -1369,7 +1374,7 @@ impl Workspace {
                         if let Some(session_id) = visible_session {
                             view.select_session(session_id, cx);
                         }
-                        view.set_surface_visible(visible_session.is_some(), cx);
+                        view.set_surface_visible(visible_session.is_some() && !this.pro_open, cx);
                     });
                     this.terminal = terminal.clone();
                     this._terminal_sub =
@@ -1388,7 +1393,7 @@ impl Workspace {
                         if let Some(session_id) = visible_session {
                             view.select_session(session_id, cx);
                         }
-                        view.set_surface_visible(visible_session.is_some(), cx);
+                        view.set_surface_visible(visible_session.is_some() && !this.pro_open, cx);
                     });
                     if let shelldeck_core::workspace_navigation::WorkspaceTabContent::AgentSession(
                         binding,
@@ -1568,6 +1573,10 @@ impl Workspace {
             workspace_hub,
             terminal,
             agent_console,
+            pro_open: false,
+            pro_browser: None,
+            pro_url_input: None,
+            pro_error: false,
             scripts,
             port_forwards,
             server_sync,

@@ -1,6 +1,8 @@
 //! Isolated native browser fixture. No provider or external website is used.
 //! Stage the packaged helper beside this executable (browser/shelldeck-browser)
 //! and set all three XDG homes to disposable directories before running.
+//! Set SHELLDECK_PREVIEW_PRO_ORIGIN to a loopback fixture origin to exercise
+//! the dedicated Pro browser without loading desktop accounts or SSH profiles.
 use adabraka_ui::prelude::*;
 use gpui::*;
 use shelldeck_ui::native_browser::{NativeBrowserEvent, NativeBrowserView};
@@ -50,22 +52,40 @@ fn main() -> anyhow::Result<()> {
             "Use a disposable profile under the temporary directory"
         );
     }
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
-    let url = format!("http://{}/", listener.local_addr()?);
-    eprintln!("Native browser fixture: {url}");
-    std::thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-            let mut request = [0; 8192];
-            if stream.read(&mut request).is_err() {
-                continue;
+    let pro_origin = std::env::var("SHELLDECK_PREVIEW_PRO_ORIGIN").ok();
+    let dedicated = pro_origin.is_some();
+    let url = if let Some(origin) = pro_origin {
+        let origin =
+            shelldeck_core::config::pro_web::normalize_url(&origin).map_err(anyhow::Error::msg)?;
+        let parsed = url::Url::parse(&origin)?;
+        anyhow::ensure!(
+            matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")),
+            "The dedicated preview only accepts a loopback fixture origin"
+        );
+        anyhow::ensure!(
+            std::env::var_os("SHELLDECK_PREVIEW_AUDIT").is_none(),
+            "The generic fixture DOM audit does not apply to Pro; use native interaction QA"
+        );
+        origin
+    } else {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        let url = format!("http://{}/", listener.local_addr()?);
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut request = [0; 8192];
+                if stream.read(&mut request).is_err() {
+                    continue;
+                }
+                let body = FIXTURE.as_bytes();
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n", body.len());
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body);
             }
-            let body = FIXTURE.as_bytes();
-            let header = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n", body.len());
-            let _ = stream.write_all(header.as_bytes());
-            let _ = stream.write_all(body);
-        }
-    });
+        });
+        url
+    };
+    eprintln!("Native browser fixture: {url} (dedicated Pro mode: {dedicated})");
     let width = std::env::var("SHELLDECK_PREVIEW_WIDTH")
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
@@ -75,7 +95,7 @@ fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(60)
-        .clamp(5, 300);
+        .clamp(5, if dedicated { 1800 } else { 300 });
     let audit = std::env::var_os("SHELLDECK_PREVIEW_AUDIT").is_some();
     // Give the bounded audit time to fail explicitly even if the caller asks
     // for a short visual preview. An early window close still fails below.
@@ -104,8 +124,14 @@ fn main() -> anyhow::Result<()> {
             },
             |window, cx| {
                 window.set_rem_size(px(16.0));
-                let view = cx
-                    .new(|cx| NativeBrowserView::new("native-browser-isolated-fixture".into(), cx));
+                let view = cx.new(|cx| {
+                    let scope = "native-browser-isolated-fixture".into();
+                    if dedicated {
+                        NativeBrowserView::new_workspace(scope, cx)
+                    } else {
+                        NativeBrowserView::new(scope, cx)
+                    }
+                });
                 cx.subscribe(&view, |_, event: &NativeBrowserEvent, _| match event {
                     NativeBrowserEvent::Ready => eprintln!("Native browser fixture connected"),
                     NativeBrowserEvent::Error(error) => {
