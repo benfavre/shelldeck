@@ -48,6 +48,9 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.window_active = _window.is_window_active();
+        // The street scene counts the frames it is absent from, to play again
+        // when its screen comes back (`ludique.rs`).
+        crate::ludique::begin_frame(_cx);
         if self.active_view.is_retired() {
             self.active_view = ActiveView::Agents;
             self.sidebar.update(_cx, |sidebar, _| {

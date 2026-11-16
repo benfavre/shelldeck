@@ -97,6 +97,7 @@ lucide_assets!(
     "info",
     "key",
     "keyboard",
+    "laptop",
     "life-buoy",
     "list-checks",
     "layout-dashboard",
@@ -363,10 +364,76 @@ impl AssetSource for Assets {
             "images/onboarding/role-aware/dev-06-modes.webp" => {
                 include_bytes!("../assets/images/onboarding/role-aware/dev-06-modes.webp")
             }
-            // Dashboard-specific artwork. It deliberately leaves the right
-            // half quiet so localized copy remains readable over the image.
-            "images/home/user-dashboard-colorful-v2.webp" => {
-                include_bytes!("../assets/images/home/user-dashboard-colorful-v2.webp")
+            // The street of inklura.fr (welcome screen, home banner, empty states).
+            // Exported by scripts/export-ludique-art.py.
+            "images/ludique/town-day.svg" => {
+                include_bytes!("../assets/images/ludique/town-day.svg")
+            }
+            "images/ludique/town-night.svg" => {
+                include_bytes!("../assets/images/ludique/town-night.svg")
+            }
+            "images/ludique/road-day.svg" => {
+                include_bytes!("../assets/images/ludique/road-day.svg")
+            }
+            "images/ludique/road-night.svg" => {
+                include_bytes!("../assets/images/ludique/road-night.svg")
+            }
+            "images/ludique/sun-a.svg" => {
+                include_bytes!("../assets/images/ludique/sun-a.svg")
+            }
+            "images/ludique/sun-b.svg" => {
+                include_bytes!("../assets/images/ludique/sun-b.svg")
+            }
+            "images/ludique/moon.svg" => {
+                include_bytes!("../assets/images/ludique/moon.svg")
+            }
+            "images/ludique/stars.svg" => {
+                include_bytes!("../assets/images/ludique/stars.svg")
+            }
+            "images/ludique/cloud-day.svg" => {
+                include_bytes!("../assets/images/ludique/cloud-day.svg")
+            }
+            "images/ludique/cloud-night.svg" => {
+                include_bytes!("../assets/images/ludique/cloud-night.svg")
+            }
+            "images/ludique/balloon.svg" => {
+                include_bytes!("../assets/images/ludique/balloon.svg")
+            }
+            "images/ludique/van.svg" => {
+                include_bytes!("../assets/images/ludique/van.svg")
+            }
+            "images/ludique/bird.svg" => {
+                include_bytes!("../assets/images/ludique/bird.svg")
+            }
+            "images/ludique/parcel.svg" => {
+                include_bytes!("../assets/images/ludique/parcel.svg")
+            }
+            "images/ludique/pin.svg" => {
+                include_bytes!("../assets/images/ludique/pin.svg")
+            }
+            "images/ludique/badge-account-day.svg" => {
+                include_bytes!("../assets/images/ludique/badge-account-day.svg")
+            }
+            "images/ludique/badge-account-night.svg" => {
+                include_bytes!("../assets/images/ludique/badge-account-night.svg")
+            }
+            "images/ludique/badge-shop-day.svg" => {
+                include_bytes!("../assets/images/ludique/badge-shop-day.svg")
+            }
+            "images/ludique/badge-shop-night.svg" => {
+                include_bytes!("../assets/images/ludique/badge-shop-night.svg")
+            }
+            "images/ludique/badge-laptop-day.svg" => {
+                include_bytes!("../assets/images/ludique/badge-laptop-day.svg")
+            }
+            "images/ludique/badge-laptop-night.svg" => {
+                include_bytes!("../assets/images/ludique/badge-laptop-night.svg")
+            }
+            "images/ludique/badge-shield-day.svg" => {
+                include_bytes!("../assets/images/ludique/badge-shield-day.svg")
+            }
+            "images/ludique/badge-shield-night.svg" => {
+                include_bytes!("../assets/images/ludique/badge-shield-night.svg")
             }
             // Magnifying-glass icon used by search inputs (sidebar filter, …).
             "images/search.svg" => include_bytes!("../assets/images/search.svg"),
@@ -450,7 +517,29 @@ impl AssetSource for Assets {
             SharedString::from("images/onboarding/role-aware/dev-04-tunnels.webp"),
             SharedString::from("images/onboarding/role-aware/dev-05-ai.webp"),
             SharedString::from("images/onboarding/role-aware/dev-06-modes.webp"),
-            SharedString::from("images/home/user-dashboard-colorful-v2.webp"),
+            SharedString::from("images/ludique/town-day.svg"),
+            SharedString::from("images/ludique/town-night.svg"),
+            SharedString::from("images/ludique/road-day.svg"),
+            SharedString::from("images/ludique/road-night.svg"),
+            SharedString::from("images/ludique/sun-a.svg"),
+            SharedString::from("images/ludique/sun-b.svg"),
+            SharedString::from("images/ludique/moon.svg"),
+            SharedString::from("images/ludique/stars.svg"),
+            SharedString::from("images/ludique/cloud-day.svg"),
+            SharedString::from("images/ludique/cloud-night.svg"),
+            SharedString::from("images/ludique/balloon.svg"),
+            SharedString::from("images/ludique/van.svg"),
+            SharedString::from("images/ludique/bird.svg"),
+            SharedString::from("images/ludique/parcel.svg"),
+            SharedString::from("images/ludique/pin.svg"),
+            SharedString::from("images/ludique/badge-account-day.svg"),
+            SharedString::from("images/ludique/badge-account-night.svg"),
+            SharedString::from("images/ludique/badge-shop-day.svg"),
+            SharedString::from("images/ludique/badge-shop-night.svg"),
+            SharedString::from("images/ludique/badge-laptop-day.svg"),
+            SharedString::from("images/ludique/badge-laptop-night.svg"),
+            SharedString::from("images/ludique/badge-shield-day.svg"),
+            SharedString::from("images/ludique/badge-shield-night.svg"),
             SharedString::from("images/search.svg"),
             SharedString::from("images/kebab.svg"),
             SharedString::from("images/close.svg"),

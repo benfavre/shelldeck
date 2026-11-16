@@ -16,8 +16,10 @@ pub enum ToastLevel {
 }
 
 impl ToastLevel {
-    /// Background color for the toast based on its level.
-    fn bg_color(&self) -> Hsla {
+    /// The colour that says what kind of notice this is. It tints the icon,
+    /// its tile and the outline of the card; the card itself stays a calm
+    /// surface, so a notice never shouts over the page it appears on.
+    fn accent(&self) -> Hsla {
         match self {
             ToastLevel::Info => ShellDeckColors::primary(),
             ToastLevel::Success => ShellDeckColors::success(),
@@ -26,13 +28,14 @@ impl ToastLevel {
         }
     }
 
-    /// Text color for the toast based on its level.
-    fn text_color(&self) -> Hsla {
+    /// Bundled Lucide icon of the level. The shape tells the levels apart
+    /// without the colour.
+    fn icon(&self) -> &'static str {
         match self {
-            // Warning uses a bright amber background -- dark text reads better
-            ToastLevel::Warning => hsla(0.0, 0.0, 0.10, 1.0),
-            // All others use light text on a saturated background
-            _ => hsla(0.0, 0.0, 0.98, 1.0),
+            ToastLevel::Info => "info",
+            ToastLevel::Success => "circle-check",
+            ToastLevel::Warning => "triangle-alert",
+            ToastLevel::Error => "circle-alert",
         }
     }
 
@@ -41,16 +44,6 @@ impl ToastLevel {
         match self {
             ToastLevel::Info | ToastLevel::Success => Duration::from_secs(3),
             ToastLevel::Warning | ToastLevel::Error => Duration::from_secs(5),
-        }
-    }
-
-    /// A small prefix label rendered before the message.
-    fn label(&self) -> &'static str {
-        match self {
-            ToastLevel::Info => "INFO",
-            ToastLevel::Success => "OK",
-            ToastLevel::Warning => "WARN",
-            ToastLevel::Error => "ERR",
         }
     }
 }
@@ -209,13 +202,19 @@ impl ToastContainer {
     /// Render a single toast element.
     fn render_toast(toast: &Toast, weak: WeakEntity<Self>) -> impl IntoElement {
         let id = toast.id;
-        let bg = toast.level.bg_color();
-        let text_col = toast.level.text_color();
-        let label = toast.level.label();
+        let accent = toast.level.accent();
         let message = toast.message.clone();
+        // The card is the lightest surface of the theme with a trace of the
+        // level colour. Opaque: it lies over whatever the window shows.
+        let surface = if ShellDeckColors::is_dark() {
+            ShellDeckColors::bg_surface()
+        } else {
+            ShellDeckColors::bg_sidebar()
+        }
+        .blend(accent.opacity(0.07));
 
-        // Message column width: toast max_w(420) minus padding, badge, gaps,
-        // close affordance (~100px chrome). Per-line max_w gives gpui a
+        // Message column width: toast max_w(420) minus padding, icon tile,
+        // gaps and close affordance (~100px chrome). Per-line max_w gives gpui a
         // Definite wrap width (see `.agents/overflow.md`).
         const MSG_MAX_W: f32 = 310.0;
 
@@ -223,7 +222,7 @@ impl ToastContainer {
             .flex()
             .flex_col()
             .text_size(px(13.0))
-            .text_color(text_col);
+            .text_color(ShellDeckColors::text_primary());
         for line in message.split('\n') {
             let display: SharedString = if line.is_empty() {
                 " ".into()
@@ -249,7 +248,7 @@ impl ToastContainer {
                         action.label.clone(),
                     )
                     .variant(if index == 0 {
-                        ButtonVariant::Secondary
+                        ButtonVariant::Default
                     } else {
                         ButtonVariant::Outline
                     })
@@ -268,16 +267,20 @@ impl ToastContainer {
 
         div()
             .id(ElementId::Name(format!("toast-{}", id).into()))
+            .group("toast")
             .flex()
             .items_start()
-            .gap(px(8.0))
-            .px(px(14.0))
+            .gap(px(11.0))
+            .pl(px(11.0))
+            .pr(px(9.0))
             .py(px(10.0))
-            .min_w(px(240.0))
+            .min_w(px(260.0))
             .max_w(px(420.0))
             .overflow_hidden()
-            .rounded(px(8.0))
-            .bg(bg)
+            .rounded(px(12.0))
+            .bg(surface)
+            .border_1()
+            .border_color(accent.opacity(0.38))
             .shadow_lg()
             .cursor_pointer()
             .on_click(move |_event, _window, cx| {
@@ -288,43 +291,50 @@ impl ToastContainer {
                 }
             })
             .child(
-                // Level badge
+                // Level: an icon on a tile of its colour.
                 div()
                     .flex_shrink_0()
-                    .px(px(6.0))
-                    .py(px(2.0))
-                    .rounded(px(4.0))
-                    .bg(hsla(0.0, 0.0, 0.0, 0.2))
+                    .size(px(28.0))
+                    .rounded(px(8.0))
+                    .bg(accent.opacity(0.16))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .child(
-                        div()
-                            .text_size(px(10.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(text_col)
-                            .child(label),
+                        svg()
+                            .path(crate::icons::lucide_path(toast.level.icon()))
+                            .size(px(15.0))
+                            .text_color(accent),
                     ),
             )
             .child(
                 // Message text — flex_grow + min_w(0) so long content wraps
-                // inside max_w instead of spilling past the toast edge.
+                // inside max_w instead of spilling past the toast edge. The
+                // top padding centres a single line on the tile.
                 div()
                     .flex_grow()
                     .min_w(px(0.0))
+                    .pt(px(4.0))
+                    .pb(px(2.0))
                     .overflow_hidden()
                     .child(message_body),
             )
             .child(
-                // Dismiss hint (x)
+                // Dismiss hint (x): quiet until the pointer is on the card.
                 div()
                     .flex_shrink_0()
+                    .mt(px(4.0))
+                    .size(px(20.0))
+                    .rounded(px(6.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_color(text_col.opacity(0.55))
+                    .group_hover("toast", |style| style.bg(ShellDeckColors::hover_bg()))
                     .child(
                         svg()
                             .path("icons/lucide/x.svg")
                             .size(px(12.0))
-                            .text_color(text_col.opacity(0.55)),
+                            .text_color(ShellDeckColors::text_muted()),
                     ),
             )
     }
@@ -345,7 +355,7 @@ impl Render for ToastContainer {
             .max_w(px(420.0))
             .flex()
             .flex_col()
-            .gap(px(8.0))
+            .gap(px(10.0))
             .items_end();
 
         // Render from oldest (top) to newest (bottom)
@@ -385,6 +395,30 @@ mod tests {
             dismiss_after(ToastLevel::Info, 100_000),
             Duration::from_secs(12)
         );
+    }
+
+    // SDTEST-3182 (SDUC-589): the level of a notice is carried by its icon.
+    // An icon that is not embedded in the binary draws nothing and says
+    // nothing: the notice would lose the only mark of its level.
+    #[test]
+    fn sdtest_3182_every_level_has_its_own_embedded_icon() {
+        let main_rs = include_str!("../../shelldeck/src/main.rs");
+        let levels = [
+            ToastLevel::Info,
+            ToastLevel::Success,
+            ToastLevel::Warning,
+            ToastLevel::Error,
+        ];
+        let mut icons = Vec::new();
+        for level in levels {
+            let icon = level.icon();
+            assert!(
+                main_rs.contains(&format!("    \"{icon}\",\n")),
+                "{icon} is not in lucide_assets! (main.rs)",
+            );
+            assert!(!icons.contains(&icon), "{icon} stands for two levels");
+            icons.push(icon);
+        }
     }
 
     // SDTEST-3023 (SDUC-574): a question shown as a toast waits for its

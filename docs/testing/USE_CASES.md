@@ -3367,6 +3367,14 @@ Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
 
+2026-11-16: Added SDUC-590: "Mes informations" redrawn from the owner's second mock-up (page head with the street, one illustrated panel per subject).
+
+2026-11-16: Added SDUC-589: notices (toasts) redrawn as calm cards; the level is an icon on a tile of its colour. SDTEST-3182.
+
+2026-11-16: Added SDUC-588: the User home page redrawn from the mock-up shared by the owner (navigation row, banner with the main action, panels, status pills). SDTEST-3181.
+
+2026-11-16: Added SDUC-587: the street of inklura.fr on the welcome screen, the User home banner and the empty states of "Mes sites" and "Mes demandes". SDTEST-3177 to 3180.
+
 2026-11-13: Added SDUC-586 for the dedicated Pro web workspace, account isolation, retained desktop tools and the user-selected pro.inklura.fr default.
 
 - **2026-11-13**: Added SDUC-583: `events` pushed by the daemon (`Subscribe`, `PaneEvent`, a second feature bit; an older daemon is still polled), `show` opens a pane as a tab behind the active one, `skill setup --with-hook` and `skill context` (Claude Code start hook). SDTEST-3124..3134.
@@ -5776,3 +5784,150 @@ Same-account refresh keeps Pro open; central logout and shutdown dispose it.
 Pro has its own site selection, so the native site chip and contextual sidebar/AI
 controls are hidden while Pro is shown. On narrow windows the tool shortcuts
 scroll independently of the always-visible minimize/maximize/close controls.
+
+## SDUC-587: The street of inklura.fr in the application
+
+The public site opens on a small town: buildings, a road, a delivery van, a sun
+to click. The same drawings give three places of Inklura Desktop their playful
+side (`crates/shelldeck-ui/src/ludique.rs`):
+
+- **Welcome screen** (signed out): the sky fills the window, the town stands on
+  the road at the bottom, clouds drift, a bird and a balloon cross the sky. The
+  copy sits above the town with the site's label, marker and buttons. "Réalisé
+  par WD29" is written on the pavement under the road.
+- **User home banner**: the copy and the "Nouvelle demande" button on the sky
+  to the left; to the right the town on its stretch of road, which fades into
+  the sky towards the copy, and the van that drives out of that fade (see
+  SDUC-588 for the page around it).
+- **Empty states** of "Mes sites" (a map pin, or the balloon when a search finds
+  nothing) and of "Mes demandes" (the van and a client record).
+
+Behaviour the user can rely on:
+
+- The scene follows the theme: day under a light theme, night (stars, moon, lit
+  windows) under a dark one. A click on the sun or the moon switches the scene
+  only, never the theme, and the copy stays readable either way.
+- A click on the van makes it honk ("Tut tut !") and jump; a click on the
+  balloon sends it away, and it comes back nine seconds later.
+- The scene plays, then rests: five crossings of the van on the welcome screen
+  (two minutes), one on the home banner (22 seconds), about 13 seconds for a
+  vignette. At rest the application draws no frame for it. It plays again when
+  its screen comes back and when the pointer comes over it.
+- With reduced motion requested by the system, nothing moves, the van is parked
+  in front of the town, and only the day and night click remains.
+- Terminal, editor, Agents and Support triage are unchanged.
+
+#### Native walkthrough (2026-11-16)
+
+Checked on a private headless desktop with the demonstration Manage stub
+(`scripts/demo/manage_stub.py`), light and dark themes, French:
+
+- Welcome screen at 1200 x 800, in a 860 x 533 window (compact layout) and
+  maximized at 2600 px wide: the town repeats without a seam and stays centred.
+- Day and night by theme, and by a click on the moon under the dark theme.
+- Home banner, client account, both themes: the van crossed once, then the
+  process went from about 95 % of a core (debug build, software rendering) to
+  2 to 4 %; moving the pointer over the banner started a new crossing.
+- Empty account (no site, no request): pin on "Mes sites", van on "Mes demandes".
+- Welcome screen: a click on the balloon made it leave and come back; a click
+  on the passing van showed "Tut tut !" above it.
+
+Not checked on screen: reduced motion, a release build on a real GPU, macOS
+and Windows, UI scales other than the default, English.
+([`screenshots/2026-11-16-street/`](./screenshots/2026-11-16-street/).)
+
+## SDUC-588: User home page redrawn from the owner's mock-up
+
+The home page of User mode follows the mock-up the owner shared on 2026-11-16
+(`share.inklura.fr/r/618f376387a0.png`). What the user sees:
+
+- **Navigation row**: the Inklura mark and name, then the tabs as quiet text
+  buttons; the current tab is tinted with the brand colour. A rule, then the
+  account (initial, name, role), "Ouvrir Manage" and the synchronise button.
+  Under 1100 px the mark and the role give their place to the tabs; the tabs
+  wrap on a second line when they must.
+- **Banner** (212 px, 204 px under 1100 px): a large title under the marker pen,
+  the subtitle, and the main action, "Nouvelle demande", on the sky; the town
+  of SDUC-587 to the right. The banner has no counter any more: the counters
+  are the two panels under it.
+- **Counters**: sites and open requests, each in a panel that opens its tab.
+- **Accès rapide**: capture and share, share files. "Nouvelle demande" is no
+  longer repeated here.
+- **Demandes récentes**: the three latest requests, "Voir tout" opens the tab.
+  Each status is a pill: a request that waits for someone ("À traiter") is the
+  one in the warning colour, work in progress is in the brand colour, a
+  finished one is only outlined.
+- **État de votre espace**: account, active site, directory, one per line.
+- The page has one background for every tab of User mode: the page colour with
+  a breath of the brand colour. Panels are the lightest surface, with round
+  corners and a soft shadow. Every colour comes from the palette, so the page
+  follows the theme; only the banner keeps the scene's own day and night.
+
+Kept although the mock-up does not show them: the role beside the name and the
+synchronise button (both are functions of the row, not decoration), the window
+title bar and its menu, and the share card when the account has shared files.
+The mock-up's own logo and its share icon are not in the product: the row uses
+the Inklura mark and the existing icon.
+
+#### Native walkthrough (2026-11-16)
+
+Private headless desktop, demonstration Manage stub, client account, French:
+light and dark themes at 1200 x 800 (the whole page fits without scrolling),
+and a 760 px wide window (smaller title on one line, tabs on two lines, quick
+actions under their title). The banner's bottom right corner is round over the
+road. Not checked on screen: a window under 600 px, English, other UI scales,
+keyboard focus on the new button, macOS and Windows.
+([`screenshots/2026-11-16-street/`](./screenshots/2026-11-16-street/), 03, 04 and 07.)
+
+## SDUC-589: Notices (toasts) as calm cards
+
+A notice used to be a block filled with its level colour (blue, green, orange,
+red) with a "WARN" or "ERR" tag: on the light User home it was the loudest
+thing on the screen. It is now a card (`crates/shelldeck-ui/src/toast.rs`):
+
+- the lightest surface of the theme with a trace of the level colour, a thin
+  outline in that colour, round corners and the usual shadow;
+- on the left an icon on a tile of the level colour: information, success,
+  warning, error each have their own shape, so the level does not rest on the
+  colour alone; the text tags are gone;
+- the message in the normal text colour, the close cross in the muted one;
+- in a question (prompt), the first answer is the primary button.
+
+Nothing else changes: position, stacking limit, reading time by length,
+click to dismiss, prompts that wait for their answer (SDUC-574).
+
+#### Native walkthrough (2026-11-16)
+
+Warning and error notices seen at start-up of the demonstration client
+account, light and dark themes. Not checked on screen: information and
+success notices, a prompt with its buttons, the other themes.
+
+## SDUC-590: "Mes informations" redrawn from the owner's mock-up
+
+The tab follows the mock-up the owner shared on 2026-11-16
+(`share.inklura.fr/r/96e9abe6abc9.png`):
+
+- **Page head**: a short banner (140 px, 124 px in a compact window) with the
+  title under the marker pen and a small town on most of its width. Same scene
+  as the home banner (SDUC-587): it plays one crossing of the van, rests, and
+  plays again when the tab comes back or under the pointer. Each scene has its
+  own clock, so coming back to a tab replays that tab's scene.
+- **Panels**, two per row on a wide window and of equal height in a row, in
+  this order: "Votre compte", "Organisation et sites", "Votre session", "Vos
+  accès". Each opens with a drawing of the street and three strokes of the
+  marker yellow: a client record, a shop, a laptop, a shield with a tick. A dark
+  theme gets the drawings with a light line.
+- **Rows**: an icon tile, the label in small capitals, the value in bold, a
+  rule between two rows. The device row uses the Lucide `laptop` icon.
+- **Roles**: one larger pill per role.
+- A subject with nothing to show has no panel (a session without device name
+  or dates, an account without role), instead of an empty panel under a title.
+
+The tab stays read-only. The values and the rules for the roles are unchanged.
+
+#### Native walkthrough (2026-11-16)
+
+Private headless desktop, demonstration Manage stub, client account, French,
+light and dark themes at 1200 x 800. Not checked on screen: a narrow window,
+English, an account with several roles or with session dates, other themes.
+([`screenshots/2026-11-16-street/`](./screenshots/2026-11-16-street/), 08 and 09.)
