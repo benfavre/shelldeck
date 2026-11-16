@@ -136,6 +136,12 @@ Truncated or invalid escape sequences are dropped without panicking
 and the parser recovers on the next valid byte.
 Malformed OSC palette values, including fragmented non-ASCII color strings,
 leave existing palette entries intact.
+A CSI sequence whose private marker (`<`, `=`, `>`, `?`) or intermediate
+byte selects a function the emulator does not implement is ignored. It never
+runs the standard function that shares its final byte: `CSI > 4 m` (xterm's
+modifyOtherKeys, sent by Claude Code when it exits) does not underline,
+`CSI ? u` (kitty keyboard query) does not restore the cursor, and
+`CSI ? 1 ; 1 S` (graphics query) does not scroll.
 
 ### SDUC-021 — URL & path detection in scrollback
 

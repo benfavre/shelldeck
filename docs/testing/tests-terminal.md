@@ -54,6 +54,7 @@ cross-platform coverage.
 | SDTEST-1927 | `parser.rs::terminal_reset_keeps_pty_replies_connected` | SDUC-018, SDUC-019 | Green | RIS clears screen, scrollback and attributes while retaining the host response channel; subsequent cursor-position and device-attribute queries receive exact replies. |
 | SDTEST-1928 | `parser.rs::combining_characters_at_right_margin_attach_before_wrapping` | SDUC-001 | Green | A separately received accent attaches to the final glyph before delayed wrapping, including a wide glyph and a one-column terminal; the next spacing character still wraps. |
 | SDTEST-1929 | `parser.rs::command_completion_generation_stays_monotonic_across_reset` | SDUC-018, SDUC-431 | Green | RIS clears previous command output and prompt markers while preserving the session's completion generation, so a new OSC 133 completion remains visible to existing observers. |
+| SDTEST-3194 | `parser.rs::sdtest_3194_private_csi_variants_do_not_run_the_standard_function` | SDUC-003, SDUC-004, SDUC-020 | Green | The bytes Claude Code writes when it exits (`CSI > 4 m` among them) leave the shell prompt without underline; modifyOtherKeys on is neither underline nor dim; the kitty keyboard sequences leave the cursor in place; the graphics query and the xterm title modes do not scroll; DA3 and the extended cursor report get no answer. DA2, DECRQM, DECSET, DECSCUSR and the plain restore-cursor and underline still act. Fails with the gate removed. |
 
 ### Gaps
 

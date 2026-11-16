@@ -22,4 +22,7 @@ pub use error::{Result, TerminalError};
 /// rows at the bottom) instead of leaving a short screen.
 /// 3: a screen that loses rows gives up the blank ones under the cursor
 /// before it moves rows from the top to the history.
-pub const EMULATOR_REV: u16 = 3;
+/// 4: a CSI sequence with a private marker or an intermediate byte this
+/// emulator does not implement is dropped instead of running the standard
+/// function of its final byte (`CSI > 4 m` no longer underlines).
+pub const EMULATOR_REV: u16 = 4;

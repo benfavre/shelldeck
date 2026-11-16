@@ -1831,6 +1831,13 @@ lost as many of its first lines. The
 grid now gives up the blank rows under the cursor first. `EMULATOR_REV` is 3.
 SDTEST-3152.
 
+Later (2026-11-16): the parser ran the standard function of a CSI final byte
+whatever private marker or intermediate byte came with it, so `CSI > 4 m`
+(xterm's modifyOtherKeys, which Claude Code resets when it exits) underlined
+everything that followed and the kitty keyboard queries (`CSI ? u`) moved the
+cursor. Variants the emulator does not implement are now dropped.
+`EMULATOR_REV` is 4. SDTEST-3194.
+
 What the run confirmed about the design: the daemon and its shells keep
 their process ids across an app quit and across `kill -9` of the app; the
 layout comes back by pane id with ratios, active tab and focused pane; a
