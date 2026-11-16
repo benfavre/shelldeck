@@ -46,17 +46,27 @@ sequence. An empty SGR resets attributes.
 
 Absolute positioning is 1-indexed and clamps to bounds. Relative
 movement clamps to bounds. `CHA` sets the absolute column only.
+A vertical move stops at a margin of the scroll region only when the cursor
+starts inside the region: above it, an upward move stops at the first line
+of the screen, and below it a downward move stops at the last line.
 
 ### SDUC-005 — Erase display / line variants
 
 `ED` modes 0/1/2/3 clear cursor-to-end, start-to-cursor, whole screen,
 and scrollback respectively. `EL` variants mirror the behaviour on the
 current line. Erases use the current background colour, not "black".
+After a character in the last column the cursor waits past it for the wrap:
+an erase "from the cursor to the end" (`EL` 0, `ED` 0) then leaves that
+character in place, so a line exactly as wide as the terminal that ends with
+`CSI K` (`grep --color`, `top`, `git diff`) keeps its last character.
 
 ### SDUC-006 — Scroll region and origin mode
 
 Setting a scroll region homes the cursor and bounds subsequent
-scrolling. Origin mode makes the cursor row relative to the region.
+scrolling. Home is the first line of the screen, or the first line of the
+region when origin mode is on. A region of less than two lines is ignored:
+the margins and the cursor stay as they were.
+Origin mode makes the cursor row relative to the region.
 `RI` (reverse index) scrolls the region down at the top.
 
 ### SDUC-007 — Insert / delete lines and characters
@@ -67,12 +77,17 @@ content, deletions pull content, erase-chars replace without shifting.
 ### SDUC-008 — Save / restore cursor
 
 `ESC 7` / `ESC 8` (and CSI `s`/`u`) save and restore cursor position
-and attributes.
+and attributes: the colours, bold, underline and inverse in force at the
+save come back, so a status line or a progress bar drawn in between does not
+colour what follows. A restore with nothing saved goes to the home position
+with the default rendition.
 
 ### SDUC-009 — Alt screen preserves and restores primary
 
 Entering the alt screen isolates the buffer; leaving it restores the
 primary buffer bit-for-bit including cursor position.
+Entering does not move the cursor or show it again: a program that hid the
+cursor before switching finds it still hidden.
 
 ### SDUC-010 — Scrollback ring buffer
 
@@ -136,6 +151,14 @@ Truncated or invalid escape sequences are dropped without panicking
 and the parser recovers on the next valid byte.
 Malformed OSC palette values, including fragmented non-ASCII color strings,
 leave existing palette entries intact.
+A CSI sequence whose private marker (`<`, `=`, `>`, `?`) or intermediate
+byte selects a function the emulator does not implement is ignored. It never
+runs the standard function that shares its final byte: `CSI > 4 m` (xterm's
+modifyOtherKeys, sent by Claude Code when it exits) does not underline,
+`CSI ? u` (kitty keyboard query) does not restore the cursor, and
+`CSI ? 1 ; 1 S` (graphics query) does not scroll.
+Writing over one half of a wide character blanks the other half and keeps
+its colours (SDUC-001), so a coloured row shows no hole.
 
 ### SDUC-021 — URL & path detection in scrollback
 
@@ -156,6 +179,11 @@ hitboxes use terminal columns, including Unicode and wide cells.
 `LocalPty::spawn` on Linux, macOS, and Windows produces a live process
 with a writable stdin, readable stdout, correct initial size, and
 `is_alive()` transitions to `false` after the child exits.
+Every terminal announces 24-bit colour (`COLORTERM=truecolor`) and never
+passes on what the application inherited from the terminal or the session it
+was started from: the identity of another emulator (`VTE_VERSION`,
+`TERM_PROGRAM`, ...), a multiplexer (`TMUX`, `STY`) or the markers of a
+Claude Code session. The user's own settings stay.
 
 ### SDUC-455 — Local terminals honor the configured default shell with platform-correct fallbacks
 

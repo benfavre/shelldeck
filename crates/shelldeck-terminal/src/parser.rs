@@ -282,6 +282,33 @@ fn param(params: &vte::Params, index: usize, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+/// Whether this emulator implements the CSI function selected by a private
+/// marker (`<`, `=`, `>`, `?`) or an intermediate byte together with the
+/// final byte `action`.
+///
+/// The final byte alone does not name the function. `CSI 4 m` underlines,
+/// but `CSI > 4 m` sets xterm's modifyOtherKeys; `CSI u` restores the
+/// cursor, but `CSI ? u`, `CSI > 1 u` and `CSI < u` belong to the kitty
+/// keyboard protocol; `CSI 1 S` scrolls, but `CSI ? 1 ; 1 S` asks about
+/// graphics. Programs send these to every terminal and expect one that does
+/// not know them to do nothing, so a variant that is not listed here is
+/// dropped instead of running the standard function of its final byte.
+fn csi_variant_supported(intermediates: &[u8], action: char) -> bool {
+    match intermediates {
+        [] => true,
+        // DECSET / DECRST, and DECSED / DECSEL, which erase like ED / EL
+        // here (no protected cells).
+        [b'?'] => matches!(action, 'h' | 'l' | 'J' | 'K'),
+        // DECRQM - Request Mode (CSI ? Ps $ p)
+        [b'?', b'$'] => action == 'p',
+        // DA2 - Secondary Device Attributes (CSI > c)
+        [b'>'] => action == 'c',
+        // DECSCUSR - Set Cursor Shape (CSI Ps SP q)
+        [b' '] => action == 'q',
+        _ => false,
+    }
+}
+
 /// Collect all params into a flat u16 slice (flattening sub-params).
 fn collect_params(params: &vte::Params) -> Vec<u16> {
     let mut out = Vec::new();
@@ -441,6 +468,16 @@ impl vte::Perform for Performer<'_> {
         _ignore: bool,
         action: char,
     ) {
+        if !csi_variant_supported(intermediates, action) {
+            tracing::trace!(
+                "Ignored CSI variant: params={:?} intermediates={:?} action={}",
+                collect_params(params),
+                intermediates,
+                action
+            );
+            return;
+        }
+
         let grid = &mut *self.grid;
         let private_mode = intermediates.first().copied() == Some(b'?');
 
@@ -1224,6 +1261,159 @@ mod tests {
         assert!(!g.cells[0][1].attrs.bold);
     }
 
+    // SDTEST-3194 / SDUC-003, SDUC-004, SDUC-020. Claude Code leaves with
+    // `CSI > 4 m` (xterm's modifyOtherKeys back to its default) and never
+    // sends a full SGR reset when it starts. Read as SGR 4, that one sequence
+    // underlined the shell prompt and the whole of the next launch.
+    #[test]
+    fn sdtest_3194_private_csi_variants_do_not_run_the_standard_function() {
+        // What Claude Code 2.1 writes on its way out, then the shell prompt.
+        let g = run(2, 40, b"\x1b[?1004l\x1b[>4m\x1b[?2031l\x1b[?2004l$ claude");
+        {
+            let g = g.lock();
+            assert_eq!(&row_text(&g, 0)[..8], "$ claude");
+            assert!(g.cells[0][..8]
+                .iter()
+                .all(|c| c.attrs.underline == UnderlineStyle::None));
+        }
+
+        // modifyOtherKeys switched on is neither underline nor dim.
+        let g = run(2, 10, b"\x1b[>4;2mA");
+        {
+            let g = g.lock();
+            assert_eq!(g.cells[0][0].attrs.underline, UnderlineStyle::None);
+            assert!(!g.cells[0][0].attrs.dim);
+        }
+
+        // The kitty keyboard protocol ends in `u`, like "restore cursor".
+        let g = run(5, 20, b"\x1b[3;6H\x1b[?u\x1b[>1u\x1b[=1;1u\x1b[<u");
+        {
+            let g = g.lock();
+            assert_eq!((g.cursor.row, g.cursor.col), (2, 5));
+        }
+
+        // The graphics query and xterm's title modes end in `S` and `T`,
+        // like the two scrolls.
+        let g = run(3, 10, b"top\x1b[?1;1;0S\x1b[>1T");
+        {
+            let g = g.lock();
+            assert_eq!(&row_text(&g, 0)[..3], "top");
+            assert_eq!(g.scrollback_len(), 0);
+        }
+
+        // A marker also changes which report is asked for: DA3 and the
+        // extended cursor report get no DA1 or CPR answer.
+        let grid = Arc::new(Mutex::new(TerminalGrid::new(3, 10)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        grid.lock().set_response_tx(tx);
+        let mut processor = TerminalProcessor::new(grid.clone());
+        let mut parser = vte::Parser::new();
+        processor.process_bytes(&mut parser, b"\x1b[=c\x1b[?6n");
+        assert!(rx.try_recv().is_err());
+
+        // The variants this emulator implements still act, and so do the
+        // plain functions that share their final byte.
+        processor.process_bytes(&mut parser, b"\x1b[>c\x1b[?2026$p\x1b[?25l\x1b[4 q");
+        assert_eq!(rx.try_recv().expect("DA2"), b"\x1b[>0;1;0c");
+        assert_eq!(rx.try_recv().expect("DECRPM"), b"\x1b[?2026;2$y");
+        processor.process_bytes(&mut parser, b"\x1b[2;3H\x1b[s\x1b[H\x1b[u\x1b[4mU");
+        let grid = grid.lock();
+        assert!(!grid.cursor.visible);
+        assert_eq!(grid.cursor.shape, CursorShape::Underline);
+        assert_eq!(grid.cells[1][2].c, 'U');
+        assert_eq!(grid.cells[1][2].attrs.underline, UnderlineStyle::Single);
+    }
+
+    // SDTEST-3195 / SDUC-005. `grep --color`, `top` and `git diff` end a
+    // coloured line with `CSI K`. On a line exactly as wide as the terminal
+    // the cursor waits past the last column, and the erase ate the last
+    // character.
+    #[test]
+    fn sdtest_3195_erasing_after_a_full_width_line_keeps_its_last_character() {
+        let g = run(3, 10, b"0123456789\x1b[m\x1b[K\r\nabcdefghij\x1b[J");
+        {
+            let g = g.lock();
+            assert_eq!(row_text(&g, 0), "0123456789");
+            assert_eq!(row_text(&g, 1), "abcdefghij");
+        }
+        // The wrap is still due: the next character opens the next line.
+        let g = run(3, 10, b"0123456789\x1b[KX");
+        {
+            let g = g.lock();
+            assert_eq!(row_text(&g, 0), "0123456789");
+            assert_eq!(g.cells[1][0].c, 'X');
+        }
+        // Anywhere else the cell under the cursor goes with the rest.
+        let g = run(3, 10, b"0123456789\x1b[3G\x1b[K");
+        assert_eq!(row_text(&g.lock(), 0), "01        ");
+    }
+
+    // SDTEST-3196 / SDUC-004. Above or below the scroll region the cursor is
+    // outside it: an upward move from the title line of a program must not
+    // land on the top margin, further down the screen.
+    #[test]
+    fn sdtest_3196_margins_stop_the_cursor_only_from_inside_the_region() {
+        let row_after = |bytes: &[u8]| run(10, 8, bytes).lock().cursor.row;
+        // Region: lines 4 to 6 (rows 3 to 5).
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[2;1H\x1b[5A"), 0);
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[9;1H\x1b[5B"), 9);
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[5;1H\x1b[9A"), 3);
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[5;1H\x1b[9B"), 5);
+        // From above, the bottom margin still stops a downward move; from
+        // below, the top margin still stops an upward one.
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[2;1H\x1b[9B"), 5);
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[9;1H\x1b[9A"), 3);
+    }
+
+    // SDTEST-3197 / SDUC-003, SDUC-004. A status line drawn between "save
+    // cursor" and "restore cursor" must not colour what follows it.
+    #[test]
+    fn sdtest_3197_restore_cursor_brings_back_the_saved_colours_and_attributes() {
+        let g = run(
+            4,
+            20,
+            b"ab\x1b[1;31m\x1b7\x1b[4;1H\x1b[0;7;42mstatus\x1b8cd",
+        );
+        {
+            let g = g.lock();
+            assert_eq!(&row_text(&g, 0)[..4], "abcd");
+            let c = &g.cells[0][2];
+            assert_eq!(c.fg, TermColor::Named(NamedColor::Red));
+            assert_eq!(c.bg, TermColor::Default);
+            assert!(c.attrs.bold);
+            assert!(!c.attrs.inverse);
+        }
+        // `CSI s` / `CSI u` are the same pair.
+        let g = run(2, 10, b"\x1b[s\x1b[4mx\x1b[uy");
+        {
+            let g = g.lock();
+            assert_eq!(g.cells[0][0].c, 'y');
+            assert_eq!(g.cells[0][0].attrs.underline, UnderlineStyle::None);
+        }
+        // Nothing saved: the home position and the default rendition.
+        let g = run(2, 10, b"\x1b[2;4H\x1b[4;7;33m\x1b8z");
+        let g = g.lock();
+        let c = &g.cells[0][0];
+        assert_eq!(c.c, 'z');
+        assert_eq!(c.fg, TermColor::Default);
+        assert_eq!(c.attrs.underline, UnderlineStyle::None);
+        assert!(!c.attrs.inverse);
+    }
+
+    // SDTEST-3198 / SDUC-001. Writing over one half of a wide character on a
+    // coloured row must not open a hole in the default background.
+    #[test]
+    fn sdtest_3198_the_other_half_of_an_overwritten_wide_character_keeps_its_colours() {
+        let g = run(2, 10, "\x1b[41m日本\x1b[1;1Hx\x1b[1;4Hy".as_bytes());
+        let g = g.lock();
+        assert_eq!(&row_text(&g, 0)[..4], "x  y");
+        for col in [1, 2] {
+            let c = &g.cells[0][col];
+            assert_eq!(c.wide, CellWidth::Normal);
+            assert_eq!(c.bg, TermColor::Named(NamedColor::Red));
+        }
+    }
+
     // ---- cursor movement CSI ----
 
     #[test]
@@ -1300,10 +1490,10 @@ mod tests {
 
     #[test]
     fn scroll_region_set_via_csi() {
-        let g = run(10, 8, b"\x1b[3;7r");
+        let g = run(10, 8, b"\x1b[5;4H\x1b[3;7r");
         let g = g.lock();
-        // DECSTBM homes the cursor to the scroll-region top (row 2, 0-indexed).
-        assert_eq!(g.cursor.row, 2);
+        // DECSTBM homes the cursor to the first line of the screen.
+        assert_eq!(g.cursor.row, 0);
         assert_eq!(g.cursor.col, 0);
     }
 

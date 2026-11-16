@@ -1032,6 +1032,7 @@ impl TerminalGrid {
         self.cursor = d.cursor;
         self.pending_wrap = d.pending_wrap;
         self.saved_cursor = d.saved_cursor;
+        self.saved_rendition = None;
         self.current_attrs = d.current_attrs;
         self.current_fg = d.current_fg;
         self.current_bg = d.current_bg;

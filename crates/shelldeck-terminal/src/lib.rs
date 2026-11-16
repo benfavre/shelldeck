@@ -22,4 +22,10 @@ pub use error::{Result, TerminalError};
 /// rows at the bottom) instead of leaving a short screen.
 /// 3: a screen that loses rows gives up the blank ones under the cursor
 /// before it moves rows from the top to the history.
-pub const EMULATOR_REV: u16 = 3;
+/// 4: a CSI sequence with a private marker or an intermediate byte this
+/// emulator does not implement is dropped instead of running the standard
+/// function of its final byte (`CSI > 4 m` no longer underlines).
+/// Also: erasing after a full-width line keeps its last character, DECSTBM
+/// homes to the first line of the screen, the margins stop a vertical move
+/// only from inside the region, and DECSC/DECRC keep the rendition.
+pub const EMULATOR_REV: u16 = 4;

@@ -39,7 +39,7 @@ cross-platform coverage.
 | SDTEST-714 | `parser.rs::alt_screen_enter_leave_via_csi` | SDUC-009 | Green |
 | SDTEST-715 | `parser.rs::cursor_visibility_mode_25` | SDUC-017 | Green |
 | SDTEST-716 | `parser.rs::bracketed_paste_mode_toggle` | SDUC-016 | Green |
-| SDTEST-717 | `parser.rs::scroll_region_set_via_csi` | SDUC-006 | Green |
+| SDTEST-717 | `parser.rs::scroll_region_set_via_csi` | SDUC-006 | Green | The cursor goes to the first line of the screen, from anywhere. |
 | SDTEST-718 | `parser.rs::osc_sets_window_title` | SDUC-014 | Green |
 | SDTEST-719 | `parser.rs::osc_2_sets_title_st_terminated` | SDUC-014 | Green |
 | SDTEST-720 | `parser.rs::osc_palette_color_override` | SDUC-014 | Green |
@@ -54,6 +54,12 @@ cross-platform coverage.
 | SDTEST-1927 | `parser.rs::terminal_reset_keeps_pty_replies_connected` | SDUC-018, SDUC-019 | Green | RIS clears screen, scrollback and attributes while retaining the host response channel; subsequent cursor-position and device-attribute queries receive exact replies. |
 | SDTEST-1928 | `parser.rs::combining_characters_at_right_margin_attach_before_wrapping` | SDUC-001 | Green | A separately received accent attaches to the final glyph before delayed wrapping, including a wide glyph and a one-column terminal; the next spacing character still wraps. |
 | SDTEST-1929 | `parser.rs::command_completion_generation_stays_monotonic_across_reset` | SDUC-018, SDUC-431 | Green | RIS clears previous command output and prompt markers while preserving the session's completion generation, so a new OSC 133 completion remains visible to existing observers. |
+| SDTEST-3194 | `parser.rs::sdtest_3194_private_csi_variants_do_not_run_the_standard_function` | SDUC-003, SDUC-004, SDUC-020 | Green | The bytes Claude Code writes when it exits (`CSI > 4 m` among them) leave the shell prompt without underline; modifyOtherKeys on is neither underline nor dim; the kitty keyboard sequences leave the cursor in place; the graphics query and the xterm title modes do not scroll; DA3 and the extended cursor report get no answer. DA2, DECRQM, DECSET, DECSCUSR and the plain restore-cursor and underline still act. Fails with the gate removed. |
+| SDTEST-3195 | `parser.rs::sdtest_3195_erasing_after_a_full_width_line_keeps_its_last_character` | SDUC-005 | Green | A line that fills the terminal and ends with `CSI K` or `CSI J` keeps its last character and the next character still wraps; anywhere else the cell under the cursor is erased with the rest. Fails without the fix. |
+| SDTEST-3196 | `parser.rs::sdtest_3196_margins_stop_the_cursor_only_from_inside_the_region` | SDUC-004, SDUC-006 | Green | With a region on lines 4 to 6: from above, up stops at the first line; from below, down stops at the last line; from inside, both stop at the margins; a move towards the region from outside stops at its far margin. Fails without the fix. |
+| SDTEST-3197 | `parser.rs::sdtest_3197_restore_cursor_brings_back_the_saved_colours_and_attributes` | SDUC-003, SDUC-008 | Green | Text written after `ESC 8` has the bold red saved by `ESC 7`, not the inverse green of the status line drawn in between; `CSI s` / `CSI u` likewise; a restore with nothing saved homes the cursor with the default rendition. Fails without the fix. |
+| SDTEST-3198 | `parser.rs::sdtest_3198_the_other_half_of_an_overwritten_wide_character_keeps_its_colours` | SDUC-001 | Green | Overwriting either half of a wide character on a red background leaves a normal-width blank that is still red. Fails without the fix. |
+| SDTEST-3199 | `pty.rs::environment_tests::sdtest_3199_a_terminal_does_not_pass_on_the_identity_of_another` | SDUC-022 | Green | The command of a new terminal loses `VTE_VERSION`, `TERM_PROGRAM`, `TMUX` and the Claude Code session marker, gets `COLORTERM=truecolor` over an inherited value, and keeps the user's settings (`CLAUDE_CODE_USE_BEDROCK`, `LANG`). |
 
 ### Gaps
 

@@ -660,9 +660,15 @@ fn write_response(
 pub fn open_in_browser(url: &str) -> Result<()> {
     use std::process::Command;
     let spawn = |mut cmd: Command| {
-        cmd.spawn()
-            .map(|_| ())
-            .map_err(|e| ShellDeckError::Connection(format!("failed to open browser: {}", e)))
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| ShellDeckError::Connection(format!("failed to open browser: {}", e)))?;
+        // Reap the launcher when it exits. Without a wait, every link opened
+        // left a defunct `xdg-open` for the life of the application.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
     };
 
     #[cfg(target_os = "linux")]
