@@ -1324,6 +1324,96 @@ mod tests {
         assert_eq!(grid.cells[1][2].attrs.underline, UnderlineStyle::Single);
     }
 
+    // SDTEST-3195 / SDUC-005. `grep --color`, `top` and `git diff` end a
+    // coloured line with `CSI K`. On a line exactly as wide as the terminal
+    // the cursor waits past the last column, and the erase ate the last
+    // character.
+    #[test]
+    fn sdtest_3195_erasing_after_a_full_width_line_keeps_its_last_character() {
+        let g = run(3, 10, b"0123456789\x1b[m\x1b[K\r\nabcdefghij\x1b[J");
+        {
+            let g = g.lock();
+            assert_eq!(row_text(&g, 0), "0123456789");
+            assert_eq!(row_text(&g, 1), "abcdefghij");
+        }
+        // The wrap is still due: the next character opens the next line.
+        let g = run(3, 10, b"0123456789\x1b[KX");
+        {
+            let g = g.lock();
+            assert_eq!(row_text(&g, 0), "0123456789");
+            assert_eq!(g.cells[1][0].c, 'X');
+        }
+        // Anywhere else the cell under the cursor goes with the rest.
+        let g = run(3, 10, b"0123456789\x1b[3G\x1b[K");
+        assert_eq!(row_text(&g.lock(), 0), "01        ");
+    }
+
+    // SDTEST-3196 / SDUC-004. Above or below the scroll region the cursor is
+    // outside it: an upward move from the title line of a program must not
+    // land on the top margin, further down the screen.
+    #[test]
+    fn sdtest_3196_margins_stop_the_cursor_only_from_inside_the_region() {
+        let row_after = |bytes: &[u8]| run(10, 8, bytes).lock().cursor.row;
+        // Region: lines 4 to 6 (rows 3 to 5).
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[2;1H\x1b[5A"), 0);
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[9;1H\x1b[5B"), 9);
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[5;1H\x1b[9A"), 3);
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[5;1H\x1b[9B"), 5);
+        // From above, the bottom margin still stops a downward move; from
+        // below, the top margin still stops an upward one.
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[2;1H\x1b[9B"), 5);
+        assert_eq!(row_after(b"\x1b[4;6r\x1b[9;1H\x1b[9A"), 3);
+    }
+
+    // SDTEST-3197 / SDUC-003, SDUC-004. A status line drawn between "save
+    // cursor" and "restore cursor" must not colour what follows it.
+    #[test]
+    fn sdtest_3197_restore_cursor_brings_back_the_saved_colours_and_attributes() {
+        let g = run(
+            4,
+            20,
+            b"ab\x1b[1;31m\x1b7\x1b[4;1H\x1b[0;7;42mstatus\x1b8cd",
+        );
+        {
+            let g = g.lock();
+            assert_eq!(&row_text(&g, 0)[..4], "abcd");
+            let c = &g.cells[0][2];
+            assert_eq!(c.fg, TermColor::Named(NamedColor::Red));
+            assert_eq!(c.bg, TermColor::Default);
+            assert!(c.attrs.bold);
+            assert!(!c.attrs.inverse);
+        }
+        // `CSI s` / `CSI u` are the same pair.
+        let g = run(2, 10, b"\x1b[s\x1b[4mx\x1b[uy");
+        {
+            let g = g.lock();
+            assert_eq!(g.cells[0][0].c, 'y');
+            assert_eq!(g.cells[0][0].attrs.underline, UnderlineStyle::None);
+        }
+        // Nothing saved: the home position and the default rendition.
+        let g = run(2, 10, b"\x1b[2;4H\x1b[4;7;33m\x1b8z");
+        let g = g.lock();
+        let c = &g.cells[0][0];
+        assert_eq!(c.c, 'z');
+        assert_eq!(c.fg, TermColor::Default);
+        assert_eq!(c.attrs.underline, UnderlineStyle::None);
+        assert!(!c.attrs.inverse);
+    }
+
+    // SDTEST-3198 / SDUC-001. Writing over one half of a wide character on a
+    // coloured row must not open a hole in the default background.
+    #[test]
+    fn sdtest_3198_the_other_half_of_an_overwritten_wide_character_keeps_its_colours() {
+        let g = run(2, 10, "\x1b[41m日本\x1b[1;1Hx\x1b[1;4Hy".as_bytes());
+        let g = g.lock();
+        assert_eq!(&row_text(&g, 0)[..4], "x  y");
+        for col in [1, 2] {
+            let c = &g.cells[0][col];
+            assert_eq!(c.wide, CellWidth::Normal);
+            assert_eq!(c.bg, TermColor::Named(NamedColor::Red));
+        }
+    }
+
     // ---- cursor movement CSI ----
 
     #[test]
@@ -1400,10 +1490,10 @@ mod tests {
 
     #[test]
     fn scroll_region_set_via_csi() {
-        let g = run(10, 8, b"\x1b[3;7r");
+        let g = run(10, 8, b"\x1b[5;4H\x1b[3;7r");
         let g = g.lock();
-        // DECSTBM homes the cursor to the scroll-region top (row 2, 0-indexed).
-        assert_eq!(g.cursor.row, 2);
+        // DECSTBM homes the cursor to the first line of the screen.
+        assert_eq!(g.cursor.row, 0);
         assert_eq!(g.cursor.col, 0);
     }
 

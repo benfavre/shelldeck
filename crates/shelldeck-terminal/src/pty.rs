@@ -321,6 +321,7 @@ impl LocalPty {
 
         // Set TERM so applications know what terminal features are available.
         cmd.env("TERM", "xterm-256color");
+        terminal_environment(&mut cmd);
 
         Self::spawn_builder(cmd, rows, cols)
     }
@@ -355,6 +356,7 @@ impl LocalPty {
         };
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
+        terminal_environment(&mut cmd);
         for (name, value) in env {
             cmd.env(name, value);
         }
@@ -441,6 +443,103 @@ impl LocalPty {
     /// Wait for the child process to exit and return its exit code.
     pub fn wait(&mut self) -> crate::Result<u32> {
         self.child.wait()
+    }
+}
+
+/// Variables by which another terminal, or a session inside one, announces
+/// itself to the programs it runs. The application inherits them when it is
+/// started from a terminal; passed on, they would describe that terminal in
+/// every tab of this one. Programs then draw for the wrong emulator (Claude
+/// Code reads `VTE_VERSION`), wrap their sequences for a tmux that is not
+/// there, or take the tab for a child of the agent session that started the
+/// application (Claude Code stops saving the conversation).
+const FOREIGN_SESSION_ENV: &[&str] = &[
+    // Emulators.
+    "VTE_VERSION",
+    "GNOME_TERMINAL_SCREEN",
+    "GNOME_TERMINAL_SERVICE",
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "TERMINAL_EMULATOR",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+    "ITERM_SESSION_ID",
+    "KITTY_WINDOW_ID",
+    "KITTY_PID",
+    "KITTY_LISTEN_ON",
+    "WEZTERM_PANE",
+    "WEZTERM_UNIX_SOCKET",
+    "ALACRITTY_WINDOW_ID",
+    "ALACRITTY_SOCKET",
+    "KONSOLE_VERSION",
+    "TERMINATOR_UUID",
+    "TILIX_ID",
+    "XTERM_VERSION",
+    "WT_SESSION",
+    "WT_PROFILE_ID",
+    "WINDOWID",
+    // Multiplexers.
+    "TMUX",
+    "TMUX_PANE",
+    "STY",
+    "ZELLIJ",
+    "ZELLIJ_SESSION_NAME",
+    // Markers of a Claude Code session. Its settings (`CLAUDE_CONFIG_DIR`,
+    // `CLAUDE_CODE_USE_BEDROCK`, API keys) are the user's and stay.
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+];
+
+/// What every terminal of this application tells its programs, whatever the
+/// application itself was started from: none of [`FOREIGN_SESSION_ENV`], and
+/// 24-bit colour, which the grid renders. Without `COLORTERM` a program
+/// started from the desktop falls back to the 256-colour palette.
+fn terminal_environment(cmd: &mut CommandBuilder) {
+    for name in FOREIGN_SESSION_ENV {
+        cmd.env_remove(name);
+    }
+    cmd.env("COLORTERM", "truecolor");
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::{terminal_environment, CommandBuilder};
+
+    // SDTEST-3199 / SDUC-022. Started from GNOME Terminal inside a Claude
+    // Code session, the application passed that terminal's identity and the
+    // session's markers to every tab: Claude Code drew for VTE and did not
+    // save its conversations.
+    #[test]
+    fn sdtest_3199_a_terminal_does_not_pass_on_the_identity_of_another() {
+        let mut cmd = CommandBuilder::new("sh");
+        for (name, value) in [
+            ("VTE_VERSION", "6800"),
+            ("TERM_PROGRAM", "iTerm.app"),
+            ("TMUX", "/tmp/tmux-1000/default,1,0"),
+            ("CLAUDE_CODE_CHILD_SESSION", "1"),
+            ("COLORTERM", "24bit"),
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("LANG", "fr_FR.UTF-8"),
+        ] {
+            cmd.env(name, value);
+        }
+        terminal_environment(&mut cmd);
+        for name in [
+            "VTE_VERSION",
+            "TERM_PROGRAM",
+            "TMUX",
+            "CLAUDE_CODE_CHILD_SESSION",
+        ] {
+            assert_eq!(cmd.get_env(name), None, "{name} must not reach the tab");
+        }
+        assert_eq!(cmd.get_env("COLORTERM").unwrap(), "truecolor");
+        // The user's own settings are not session markers.
+        assert_eq!(cmd.get_env("CLAUDE_CODE_USE_BEDROCK").unwrap(), "1");
+        assert_eq!(cmd.get_env("LANG").unwrap(), "fr_FR.UTF-8");
     }
 }
 

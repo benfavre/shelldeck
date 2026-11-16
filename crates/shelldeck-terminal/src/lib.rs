@@ -25,4 +25,7 @@ pub use error::{Result, TerminalError};
 /// 4: a CSI sequence with a private marker or an intermediate byte this
 /// emulator does not implement is dropped instead of running the standard
 /// function of its final byte (`CSI > 4 m` no longer underlines).
+/// Also: erasing after a full-width line keeps its last character, DECSTBM
+/// homes to the first line of the screen, the margins stop a vertical move
+/// only from inside the region, and DECSC/DECRC keep the rendition.
 pub const EMULATOR_REV: u16 = 4;

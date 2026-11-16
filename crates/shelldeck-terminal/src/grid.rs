@@ -332,6 +332,16 @@ pub struct Cell {
     pub wide: CellWidth,
 }
 
+impl Cell {
+    /// Turn the cell into a space of normal width, keeping its colours and
+    /// attributes.
+    fn blank_in_place(&mut self) {
+        self.c = ' ';
+        self.combining.clear();
+        self.wide = CellWidth::Normal;
+    }
+}
+
 /// A row nothing was written on: spaces in the default colours.
 fn row_is_blank(row: &[Cell]) -> bool {
     let plain = CellAttributes::default();
@@ -486,6 +496,9 @@ pub struct TerminalGrid {
     scroll_top: usize,
     scroll_bottom: usize,
     saved_cursor: Option<(usize, usize)>,
+    /// The rendition saved with the cursor (DECSC). Not part of a snapshot:
+    /// after one, a restore brings back the position alone.
+    saved_rendition: Option<(CellAttributes, TermColor, TermColor)>,
     pub current_attrs: CellAttributes,
     pub current_fg: TermColor,
     pub current_bg: TermColor,
@@ -595,6 +608,7 @@ impl TerminalGrid {
             scroll_top: 0,
             scroll_bottom: rows.saturating_sub(1),
             saved_cursor: None,
+            saved_rendition: None,
             current_attrs: CellAttributes::default(),
             current_fg: TermColor::Default,
             current_bg: TermColor::Default,
@@ -819,8 +833,10 @@ impl TerminalGrid {
         self.dirty = true;
     }
 
-    /// If the cell at (row, col) is part of a wide character pair, clear both
-    /// halves to prevent "half characters" from lingering on screen.
+    /// If the cell at (row, col) is part of a wide character pair, blank the
+    /// other half to prevent "half characters" from lingering on screen. The
+    /// blank keeps the colours and attributes it had: on a coloured row it
+    /// must not open a hole in the default background.
     fn clear_wide_pair_at(&mut self, row: usize, col: usize) {
         if row >= self.rows || col >= self.cols {
             return;
@@ -828,12 +844,12 @@ impl TerminalGrid {
         match self.cells[row][col].wide {
             CellWidth::Wide => {
                 if col + 1 < self.cols && self.cells[row][col + 1].wide == CellWidth::Spacer {
-                    self.cells[row][col + 1] = Cell::default();
+                    self.cells[row][col + 1].blank_in_place();
                 }
             }
             CellWidth::Spacer => {
                 if col > 0 && self.cells[row][col - 1].wide == CellWidth::Wide {
-                    self.cells[row][col - 1] = Cell::default();
+                    self.cells[row][col - 1].blank_in_place();
                 }
             }
             CellWidth::Normal => {}
@@ -899,21 +915,29 @@ impl TerminalGrid {
 
     // -- Cursor movement --
 
+    /// Move up, stopping at the top margin. A cursor that starts above the
+    /// scroll region is outside it and stops at the first line instead.
     pub fn cursor_up(&mut self, n: usize) {
         self.pending_wrap = false;
-        let top = self.scroll_top;
-        if self.cursor.row >= top + n {
-            self.cursor.row -= n;
+        let top = if self.cursor.row >= self.scroll_top {
+            self.scroll_top
         } else {
-            self.cursor.row = top;
-        }
+            0
+        };
+        self.cursor.row = self.cursor.row.saturating_sub(n).max(top);
         self.dirty = true;
     }
 
+    /// Move down, stopping at the bottom margin. A cursor that starts below
+    /// the scroll region is outside it and stops at the last line instead.
     pub fn cursor_down(&mut self, n: usize) {
         self.pending_wrap = false;
-        let bottom = self.scroll_bottom;
-        self.cursor.row = (self.cursor.row + n).min(bottom);
+        let bottom = if self.cursor.row <= self.scroll_bottom {
+            self.scroll_bottom
+        } else {
+            self.rows - 1
+        };
+        self.cursor.row = self.cursor.row.saturating_add(n).min(bottom);
         self.dirty = true;
     }
 
@@ -953,20 +977,49 @@ impl TerminalGrid {
         }
     }
 
+    /// Save the cursor position with the colours and attributes in force
+    /// (DECSC).
     pub fn save_cursor(&mut self) {
         self.saved_cursor = Some((self.cursor.row, self.cursor.col));
+        self.saved_rendition = Some((self.current_attrs.clone(), self.current_fg, self.current_bg));
     }
 
+    /// Go back to the saved position and rendition (DECRC), so what a
+    /// program drew in between (a status line, a progress bar) does not
+    /// colour what follows. With nothing saved: the home position and the
+    /// default rendition.
     pub fn restore_cursor(&mut self) {
-        if let Some((row, col)) = self.saved_cursor {
-            self.cursor.row = row.min(self.rows - 1);
-            self.cursor.col = col.min(self.cols - 1);
-            self.pending_wrap = false;
+        let (row, col) = self.saved_cursor.unwrap_or((0, 0));
+        self.cursor.row = row.min(self.rows - 1);
+        self.cursor.col = col.min(self.cols - 1);
+        if self.saved_cursor.is_none() {
+            self.saved_rendition = Some(Default::default());
         }
+        if let Some((attrs, fg, bg)) = self.saved_rendition.clone() {
+            self.current_attrs = attrs;
+            self.current_fg = fg;
+            self.current_bg = bg;
+        }
+        self.pending_wrap = false;
         self.dirty = true;
     }
 
     // -- Erasing --
+
+    /// The first column an erase "from the cursor to the end" clears.
+    ///
+    /// After a character in the last column the cursor waits past it for the
+    /// wrap: nothing is left to erase on that line. Programs end a coloured
+    /// line with `CSI K` (`grep --color`, `top`, `git diff`), so erasing the
+    /// cell under the waiting cursor ate the last character of every line
+    /// that was exactly as wide as the terminal.
+    fn erase_start_col(&self) -> usize {
+        if self.pending_wrap {
+            self.cols
+        } else {
+            self.cursor.col
+        }
+    }
 
     /// Erase display.
     /// mode 0: erase from cursor to end of display.
@@ -979,11 +1032,13 @@ impl TerminalGrid {
             0 => {
                 // Clear from cursor to end of line, then all lines below.
                 let row = self.cursor.row;
-                let col = self.cursor.col;
+                let col = self.erase_start_col();
                 if row < self.rows {
                     // If erasing starts on the Spacer half of a wide char,
                     // also clear the Wide cell to the left.
-                    self.clear_wide_pair_at(row, col);
+                    if col < self.cols {
+                        self.clear_wide_pair_at(row, col);
+                    }
                     for c in col..self.cols {
                         self.cells[row][c] = bce.clone();
                     }
@@ -1054,8 +1109,11 @@ impl TerminalGrid {
         let bce = self.bce_cell();
         match mode {
             0 => {
-                self.clear_wide_pair_at(row, self.cursor.col);
-                for c in self.cursor.col..self.cols {
+                let col = self.erase_start_col();
+                if col < self.cols {
+                    self.clear_wide_pair_at(row, col);
+                }
+                for c in col..self.cols {
                     self.cells[row][c] = bce.clone();
                 }
             }
@@ -1355,18 +1413,19 @@ impl TerminalGrid {
     }
 
     /// Set the scroll region (0-indexed, inclusive on both ends).
+    ///
+    /// A region needs two lines at least: a request for less is ignored whole
+    /// and the cursor stays where it is, as in xterm.
     pub fn set_scroll_region(&mut self, top: usize, bottom: usize) {
-        let top = top.min(self.rows - 1);
         let bottom = bottom.min(self.rows - 1);
-        if top < bottom {
-            self.scroll_top = top;
-            self.scroll_bottom = bottom;
-        } else {
-            self.scroll_top = 0;
-            self.scroll_bottom = self.rows - 1;
+        if top >= bottom {
+            return;
         }
-        // After setting scroll region, cursor moves to home.
-        self.cursor.row = self.scroll_top;
+        self.scroll_top = top;
+        self.scroll_bottom = bottom;
+        // DECSTBM homes the cursor: the first line of the screen, or of the
+        // region when origin mode makes positions relative to it.
+        self.cursor.row = if self.origin_mode { self.scroll_top } else { 0 };
         self.cursor.col = 0;
         self.pending_wrap = false;
         self.dirty = true;
@@ -1824,7 +1883,8 @@ impl TerminalGrid {
         // Clear the screen for the alt buffer.
         self.cells = (0..self.rows).map(|_| self.new_row()).collect();
         self.line_flags = vec![LineFlags::default(); self.rows];
-        self.cursor = CursorState::default();
+        // The cursor is the same one on both screens: it stays where it is,
+        // and a program that hid it before switching finds it still hidden.
         self.pending_wrap = false;
         self.dirty = true;
     }
@@ -2947,13 +3007,26 @@ mod tests {
     #[test]
     fn set_scroll_region_homes_cursor_and_bounds_scroll() {
         let mut g = TerminalGrid::new(10, 5);
+        g.cursor_to(4, 3);
         g.set_scroll_region(2, 5);
-        assert_eq!(g.cursor.row, 2);
-        assert_eq!(g.cursor.col, 0);
-        // Invalid region (top >= bottom) resets to full screen.
-        g.set_scroll_region(5, 3);
+        // Home is the first line of the screen, not of the region.
+        assert_eq!((g.cursor.row, g.cursor.col), (0, 0));
+        g.cursor_to(3, 0);
         g.cursor_down(100);
-        assert_eq!(g.cursor.row, 9);
+        assert_eq!(g.cursor.row, 5);
+        // With origin mode, home is the first line of the region.
+        g.set_origin_mode(true);
+        g.set_scroll_region(3, 6);
+        assert_eq!((g.cursor.row, g.cursor.col), (3, 0));
+        g.set_origin_mode(false);
+        // A region of less than two lines is ignored: the margins and the
+        // cursor stay.
+        g.cursor_to(4, 2);
+        g.set_scroll_region(5, 3);
+        g.set_scroll_region(7, 7);
+        assert_eq!((g.cursor.row, g.cursor.col), (4, 2));
+        g.cursor_down(100);
+        assert_eq!(g.cursor.row, 6);
     }
 
     #[test]
@@ -3028,9 +3101,15 @@ mod tests {
         let mut g = TerminalGrid::new(3, 6);
         write_str(&mut g, "primary");
         let primary_text = row_text(&g, 0);
+        g.set_cursor_visible(false);
+        let before = (g.cursor.row, g.cursor.col);
         g.enter_alt_screen();
-        // Alt screen starts blank.
+        // Alt screen starts blank. The cursor is the same one on both
+        // screens: it has not moved and it is still hidden.
         assert_eq!(row_text(&g, 0), "      ");
+        assert_eq!((g.cursor.row, g.cursor.col), before);
+        assert!(!g.cursor.visible);
+        g.cursor_to(0, 0);
         write_str(&mut g, "alt");
         assert_eq!(&row_text(&g, 0)[..3], "alt");
         // Entering again is a no-op.

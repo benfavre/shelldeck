@@ -1838,6 +1838,22 @@ everything that followed and the kitty keyboard queries (`CSI ? u`) moved the
 cursor. Variants the emulator does not implement are now dropped.
 `EMULATOR_REV` is 4. SDTEST-3194.
 
+The same revision carries the grid corrections found by replaying real
+programs and random sequences against a reference emulator: an erase to the
+end of the line keeps the last character of a full-width line, DECSTBM homes
+the cursor to the first line of the screen and ignores a region of less than
+two lines, the margins stop a vertical move only from inside the region,
+DECSC and DECRC keep the colours and attributes, the alternate screen keeps
+the cursor where and as it was, and the other half of an overwritten wide
+character keeps its colours. SDTEST-3195 to SDTEST-3198. The rendition saved
+by DECSC is not in a snapshot: after one, a restore brings back the position
+alone until the next save.
+
+`LocalPty` now sets `COLORTERM=truecolor` and removes the variables of the
+terminal or session the process was started from (SDTEST-3199). In the
+daemon this runs before the `Spawn` frame's own environment is applied, so
+what a client sends still wins.
+
 What the run confirmed about the design: the daemon and its shells keep
 their process ids across an app quit and across `kill -9` of the app; the
 layout comes back by pane id with ratios, active tab and focused pane; a
