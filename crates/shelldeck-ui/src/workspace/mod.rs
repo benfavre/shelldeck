@@ -161,6 +161,7 @@ mod requests;
 mod scripts;
 mod server_sync;
 mod share;
+mod site_picker;
 mod sites;
 mod ssh;
 mod support;
@@ -183,7 +184,7 @@ pub enum AccountStatus {
 
 /// Height of the custom client-side titlebar. Sheets that must leave the
 /// window controls reachable use the same scale-aware value as the chrome.
-const WORKSPACE_TITLEBAR_HEIGHT: f32 = 40.0;
+const WORKSPACE_TITLEBAR_HEIGHT: f32 = crate::window_chrome::TITLEBAR_HEIGHT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IssueAttachmentTarget {
@@ -242,8 +243,9 @@ impl AccountStatus {
     }
 }
 
-struct WorkspaceTooltip {
-    label: SharedString,
+/// The plain tooltip of the app chrome (also used by the Share gallery).
+pub(crate) struct WorkspaceTooltip {
+    pub(crate) label: SharedString,
 }
 
 impl Render for WorkspaceTooltip {
@@ -556,6 +558,7 @@ pub struct Workspace {
     _personal_share_sub: Subscription,
     /// Re-renders User Home only when the Share summary actually changes.
     _personal_share_observer: Subscription,
+    _menu_bar_observer: Subscription,
     /// Personal Share summary for the User Home dashboard card.
     share_summary: Option<crate::share_view::ShareSummary>,
     _workspace_hub_sub: Subscription,
@@ -622,6 +625,11 @@ pub struct Workspace {
     site_directory: Option<SitesPayload>,
     /// Whether the titlebar site-switcher dropdown is open.
     site_menu_open: bool,
+    /// « Choisir un site » modal, open while an action waits for a site.
+    site_picker: Option<site_picker::SitePicker>,
+    /// The menu row is shown over the content for one use (Alt or the
+    /// chevron beside the logo); see `workspace/menu.rs`.
+    menu_row: menu::MenuRowState,
     /// Inklura Manage bell, merged across the account's spaces. `None` until
     /// the first successful poll (and while the server lacks the endpoint).
     inklura_notifications: Option<shelldeck_core::config::manage_notifications::NotificationFeed>,
@@ -1181,7 +1189,7 @@ impl Workspace {
             let cursor_style = cfg.cursor_style.clone();
             let cursor_blink = cfg.cursor_blink;
             let scrollback = cfg.scrollback_lines;
-            let menu_bar_visible = config.general.menu_bar_visible;
+            let menu_bar_always_visible = config.general.menu_bar_always_visible;
             workspace_hub.update(cx, |hub, cx| {
                 hub.configure_terminals(
                     workspaces::WorkspaceTerminalConfig {
@@ -1193,7 +1201,7 @@ impl Workspace {
                         cursor_blink,
                         scrollback_lines: scrollback,
                         sidebar_width: initial_sidebar_width + crate::sidebar::RAIL_WIDTH,
-                        menu_bar_visible,
+                        menu_bar_always_visible,
                         persistent_sessions: config.general.session_daemon,
                     },
                     cx,
@@ -1231,6 +1239,10 @@ impl Workspace {
                 this.invalidate_cloud_session(cx);
             },
         );
+        let menu_bar_observer = cx.observe(&menu_bar, |this, bar, cx| {
+            let open = bar.read(cx).is_open();
+            this.menu_bar_open_changed(open, cx);
+        });
         let personal_share_observer = cx.observe(&personal_share, |this, share, cx| {
             let summary = share.read(cx).summary();
             if summary != this.share_summary {
@@ -1674,9 +1686,12 @@ impl Workspace {
             pending_share_files: Vec::new(),
             _personal_share_sub: personal_share_sub,
             _personal_share_observer: personal_share_observer,
+            _menu_bar_observer: menu_bar_observer,
             share_summary: None,
             site_directory: None,
             site_menu_open: false,
+            site_picker: None,
+            menu_row: menu::MenuRowState::default(),
             inklura_notifications: None,
             inklura_notifications_seen: None,
             inklura_notifications_open: false,
@@ -1796,7 +1811,7 @@ const SITE_ROW_H_COMPACT: f32 = 88.0;
 /// `slot - 4px`; the remainder is the visual gap while GPUI renders only the
 /// visible range. Compact rows reserve enough height for one title line, its
 /// gap, and the full badge line without clipping either edge after scaling.
-const USER_REQUEST_ROW_H: f32 = 42.0;
+const USER_REQUEST_ROW_H: f32 = 52.0;
 const USER_REQUEST_ROW_H_COMPACT: f32 = 70.0;
 
 /// Lucide slug for a Manage area key. Kept in one place so the User-home

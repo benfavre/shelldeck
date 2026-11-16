@@ -56,7 +56,8 @@ impl Workspace {
         let mut title = div()
             .min_w(px(0.0))
             .overflow_hidden()
-            .text_size(px(13.0))
+            .text_size(px(14.0))
+            .font_weight(FontWeight::SEMIBOLD)
             .text_color(ShellDeckColors::text_primary());
         title = if compact {
             // GPUI paints the second `line_clamp` line without contributing
@@ -207,9 +208,11 @@ impl Workspace {
             // top/bottom padding stays symmetrical.
             .h(px(row_h - 4.0))
             .flex()
-            .px(px(10.0))
+            // The same card as the rows of Mes sites.
+            .px(px(16.0))
             .py(px(7.0))
-            .rounded(px(8.0))
+            .rounded(px(12.0))
+            .bg(ShellDeckColors::bg_sidebar())
             .border_1()
             .border_color(if selected {
                 ShellDeckColors::primary()
@@ -256,7 +259,6 @@ impl Workspace {
         let list = if mine_count == 0 {
             // Nothing filed yet: the van has nothing to deliver.
             div()
-                .mt(px(8.0))
                 .py(px(20.0))
                 .flex()
                 .flex_col()
@@ -286,7 +288,6 @@ impl Workspace {
             div()
                 .w_full()
                 .h(px(visible_h))
-                .mt(px(8.0))
                 .child(
                     uniform_list(
                         "user-requests-virt",
@@ -325,59 +326,22 @@ impl Workspace {
                 .into_any_element()
         };
 
-        // Section header: title + "Nouvelle demande" button.
-        let header = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .mb(px(4.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(lucide_icon("tag", 16.0, ShellDeckColors::text_muted()))
-                    .child(
-                        div()
-                            .text_size(px(18.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("user.requests.title").to_string()),
-                    ),
-            )
-            .child(
-                div()
-                    .id("user-new-request-btn")
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px(px(10.0))
-                    .py(px(6.0))
-                    .rounded(px(6.0))
-                    .bg(ShellDeckColors::primary())
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(white())
-                    .cursor_pointer()
-                    .child(
-                        svg()
-                            .path("icons/lucide/plus.svg")
-                            .size(px(11.0))
-                            .text_color(white()),
-                    )
-                    .child(t!("user.requests.new").to_string())
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.open_new_request(cx);
-                    })),
-            );
+        // Head of the page, as on every User screen; "Nouvelle demande" is the
+        // same button as on Accueil.
+        let entity = cx.entity();
+        let new_request = Button::new("user-new-request-btn", t!("user.requests.new").to_string())
+            .size(ButtonSize::Lg)
+            .icon(IconSource::from("plus"))
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| this.open_new_request(cx));
+            });
+        let header = crate::user_page::head(
+            t!("user.page.requests.eyebrow").to_string(),
+            crate::user_page::title_text(t!("user.requests.title").to_string(), compact),
+            Some(new_request.into_any_element()),
+        );
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .m(px(16.0))
-            .child(header)
-            .child(list)
+        crate::user_page::page(compact).child(header).child(list)
     }
 
     /// Full-screen dimmed backdrop + right-anchored panel that wraps some inner
@@ -1298,7 +1262,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .gap(px(1.0))
-                .bg(ShellDeckColors::bg_surface())
+                .bg(ShellDeckColors::popover_bg())
                 .border_1()
                 .border_color(ShellDeckColors::border())
                 .rounded(px(9.0))

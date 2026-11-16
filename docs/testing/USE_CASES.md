@@ -2110,6 +2110,8 @@ growing the surrounding screen or typing off-screen.
 
 ### SDUC-434 — The tray opens one standalone AI Dock
 
+Inside the main window the Dock is reached from the Go menu (« Dock IA », for an account with the Dev capability or a ready AI backend), the global shortcut and the tray; the titlebar has no Dock button since 2026-11-16.
+
 The tray icon opens the complete native dropdown, including Assistant, Clippy,
 sharing, main window, palette, character controls, pinned hosts, counters and Quit.
 Clicking the icon never substitutes a direct Assistant action. For an
@@ -3366,6 +3368,22 @@ Existing local and plain SSH terminals retain their native split behavior.
 Tmux owns its pane layout across ShellDeck restarts and SSH disconnects.
 
 ## Change log
+
+2026-11-16: SDUC-568 amended: Desktop keeps a thumbnail of the PNGs it shares and shows it in the gallery and on the home tiles. SDUC-591 amended: when the window is too narrow for the view switcher to stay centred beside the titlebar actions, it follows the logo; narrower still, the site chip keeps only its globe. SDTEST-3193.
+
+2026-11-16: SDUC-568 and SDUC-588 amended: the Share page follows the owner's mock-up (head, intake card, « Mes fichiers » with filters, order, grid/list, cards with expiry and « … » menu) and the home « Partages récents » shows tiles; pictures only from a Share preview, never the view-counting file link. SDTEST-3189, SDTEST-3190, SDTEST-3191, SDTEST-3192.
+
+2026-11-16: Added SDUC-594: an action that needs an active site opens « Choisir un site » instead of a warning. SDTEST-3188.
+
+2026-11-16: SDUC-434 amended: the titlebar Dock button is gone; the Dock opens from Aller → « Dock IA » (plus the tray and global shortcut). SDTEST-3187.
+
+2026-11-16: Added SDUC-593: notifications panel with rows that keep their height, kind tiles and runs of repeats collapsed into one row. SDTEST-3186.
+
+2026-11-16: Added SDUC-592: one frame (margins, head, card titles, list rows) for every User screen; the street banner of "Mes informations" (SDUC-590) gives way to the common head.
+
+2026-11-16: Added SDUC-591: Firefox-style menu row (Alt or the chevron beside the logo, « Toujours afficher la barre de menus »), new titlebar with the centred view switcher and the account avatar, User mode rail. SDUC-588 amended (rail, « Vue d'ensemble » / « Bonjour <name> » head, icon copy buttons). SDTEST-3184; SDTEST-2909 retired.
+
+2026-11-16: Amended SDUC-588: the User home page follows the owner's second mock-up (greeting head, « Demandes récentes » beside « Mes sites », « Partages récents », Manage status foot); the street banner left this page. SDTEST-3181 amended, SDTEST-3183.
 
 2026-11-16: Added SDUC-590: "Mes informations" redrawn from the owner's second mock-up (page head with the street, one illustrated panel per subject).
 
@@ -4989,6 +5007,20 @@ search, open, copy, confirmed deletion and a saved retention default. Files abov
 service failures preserve the Manage login. Account changes cancel pending work
 and discard old results, drafts and gallery data. Desktop never requests a Share
 API key or receives administrative, team-management or billing permissions.
+Since 2026-11-16 the page follows the owner's mock-up and scrolls as one
+(virtualised) list: head with the plan, storage meter and account; the
+« Un fichier à partager ? » card (four actions, drop zone, retention picker,
+« Utiliser par défaut », privacy note); « Mes fichiers » with search,
+Tous / Images / Documents / Archives, an order picker and grid/list views.
+A card shows the picture, the name, kind · size · day shared, the expiry
+(warning colour within three days, « Sans expiration » when none),
+« Copier le lien » and a « … » menu (open, rename, delete). The send bar and
+the transfer stay pinned below the page. A picture comes only from a preview
+Share serves (`thumbnail_url`), never from the file link (`/r/…`), which counts
+views. When Desktop shares a PNG itself (capture, paste, file), it keeps a
+480 px thumbnail in its cache (`share-thumbs/<id>.png`) and shows it; other
+files show their icon on a tile of their family's colour until Share serves
+previews.
 
 ### SDUC-569 — Existing Inklura PDF application from Desktop
 
@@ -5795,7 +5827,9 @@ side (`crates/shelldeck-ui/src/ludique.rs`):
   the road at the bottom, clouds drift, a bird and a balloon cross the sky. The
   copy sits above the town with the site's label, marker and buttons. "Réalisé
   par WD29" is written on the pavement under the road.
-- **User home banner**: the copy and the "Nouvelle demande" button on the sky
+- **User home banner** (retired 2026-11-16: the home page follows the second
+  mock-up of SDUC-588 and has no street; the head of "Mes informations" keeps it):
+  the copy and the "Nouvelle demande" button on the sky
   to the left; to the right the town on its stretch of road, which fades into
   the sky towards the copy, and the van that drives out of that fade (see
   SDUC-588 for the page around it).
@@ -5838,46 +5872,43 @@ and Windows, UI scales other than the default, English.
 
 ## SDUC-588: User home page redrawn from the owner's mock-up
 
-The home page of User mode follows the mock-up the owner shared on 2026-11-16
-(`share.inklura.fr/r/618f376387a0.png`). What the user sees:
+The home page of User mode follows the second mock-up the owner shared on
+2026-11-16 (`share.inklura.fr/r/80cab9ac9b2f.png`), which replaced the first
+(`share.inklura.fr/r/618f376387a0.png`, banner with the street). What the user
+sees:
 
-- **Navigation row**: the Inklura mark and name, then the tabs as quiet text
-  buttons; the current tab is tinted with the brand colour. A rule, then the
-  account (initial, name, role), "Ouvrir Manage" and the synchronise button.
-  Under 1100 px the mark and the role give their place to the tabs; the tabs
-  wrap on a second line when they must.
-- **Banner** (212 px, 204 px under 1100 px): a large title under the marker pen,
-  the subtitle, and the main action, "Nouvelle demande", on the sky; the town
-  of SDUC-587 to the right. The banner has no counter any more: the counters
-  are the two panels under it.
-- **Counters**: sites and open requests, each in a panel that opens its tab.
-- **Accès rapide**: capture and share, share files. "Nouvelle demande" is no
-  longer repeated here.
-- **Demandes récentes**: the three latest requests, "Voir tout" opens the tab.
-  Each status is a pill: a request that waits for someone ("À traiter") is the
-  one in the warning colour, work in progress is in the brand colour, a
-  finished one is only outlined.
-- **État de votre espace**: account, active site, directory, one per line.
-- The page has one background for every tab of User mode: the page colour with
-  a breath of the brand colour. Panels are the lightest surface, with round
-  corners and a soft shadow. Every colour comes from the palette, so the page
-  follows the theme; only the banner keeps the scene's own day and night.
+- **Navigation**: a rail on the left (SDUC-591, third mock-up of 2026-11-16):
+  Accueil, Mes sites, Partage, Mes demandes, Mes informations,
+  then « Ouvrir Manage » and Aide at its foot. The account is the avatar of the
+  titlebar.
+- **Head**: « Vue d'ensemble » in small text, then « Bonjour <first name> » as
+  the title with the name on a marker stroke (first word of the account name,
+  else the local part of the e-mail address), and "Nouvelle demande" to the
+  right. No street on this page any more.
+- **Demandes récentes**: the three latest requests, with « N à traiter » beside
+  the title when requests wait for someone. Each row: a dot coloured by status
+  (warning for a request that waits, brand colour for work in progress, muted
+  for a finished one), the title on up to two lines, « Statut · il y a … », a
+  chevron; a click opens the request.
+- **Mes sites**, beside it: « Parcourir → » opens the tab, the number of sites,
+  and « Site actif », a field that opens the titlebar site switcher.
+- **Partages récents**: « Capturer » and « Ajouter des fichiers » always; once
+  the gallery has loaded, the four latest files as tiles (the preview Share
+  serves, else the file's icon and kind; name, kind and size; « Copier le lien »; a click
+  opens the file's page) and a foot with the storage meter, « used / total · N fichiers » and
+  « Tout voir → ».
+- **Foot**: « Actualiser ». The state of the Manage connection is the dot on
+  the titlebar avatar.
+- One background for every tab of User mode; panels are the lightest surface.
+  Every colour comes from the palette, so the page follows the theme.
 
-Kept although the mock-up does not show them: the role beside the name and the
-synchronise button (both are functions of the row, not decoration), the window
-title bar and its menu, and the share card when the account has shared files.
-The mock-up's own logo and its share icon are not in the product: the row uses
-the Inklura mark and the existing icon.
+#### Native walkthrough (2026-11-16, second mock-up)
 
-#### Native walkthrough (2026-11-16)
-
-Private headless desktop, demonstration Manage stub, client account, French:
-light and dark themes at 1200 x 800 (the whole page fits without scrolling),
-and a 760 px wide window (smaller title on one line, tabs on two lines, quick
-actions under their title). The banner's bottom right corner is round over the
-road. Not checked on screen: a window under 600 px, English, other UI scales,
-keyboard focus on the new button, macOS and Windows.
-([`screenshots/2026-11-16-street/`](./screenshots/2026-11-16-street/), 03, 04 and 07.)
+Private Xvfb display with picom, demonstration Manage stub (`--role client`),
+disposable profile, French, 1200 x 800: light and Tokyo Night. Head, both cards
+and the foot match the mock-up. Not checked on screen: the share list and its
+foot (the stub serves no Share gallery), a window under 600 px, English, other
+UI scales, macOS and Windows.
 
 ## SDUC-589: Notices (toasts) as calm cards
 
@@ -5931,3 +5962,102 @@ Private headless desktop, demonstration Manage stub, client account, French,
 light and dark themes at 1200 x 800. Not checked on screen: a narrow window,
 English, an account with several roles or with session dates, other themes.
 ([`screenshots/2026-11-16-street/`](./screenshots/2026-11-16-street/), 08 and 09.)
+
+## SDUC-591: Firefox-style menu row and the new titlebar
+
+From the owner's mock-up of 2026-11-16 and the request « try something like
+firefox file menu »: « alt show's it or click on the chevron next to logo,
+also have a toujours afficher », for the whole application.
+
+- **Titlebar**: the sidebar toggle (Dev), the Inklura mark, « Inklura » and a
+  chevron; the view switcher (full app, Agents, Terminal, Editor) centred in
+  the window, the current view raised as a white tile; tools, bell and the
+  account avatar (two initials, Manage status dot); window controls.
+- **Menu row** (Fichier, Édition, Affichage, Aller, Terminal, Aide): its own
+  row under the titlebar, hidden by default. A tap on Alt alone, or the
+  chevron, shows it over the content without resizing anything; it leaves when
+  a menu is used or closed, when the content is clicked, on Escape or on
+  another tap on Alt. Alt held with a key (Alt+F, a terminal Meta key) or with
+  another modifier shows nothing.
+- **Toujours afficher la barre de menus** (Affichage, `secondary-shift-m`,
+  saved as `general.menu_bar_always_visible`): the row stays and takes its
+  height from the content, terminals included. The chevron on a pinned row
+  unpins it. The old `menu_bar_visible` is ignored, so nobody starts pinned.
+- Focused views (Agents, Terminal, Editor) have neither the row nor the chevron.
+- **User mode** loses its tab row for a rail on the left (see SDUC-588). The
+  sidebar toggle at the top left (and Ctrl+B) hides or shows that rail without
+  leaving User mode; saved as `general.user_rail_hidden`.
+
+#### Native walkthrough (2026-11-16)
+
+Private Xvfb display with mutter as window manager, demonstration Manage stub,
+disposable profile, French, 1200 x 800, light theme. Client account: User home
+with the rail, no switcher. Staff account: switcher centred; full app with the
+row pinned, then the chevron (unpins, saved), the chevron again (row over the
+content), a click in the content (row leaves), Alt (row shows), Alt (row
+leaves), Alt then Affichage → Toujours afficher (pinned, saved). A terminal
+running `seq 1 200` keeps its prompt in view with the row pinned and after
+unpinning. Without a window manager the display sends no keyboard focus
+events and Alt does nothing there; that is the test display, not the app.
+Not checked: Wayland and macOS/Windows key handling, dark themes for the new
+titlebar, a window under 1000 px (the single Menu trigger).
+
+## SDUC-592: One frame for every User screen
+
+Request of 2026-11-16: « uniformize the padding around screens and typography
+and alignements ». Accueil, Mes sites, Partage, Mes demandes and Mes
+informations share `crate::user_page`:
+
+- the same side margins (30 px, 16 px in a window under 600 logical px), the
+  same space above the head and below the last block, the same 20 px between
+  blocks, so switching tabs never moves the content;
+- the same head: a small eyebrow (Vue d'ensemble, Annuaire, Inklura Share,
+  Suivi, Compte) over a 28 px title (24 px when compact), actions to the right
+  (Nouvelle demande, the site search, Actualiser);
+- card titles at 18 px semibold everywhere; the rows of Mes sites and Mes
+  demandes are the same card (radius 12, 16 px inside, 14 px semibold title);
+- Partage sits on the page colour of the other tabs and uses the default
+  button size; Mes informations drops its street banner for the common head
+  and keeps the street drawings on its panels.
+
+Checked in the private Xvfb + mutter walkthrough of SDUC-591 (client account,
+light theme, 1200 x 800), all five tabs side by side. Not checked: compact
+width, dark themes, English.
+
+## SDUC-593: Readable notifications panel
+
+The bell's panel (Inklura Manage notifications) drew every row squashed into
+its neighbours once the feed was longer than the panel: the list caps its
+height and scrolls, and rows that may shrink were shrunk instead. Since
+2026-11-16:
+
+- rows keep their height and the list scrolls (`flex_shrink_0` on each row);
+- a row is an icon on a tile of its kind's colour (success, warning, error,
+  info), the title (semibold while unread), the text on up to two lines, then
+  the space and the time; unread rows are tinted and carry a dot;
+- runs of the same notification next to each other (same space, kind, title
+  and text, such as an agent waiting for a validation every minute) are one
+  row with « ×N »; opening it opens the newest and marks the whole run read;
+- the head shows the unread count and « Tout marquer comme lu ».
+
+Checked in the private Xvfb + mutter walkthrough with a stub feed of 18 items
+(six repeats): no overlap, scrolling, ×6 run, dots. Not checked: dark themes.
+
+## SDUC-594: Choose a site instead of a dead end
+
+Ouvrir Manage (the User rail, the empty state, a Manage area from the palette
+or the site menu) needs an active site. Without one it used to stop on a
+warning (« Sélectionnez d’abord un site actif pour ouvrir Manage. »). Since
+2026-11-16 it opens « Choisir un site »:
+
+- a centred modal on the menu surface, with a search field that has focus at
+  once and filters by name, address or company;
+- the sites in alphabetical order, each with its initial on a tile of its brand
+  colour and its address;
+- a click, or Enter on the first match, makes the site active and opens Manage
+  on it; Escape, the backdrop or « Annuler » close it without changing anything.
+
+The warning remains only when there is no site to choose from.
+
+Checked in the private Xvfb + mutter walkthrough (client account, two sites,
+no active site): Light and Tokyo Night, search, Enter, Escape.

@@ -114,9 +114,16 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `external-link` | navigation | open in browser |
 | `eye` | action | show password / preview |
 | `eye-off` | action | hide password |
+| `file-archive` | user home | archive in the recent shares |
+| `file-image` | user home | recent shares on the home page |
+| `image` | share | « Images » filter of the Share gallery |
+| `infinity` | share | file shared without expiry |
+| `layout-grid` | share | gallery shown as a grid |
+| `list` | share | gallery shown as a list |
 | `file-text` | AI | mention picker — open editor file |
 | `filter` | support | ticket list filters |
 | `flag` | support | priority / flag ticket |
+| `folder-up` | user home | Partage in the User rail |
 | `folder` | navigation | Agents project picker |
 | `globe` | infra | sites, public URL |
 | `grid-2x2` | view | Sites view — cards mode toggle |
@@ -127,6 +134,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `keyboard` | dashboard | shortcuts section header |
 | `laptop` | user home | device row of "Mes informations" |
 | `life-buoy` | AI | mention picker — support ticket |
+| `link` | user home | "Copier le lien" of a recent share |
 | `list-checks` | AI | assistant tasks tab and empty state |
 | `layout-dashboard` | view | Dev sidebar — Workspaces |
 | `lock` | security | locked / auth required |
@@ -136,8 +144,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `minimize-2` | window | minimize (titlebar) |
 | `minus` | chrome | zoom out, decrement |
 | `paperclip` | AI | composer attachments (`+`) |
-| `panel-right-close` | window | titlebar — external AI Dock is open |
-| `panel-right-open` | window | titlebar — open the external AI Dock |
+| `panel-right-open` | window | Go menu — open the external AI Dock |
 | `pencil` | action | edit |
 | `pin` | terminal | pin tab |
 | `play` | action | execute AI actions and scripts |
@@ -161,6 +168,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `table` | view | Sites view — table mode toggle |
 | `tag` | support | tags, labels |
 | `terminal` | ssh | terminal tabs |
+| `ticket` | user home | Mes demandes in the User rail |
 | `trash-2` | action | delete / destroy |
 | `triangle-alert` | status | errors |
 | `upload` | action | import, push |

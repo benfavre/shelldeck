@@ -33,6 +33,21 @@ fn click(window: &mut VisualTestContext, selector: &str) {
     window.simulate_click(bounds.center(), Modifiers::none());
     redraw(window);
 }
+/// The page scrolls as one list; bring the first gallery row to the top, as
+/// a user scrolls in a small window.
+fn reveal_gallery(
+    view: &Entity<ShareView>,
+    app: &mut TestAppContext,
+    window: &mut VisualTestContext,
+) {
+    view.update(app, |view, _| {
+        view.page.scroll_to(ListOffset {
+            item_ix: 1,
+            offset_in_item: gpui::px(0.0),
+        })
+    });
+    redraw(window);
+}
 // SDTEST-2893 / SDUC-568 — production controls, layout, clipboard and stale-job fence.
 #[::core::prelude::v1::test]
 fn sdtest_2893_small_share_batches_keep_actions_reachable_and_account_switch_rejects_old_results() {
@@ -59,11 +74,11 @@ fn sdtest_2893_small_share_batches_keep_actions_reachable_and_account_switch_rej
         redraw(&mut window);
         let drafts = window.debug_bounds("share-drafts").unwrap();
         assert!(drafts.size.height <= gpui::px(100.0));
-        let intake = window.debug_bounds("share-intake").unwrap();
+        let page = window.debug_bounds("share-page").unwrap();
         let send = window.debug_bounds("share-send").unwrap();
         assert!(
-            send.origin.y >= intake.bottom(),
-            "Send stays outside the scrolling intake"
+            send.origin.y >= page.bottom(),
+            "Send stays pinned below the scrolling page"
         );
         let viewport = window.update(|window, _| window.viewport_size());
         assert!(
@@ -76,11 +91,13 @@ fn sdtest_2893_small_share_batches_keep_actions_reachable_and_account_switch_rej
             && view.drafts[0].upload.filename.ends_with("-1.pdf")));
         click(&mut window, "share-review-close");
         assert!(!view.read_with(&app, |view, _| view.review_drafts));
+        reveal_gallery(&view, &mut app, &mut window);
         click(&mut window, "share-copy-abcdef");
         assert_eq!(
             app.read_from_clipboard().unwrap().text().unwrap(),
             "https://share.inklura.fr/s/abcdef"
         );
+        click(&mut window, "share-more-abcdef");
         click(&mut window, "share-delete-abcdef");
         assert!(view.read_with(&app, |view, _| view.confirm_delete.is_some()));
         click(&mut window, "share-delete-cancel");
@@ -246,6 +263,8 @@ fn gallery_rename_prefills_validates_and_reports_success() {
     let mut window = VisualTestContext::from_window(*handle, &app);
     window.simulate_resize(size(gpui::px(480.0), gpui::px(420.0)));
     redraw(&mut window);
+    reveal_gallery(&view, &mut app, &mut window);
+    click(&mut window, "share-more-abcdef");
     click(&mut window, "share-rename-abcdef");
     assert!(window.debug_bounds("share-rename-input").is_some());
     view.read_with(&app, |view, cx| {
@@ -286,35 +305,46 @@ fn gallery_rename_prefills_validates_and_reports_success() {
     });
 }
 
-// The Home card summary lists the newest valid links first, at most three,
+// The Home card summary lists the newest valid links first, at most four,
 // and reports storage use against the plan.
 #[::core::prelude::v1::test]
 fn home_summary_orders_recent_links_and_reports_usage() {
     let mut snapshot = snapshot();
     let base = snapshot.files[0].clone();
-    snapshot.files = ["2026-11-01", "2026-11-05", "2026-11-03", "2026-11-04"]
-        .iter()
-        .enumerate()
-        .map(|(index, day)| shelldeck_core::config::share::ShareFile {
-            id: format!("abcde{index}"),
-            filename: format!("{day}.pdf"),
-            created_at: format!("{day}T12:00:00Z"),
-            viewer_url: format!("https://share.inklura.fr/s/abcde{index}"),
-            ..base.clone()
-        })
-        .chain([shelldeck_core::config::share::ShareFile {
-            id: "unsafe".into(),
-            created_at: "2026-11-09T12:00:00Z".into(),
-            viewer_url: "https://attacker.example/s/x".into(),
-            ..base.clone()
-        }])
-        .collect();
+    snapshot.files = [
+        "2026-11-01",
+        "2026-11-05",
+        "2026-11-03",
+        "2026-11-04",
+        "2026-11-02",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(index, day)| shelldeck_core::config::share::ShareFile {
+        id: format!("abcde{index}"),
+        filename: format!("{day}.pdf"),
+        created_at: format!("{day}T12:00:00Z"),
+        viewer_url: format!("https://share.inklura.fr/s/abcde{index}"),
+        ..base.clone()
+    })
+    .chain([shelldeck_core::config::share::ShareFile {
+        id: "unsafe".into(),
+        created_at: "2026-11-09T12:00:00Z".into(),
+        viewer_url: "https://attacker.example/s/x".into(),
+        ..base.clone()
+    }])
+    .collect();
     snapshot.usage.bytes = snapshot.plan.storage_bytes / 4;
     let summary = ShareSummary::from_snapshot(&snapshot);
     let names: Vec<_> = summary.recent.iter().map(|f| f.filename.as_str()).collect();
     assert_eq!(
         names,
-        ["2026-11-05.pdf", "2026-11-04.pdf", "2026-11-03.pdf"]
+        [
+            "2026-11-05.pdf",
+            "2026-11-04.pdf",
+            "2026-11-03.pdf",
+            "2026-11-02.pdf"
+        ]
     );
     assert!((summary.usage_ratio() - 0.25).abs() < 1e-6);
     snapshot.plan.storage_bytes = 0;

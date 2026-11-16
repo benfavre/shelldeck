@@ -1689,7 +1689,7 @@ impl SitesView {
             .id("sites-kebab-panel")
             .occlude()
             .w(px(220.0))
-            .bg(ShellDeckColors::bg_surface())
+            .bg(ShellDeckColors::popover_bg())
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(8.0))

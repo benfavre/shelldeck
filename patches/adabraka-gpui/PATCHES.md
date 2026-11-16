@@ -717,6 +717,20 @@ Cargo.toml-only and outside the src-scoped marker convention.)
   to preserve GPUI's existing subpixel layout.
 - **Upstream status**: not filed yet; suitable for the vendored GPUI upstream.
 
+### SDPATCH-133 — Text truncation must not shorten the runs of later measures
+
+- **Files / symbols**:
+  - `src/elements/text.rs` — `TextLayout::layout` (measure closure)
+- **Markers** (1):
+  - `src/elements/text.rs` — `// ShellDeck patch: SDPATCH-133 — truncation shortens the runs; work on a`
+- **Why**: the measure closure owned the text runs and `truncate_line`
+  rewrote them in place. A text measured once narrow (a `list` row measured
+  at no width) kept runs cut to that first, truncated length; every later
+  measure styled only the first bytes, so a semibold file name showed its
+  first word bold and the rest regular (Share gallery, 2026-11-16). Each
+  measure now truncates a copy.
+- **Upstream status**: not filed yet; the same closure exists upstream.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)

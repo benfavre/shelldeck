@@ -47,8 +47,11 @@ pub struct ShareSummaryFile {
     pub filename: String,
     pub bytes: u64,
     pub viewer_url: String,
+    /// The preview Share serves, when it has one (never the file link).
+    pub thumbnail_url: Option<String>,
+    pub kind: String,
 }
-pub const SHARE_SUMMARY_RECENT: usize = 3;
+pub const SHARE_SUMMARY_RECENT: usize = 4;
 impl ShareSummary {
     fn from_snapshot(snapshot: &ShareSnapshot) -> Self {
         let mut files: Vec<_> = snapshot
@@ -71,6 +74,8 @@ impl ShareSummary {
                     filename: file.filename.clone(),
                     bytes: file.bytes,
                     viewer_url: file.viewer_url.clone(),
+                    thumbnail_url: file.thumbnail_url.clone(),
+                    kind: file.kind.clone(),
                 })
                 .collect(),
         }
@@ -127,6 +132,31 @@ pub struct ShareView {
     annotator: Option<Entity<AttachmentAnnotator>>,
     search: Entity<InputState>,
     focus: FocusHandle,
+    /// The whole page scrolls as one virtualised list: head, intake,
+    /// toolbar, then the rows of the gallery.
+    page: ListState,
+    filter: gallery::FileFilter,
+    sort: gallery::FileSort,
+    /// Gallery as a list of flat rows instead of a grid of cards.
+    list_mode: bool,
+    /// File whose « … » menu is open.
+    file_menu: Option<String>,
+    sort_select: Entity<adabraka_ui::components::select::Select<gallery::FileSort>>,
+    /// Retention picker, rebuilt when the plan's choices change.
+    retention_select: Option<(
+        Vec<u64>,
+        u64,
+        Entity<adabraka_ui::components::select::Select<u64>>,
+    )>,
+    /// What the rows of the page show, computed once per frame.
+    shown: Arc<Vec<shelldeck_core::config::share::ShareFile>>,
+    columns: usize,
+    /// Room for the gallery (page width less its margins), logical pixels.
+    room: f32,
+    /// Width of the page at the last paint, in logical pixels: cards get a
+    /// definite width from it (a list row measured at its content width
+    /// would truncate every name to « … »).
+    page_width: std::rc::Rc<std::cell::Cell<f32>>,
 }
 impl ShareView {
     /// Native preview examples can exercise overlays without an account.
@@ -191,7 +221,81 @@ impl ShareView {
             annotator: None,
             search: cx.new(InputState::new),
             focus: cx.focus_handle(),
+            page: ListState::new(0, ListAlignment::Top, gpui::px(600.0)),
+            filter: gallery::FileFilter::default(),
+            sort: gallery::FileSort::default(),
+            list_mode: false,
+            file_menu: None,
+            sort_select: Self::build_sort_select(cx),
+            retention_select: None,
+            shown: Arc::new(Vec::new()),
+            columns: 1,
+            room: 0.0,
+            page_width: Default::default(),
         }
+    }
+    fn build_sort_select(
+        cx: &mut Context<Self>,
+    ) -> Entity<adabraka_ui::components::select::Select<gallery::FileSort>> {
+        use adabraka_ui::components::select::{Select, SelectOption};
+        let view = cx.entity().downgrade();
+        cx.new(move |select_cx| {
+            Select::new(select_cx)
+                .options(
+                    gallery::FileSort::ALL
+                        .iter()
+                        .map(|sort| SelectOption::new(*sort, sort.label()))
+                        .collect(),
+                )
+                .selected_index(Some(0))
+                .on_change(move |sort, _, cx| {
+                    let sort = *sort;
+                    let _ = view.update(cx, |this, cx| {
+                        this.sort = sort;
+                        cx.notify();
+                    });
+                })
+        })
+    }
+    /// The retention picker for the plan's choices, rebuilt when they change.
+    fn retention_select(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<adabraka_ui::components::select::Select<u64>>> {
+        use adabraka_ui::components::select::{Select, SelectOption};
+        let days = self.snapshot.as_ref()?.plan.retention_days.clone();
+        let selected = days.iter().position(|d| d * 86400 == self.retention);
+        if let Some((cached, retention, select)) = &self.retention_select {
+            if *cached == days && *retention == self.retention {
+                return Some(select.clone());
+            }
+        }
+        let view = cx.entity().downgrade();
+        let options: Vec<_> = days
+            .iter()
+            .map(|days| {
+                let label = if *days == 0 {
+                    t!("share.forever").to_string()
+                } else {
+                    t!("share.days", count = *days).to_string()
+                };
+                SelectOption::new(days * 86400, label)
+            })
+            .collect();
+        let select = cx.new(move |select_cx| {
+            Select::new(select_cx)
+                .options(options)
+                .selected_index(selected)
+                .on_change(move |seconds, _, cx| {
+                    let seconds = *seconds;
+                    let _ = view.update(cx, |this, cx| {
+                        this.retention = seconds;
+                        cx.notify();
+                    });
+                })
+        });
+        self.retention_select = Some((days, self.retention, select.clone()));
+        Some(select)
     }
     pub fn configure(&mut self, manage: String, device: String, cx: &mut Context<Self>) {
         if self.manage == manage && self.device == device {
@@ -337,7 +441,10 @@ impl ShareView {
                     match client.upload(&draft.upload, retention, |done, total| {
                         progress.update(done, total)
                     }) {
-                        Ok(upload) => uploads.push(upload),
+                        Ok(upload) => {
+                            preview::save_local_thumbnail(&draft.upload, &upload.id);
+                            uploads.push(upload);
+                        }
                         Err(error) => {
                             warning = Some(error);
                             break;
@@ -672,8 +779,12 @@ impl Drop for ShareView {
         self.cancelled.store(true, Ordering::Release);
     }
 }
+mod gallery;
+mod page;
+mod preview;
 mod progress;
 mod rendering;
+pub(crate) use preview::{file_icon, file_kind, thumbnail, Radius, ThumbFile};
 use progress::UploadProgress;
 pub(crate) use rendering::human_bytes;
 

@@ -34,13 +34,22 @@ ANSI hex in non-terminal views.
 
 ## The one exception: the street illustration
 
-The street of the welcome screen, the home banner and the empty states
+The street of the welcome screen, the "Mes informations" badges and the empty states
 (`ludique.rs`) is artwork with its own day and night. Its colours are fixed and
 live in `StreetColors` (`theme.rs`), beside the palette, not in view code. Text
 or controls placed over its sky use `StreetColors::ink` / `ink_muted` / `paper`,
 because the scene can be in daylight under a dark theme (the sun is clickable).
 Do not use `StreetColors` anywhere else, and do not use palette colours over
 the sky.
+
+## Menus and popovers
+
+Every menu, dropdown and popover (titlebar account / mode / site / bell
+panels, kebab menus, the menu bar's dropdowns, adabraka `Select`/`Popover`
+through `tokens.popover`) uses `ShellDeckColors::popover_bg()`: the surface of
+the cards, so a menu reads as the same raised sheet, not a grey block. Buttons
+inside a menu sit on that colour too. Do not paint a new menu with
+`bg_surface()`.
 
 ## Switch flow (do not break)
 

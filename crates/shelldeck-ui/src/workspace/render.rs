@@ -373,7 +373,49 @@ impl Render for Workspace {
                     let presentation = action.presentation;
                     ws.update(cx, |ws, cx| ws.set_presentation(presentation, cx));
                 }
-            });
+            })
+            // A tap on Alt alone shows the menu row, as in Firefox. The
+            // listeners only watch: every key still reaches its target.
+            .on_modifiers_changed(_cx.listener(|ws, event: &ModifiersChangedEvent, _, cx| {
+                ws.menu_row_modifiers_changed(event.modifiers, cx);
+            }))
+            .capture_key_down(_cx.listener(|ws, event: &KeyDownEvent, _, cx| {
+                ws.menu_row_key_down(&event.keystroke.key, cx);
+            }));
+        // A click in the content ends a one-use reveal of the menu row; one
+        // in the titlebar or in the row itself (and its menus) does not. The
+        // content occludes the root, so the click is watched at the window,
+        // in the capture phase, without stopping it.
+        if self.menu_row.revealed {
+            let workspace = _cx.entity().downgrade();
+            root = root.child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| {
+                        let workspace = workspace.clone();
+                        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                            if phase != DispatchPhase::Capture {
+                                return;
+                            }
+                            let chrome = px(crate::window_chrome::top_chrome_height(true))
+                                .to_pixels(window.rem_size());
+                            if event.position.y <= chrome {
+                                return;
+                            }
+                            if let Some(workspace) = workspace.upgrade() {
+                                workspace.update(cx, |ws, cx| {
+                                    if !ws.menu_bar.read(cx).is_open() {
+                                        ws.set_menu_row_revealed(false, cx);
+                                    }
+                                });
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_0(),
+            );
+        }
 
         // Apply the application UI font family on the root so it cascades to
         // every child view. Unconditional on purpose: the family is always
@@ -557,6 +599,7 @@ impl Render for Workspace {
         let titlebar = Self::render_titlebar(
             is_maximized,
             compact_titlebar,
+            logical_width,
             presentation,
             (!self.show_welcome() && self.can_access_mode(AppMode::Dev))
                 .then(|| self.presentation_attention(_cx)),
@@ -572,11 +615,10 @@ impl Render for Workspace {
             } else {
                 None
             },
-            self.app_config.general.menu_bar_visible,
-            self.menu_bar.clone(),
+            self.menu_row_available().then(|| self.menu_row_shown()),
             if !self.show_welcome()
                 && !self.pro_open
-                && self.effective_mode() == AppMode::Dev
+                && matches!(self.effective_mode(), AppMode::Dev | AppMode::User)
                 && presentation.has_sidebar_toggle()
             {
                 Some(self.contextual_sidebar_visible(_cx))
@@ -584,8 +626,6 @@ impl Render for Workspace {
                 None
             },
             !self.pro_open && self.ai_available_for_current_surface(_cx),
-            self.can_access_mode(AppMode::Dev) || self.ai_available_for_current_surface(_cx),
-            self.ai_dock_open,
             self.ai_tasks
                 .iter()
                 .filter(|task| {
@@ -599,13 +639,22 @@ impl Render for Workspace {
             _cx,
         );
 
-        // Menus and sidebar controls share the titlebar; content starts directly below it.
+        // The titlebar, then the menu row when it is pinned; a row shown for
+        // one use floats over the content instead (added after the content).
         root = root.child(titlebar);
+        let menu_row_pinned = self.menu_row_available() && self.menu_row_pinned();
+        if menu_row_pinned {
+            root = root.child(self.render_menu_row(false));
+        }
         let show_status_bar =
             workspace_status_bar_visible(self.show_welcome(), self.effective_mode());
         root = root.child(main_area);
         if show_status_bar {
             root = root.child(self.status_bar.clone());
+        }
+
+        if self.menu_row_shown() && !menu_row_pinned {
+            root = root.child(self.render_menu_row(true));
         }
 
         // Titlebar account dropdown overlay
@@ -761,6 +810,9 @@ impl Render for Workspace {
             root = root.child(sheet.clone());
         }
 
+        if let Some(picker) = self.render_site_picker(is_maximized, _window, _cx) {
+            root = root.child(picker);
+        }
         if self.confirm_new_request_discard {
             root = root.child(self.render_new_request_discard_modal(is_maximized, _cx));
         }

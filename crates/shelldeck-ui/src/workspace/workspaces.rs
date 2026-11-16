@@ -460,7 +460,7 @@ pub(super) struct WorkspaceTerminalConfig {
     pub cursor_blink: bool,
     pub scrollback_lines: usize,
     pub sidebar_width: f32,
-    pub menu_bar_visible: bool,
+    pub menu_bar_always_visible: bool,
     /// `general.session_daemon`.
     pub persistent_sessions: bool,
 }
@@ -480,7 +480,7 @@ pub(super) fn apply_terminal_config(
         terminal.set_scrollback_lines(config.scrollback_lines);
         terminal.set_persistent_sessions(config.persistent_sessions);
         terminal.set_sidebar_width(config.sidebar_width);
-        terminal.set_menu_bar_visible(config.menu_bar_visible);
+        terminal.set_menu_bar_always_visible(config.menu_bar_always_visible);
     });
 }
 

@@ -236,12 +236,23 @@ pub struct GeneralConfig {
     /// build still loads.
     #[serde(default)]
     pub sidebar_nav_collapsed: bool,
-    /// Whether the application menu row (Fichier / Édition / …) is shown
-    /// under the titlebar. Visible by default; hidden from Affichage → Barre
-    /// de menus. The terminal grid's usable height depends on this, so the
-    /// workspace pushes changes down to `TerminalView::set_menu_bar_visible`.
+    /// Retired with the Firefox-style menu row (2026-11-16): it said whether
+    /// the menus were embedded in the titlebar. Kept as a parsed-and-ignored
+    /// field so a `shelldeck.toml` written by an older build still loads, and
+    /// so its old `true` default does not pin the new row for everyone.
     #[serde(default = "default_true")]
     pub menu_bar_visible: bool,
+    /// Whether the menu row (Fichier / Édition / …) stays under the titlebar.
+    /// Off by default: the row then appears on Alt or from the chevron beside
+    /// the logo, over the content, and leaves after a menu is used
+    /// (Affichage → Toujours afficher la barre de menus). Only a pinned row
+    /// takes height from the content, so the workspace pushes this value to
+    /// `TerminalView::set_menu_bar_always_visible`.
+    #[serde(default)]
+    pub menu_bar_always_visible: bool,
+    /// Whether the left rail of User mode is hidden (titlebar toggle, Ctrl+B).
+    #[serde(default)]
+    pub user_rail_hidden: bool,
     pub auto_attach_tmux: bool,
     /// Opt-in prototype (`docs/design/session-daemon.md`): new local
     /// terminal tabs and splits run in panes owned by the per-user
@@ -600,6 +611,8 @@ impl Default for GeneralConfig {
             sidebar_width: 260.0,
             sidebar_nav_collapsed: false,
             menu_bar_visible: true,
+            menu_bar_always_visible: false,
+            user_rail_hidden: false,
             auto_attach_tmux: false,
             session_daemon: false,
             auto_update: true,

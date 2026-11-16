@@ -1034,7 +1034,7 @@ and deep-link walkthroughs remain manual acceptance checks.
 | SDTEST-2906 | `support_view::tickets::chip_label_tests::sdtest_2906_filter_chip_carries_its_count_inline` | SDUC-463 | Green | Ticket and request filter chips render "Label N" in one chip instead of a chip plus a detached count pill. |
 | SDTEST-2907 | `support_view::requests::source_label_tests::sdtest_2907_issue_source_slugs_are_localized_or_hidden` | SDUC-463 | Green | Request rows show the localized source (Utilisateur, Support, E-mail...) and drop unknown or empty slugs instead of printing "user". |
 | SDTEST-2908 | `icons::backend_label_tests::sdtest_2908_disabled_backend_is_localized_and_products_keep_their_name` | SDUC-463 | Green | The composer provider label localizes the disabled backend (fr "Désactivé") and keeps product names verbatim. |
-| SDTEST-2909 | `workspace::user_home::tests::sdtest_2909_short_banner_only_where_the_subtitle_fits_on_one_line` | SDUC-440 | Green | The 104 px home banner applies from 1100 logical pixels only, scaled with UI font size. |
+| SDTEST-2909 | `workspace::user_home::tests::sdtest_2909_short_banner_only_where_the_subtitle_fits_on_one_line` | SDUC-440 | Retired | Retired 2026-11-16: the User home has no banner any more (SDUC-588, second mock-up). |
 
 Native visual fixture: `cargo run -p shelldeck-ui --example share_preview` with
 disposable XDG homes, no device credential and no real files. Screenshot/capture
@@ -1267,7 +1267,16 @@ click on a row, and the workspace storing the connection (the existing
 | SDTEST-3179 | What crosses the scene starts and ends out of sight; the banner keeps room for its copy | SDUC-587 | Green | `ludique.rs` |
 | SDTEST-3180 | The scene plays its run, rests when the van is out of the picture, keeps its time, ignores time spent off screen, and plays again when shown or woken | SDUC-587 | Green | `ludique.rs`, `StageClock` driven with explicit instants and frame numbers |
 
-| SDTEST-3181 | On the home page only a request that waits takes the warning pill; status labels start with a capital, accents included | SDUC-588 | Green | `workspace/user_home.rs`, pure functions |
+| SDTEST-3181 | On the home page only a request that waits takes the warning colour; status labels start with a capital, accents included | SDUC-588 | Green | `workspace/user_home.rs`, pure functions |
+| SDTEST-3183 | Home page data: the brand word of the title in French and English, the first name of the greeting, the « à traiter » count and the kind of a shared file | SDUC-588 | Green | `workspace/user_home.rs`, pure functions |
+| SDTEST-3184 | A tap on Alt alone shows the menu row; Alt with a key or another modifier, or Shift alone, does not; closing a menu ends a one-use reveal once | SDUC-591 | Green | `workspace/menu.rs`, `MenuRowState` pure reducer; native walkthrough under SDUC-591 |
+| SDTEST-3186 | Repeats of the same notification next to each other form one run; the same title from another space, with another text or further down stays its own row | SDUC-593 | Green | `workspace/inklura_notifications.rs`, `notification_runs` |
+| SDTEST-3187 | The Go menu offers « Dock IA » only when the Dock is available, as the last row | SDUC-434 | Green | `menu_bar.rs`, `menu_bar_spec` |
+| SDTEST-3188 | The site picker filters by label, address or company, ignoring case and spaces, and lists by label; a site's tile shows its first letter | SDUC-594 | Green | `workspace/site_picker.rs`, pure functions; native walkthrough under SDUC-594 |
+| SDTEST-3189 | A picture is fetched only from a preview link Share serves, never from the file link (`/r/`) or another host; each file has a family (image, document, archive) for its icon and filters | SDUC-568 | Green | `share_view/preview.rs` |
+| SDTEST-3190 | The Share gallery fits as many cards per row as the page width allows (1 to 6) | SDUC-568 | Green | `share_view/page.rs`, `columns_for_width`; layout tests SDTEST-2893 and the rename test scroll the page to reach a card |
+| SDTEST-3192 | The gallery filters by family, searches names ignoring case, orders by date, name or size, and dates files (« Aujourd’hui », « Hier », …) and expiries (soon within three days, none) | SDUC-568 | Green | `share_view/gallery.rs` |
+| SDTEST-3193 | Desktop makes a 480 px PNG thumbnail of a PNG it shares; unreadable bytes give none | SDUC-568 | Green | `share_view/preview.rs`, `make_thumbnail`; native walkthrough with cached thumbnails |
 | SDTEST-3182 | Every notice level has its own icon, embedded in the binary | SDUC-589 | Green | `toast.rs`; an icon that is not embedded draws nothing |
 
 The rendering itself (layout over the sky, both themes, three window sizes, the

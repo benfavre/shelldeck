@@ -243,6 +243,9 @@ impl Workspace {
         let site = match self.active_site_info() {
             Some(s) => s,
             None => {
+                if self.open_site_picker(area_path, cx) {
+                    return;
+                }
                 self.show_toast(
                     t!("toast.select_active_site_first").to_string(),
                     ToastLevel::Warning,

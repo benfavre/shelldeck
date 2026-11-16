@@ -624,6 +624,13 @@ impl ShellDeckColors {
         ACTIVE.read().bg_surface
     }
 
+    /// Background of menus, dropdowns and popovers: the surface of the cards
+    /// (`bg_sidebar`), so a menu opened over a page reads as the same raised
+    /// sheet as the cards on it rather than a grey block.
+    pub fn popover_bg() -> Hsla {
+        ACTIVE.read().bg_sidebar
+    }
+
     /// Border color
     pub fn border() -> Hsla {
         ACTIVE.read().border
@@ -774,7 +781,7 @@ pub fn adabraka_theme_from_palette() -> adabraka_ui::prelude::Theme {
     t.foreground = ShellDeckColors::text_primary();
     t.card = ShellDeckColors::bg_surface();
     t.card_foreground = ShellDeckColors::text_primary();
-    t.popover = ShellDeckColors::bg_surface();
+    t.popover = ShellDeckColors::popover_bg();
     t.popover_foreground = ShellDeckColors::text_primary();
     // shadcn/ui `muted` is meant as a *visible* mid-tone surface (control
     // tracks, disabled fills, muted cards). Our `hint_bg` (semi-transparent

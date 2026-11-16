@@ -1610,7 +1610,7 @@ impl ScriptEditorView {
             .id("scripts-kebab-panel")
             .occlude()
             .w(px(200.0))
-            .bg(ShellDeckColors::bg_surface())
+            .bg(ShellDeckColors::popover_bg())
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(8.0))

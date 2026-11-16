@@ -51,7 +51,7 @@ impl Workspace {
         self.companion_config_publisher = Some(publisher);
     }
 
-    /// Wire the titlebar Dock control to the binary-level companion runtime.
+    /// Wire the menu's Dock command to the binary-level companion runtime.
     pub fn set_ai_dock_open_handler(&mut self, handler: AiDockOpenHandler) {
         self.ai_dock_open_handler = Some(handler);
     }
