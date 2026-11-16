@@ -127,8 +127,10 @@ welcome screen, which is the first thing a new user sees.
   dot) to the right, then the window controls. Keep interactive controls
   outside the drag fillers. When half the window cannot hold its side (the
   widths are estimated in `render_titlebar` from the controls present), the
-  switcher follows the logo instead of overlapping the actions; narrower still
-  the site chip drops its label for the globe. Adding a titlebar control means
+  switcher follows the logo instead of overlapping the actions; when even
+  that leaves no room for the window controls and the first action, the
+  switcher joins the scrolling actions after Pro (SDTEST-3174 covers 600 px
+  at a 20 px font). The site chip drops its label for the globe when tight. Adding a titlebar control means
   adding its width to that estimate.
 - Menu labels live in `locales/{fr,en}.toml` under `menu.*`. Note the TOML
   dotted-key trap: `menu.file` cannot be both a string and a table, which is

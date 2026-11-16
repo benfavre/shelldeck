@@ -141,7 +141,7 @@ impl Render for Workspace {
             // Fall through to render titlebar + status bar chrome around
             // the welcome — no sidebar, no mode-specific children.
         } else if self.pro_open {
-            main_area = main_area.child(self.render_pro_workspace(_cx));
+            main_area = main_area.child(self.render_pro_workspace(logical_width, _cx));
         } else {
             // The app mode selects the whole surface. User/Support are full-pane
             // manage surfaces (no sidebar); Dev is the classic terminal workspace.

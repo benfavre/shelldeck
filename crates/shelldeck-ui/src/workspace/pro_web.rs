@@ -153,7 +153,11 @@ impl Workspace {
         })
     }
 
-    pub(super) fn render_pro_workspace(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_pro_workspace(
+        &mut self,
+        logical_width: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if let Some(browser) = &self.pro_browser {
             return div()
                 .flex()
@@ -217,8 +221,11 @@ impl Workspace {
                     .flex_col()
                     .flex_shrink_0()
                     .pt(px(24.0))
-                    .w_full()
-                    .max_w(px(520.0))
+                    // A width known up front (520, or the page less its
+                    // padding): with `w_full` and `max_w` the column's height
+                    // was computed with its text wrapped at another width, so
+                    // the lines it lost put the button out of the scroll.
+                    .w(px(pro_setup_width(logical_width)))
                     .gap(px(16.0))
                     .child(
                         div()
@@ -254,6 +261,12 @@ impl Workspace {
             )
             .into_any_element()
     }
+}
+
+/// Width of the Pro setup form: 520, or the window less the page's padding
+/// (24 each side) and the window border.
+fn pro_setup_width(logical_width: f32) -> f32 {
+    (logical_width - 50.0).clamp(0.0, 520.0)
 }
 
 #[cfg(test)]

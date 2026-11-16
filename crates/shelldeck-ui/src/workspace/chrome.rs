@@ -412,6 +412,20 @@ impl Workspace {
             };
         let switcher_centred =
             logical_width / 2.0 - switcher_need / 2.0 >= leading_need.max(trailing_need) + 16.0;
+        // Beside the logo while the window controls and the first action
+        // still fit after it (the actions scroll). Narrower still, the
+        // switcher joins the actions after Pro, so nothing is covered.
+        let first_action_need = if pro_workspace_button.is_some() {
+            if compact {
+                44.0
+            } else {
+                108.0
+            }
+        } else {
+            42.0
+        };
+        let switcher_after_logo = !switcher_centred
+            && logical_width >= leading_need + switcher_need + 150.0 + first_action_need + 24.0;
 
         // Site chip — shown only when signed in and the sites directory has
         // loaded. The global scope is a compact globe; a specific selection
@@ -561,6 +575,13 @@ impl Workspace {
         }
         // Leading and trailing clusters share the free width equally, so the
         // view switcher stays in the middle of the window.
+        // Too narrow even beside the logo: the switcher joins the actions
+        // (after Pro), which scroll, so the window controls never get covered.
+        let (switcher, switcher_in_actions) = if switcher_centred || switcher_after_logo {
+            (presentation_switcher, None)
+        } else {
+            (None, presentation_switcher)
+        };
         let trailing = div()
             .flex()
             .items_center()
@@ -580,6 +601,7 @@ impl Workspace {
                     .overflow_x_scroll()
                     .gap(px(8.0))
                     .children(pro_workspace_button)
+                    .children(switcher_in_actions)
                     .children(ai_button)
                     .children(mode_switcher)
                     .children(site_chip)
@@ -603,9 +625,9 @@ impl Workspace {
                     .child(maximize_btn)
                     .child(close_btn),
             );
-        let switcher = presentation_switcher.map(|switcher| div().flex_shrink_0().child(switcher));
+        let switcher = switcher.map(|switcher| div().flex_shrink_0().child(switcher));
         let titlebar = titlebar.border_b_1().border_color(titlebar_border);
-        if switcher_centred {
+        if !switcher_after_logo {
             // Equal halves around the switcher keep it in the middle.
             titlebar
                 .child(

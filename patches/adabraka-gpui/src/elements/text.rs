@@ -330,7 +330,7 @@ impl TextLayout {
             let element_state = self.clone();
 
             move |known_dimensions, available_space, window, cx| {
-                // ShellDeck patch: SDPATCH-133 — truncation shortens the runs; work on a
+                // ShellDeck patch: SDPATCH-133 - truncation shortens the runs; work on a
                 // copy so a later measure (at another width) styles the whole text.
                 let mut runs = base_runs.clone();
                 let wrap_width = if text_style.white_space == WhiteSpace::Normal {

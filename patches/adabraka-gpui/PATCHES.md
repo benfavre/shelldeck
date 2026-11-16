@@ -722,7 +722,7 @@ Cargo.toml-only and outside the src-scoped marker convention.)
 - **Files / symbols**:
   - `src/elements/text.rs` — `TextLayout::layout` (measure closure)
 - **Markers** (1):
-  - `src/elements/text.rs` — `// ShellDeck patch: SDPATCH-133 — truncation shortens the runs; work on a`
+  - `src/elements/text.rs` — `// ShellDeck patch: SDPATCH-133 - truncation shortens the runs; work on a`
 - **Why**: the measure closure owned the text runs and `truncate_line`
   rewrote them in place. A text measured once narrow (a `list` row measured
   at no width) kept runs cut to that first, truncated length; every later
