@@ -31,7 +31,7 @@ both that bundle and legacy `ShellDeck.app` and preserves an existing location.
 
 ## The Inklura street (playful surfaces)
 
-The welcome screen, the User home banner and the empty states of "Mes sites"
+The welcome screen, the badges of "Mes informations" and the empty states of "Mes sites"
 and "Mes demandes" are drawn with the street of the inklura.fr homepage (town,
 road, delivery van, sun to click), so the application and the site read as one
 product. `crates/shelldeck-ui/src/ludique.rs` holds the scene (`street_scene`),
@@ -49,18 +49,33 @@ button (`sticker`, `highlighted`, `chunky_button`). Rules:
   clock (`StageClock`), never on a free-running `repeating_phase`.
 - Working surfaces (terminal, editor, Agents, Support triage) stay sober: do not
   put the street there.
-- "Mes informations" (`render_user_infos_tab`, SDUC-590) opens with the short
-  `StreetLayout::PageHead` banner and one panel per subject, each with a
-  `ludique::section_badge` drawing (`badge-*-day.svg` / `-night.svg`, chosen by
-  the theme because they stand on a panel, not on the sky). Banners are built
-  by `Workspace::street_banner`; give every scene and vignette its own id, it
-  is the key of its clock.
-- The User home page around the banner (`render_user_overview`, SDUC-588) is
-  built from `home_panel`, `home_icon_tile`, `home_section_title` and
-  `home_status_pill` in `workspace/user_home.rs`, on `user_home_page_bg()`.
-  These use palette colours only. The banner clips to a rectangle, so its round
-  bottom right corner over the road is painted by a ring in the page colour:
-  keep `user_home_page_bg()` opaque.
+- "Mes informations" (`render_user_infos_tab`, SDUC-590) has one panel per
+  subject, each with a `ludique::section_badge` drawing (`badge-*-day.svg` /
+  `-night.svg`, chosen by the theme because they stand on a panel, not on the
+  sky). Give every scene and vignette its own id, it is the key of its clock.
+  `StreetLayout::PageHead` is no longer drawn (the page uses the common head).
+- **Every User screen has one frame** (`crate::user_page`, SDUC-592): margins
+  (`page`, `pad_x`, `PAGE_PAD_TOP`/`BOTTOM`), the gap between blocks
+  (`PAGE_GAP`), the head (`head`: eyebrow, `title_text`, actions to the right)
+  and the card title (`section_title`). Accueil, Mes sites, Partage
+  (`share_view/rendering.rs`), Mes demandes and Mes informations all use it; a
+  new User screen must too, rather than its own padding and title sizes. The
+  list rows of Mes sites and Mes demandes are the same card (radius 12, 16 px
+  inside, 14 px semibold title).
+- User mode navigates from a rail on the left (`render_user_rail`, SDUC-591);
+  the account is the titlebar avatar. The titlebar sidebar toggle hides it
+  (`general.user_rail_hidden`); in User mode `toggle_sidebar` returns before
+  `enter_dev_mode`, which would otherwise switch modes.
+- The User home page (`render_user_overview`, SDUC-588) has no street: « Vue
+  d'ensemble », « Bonjour <name> » with "Nouvelle demande", then « Demandes récentes »
+  beside « Mes sites », « Partages récents » (`render_home_share_card` in
+  `workspace/share.rs`) and « Actualiser ». It is built
+  from `home_panel`, `home_card_title` and `home_status_dot` in
+  `workspace/user_home.rs`, on `user_home_page_bg()`, in palette colours only.
+  Its « Site actif » field opens the titlebar site switcher, not a list of its
+  own. A street banner clips to a rectangle, so its round bottom right corner
+  over the road is painted by a ring in the page colour: keep
+  `user_home_page_bg()` opaque.
 - The images live in `crates/shelldeck/assets/images/ludique/` and are generated:
   edit `scripts/ludique-art/source.json` or `scripts/export-ludique-art.py`, run
   the script, and register any new file in `ludique::STREET_ASSETS` and in

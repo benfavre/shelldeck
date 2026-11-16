@@ -41,7 +41,7 @@ impl Workspace {
             scrollback_lines: self.app_config.terminal.scrollback_lines,
             // `total_width` inclut le rail et respecte l'état replié courant.
             sidebar_width: self.sidebar.read(cx).total_width(),
-            menu_bar_visible: self.app_config.general.menu_bar_visible,
+            menu_bar_always_visible: self.app_config.general.menu_bar_always_visible,
             persistent_sessions: self.app_config.general.session_daemon,
         };
         workspaces::apply_terminal_config(&self.terminal, &config, cx);
@@ -533,6 +533,9 @@ impl Workspace {
         if self.settings_open {
             return self.sidebar_visible;
         }
+        if self.effective_mode() == AppMode::User {
+            return !self.app_config.general.user_rail_hidden;
+        }
         match self.active_view {
             ActiveView::Agents => self.agent_console.read(cx).navigator_visible(),
             ActiveView::Terminal => self.terminal.read(cx).session_list_visible(),
@@ -544,6 +547,18 @@ impl Workspace {
         // No sidebar is drawn there: toggling would only change, unseen, the
         // panel the full app comes back to.
         if !self.active_presentation().has_sidebar_toggle() {
+            return;
+        }
+        // User mode: the toggle hides or shows its rail. It must not fall
+        // through to `enter_dev_mode`, which would leave User mode.
+        if !self.show_welcome() && self.effective_mode() == AppMode::User {
+            let hidden = !self.app_config.general.user_rail_hidden;
+            self.app_config.general.user_rail_hidden = hidden;
+            if let Err(error) = self.app_config.save() {
+                tracing::error!("Failed to save the User rail preference: {error}");
+            }
+            self.sync_settings_config(cx);
+            cx.notify();
             return;
         }
         if !self.enter_dev_mode(cx) {

@@ -345,11 +345,23 @@ impl Workspace {
             .flex()
             .items_center()
             .flex_shrink_0()
-            .h(px(28.0))
-            .p(px(2.0))
+            .h(px(36.0))
+            .p(px(3.0))
             .gap(px(2.0))
-            .rounded(px(7.0))
-            .bg(ShellDeckColors::badge_bg());
+            .rounded(px(10.0))
+            // A quiet tray with a hairline edge; the current view is the one
+            // raised tile in it.
+            .bg(ShellDeckColors::badge_bg().opacity(0.7))
+            .border_1()
+            .border_color(ShellDeckColors::border().opacity(0.5));
+        // The raised tile is a step lighter than the tray in every theme: the
+        // card colour in a light theme, the tray lifted toward the text colour
+        // in a dark one (where the card colour sits below the tray).
+        let tile_bg = if ShellDeckColors::is_dark() {
+            ShellDeckColors::badge_bg().blend(ShellDeckColors::text_primary().opacity(0.10))
+        } else {
+            ShellDeckColors::popover_bg()
+        };
         for (presentation, attention) in WorkspacePresentation::ALL.into_iter().zip(attention) {
             let active = presentation == current;
             let name = match attention {
@@ -383,9 +395,9 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .w(px(28.0))
-                .h(px(24.0))
-                .rounded(px(5.0))
+                .w(px(40.0))
+                .h(px(28.0))
+                .rounded(px(7.0))
                 .cursor_pointer()
                 .tooltip(move |_, cx| {
                     cx.new(|_| WorkspaceTooltip {
@@ -399,19 +411,23 @@ impl Workspace {
                     }
                 });
             segment = if active {
+                // The current view stands out of the tray as a raised tile.
                 segment
-                    .bg(ShellDeckColors::primary().opacity(0.16))
+                    .bg(tile_bg)
+                    .border_1()
+                    .border_color(ShellDeckColors::border().opacity(0.6))
+                    .shadow(vec![use_theme().tokens.shadow_sm].into())
                     .child(lucide_icon(
                         presentation.icon(),
-                        15.0,
+                        16.0,
                         ShellDeckColors::primary(),
                     ))
             } else {
                 segment
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                    .hover(move |el| el.bg(tile_bg.opacity(0.6)))
                     .child(lucide_icon(
                         presentation.icon(),
-                        15.0,
+                        16.0,
                         ShellDeckColors::text_muted(),
                     ))
             };
@@ -424,13 +440,19 @@ impl Workspace {
                 segment = segment.child(
                     div()
                         .absolute()
-                        .top(px(2.0))
-                        .right(px(3.0))
-                        .size(px(7.0))
+                        .top(px(3.0))
+                        .right(px(7.0))
+                        .size(px(8.0))
                         .rounded_full()
                         .bg(color)
-                        .border_1()
-                        .border_color(ShellDeckColors::badge_bg()),
+                        // A ring in the colour behind the tile separates the
+                        // dot from the glyph it sits on.
+                        .border_2()
+                        .border_color(if active {
+                            tile_bg
+                        } else {
+                            ShellDeckColors::badge_bg()
+                        }),
                 );
             }
             group = group.child(segment);

@@ -135,8 +135,6 @@ impl EventEmitter<TerminalEvent> for TerminalView {}
 // Layout constants – centralised so they aren't scattered as magic numbers.
 // ---------------------------------------------------------------------------
 
-/// Base height of the workspace titlebar in pixels, before UI scaling.
-const TITLEBAR_HEIGHT: f32 = 40.0;
 /// Base height of the terminal tab bar in pixels (before UI scaling).
 const TAB_BAR_HEIGHT: f32 = 38.0;
 /// Base height of the header of the session list (before UI scaling).
@@ -364,7 +362,7 @@ pub struct TerminalView {
     home_dir: Option<String>,
     /// Whether the workspace is currently showing the application menu row
     /// above the content area (updated dynamically from the workspace).
-    menu_bar_visible: bool,
+    menu_bar_always_visible: bool,
     /// Whether a split divider is being dragged.
     split_dragging: bool,
     /// The divider currently being dragged: (tree path to its split, is_horizontal).
@@ -521,7 +519,7 @@ impl TerminalView {
             recent_tabs: Vec::new(),
             home_dir: shelldeck_core::util::home_dir()
                 .and_then(|home| home.to_str().map(str::to_string)),
-            menu_bar_visible: true,
+            menu_bar_always_visible: false,
             split_dragging: false,
             active_divider: None,
             scrollbar_dragging: false,
@@ -790,8 +788,8 @@ impl TerminalView {
 
     /// Menu visibility is retained with the settings snapshot; the menus now
     /// share the titlebar and do not reserve a separate content row.
-    pub fn set_menu_bar_visible(&mut self, visible: bool) {
-        self.menu_bar_visible = visible;
+    pub fn set_menu_bar_always_visible(&mut self, visible: bool) {
+        self.menu_bar_always_visible = visible;
     }
 
     /// Apply a terminal color theme to the renderer.
@@ -1252,7 +1250,7 @@ impl TerminalView {
     pub(crate) fn runtime_config_probe(&self) -> (f32, bool, f32, &str, Option<&str>, bool, usize) {
         (
             self.sidebar_width,
-            self.menu_bar_visible,
+            self.menu_bar_always_visible,
             self.font_size,
             &self.font_family,
             self.default_shell.as_deref(),
@@ -2332,7 +2330,8 @@ impl TerminalView {
         }
         let w = (viewport.width.to_f64() as f32 - x - SIDEBAR_HANDLE_WIDTH).max(1.0);
         let h = (viewport.height.to_f64() as f32
-            - TITLEBAR_HEIGHT * Self::ui_scale(window)
+            - crate::window_chrome::top_chrome_height(self.menu_bar_always_visible)
+                * Self::ui_scale(window)
             - self.chrome_top_offset(window)
             - STATUS_BAR_HEIGHT)
             .max(1.0);
@@ -6172,7 +6171,9 @@ impl TerminalView {
         // Opened from the session list there is no tab strip to hang from:
         // the menu opens at the height of the row, in view coordinates.
         let top = if self.session_list_shown() {
-            (state.position.y - px(TITLEBAR_HEIGHT * scale)).max(px(0.0))
+            (state.position.y
+                - px(crate::window_chrome::top_chrome_height(self.menu_bar_always_visible) * scale))
+            .max(px(0.0))
         } else {
             px(TAB_BAR_HEIGHT * scale)
         };

@@ -69,6 +69,10 @@ pub struct ShareFile {
     pub views: u64,
     pub url: String,
     pub viewer_url: String,
+    /// A small preview served by Share, when it has one. Desktop never
+    /// draws a thumbnail from the file link (`url`): that link counts views.
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
 }
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ShareSnapshot {
@@ -550,6 +554,69 @@ pub fn share_url(value: &str) -> bool {
             && url.fragment().is_none()
     })
 }
+/// Largest thumbnail body Desktop accepts.
+pub const THUMBNAIL_MAX_BYTES: u64 = 12 * 1024 * 1024;
+
+/// Where Desktop keeps the thumbnail it made of an image it shared itself:
+/// the cache directory, one file per share id. `None` for an invalid id.
+pub fn local_thumbnail_path(id: &str) -> Option<PathBuf> {
+    if !valid_id(id) {
+        return None;
+    }
+    let dirs = directories::ProjectDirs::from("com", "shelldeck", "ShellDeck")?;
+    Some(
+        dirs.cache_dir()
+            .join("share-thumbs")
+            .join(format!("{id}.png")),
+    )
+}
+
+/// Whether `url` may be fetched as a thumbnail: a Share link that is not a
+/// file link (`/r/…`), since opening a file link counts as a view.
+pub fn thumbnail_url(url: &str) -> bool {
+    share_url(url) && url::Url::parse(url).is_ok_and(|url| !url.path().starts_with("/r/"))
+}
+
+/// The bytes of a thumbnail served by Share. `url` must pass
+/// [`thumbnail_url`]; a redirect may only lead to the Share storage. The body
+/// is capped at [`THUMBNAIL_MAX_BYTES`].
+pub fn fetch_thumbnail(url: &str) -> ShareResult<Vec<u8>> {
+    if !thumbnail_url(url) {
+        return Err(ShareError::Invalid("invalid_url"));
+    }
+    let policy = Policy::custom(|attempt| {
+        if attempt.previous().len() > 2 || !storage_url(attempt.url().as_str()) {
+            attempt.stop()
+        } else {
+            attempt.follow()
+        }
+    });
+    let response = Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .redirect(policy)
+        .build()?
+        .get(url)
+        .send()?;
+    if !response.status().is_success() {
+        return Err(ShareError::Invalid("unavailable"));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > THUMBNAIL_MAX_BYTES)
+    {
+        return Err(ShareError::Invalid("too_large"));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(THUMBNAIL_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > THUMBNAIL_MAX_BYTES {
+        return Err(ShareError::Invalid("too_large"));
+    }
+    Ok(bytes)
+}
+
 fn storage_url(value: &str) -> bool {
     url::Url::parse(value).is_ok_and(|url| {
         let host = url.host_str().unwrap_or_default();
@@ -568,6 +635,26 @@ fn storage_url(value: &str) -> bool {
 mod tests {
     use super::*;
     use std::{io::Write, net::TcpListener, thread};
+    // SDTEST-3191 — a thumbnail is only fetched from a Share preview link,
+    // never from the file link.
+    #[test]
+    fn sdtest_3191_thumbnail_fetch_refuses_file_links_and_foreign_urls() {
+        for url in [
+            "https://attacker.example/x.png",
+            "http://share.inklura.fr/t/abcdef.png",
+            "https://share.inklura.fr/t/abcdef.png?x=1",
+            "https://user:pw@share.inklura.fr/t/abcdef.png",
+            // The file link counts views: never used for a thumbnail.
+            "https://share.inklura.fr/r/abcdef.png",
+        ] {
+            assert!(matches!(
+                fetch_thumbnail(url),
+                Err(ShareError::Invalid("invalid_url"))
+            ));
+        }
+        assert!(thumbnail_url("https://share.inklura.fr/t/abcdef.webp"));
+        assert!(!thumbnail_url("https://share.inklura.fr/r/abcdef.png"));
+    }
     fn fixture(responses: Vec<Value>) -> (ShareClient, thread::JoinHandle<Vec<String>>) {
         fixture_with_cancel(responses, Arc::new(AtomicBool::new(false)))
     }

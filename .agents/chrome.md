@@ -96,11 +96,42 @@ welcome screen, which is the first thing a new user sees.
   than an absent one.
 - **Icons must exist in the bundled Lucide subset** (`.agents/icons.md`). The
   subset is ~78 files, not all of Lucide — check before using a slug.
-- Menus are embedded in the titlebar (`MenuBar::embedded`, SDPATCH-047), beside
-  the Dev sidebar toggle. `MENU_BAR_HEIGHT` sizes their triggers only; it does
-  not reserve another content row. Terminal geometry subtracts the scaled
-  titlebar once, regardless of menu visibility. Keep interactive controls
-  outside the draggable title area. Below 1000 logical pixels, the same authorized menu specification becomes one Menu trigger with grouped entries in the shared bounded, scrollable dropdown. The breakpoint follows UI scale; no command inventory is duplicated.
+- **The menu row is Firefox's menu bar** (SDUC-591): its own row under the
+  titlebar (`Workspace::render_menu_row`), hidden by default. A tap on Alt
+  alone (`MenuRowState::on_modifiers`; Alt held with a key or another modifier
+  is a shortcut) or the chevron beside the logo shows it **over the content**
+  (absolute, `occlude`), and it leaves when a menu is used, a menu closes, the
+  content is clicked or Escape is pressed. Affichage → « Toujours afficher la
+  barre de menus » (`general.menu_bar_always_visible`, `ToggleMenuBar`) pins
+  it: only then is it a row of the layout.
+- **Only a pinned row takes height.** `window_chrome::top_chrome_height(pinned)`
+  is the one number for the chrome above the content; the terminal subtracts
+  it (`TerminalView::set_menu_bar_always_visible`), and a row shown for one use
+  never resizes a pane. `TITLEBAR_HEIGHT` and `MENU_ROW_HEIGHT` live in
+  `window_chrome.rs`; do not redefine them per view.
+- **The content occludes the root**, so a root `on_mouse_down` never sees a
+  click in it. The click that dismisses the row is watched at the window
+  (`window.on_mouse_event`, capture phase, from a zero-size canvas painted
+  only while the row is revealed). Use the same route for any other
+  "click anywhere" behaviour.
+- The old `general.menu_bar_visible` (menus embedded in the titlebar) is
+  parsed and ignored, so its saved `true` does not pin the new row.
+- Focused views (Agents, Terminal, Editor) have no menu row and no chevron.
+  Below 1000 logical pixels, the same authorized menu specification becomes one
+  Menu trigger with grouped entries in the shared bounded, scrollable dropdown.
+  The breakpoint follows UI scale; no command inventory is duplicated.
+- **The titlebar** (`render_titlebar`): sidebar toggle (Dev), the mark,
+  « Inklura » and the chevron to the left; the view switcher centred (the two
+  side clusters are `flex_1` with a basis of 0, so it stays in the middle of
+  the window); tools, bell and the account avatar (two initials, Manage status
+  dot) to the right, then the window controls. Keep interactive controls
+  outside the drag fillers. When half the window cannot hold its side (the
+  widths are estimated in `render_titlebar` from the controls present), the
+  switcher follows the logo instead of overlapping the actions; when even
+  that leaves no room for the window controls and the first action, the
+  switcher joins the scrolling actions after Pro (SDTEST-3174 covers 600 px
+  at a 20 px font). The site chip drops its label for the globe when tight. Adding a titlebar control means
+  adding its width to that estimate.
 - Menu labels live in `locales/{fr,en}.toml` under `menu.*`. Note the TOML
   dotted-key trap: `menu.file` cannot be both a string and a table, which is
   why the titles are namespaced `menu.title.file`.

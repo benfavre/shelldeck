@@ -33,7 +33,7 @@ The order of the modifiers and upper or lower case do not matter.
 | `settings` | `secondary-,` | Open Settings |
 | `next_view` | `secondary-shift-l` | Next view: full application, Agents, Terminal, Editor |
 | `toggle_sidebar` | `secondary-b` | Show or hide the sidebar (the session list in Agents and in Terminal) |
-| `toggle_menu_bar` | `secondary-shift-m` | Show or hide the menu row |
+| `toggle_menu_bar` | `secondary-shift-m` | Always show the menu row, or hide it again (a tap on Alt shows it once) |
 | `file_editor` | `secondary-e` | Open the file editor |
 | `new_terminal` | `secondary-t` | New terminal tab |
 | `close_tab` | `secondary-w` | Close the terminal tab |

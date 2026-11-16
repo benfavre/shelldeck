@@ -685,11 +685,11 @@ impl SettingsView {
 
     /// Update the persisted "application menu row visible" state. Called by
     /// the workspace from Affichage → Barre de menus.
-    pub fn set_menu_bar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        if self.config.general.menu_bar_visible == visible {
+    pub fn set_menu_bar_always_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.config.general.menu_bar_always_visible == visible {
             return;
         }
-        self.config.general.menu_bar_visible = visible;
+        self.config.general.menu_bar_always_visible = visible;
         self.save_config(cx);
     }
 

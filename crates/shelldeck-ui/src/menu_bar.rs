@@ -76,6 +76,7 @@ pub enum MenuCommand {
     SignIn,
     SignOut,
     OpenAiAssistant,
+    OpenAiDock,
     Documentation,
     CheckForUpdates,
     About,
@@ -155,10 +156,12 @@ pub struct MenuBarContext {
     /// menus even while the user is temporarily in User mode.
     pub dev_capable: bool,
     pub sidebar_visible: bool,
-    pub menu_bar_visible: bool,
+    pub menu_bar_always_visible: bool,
     pub has_monique: bool,
     pub has_fleet: bool,
     pub ai_configured: bool,
+    /// The external AI Dock can be shown (Dev capability or AI ready).
+    pub ai_dock: bool,
     /// Current destination in the Dev « Aller » menu. Marking it selected
     /// lets the bounded dropdown reveal it automatically when it opens.
     pub active_go: Option<MenuCommand>,
@@ -356,7 +359,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
             MenuCommand::ToggleMenuBar,
         )
         .shortcut(BindableAction::ToggleMenuBar)
-        .checked(ctx.menu_bar_visible),
+        .checked(ctx.menu_bar_always_visible),
     );
     view.push(MenuEntry::Separator);
     view.push(
@@ -541,6 +544,19 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 .checked(ctx.active_go == Some(MenuCommand::GoBextCloud)),
             );
         }
+        // The external Dock is its own window, reached here (and from the
+        // tray / global shortcut) rather than from a titlebar button.
+        if ctx.ai_dock {
+            go.push(MenuEntry::Separator);
+            go.push(
+                MenuEntry::command(
+                    "go-ai-dock",
+                    t!("menu.go.ai_dock").to_string(),
+                    MenuCommand::OpenAiDock,
+                )
+                .icon("panel-right-open"),
+            );
+        }
         menus.push(MenuSpec {
             id: "menu-go",
             label: t!("menu.title.go").to_string(),
@@ -677,10 +693,11 @@ mod tests {
             mode,
             dev_capable: mode == AppMode::Dev,
             sidebar_visible: true,
-            menu_bar_visible: true,
+            menu_bar_always_visible: true,
             has_monique: false,
             has_fleet: false,
             ai_configured: false,
+            ai_dock: false,
             active_go: None,
         }
     }
@@ -810,7 +827,7 @@ mod tests {
         let mut c = ctx(AppMode::Dev, true);
         c.dev_capable = true;
         c.sidebar_visible = false;
-        c.menu_bar_visible = true;
+        c.menu_bar_always_visible = true;
 
         let menus = menu_bar_spec(c);
         let view = menus.iter().find(|m| m.id == "menu-view").unwrap();
@@ -863,6 +880,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    // SDTEST-3187 — the Dock left the titlebar; the Go menu carries it,
+    // and only when the Dock can actually open.
+    #[test]
+    fn sdtest_3187_go_menu_offers_the_dock_only_when_available() {
+        let go_ids = |c: MenuBarContext| -> Vec<&'static str> {
+            menu_bar_spec(c)
+                .into_iter()
+                .find(|m| m.id == "menu-go")
+                .map(|m| {
+                    m.entries
+                        .iter()
+                        .filter_map(|e| match e {
+                            MenuEntry::Command { id, .. } => Some(*id),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut c = ctx(AppMode::Dev, true);
+        assert!(!go_ids(c).contains(&"go-ai-dock"));
+        c.ai_dock = true;
+        assert_eq!(go_ids(c).last(), Some(&"go-ai-dock"));
+        let mut user = ctx(AppMode::User, true);
+        user.ai_dock = true;
+        assert_eq!(go_ids(user).last(), Some(&"go-ai-dock"));
     }
 
     // SDTEST-1920 — the checked row is the anchor the bounded Menu scrolls

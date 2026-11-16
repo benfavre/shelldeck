@@ -13,8 +13,8 @@ use shelldeck_core::config::manage_notifications::{
 };
 
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-const PANEL_WIDTH: f32 = 360.0;
-const PANEL_MAX_HEIGHT: f32 = 460.0;
+const PANEL_WIDTH: f32 = 380.0;
+const PANEL_MAX_HEIGHT: f32 = 480.0;
 
 /// One OS notification per poll: the item itself when alone, a count for a burst.
 pub(super) fn arrival_notification(fresh: &[&InkluraNotification]) -> Option<TrayNotification> {
@@ -42,6 +42,31 @@ fn badge_text(unread: usize) -> String {
     } else {
         unread.to_string()
     }
+}
+
+/// Runs of the same notification next to each other (same space, kind,
+/// title and text: an agent that waits for a validation every minute) are
+/// shown as one row with a count. Each run is the index of its newest item
+/// (the feed is newest first) and the indices of the whole run.
+fn notification_runs(items: &[InkluraNotification]) -> Vec<Vec<usize>> {
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let same = runs
+            .last()
+            .and_then(|run| run.first())
+            .is_some_and(|&first| {
+                let head = &items[first];
+                head.site_id == item.site_id
+                    && head.kind == item.kind
+                    && head.title == item.title
+                    && head.body == item.body
+            });
+        match runs.last_mut() {
+            Some(run) if same => run.push(index),
+            _ => runs.push(vec![index]),
+        }
+    }
+    runs
 }
 
 impl Workspace {
@@ -301,26 +326,31 @@ impl Workspace {
         Some(bell.into_any_element())
     }
 
+    /// One row of the panel: the newest item of a run, with the size of the
+    /// run when it repeats. A row is unread while any item of its run is.
     fn render_inklura_notification_row(
         &self,
-        index: usize,
-        item: &InkluraNotification,
+        items: &[InkluraNotification],
+        run: &[usize],
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let item = &items[run[0]];
+        let unread = run.iter().any(|&index| !items[index].read);
         let (icon, color) = kind_icon(item.kind);
         let mut text = div()
             .flex_1()
             .min_w(px(0.0))
+            .overflow_hidden()
             .flex()
             .flex_col()
-            .gap(px(2.0))
+            .gap(px(3.0))
             .child(
                 div()
-                    .text_size(px(12.0))
-                    .font_weight(if item.read {
-                        FontWeight::NORMAL
-                    } else {
+                    .text_size(px(13.0))
+                    .font_weight(if unread {
                         FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::MEDIUM
                     })
                     .text_color(ShellDeckColors::text_primary())
                     .line_clamp(2)
@@ -329,7 +359,7 @@ impl Workspace {
         if !item.body.trim().is_empty() {
             text = text.child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
                     .line_clamp(2)
                     .child(item.body.clone()),
@@ -341,49 +371,121 @@ impl Workspace {
             (false, true) => item.site_label.clone(),
             (true, _) => when,
         };
+        let mut meta_row = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .min_w(px(0.0))
+            .overflow_hidden();
         if !meta.is_empty() {
-            text = text.child(
+            meta_row = meta_row.child(
                 div()
-                    .text_size(px(10.5))
-                    .text_color(ShellDeckColors::text_muted())
+                    .min_w(px(0.0))
                     .truncate()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
                     .child(meta),
             );
         }
+        if run.len() > 1 {
+            meta_row = meta_row.child(
+                div()
+                    .flex_shrink_0()
+                    .px(px(6.0))
+                    .rounded_full()
+                    .bg(ShellDeckColors::badge_bg())
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(format!("×{}", run.len())),
+            );
+        }
+        text = text.child(meta_row);
+
         let site_id = item.site_id.clone();
         let id = item.id.clone();
+        let others: Vec<String> = run[1..]
+            .iter()
+            .filter(|&&index| !items[index].read)
+            .map(|&index| items[index].id.clone())
+            .collect();
         let mut row = div()
-            .id(("inklura-notification", index))
+            .id(SharedString::from(format!(
+                "inklura-notification-{}-{}",
+                item.site_id, item.id
+            )))
+            // The list caps its height and scrolls: a row that may shrink is
+            // squashed into its neighbours instead.
+            .flex_shrink_0()
             .flex()
             .items_start()
-            .gap(px(9.0))
-            .px(px(10.0))
-            .py(px(8.0))
-            .rounded(px(7.0))
-            .overflow_hidden()
+            .gap(px(12.0))
+            .px(px(12.0))
+            .py(px(10.0))
+            .rounded(px(10.0))
             .cursor_pointer()
             .hover(|el| el.bg(ShellDeckColors::hover_bg()))
             .child(
                 div()
                     .flex_shrink_0()
-                    .pt(px(1.0))
-                    .child(lucide_icon(icon, 14.0, color)),
+                    .size(px(30.0))
+                    .rounded(px(8.0))
+                    .bg(color.opacity(0.12))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(lucide_icon(icon, 15.0, color)),
             )
             .child(text)
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.mark_inklura_notifications_read_quietly(&site_id, &others, cx);
                 this.open_inklura_notification(site_id.clone(), id.clone(), cx);
             }));
-        if !item.read {
-            row = row.bg(ShellDeckColors::primary().opacity(0.06)).child(
+        if unread {
+            row = row.bg(ShellDeckColors::primary().opacity(0.05)).child(
                 div()
                     .flex_shrink_0()
-                    .mt(px(5.0))
-                    .size(px(7.0))
+                    .mt(px(6.0))
+                    .size(px(8.0))
                     .rounded_full()
                     .bg(ShellDeckColors::primary()),
             );
         }
         row
+    }
+
+    /// The hidden items of a run that was opened: read locally at once, and
+    /// on the server in the background without a toast (opening the newest
+    /// one reports its own failure).
+    fn mark_inklura_notifications_read_quietly(
+        &mut self,
+        site_id: &str,
+        ids: &[String],
+        cx: &mut Context<Self>,
+    ) {
+        if ids.is_empty() {
+            return;
+        }
+        let Some((base, token)) = self.manage_base_token() else {
+            return;
+        };
+        if let Some(feed) = self.inklura_notifications.as_mut() {
+            for id in ids {
+                feed.mark_read_locally(site_id, id);
+            }
+        }
+        let site_id = site_id.to_string();
+        let ids = ids.to_vec();
+        cx.background_executor()
+            .spawn(async move {
+                for id in ids {
+                    if let Err(e) = manage_notifications::mark_read(&base, &token, &site_id, &id) {
+                        tracing::warn!("Failed to mark Inklura notification read: {e}");
+                    }
+                }
+            })
+            .detach();
     }
 
     /// Anchored panel under the bell plus a dismiss backdrop.
@@ -401,46 +503,54 @@ impl Workspace {
             inset: false,
         }];
 
-        let mut header = div()
+        let mut title = div()
             .flex()
             .items_center()
             .gap(px(8.0))
-            .px(px(10.0))
-            .pt(px(6.0))
-            .pb(px(8.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
+            .flex_1()
+            .min_w(px(0.0))
             .child(
                 div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .text_size(px(13.0))
+                    .text_size(px(15.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
                     .child(t!("inklura_notifications.title").to_string()),
             );
         if feed.unread > 0 {
-            header = header.child(
+            title = title.child(
                 div()
-                    .id("inklura-notifications-mark-all")
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
                     .px(px(7.0))
-                    .py(px(3.0))
-                    .rounded(px(5.0))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-                    .child(lucide_icon("check-check", 13.0, ShellDeckColors::primary()))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::primary())
-                            .child(t!("inklura_notifications.mark_all").to_string()),
-                    )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.mark_all_inklura_notifications_read(cx);
-                    })),
+                    .py(px(1.0))
+                    .rounded_full()
+                    .bg(ShellDeckColors::primary().opacity(0.12))
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::primary())
+                    .child(badge_text(feed.unread)),
+            );
+        }
+        let mut header = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(16.0))
+            .pt(px(12.0))
+            .pb(px(10.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border().opacity(0.7))
+            .child(title);
+        if feed.unread > 0 {
+            header = header.child(
+                Button::new(
+                    "inklura-notifications-mark-all",
+                    t!("inklura_notifications.mark_all").to_string(),
+                )
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("check-check"))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.mark_all_inklura_notifications_read(cx);
+                })),
             );
         }
 
@@ -449,7 +559,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(2.0))
-            .p(px(4.0))
+            .p(px(6.0))
             .max_h(px(PANEL_MAX_HEIGHT))
             .overflow_y_scroll();
         if feed.items.is_empty() {
@@ -479,20 +589,19 @@ impl Workspace {
                     ),
             );
         } else {
-            for (index, item) in feed.items.iter().enumerate() {
-                list = list.child(self.render_inklura_notification_row(index, item, cx));
+            for run in notification_runs(&feed.items) {
+                list = list.child(self.render_inklura_notification_row(&feed.items, &run, cx));
             }
         }
 
         let panel = div()
             .id("inklura-notifications-panel")
             .w(px(PANEL_WIDTH))
-            .bg(ShellDeckColors::bg_surface())
+            .bg(ShellDeckColors::popover_bg())
             .border_1()
             .border_color(ShellDeckColors::border())
-            .rounded(px(9.0))
+            .rounded(px(12.0))
             .shadow(shadow.into())
-            .py(px(4.0))
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -541,7 +650,10 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{arrival_notification, InkluraNotification, NotificationKind, TrayNotification};
+    use super::{
+        arrival_notification, notification_runs, InkluraNotification, NotificationKind,
+        TrayNotification,
+    };
 
     fn item(id: &str, title: &str, site: &str) -> InkluraNotification {
         InkluraNotification {
@@ -571,5 +683,29 @@ mod tests {
         let many = arrival_notification(&[&a, &b]).unwrap();
         assert!(matches!(many, TrayNotification::Inklura { count: 2, .. }));
         assert!(!many.localized_text().1.contains("Export"));
+    }
+
+    // SDTEST-3186 / SDUC-593. Repeats next to each other collapse into one
+    // row; the same title elsewhere in the feed, from another space or with
+    // another text stays its own row.
+    #[test]
+    fn sdtest_3186_repeated_notifications_collapse_into_runs() {
+        let wait = item("1", "Jcode attend une validation", "Acme");
+        let mut other_site = item("4", "Jcode attend une validation", "Blog");
+        other_site.site_id = "s2".into();
+        let items = vec![
+            item("0", "Export prêt", "Acme"),
+            wait.clone(),
+            item("2", "Jcode attend une validation", "Acme"),
+            item("3", "Jcode attend une validation", "Acme"),
+            other_site,
+            item("5", "Échec d'une demande", "Acme"),
+            item("6", "Jcode attend une validation", "Acme"),
+        ];
+        assert_eq!(
+            notification_runs(&items),
+            vec![vec![0], vec![1, 2, 3], vec![4], vec![5], vec![6]]
+        );
+        assert!(notification_runs(&[]).is_empty());
     }
 }

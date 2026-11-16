@@ -15,6 +15,23 @@ fn close_titlebar_menu_flags(account: &mut bool, mode: &mut bool, site: &mut boo
     *site = false;
 }
 
+/// Up to two initials for the titlebar avatar: the first letters of the first
+/// and last words of the name, else the first letter of the address.
+fn account_initials(account: &AccountInfo) -> String {
+    let words: Vec<&str> = account.name.split_whitespace().collect();
+    let letter = |word: &str| word.chars().next().map(|c| c.to_uppercase().to_string());
+    match (words.first(), words.last()) {
+        (Some(first), Some(last)) if words.len() > 1 => {
+            format!(
+                "{}{}",
+                letter(first).unwrap_or_default(),
+                letter(last).unwrap_or_default()
+            )
+        }
+        _ => account.initial(),
+    }
+}
+
 fn ellipsize_site_switcher_label(label: &str, max_chars: usize) -> String {
     if label.chars().count() <= max_chars {
         return label.to_string();
@@ -40,6 +57,7 @@ impl Workspace {
     pub(super) fn render_titlebar(
         is_maximized: bool,
         compact: bool,
+        logical_width: f32,
         presentation: WorkspacePresentation,
         presentation_switch: Option<[crate::view_attention::ViewAttention; 4]>,
         account_menu_open: bool,
@@ -50,12 +68,9 @@ impl Workspace {
         active_site_label: Option<String>,
         sites_loaded: bool,
         mode_switch: Option<(AppMode, &'static [AppMode])>,
-        menu_bar_visible: bool,
-        menu_bar: Entity<AdabrakaMenuBar>,
+        menu_row: Option<bool>,
         sidebar_visible: Option<bool>,
         ai_configured: bool,
-        ai_dock_available: bool,
-        ai_dock_open: bool,
         ai_task_count: usize,
         inklura_bell: Option<AnyElement>,
         pro_workspace_button: Option<AnyElement>,
@@ -70,37 +85,22 @@ impl Workspace {
         let btn_text = ShellDeckColors::text_muted();
         let btn_hover_bg = ShellDeckColors::hover_bg();
 
-        // Title area — draggable
-        let mut title_area = div()
-            .flex_1()
-            .min_w(px(32.0))
-            .h_full()
-            .flex()
-            .items_center()
-            .overflow_hidden()
-            .px(if compact { px(4.0) } else { px(10.0) })
-            .gap(if compact { px(0.0) } else { px(8.0) })
-            .window_control_area(WindowControlArea::Drag)
-            .on_mouse_down(MouseButton::Left, |_e, window, _cx| {
-                window.start_window_move();
-            });
+        // Drag regions fill whatever the controls leave free on each side of
+        // the centred view switcher.
+        let drag_filler = |id: &'static str| {
+            div()
+                .id(id)
+                .flex_1()
+                .min_w(px(8.0))
+                .h_full()
+                .window_control_area(WindowControlArea::Drag)
+                .on_mouse_down(MouseButton::Left, |_e, window, _cx| {
+                    window.start_window_move();
+                })
+        };
         let focused_presentation = presentation.is_focused();
-        if !compact && (!menu_bar_visible || focused_presentation) {
-            title_area = title_area
-                .child(crate::brand::brand_badge(20.0))
-                .child(crate::brand::brand_wordmark(12.0));
-            if focused_presentation {
-                title_area = title_area.child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(title_dim)
-                        .child(presentation.label()),
-                );
-            }
-        }
 
-        // Keep interactive controls outside the drag region. The menu bar owns
-        // deferred dropdowns, so scrolling the titles never clips an open menu.
+        // Keep interactive controls outside the drag region.
         let sidebar_button = sidebar_visible.map(|visible| {
             let tooltip: SharedString = with_shortcut(
                 t!("shortcuts.toggle_sidebar").to_string(),
@@ -109,7 +109,7 @@ impl Workspace {
             .into();
             IconButton::new(IconSource::FilePath("images/sidebar.svg".into()))
                 .variant(ButtonVariant::Ghost)
-                .size(gpui::px(28.0))
+                .size(gpui::px(32.0))
                 .icon_size(gpui::px(18.0))
                 .text_color(if visible { title_color } else { title_dim })
                 .tooltip(move |_, cx| {
@@ -123,23 +123,71 @@ impl Workspace {
                     cx.notify();
                 }))
         });
-        let mut navigation = div()
+
+        // The brand, then the chevron that shows the menu row, as Alt does.
+        let mut brand = div()
             .flex()
             .items_center()
-            .min_w(px(0.0))
+            .flex_shrink_0()
             .gap(px(8.0))
-            .pl(px(10.0))
-            .children(sidebar_button);
-        if menu_bar_visible && !focused_presentation {
-            navigation = navigation.child(
+            .child(crate::brand::brand_badge(26.0));
+        if !compact {
+            brand = brand.child(
                 div()
-                    .id("titlebar-menus")
-                    .flex_shrink_0()
-                    .min_w(px(0.0))
-                    .overflow_x_scroll()
-                    .child(menu_bar),
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(title_color)
+                    .whitespace_nowrap()
+                    .child("Inklura"),
             );
         }
+        if focused_presentation && !compact {
+            brand = brand.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(title_dim)
+                    .child(presentation.label()),
+            );
+        }
+        let menu_chevron = menu_row.map(|shown| {
+            let tooltip: SharedString = if shown {
+                t!("menu.row.hide").to_string()
+            } else {
+                t!("menu.row.show").to_string()
+            }
+            .into();
+            div()
+                .id("titlebar-menu-chevron")
+                .debug_selector(|| "titlebar-menu-chevron".into())
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(26.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(|el| el.bg(btn_hover_bg))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| WorkspaceTooltip {
+                        label: tooltip.clone(),
+                    })
+                    .into()
+                })
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_menu_row(cx)))
+                .child(lucide_icon(
+                    if shown { "chevron-up" } else { "chevron-down" },
+                    15.0,
+                    btn_text,
+                ))
+        });
+        let leading = div()
+            .flex()
+            .items_center()
+            .h_full()
+            .gap(px(8.0))
+            .pl(px(12.0))
+            .children(sidebar_button)
+            .child(brand.ml(px(4.0)))
+            .children(menu_chevron);
 
         let control_btn = crate::window_chrome::control_button;
 
@@ -199,11 +247,10 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(6.0))
-            .h(px(28.0))
-            .px(px(7.0))
-            .rounded(px(6.0))
-            .cursor_pointer()
-            .hover(|s| s.bg(btn_hover_bg));
+            .h(px(36.0))
+            .px(px(2.0))
+            .rounded_full()
+            .cursor_pointer();
 
         if let Some(acct) = &account {
             let dot = account_status.dot_color();
@@ -212,34 +259,40 @@ impl Workspace {
                     .relative()
                     .child(
                         div()
-                            .size(px(18.0))
+                            .size(px(34.0))
                             .rounded_full()
-                            .bg(accent.opacity(0.20))
+                            .bg(accent.opacity(0.10))
+                            .border_1()
+                            .border_color(accent.opacity(0.22))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(10.0))
+                            .text_size(px(12.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(accent)
-                            .child(acct.initial()),
+                            .hover(|el| el.bg(accent.opacity(0.18)))
+                            .child(account_initials(acct)),
                     )
                     .child(
                         div()
                             .absolute()
-                            .bottom(px(-1.0))
-                            .right(px(-1.0))
-                            .size(px(7.0))
+                            .bottom(px(0.0))
+                            .right(px(0.0))
+                            .size(px(9.0))
                             .rounded_full()
                             .bg(dot)
-                            .border_1()
+                            .border_2()
                             .border_color(titlebar_bg),
                     ),
             );
         } else {
             account_btn = account_btn
+                .px(px(10.0))
+                .rounded(px(8.0))
+                .hover(|s| s.bg(btn_hover_bg))
                 .child(
                     div()
-                        .size(px(18.0))
+                        .size(px(20.0))
                         .rounded_full()
                         .bg(ShellDeckColors::badge_bg())
                         .flex()
@@ -251,7 +304,7 @@ impl Workspace {
                 )
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(px(12.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(title_dim)
                         .child(crate::t!("account.sign_in").to_string()),
@@ -270,7 +323,7 @@ impl Workspace {
             }
             cx.notify();
         }));
-        if account_menu_open {
+        if account_menu_open && account.is_none() {
             account_btn = account_btn.bg(ShellDeckColors::hover_bg());
         }
 
@@ -317,10 +370,66 @@ impl Workspace {
             chip
         });
 
+        // Where the view switcher goes. It sits in the middle of the window
+        // while each half has room for its side; otherwise it follows the
+        // logo, and in a narrower window still the site chip keeps only its
+        // globe (the site stays in its tooltip). Widths are estimates in
+        // logical pixels of what each control draws.
+        let show_site_chip = account.is_some() && sites_loaded;
+        let leading_need = 12.0
+            + if sidebar_visible.is_some() { 40.0 } else { 0.0 }
+            + if compact { 34.0 } else { 96.0 }
+            + if menu_row.is_some() { 34.0 } else { 0.0 }
+            + if focused_presentation && !compact {
+                64.0
+            } else {
+                0.0
+            };
+        let switcher_need = if presentation_switch.is_some() {
+            186.0
+        } else {
+            0.0
+        };
+        let trailing_base = 150.0 // divider and window controls
+            + 42.0 // account
+            + if inklura_bell.is_some() { 38.0 } else { 0.0 }
+            + if pro_workspace_button.is_some() { if compact { 44.0 } else { 108.0 } } else { 0.0 }
+            + if ai_configured { 52.0 } else { 0.0 }
+            + if mode_switch.is_some() { 108.0 } else { 0.0 }
+            + if show_site_chip { 40.0 } else { 0.0 };
+        let site_label_need = if active_site_label.is_some() {
+            136.0
+        } else {
+            0.0
+        };
+        let site_label_fits =
+            logical_width >= leading_need + switcher_need + trailing_base + site_label_need + 24.0;
+        let trailing_need = trailing_base
+            + if site_label_fits {
+                site_label_need
+            } else {
+                0.0
+            };
+        let switcher_centred =
+            logical_width / 2.0 - switcher_need / 2.0 >= leading_need.max(trailing_need) + 16.0;
+        // Beside the logo while the window controls and the first action
+        // still fit after it (the actions scroll). Narrower still, the
+        // switcher joins the actions after Pro, so nothing is covered.
+        let first_action_need = if pro_workspace_button.is_some() {
+            if compact {
+                44.0
+            } else {
+                108.0
+            }
+        } else {
+            42.0
+        };
+        let switcher_after_logo = !switcher_centred
+            && logical_width >= leading_need + switcher_need + 150.0 + first_action_need + 24.0;
+
         // Site chip — shown only when signed in and the sites directory has
         // loaded. The global scope is a compact globe; a specific selection
         // keeps its label visible so the current scope is never ambiguous.
-        let show_site_chip = account.is_some() && sites_loaded;
         let site_chip = if show_site_chip {
             let scope_tooltip: SharedString = active_site_label
                 .clone()
@@ -353,7 +462,7 @@ impl Workspace {
                     }
                     cx.notify();
                 }));
-            if let Some(label) = active_site_label {
+            if let Some(label) = active_site_label.filter(|_| site_label_fits) {
                 let visible_label = ellipsize_site_switcher_label(&label, 18);
                 chip = chip
                     .child(
@@ -380,39 +489,6 @@ impl Workspace {
         } else {
             None
         };
-
-        // The menu row contains its own visibility toggle, so hiding it would
-        // otherwise remove the only discoverable way to restore it. This
-        // compact titlebar affordance exists only while the row is hidden.
-        let restore_menu_button = (!menu_bar_visible && !focused_presentation).then(|| {
-            let tooltip: SharedString = with_shortcut(
-                t!("menu.view.menu_bar").to_string(),
-                BindableAction::ToggleMenuBar,
-            )
-            .into();
-            let workspace = handle.clone();
-            div()
-                .id("titlebar-restore-menu")
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(28.0))
-                .rounded(px(6.0))
-                .cursor_pointer()
-                .hover(|el| el.bg(btn_hover_bg))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| WorkspaceTooltip {
-                        label: tooltip.clone(),
-                    })
-                    .into()
-                })
-                .on_click(move |_, _, cx| {
-                    if let Some(workspace) = workspace.upgrade() {
-                        workspace.update(cx, |this, cx| this.toggle_menu_bar(cx));
-                    }
-                })
-                .child(lucide_icon("list-checks", 14.0, btn_text))
-        });
 
         // One control both leaves a focused view and returns to it, so the
         // full app is never a one-way door.
@@ -480,58 +556,8 @@ impl Workspace {
                 })
         });
 
-        // The standalone Dock is owned by the binary-level companion runtime,
-        // not by Workspace. Dispatch its action to the window-level handler so
-        // the titlebar follows the same creation/reuse path as the tray and
-        // global shortcut, while always using the idempotent "show" request.
-        let ai_dock_button = ai_dock_available.then(|| {
-            let tooltip: SharedString = if ai_dock_open {
-                t!("ai.dock.external_opened")
-            } else {
-                t!("ai.dock.open_external")
-            }
-            .to_string()
-            .into();
-            let icon = if ai_dock_open {
-                "panel-right-close"
-            } else {
-                "panel-right-open"
-            };
-            let icon_color = if ai_dock_open {
-                ShellDeckColors::primary()
-            } else {
-                btn_text
-            };
-            let workspace = handle.clone();
-            let mut button = div()
-                .id("titlebar-ai-dock")
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(28.0))
-                .rounded(px(6.0))
-                .cursor_pointer()
-                .hover(|el| el.bg(btn_hover_bg))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| WorkspaceTooltip {
-                        label: tooltip.clone(),
-                    })
-                    .into()
-                })
-                .on_click(move |_, _, cx| {
-                    if let Some(workspace) = workspace.upgrade() {
-                        workspace.update(cx, |this, cx| this.open_external_ai_dock(cx));
-                    }
-                })
-                .child(lucide_icon(icon, 18.0, icon_color));
-            if ai_dock_open {
-                button = button.bg(ShellDeckColors::primary().opacity(0.12));
-            }
-            button
-        });
-
         // Subtle vertical divider between the chrome control clusters.
-        let divider = || div().w(px(1.0)).h(px(16.0)).mx(px(4.0)).bg(titlebar_border);
+        let divider = || div().w(px(1.0)).h(px(22.0)).mx(px(4.0)).bg(titlebar_border);
 
         let mut titlebar = div()
             .debug_selector(|| "workspace-titlebar".into())
@@ -547,11 +573,23 @@ impl Workspace {
         if !is_maximized {
             titlebar = titlebar.rounded_t(use_theme().tokens.radius_xl);
         }
-        titlebar
-            .border_b_1()
-            .border_color(titlebar_border)
-            .child(navigation)
-            .child(title_area)
+        // Leading and trailing clusters share the free width equally, so the
+        // view switcher stays in the middle of the window.
+        // Too narrow even beside the logo: the switcher joins the actions
+        // (after Pro), which scroll, so the window controls never get covered.
+        let (switcher, switcher_in_actions) = if switcher_centred || switcher_after_logo {
+            (presentation_switcher, None)
+        } else {
+            (None, presentation_switcher)
+        };
+        let trailing = div()
+            .flex()
+            .items_center()
+            .justify_end()
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full()
+            .child(drag_filler("titlebar-drag-trailing"))
             .child(
                 div()
                     .id("titlebar-actions")
@@ -561,17 +599,14 @@ impl Workspace {
                     .h_full()
                     .min_w_0()
                     .overflow_x_scroll()
-                    .gap(px(6.0))
+                    .gap(px(8.0))
                     .children(pro_workspace_button)
-                    .children(presentation_switcher)
-                    .children(restore_menu_button)
+                    .children(switcher_in_actions)
                     .children(ai_button)
-                    .children(ai_dock_button)
-                    .children(inklura_bell)
-                    .child(divider())
-                    .child(account_btn)
                     .children(mode_switcher)
-                    .children(site_chip),
+                    .children(site_chip)
+                    .children(inklura_bell)
+                    .child(account_btn),
             )
             // Keep native window controls reachable even when the tool
             // shortcuts need horizontal scrolling in a narrow window.
@@ -582,13 +617,71 @@ impl Workspace {
                     .items_center()
                     .h_full()
                     .flex_shrink_0()
-                    .gap(px(6.0))
-                    .pr(px(8.0))
+                    .gap(px(8.0))
+                    .pl(px(4.0))
+                    .pr(px(12.0))
                     .child(divider())
                     .child(minimize_btn)
                     .child(maximize_btn)
                     .child(close_btn),
-            )
+            );
+        let switcher = switcher.map(|switcher| div().flex_shrink_0().child(switcher));
+        let titlebar = titlebar.border_b_1().border_color(titlebar_border);
+        if !switcher_after_logo {
+            // Equal halves around the switcher keep it in the middle.
+            titlebar
+                .child(
+                    leading
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .child(drag_filler("titlebar-drag-leading")),
+                )
+                .children(switcher)
+                .child(trailing)
+        } else {
+            // Not enough room in each half: the switcher follows the logo and
+            // the actions keep the rest.
+            titlebar
+                .child(leading.flex_shrink_0())
+                .children(switcher.map(|switcher| switcher.ml(px(12.0))))
+                .child(trailing)
+        }
+    }
+
+    /// The menu row under the titlebar (Fichier, Édition, Affichage, …). Pinned
+    /// it is a row of the layout; shown for one use it floats over the content
+    /// (`floating`), so nothing below it is resized.
+    pub(super) fn render_menu_row(&self, floating: bool) -> Div {
+        let mut row = div()
+            .debug_selector(|| "workspace-menu-row".into())
+            .flex()
+            .items_center()
+            .w_full()
+            .flex_shrink_0()
+            .h(px(crate::window_chrome::MENU_ROW_HEIGHT))
+            .px(px(14.0))
+            .bg(ShellDeckColors::bg_sidebar())
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            // The menu bar owns deferred dropdowns, so scrolling the titles
+            // never clips an open menu.
+            .child(
+                div()
+                    .id("titlebar-menus")
+                    .flex_shrink_0()
+                    .min_w(px(0.0))
+                    .overflow_x_scroll()
+                    .child(self.menu_bar.clone()),
+            );
+        if floating {
+            row = row
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(WORKSPACE_TITLEBAR_HEIGHT))
+                .occlude();
+        }
+        row
     }
 
     /// Render the compact mode dropdown below its titlebar chip.
@@ -608,7 +701,7 @@ impl Workspace {
         let mut panel = div()
             .id("mode-menu-panel")
             .w(px(144.0))
-            .bg(ShellDeckColors::bg_surface())
+            .bg(ShellDeckColors::popover_bg())
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(9.0))
@@ -674,7 +767,7 @@ impl Workspace {
             )));
         }
 
-        let drop = px(52.0).to_pixels(window.rem_size());
+        let drop = px(WORKSPACE_TITLEBAR_HEIGHT + 12.0).to_pixels(window.rem_size());
         let anchor_x = self
             .mode_menu_pos
             .map(|position| position.x)
@@ -727,7 +820,7 @@ impl Workspace {
         let mut panel = div()
             .id("account-menu-panel")
             .w(px(288.0))
-            .bg(ShellDeckColors::bg_surface())
+            .bg(ShellDeckColors::popover_bg())
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(10.0))
@@ -751,7 +844,7 @@ impl Workspace {
                 .rounded(px(6.0))
                 .border_1()
                 .border_color(ShellDeckColors::border())
-                .bg(ShellDeckColors::bg_primary())
+                .bg(ShellDeckColors::popover_bg())
                 .text_size(px(13.0))
                 .text_color(ShellDeckColors::text_primary())
                 .flex()
@@ -959,9 +1052,9 @@ impl Workspace {
         // Only the X comes from the click. Taking the Y too made the panel hang
         // from wherever inside the chip the pointer happened to be, which put it
         // against the titlebar. The drop is a fixed distance below the titlebar
-        // (40px tall, see line 491) expressed in rems, so it follows the UI
+        // (`WORKSPACE_TITLEBAR_HEIGHT`) expressed in rems, so it follows the UI
         // scale the titlebar itself follows.
-        let drop = px(52.0).to_pixels(window.rem_size());
+        let drop = px(WORKSPACE_TITLEBAR_HEIGHT + 12.0).to_pixels(window.rem_size());
         let anchor_x = self
             .account_menu_pos
             .map(|position| position.x)
@@ -1100,12 +1193,12 @@ impl Workspace {
         let mut panel = div()
             .id("site-menu-panel")
             .absolute()
-            .top(px(46.0))
+            .top(px(WORKSPACE_TITLEBAR_HEIGHT + 6.0))
             .right(px(12.0))
             .w(px(300.0))
             .max_h(px(480.0))
             .overflow_y_scroll()
-            .bg(ShellDeckColors::bg_surface())
+            .bg(ShellDeckColors::popover_bg())
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(10.0))
@@ -1334,7 +1427,7 @@ impl Workspace {
             .id("sidebar-kebab-panel")
             .occlude()
             .w(px(200.0))
-            .bg(ShellDeckColors::bg_surface())
+            .bg(ShellDeckColors::popover_bg())
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(8.0))

@@ -70,13 +70,9 @@ pub(crate) enum StreetLayout {
     Welcome,
     /// Same scene for a window too short for the large town.
     WelcomeCompact,
-    /// A banner: the copy on the sky to the left; to the right the town on
-    /// its stretch of road, which fades into the sky towards the copy.
-    Banner,
-    /// The banner of a narrow window: the copy needs the larger share.
-    BannerCompact,
-    /// The head of a page: a short banner with a title, and most of its
-    /// width for a small town.
+    /// The head of a page: a short banner with a title on the sky to the
+    /// left, and most of its width for a small town on its stretch of road,
+    /// which fades into the sky towards the copy.
     PageHead,
 }
 
@@ -85,9 +81,7 @@ impl StreetLayout {
     fn scale(self) -> f32 {
         match self {
             Self::Welcome => 0.62,
-            Self::WelcomeCompact => 0.40,
-            Self::Banner => 0.52,
-            Self::BannerCompact | Self::PageHead => 0.40,
+            Self::WelcomeCompact | Self::PageHead => 0.40,
         }
     }
 
@@ -105,8 +99,6 @@ impl StreetLayout {
     /// starts there and fades in; full-window layouts keep none.
     pub(crate) fn copy_share(self) -> f32 {
         match self {
-            Self::Banner => 0.40,
-            Self::BannerCompact => 0.56,
             Self::PageHead => 0.38,
             Self::Welcome | Self::WelcomeCompact => 0.0,
         }
@@ -970,16 +962,13 @@ mod tests {
         assert!(crossing(1.0, 0.16) > 1.15);
         assert!((crossing(0.5, 0.16) - 0.5).abs() < 1e-6);
         assert!(crossing(7.0, 0.16) <= 1.16 + 1e-6);
-        for banner in [StreetLayout::Banner, StreetLayout::BannerCompact] {
-            let share = banner.copy_share();
-            assert!(
-                (0.3..=0.7).contains(&share),
-                "{banner:?} must leave room for both the copy and the town"
-            );
-        }
-        assert!(StreetLayout::BannerCompact.copy_share() > StreetLayout::Banner.copy_share());
+        let share = StreetLayout::PageHead.copy_share();
+        assert!(
+            (0.3..=0.7).contains(&share),
+            "the page head must leave room for both the copy and the town"
+        );
         assert_eq!(StreetLayout::Welcome.copy_share(), 0.0);
-        assert!(StreetLayout::Banner.town_height() < StreetLayout::Welcome.town_height());
+        assert!(StreetLayout::PageHead.town_height() < StreetLayout::Welcome.town_height());
     }
 
     /// SDTEST-3180 / SDUC-587.
@@ -989,8 +978,8 @@ mod tests {
     /// plays again when it is shown again or woken.
     #[test]
     fn sdtest_3180_the_scene_plays_its_run_then_rests_until_woken() {
-        let run = StreetLayout::Banner.run();
-        assert_eq!(run, StreetLayout::Banner.van_lap());
+        let run = StreetLayout::PageHead.run();
+        assert_eq!(run, StreetLayout::PageHead.van_lap());
         assert_eq!(
             StreetLayout::Welcome.run().as_millis() % StreetLayout::Welcome.van_lap().as_millis(),
             0,

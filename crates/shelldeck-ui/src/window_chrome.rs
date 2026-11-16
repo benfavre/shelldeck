@@ -3,6 +3,27 @@
 use crate::{scale::px, theme::ShellDeckColors};
 use gpui::{prelude::*, *};
 
+/// Height of the window titlebar before UI scaling. The workspace draws it and
+/// the terminal grid subtracts it: one number for both.
+pub const TITLEBAR_HEIGHT: f32 = 48.0;
+
+/// Height of the menu row (Fichier, Édition, …) under the titlebar, before UI
+/// scaling. It takes height from the content only while it is pinned
+/// (`general.menu_bar_always_visible`); revealed by Alt or the chevron it
+/// floats over the content, so nothing below it is resized.
+pub const MENU_ROW_HEIGHT: f32 = 36.0;
+
+/// Height of the chrome above the content: the titlebar, plus the menu row
+/// when it is pinned.
+pub fn top_chrome_height(menu_row_pinned: bool) -> f32 {
+    TITLEBAR_HEIGHT
+        + if menu_row_pinned {
+            MENU_ROW_HEIGHT
+        } else {
+            0.0
+        }
+}
+
 pub(crate) fn control_button(
     id: &'static str,
     icon_path: &'static str,

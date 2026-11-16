@@ -1,5 +1,51 @@
 use super::*;
 
+/// The menu row shown for one use, like Firefox's menu bar: a tap on Alt or a
+/// click on the chevron beside the logo shows it over the content, and it
+/// leaves once a menu has been used or dismissed. A pinned row
+/// (`general.menu_bar_always_visible`) does not use this state.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MenuRowState {
+    /// Shown over the content until the next use.
+    pub(super) revealed: bool,
+    /// Alt went down alone and nothing else has happened since: releasing it
+    /// is a tap. Any key or other modifier makes it a shortcut instead.
+    alt_armed: bool,
+    /// A menu of the row was open at the last notification of the menu bar.
+    menu_was_open: bool,
+}
+
+impl MenuRowState {
+    /// Follows the modifier keys; true when an Alt tap has just completed.
+    pub(super) fn on_modifiers(&mut self, modifiers: Modifiers) -> bool {
+        let others =
+            modifiers.control || modifiers.shift || modifiers.platform || modifiers.function;
+        if modifiers.alt && !others {
+            self.alt_armed = true;
+            false
+        } else if !modifiers.alt && !others && self.alt_armed {
+            self.alt_armed = false;
+            true
+        } else {
+            self.alt_armed = false;
+            false
+        }
+    }
+
+    /// A key went down: Alt held with it is a shortcut, not a tap.
+    pub(super) fn on_key_down(&mut self) {
+        self.alt_armed = false;
+    }
+
+    /// The menu bar opened or closed a menu; true when a menu has just been
+    /// closed, which ends a one-use reveal.
+    pub(super) fn on_menu_open(&mut self, open: bool) -> bool {
+        let closed = self.menu_was_open && !open;
+        self.menu_was_open = open;
+        closed
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct MenuBarSnapshot {
     context: crate::menu_bar::MenuBarContext,
@@ -44,10 +90,12 @@ impl Workspace {
                 .as_ref()
                 .is_some_and(|a| a.is_superadmin),
             sidebar_visible: self.contextual_sidebar_visible(cx),
-            menu_bar_visible: self.app_config.general.menu_bar_visible,
+            menu_bar_always_visible: self.app_config.general.menu_bar_always_visible,
             has_monique: self.has_monique(),
             has_fleet: self.platform_connection().is_some() || self.fleet_snapshot.is_some(),
             ai_configured: self.ai_available_for_current_surface(cx),
+            ai_dock: self.can_access_mode(AppMode::Dev)
+                || self.ai_available_for_current_surface(cx),
             active_go,
         };
 
@@ -137,6 +185,9 @@ impl Workspace {
             TogglePaneZoom, ToggleSearch, ZoomIn, ZoomOut, ZoomReset,
         };
 
+        // Using a menu ends a one-use reveal of the row.
+        self.menu_row.revealed = false;
+
         // A stale menu click must not outlive logout. The menu specification
         // hides authenticated commands, but authorization belongs here too.
         if !self.signed_in()
@@ -219,6 +270,7 @@ impl Workspace {
             Cmd::SignIn => self.show_login_form(cx),
             Cmd::SignOut => self.logout_account(cx),
             Cmd::OpenAiAssistant => self.open_ai_assistant(cx),
+            Cmd::OpenAiDock => self.open_external_ai_dock(cx),
             Cmd::Documentation => {
                 let _ = cloud_account::open_in_browser("https://shelldeck.1clic.pro");
             }
@@ -233,18 +285,145 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Show / hide the application menu row. The terminal grid's usable height
-    /// depends on it, so the change is pushed down to the terminal view before
-    /// it is persisted.
+    /// The menu row exists in the full app and on the welcome screen; the
+    /// focused views (Agents, Terminal, Editor) have no menus.
+    pub(super) fn menu_row_available(&self) -> bool {
+        !self.active_presentation().is_focused()
+    }
+
+    pub(super) fn menu_row_pinned(&self) -> bool {
+        self.app_config.general.menu_bar_always_visible
+    }
+
+    /// Whether the row is on screen, pinned or revealed for one use.
+    pub(super) fn menu_row_shown(&self) -> bool {
+        self.menu_row_available() && (self.menu_row_pinned() || self.menu_row.revealed)
+    }
+
+    /// Show or hide the row for one use. Hiding it closes an open menu.
+    pub(super) fn set_menu_row_revealed(&mut self, revealed: bool, cx: &mut Context<Self>) {
+        if self.menu_row.revealed == revealed {
+            return;
+        }
+        self.menu_row.revealed = revealed;
+        if !revealed {
+            self.menu_bar.update(cx, |bar, cx| {
+                if bar.is_open() {
+                    bar.close();
+                    cx.notify();
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    /// The chevron beside the logo: shows the row for one use, or hides it.
+    /// On a pinned row it unpins, so the chevron always does what it shows.
+    pub(super) fn toggle_menu_row(&mut self, cx: &mut Context<Self>) {
+        if self.menu_row_pinned() {
+            self.toggle_menu_bar(cx);
+            self.set_menu_row_revealed(false, cx);
+        } else {
+            let revealed = !self.menu_row.revealed;
+            self.set_menu_row_revealed(revealed, cx);
+        }
+    }
+
+    /// Modifier keys changed anywhere in the window: a tap on Alt alone
+    /// shows or hides the row, as in Firefox.
+    pub(super) fn menu_row_modifiers_changed(
+        &mut self,
+        modifiers: Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        if self.menu_row.on_modifiers(modifiers)
+            && self.menu_row_available()
+            && !self.menu_row_pinned()
+        {
+            let revealed = !self.menu_row.revealed;
+            self.set_menu_row_revealed(revealed, cx);
+        }
+    }
+
+    pub(super) fn menu_row_key_down(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.menu_row.on_key_down();
+        if key == "escape" && self.menu_row.revealed && !self.menu_bar.read(cx).is_open() {
+            self.set_menu_row_revealed(false, cx);
+        }
+    }
+
+    /// The menu bar notified: a menu closed without a command (a click on
+    /// its title, outside it, Escape) also ends a one-use reveal.
+    pub(super) fn menu_bar_open_changed(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.menu_row.on_menu_open(open) && self.menu_row.revealed {
+            self.set_menu_row_revealed(false, cx);
+        }
+    }
+
+    /// Pin / unpin the menu row (Affichage → Toujours afficher la barre de
+    /// menus). Only a pinned row takes height from the terminal grid, so the
+    /// change is pushed down to the terminal view before it is persisted.
     pub fn toggle_menu_bar(&mut self, cx: &mut Context<Self>) {
-        let visible = !self.app_config.general.menu_bar_visible;
-        self.app_config.general.menu_bar_visible = visible;
+        let visible = !self.app_config.general.menu_bar_always_visible;
+        self.app_config.general.menu_bar_always_visible = visible;
         self.terminal.update(cx, |terminal, _| {
-            terminal.set_menu_bar_visible(visible);
+            terminal.set_menu_bar_always_visible(visible);
         });
         self.settings.update(cx, |settings, cx| {
-            settings.set_menu_bar_visible(visible, cx);
+            settings.set_menu_bar_always_visible(visible, cx);
         });
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MenuRowState;
+    use gpui::Modifiers;
+
+    fn alt() -> Modifiers {
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        }
+    }
+
+    // SDTEST-3184 / SDUC-591. Alt pressed and released alone is a tap that
+    // shows the menu row; Alt held with a key or with another modifier is a
+    // shortcut and shows nothing; closing a menu ends a one-use reveal.
+    #[test]
+    fn sdtest_3184_alt_tap_shows_the_menu_row_and_shortcuts_do_not() {
+        let mut row = MenuRowState::default();
+        assert!(!row.on_modifiers(alt()));
+        assert!(row.on_modifiers(Modifiers::default()), "a tap");
+
+        // Alt+F: a key went down while Alt was held.
+        assert!(!row.on_modifiers(alt()));
+        row.on_key_down();
+        assert!(!row.on_modifiers(Modifiers::default()));
+
+        // Ctrl+Alt: another modifier joined.
+        assert!(!row.on_modifiers(alt()));
+        assert!(!row.on_modifiers(Modifiers {
+            alt: true,
+            control: true,
+            ..Modifiers::default()
+        }));
+        assert!(!row.on_modifiers(Modifiers::default()));
+
+        // Shift released alone is not an Alt tap.
+        assert!(!row.on_modifiers(Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        }));
+        assert!(!row.on_modifiers(Modifiers::default()));
+
+        // A menu opened then closed ends the reveal once; staying closed or
+        // moving from one menu to another does not.
+        assert!(!row.on_menu_open(false));
+        assert!(!row.on_menu_open(true));
+        assert!(!row.on_menu_open(true));
+        assert!(row.on_menu_open(false));
+        assert!(!row.on_menu_open(false));
     }
 }
