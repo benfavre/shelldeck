@@ -481,6 +481,74 @@ pub fn palette_for(pref: &ThemePreference) -> Palette {
     }
 }
 
+/// Colours of the street illustration (`ludique.rs`), taken from inklura.fr.
+///
+/// They belong to the artwork, not to the active palette: the scene has its
+/// own day and its own night, and its images are drawn with the same values.
+/// Text placed over the sky must use [`StreetColors::ink`], never a palette
+/// colour, or it disappears when the scene and the theme disagree.
+pub struct StreetColors;
+
+impl StreetColors {
+    fn pick(night: bool, day: u32, dark: u32) -> Hsla {
+        rgb(if night { dark } else { day }).into()
+    }
+
+    pub fn sky_top(night: bool) -> Hsla {
+        Self::pick(night, 0xD6E6FF, 0x131A3C)
+    }
+
+    pub fn sky_bottom(night: bool) -> Hsla {
+        Self::pick(night, 0xFFE9CC, 0x2B2F73)
+    }
+
+    /// Text over the sky.
+    pub fn ink(night: bool) -> Hsla {
+        Self::pick(night, 0x14161C, 0xFFFFFF)
+    }
+
+    /// Secondary text over the sky.
+    pub fn ink_muted(night: bool) -> Hsla {
+        Self::pick(night, 0x444B5C, 0xD3D9F0)
+    }
+
+    /// The highlighter under a title: yellow by day, blue at night.
+    pub fn marker(night: bool) -> Hsla {
+        if night {
+            Hsla::from(rgb(0x146BFF)).opacity(0.85)
+        } else {
+            rgb(0xFFC83D).into()
+        }
+    }
+
+    pub fn pavement(night: bool) -> Hsla {
+        Self::pick(night, 0xFFF4DE, 0xD9CBAA)
+    }
+
+    pub fn road() -> Hsla {
+        rgb(0x3B404C).into()
+    }
+
+    /// Outline of every drawing, and text on paper.
+    pub fn line() -> Hsla {
+        rgb(0x14161C).into()
+    }
+
+    /// White of labels, bubbles and the secondary button.
+    pub fn paper() -> Hsla {
+        rgb(0xFFFFFF).into()
+    }
+
+    pub fn button() -> Hsla {
+        rgb(0x146BFF).into()
+    }
+
+    /// The hard edge a button stands on.
+    pub fn button_edge() -> Hsla {
+        rgb(0x0A3F9E).into()
+    }
+}
+
 /// ShellDeck brand colors — every accessor reads from the active palette.
 pub struct ShellDeckColors;
 

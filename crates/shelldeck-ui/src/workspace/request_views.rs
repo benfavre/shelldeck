@@ -254,12 +254,22 @@ impl Workspace {
             .filter(|i| self.is_user_visible_issue(i))
             .count();
         let list = if mine_count == 0 {
+            // Nothing filed yet: the van has nothing to deliver.
             div()
                 .mt(px(8.0))
+                .py(px(20.0))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(12.0))
+                .child(crate::ludique::vignette(
+                    "uh-requests-empty",
+                    crate::ludique::Vignette::Delivery,
+                    cx,
+                ))
                 .child(
                     div()
-                        .py(px(8.0))
-                        .text_size(px(12.0))
+                        .text_size(px(13.0))
                         .text_color(ShellDeckColors::text_muted())
                         .child(t!("user.requests.empty").to_string()),
                 )

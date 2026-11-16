@@ -32,6 +32,16 @@ ANSI hex in non-terminal views.
 5. **Contrast** → test mentally on **both** a dark and a light built-in theme
    (e.g. Dark + Solarized Light). If a chip/badge only works on beige, fix the token.
 
+## The one exception: the street illustration
+
+The street of the welcome screen, the home banner and the empty states
+(`ludique.rs`) is artwork with its own day and night. Its colours are fixed and
+live in `StreetColors` (`theme.rs`), beside the palette, not in view code. Text
+or controls placed over its sky use `StreetColors::ink` / `ink_muted` / `paper`,
+because the scene can be in daylight under a dark theme (the sun is clickable).
+Do not use `StreetColors` anywhere else, and do not use palette colours over
+the sky.
+
 ## Switch flow (do not break)
 
 ```

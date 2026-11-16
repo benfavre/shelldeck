@@ -1257,3 +1257,19 @@ click on a row, and the workspace storing the connection (the existing
 | SDTEST-3173 | Pro workspace native GPU visual walkthrough and embedded page input | SDUC-586 | Yellow | P1 partial: full native shell/form/logout pass; dedicated production browser preview now passes real CEF sign-in, CRM keyboard/mouse/scroll input, 600×600 resize, page dialog and web logout; the web compact-height fix passes at 600×400 plus client details/return at 600×320. Full Workspace + matching helper remains blocked by the extra test sandbox/host userns policy; macOS and Windows remain open. Manage fixture evidence covers route navigation only. [Evidence](screenshots/2026-11-13-pro-workspace/README.md) |
 | SDTEST-3174 | Rendered Pro controls, compact titlebar, UI scaling and full-app navigation | SDUC-586 | Green | `workspace/pro_web_tests.rs`; final targeted run passes in French/English, 600–1280px widths and 10/14/20px fonts; includes hidden shared-Chrome selector |
 | SDTEST-3175 | Dedicated web workspace refuses shared Chrome engine and agent grants | SDUC-586 | Green | `native_browser.rs`; final targeted run passes; dedicated workspace refuses Chrome launch, observation/control grants and control handle |
+
+## The Inklura street (welcome screen, home banner, empty states)
+
+| ID | Test | Use case | Status | Notes |
+| --- | --- | --- | --- | --- |
+| SDTEST-3177 | Every image of the street is exported, embedded in the binary and listed | SDUC-587 | Green | `ludique.rs`; an unregistered image fails to load without an error |
+| SDTEST-3178 | The balloon leaves after a click, stays away, and is always back in place | SDUC-587 | Green | `ludique.rs`, pure function |
+| SDTEST-3179 | What crosses the scene starts and ends out of sight; the banner keeps room for its copy | SDUC-587 | Green | `ludique.rs` |
+| SDTEST-3180 | The scene plays its run, rests when the van is out of the picture, keeps its time, ignores time spent off screen, and plays again when shown or woken | SDUC-587 | Green | `ludique.rs`, `StageClock` driven with explicit instants and frame numbers |
+
+| SDTEST-3181 | On the home page only a request that waits takes the warning pill; status labels start with a capital, accents included | SDUC-588 | Green | `workspace/user_home.rs`, pure functions |
+| SDTEST-3182 | Every notice level has its own icon, embedded in the binary | SDUC-589 | Green | `toast.rs`; an icon that is not embedded draws nothing |
+
+The rendering itself (layout over the sky, both themes, three window sizes, the
+home page against the mock-up) was checked by hand: see the walkthroughs under
+SDUC-587 and SDUC-588.

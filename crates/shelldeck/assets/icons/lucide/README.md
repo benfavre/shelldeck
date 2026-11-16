@@ -125,6 +125,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `info` | status | info banners |
 | `key` | ssh | SSH keys, credentials |
 | `keyboard` | dashboard | shortcuts section header |
+| `laptop` | user home | device row of "Mes informations" |
 | `life-buoy` | AI | mention picker — support ticket |
 | `list-checks` | AI | assistant tasks tab and empty state |
 | `layout-dashboard` | view | Dev sidebar — Workspaces |

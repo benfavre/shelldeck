@@ -66,6 +66,127 @@ fn user_sites_empty_state(
     }
 }
 
+/// Background of the User home page: the page colour with a breath of the
+/// brand colour, so the panels stand out on it. Opaque on purpose: the banner
+/// paints it again over its own square corner (see `render_user_overview`).
+fn user_home_page_bg() -> Hsla {
+    ShellDeckColors::bg_primary().blend(ShellDeckColors::primary().opacity(0.045))
+}
+
+/// Corner radius of a banner that carries the street scene.
+const BANNER_RADIUS: f32 = 16.0;
+
+/// A panel of the User home: the lightest surface, a quiet border, a soft
+/// shadow and generous corners.
+fn home_panel() -> Div {
+    div()
+        .rounded(px(14.0))
+        .border_1()
+        .border_color(ShellDeckColors::border().opacity(0.55))
+        .bg(ShellDeckColors::bg_sidebar())
+        .shadow(vec![use_theme().tokens.shadow_sm].into())
+}
+
+/// The tinted tile that carries the icon of a counter or of a row.
+fn home_icon_tile(icon: &'static str, color: Hsla, round: bool) -> Div {
+    let tile = div()
+        .size(px(36.0))
+        .flex_shrink_0()
+        .bg(color.opacity(0.12))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(lucide_icon(icon, 17.0, color));
+    if round {
+        tile.rounded_full()
+    } else {
+        tile.rounded(px(9.0))
+    }
+}
+
+/// Title of a panel: its icon in the brand colour, then the label.
+fn home_section_title(icon: &'static str, label: String) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(lucide_icon(icon, 18.0, ShellDeckColors::primary()))
+        .child(
+            div()
+                .text_size(px(16.0))
+                .font_weight(FontWeight::BOLD)
+                .text_color(ShellDeckColors::text_primary())
+                .child(label),
+        )
+}
+
+/// How the status of a request is shown on the home page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HomeStatusTone {
+    /// Waiting for someone: the one that should catch the eye.
+    Waiting,
+    /// Being worked on.
+    Active,
+    /// Being looked at before work starts.
+    Review,
+    Blocked,
+    /// Done or closed: nothing left to do.
+    Settled,
+}
+
+fn home_status_tone(status: &str) -> HomeStatusTone {
+    match status {
+        "open" => HomeStatusTone::Waiting,
+        "in_progress" => HomeStatusTone::Active,
+        "blocked" => HomeStatusTone::Blocked,
+        "done" | "closed" => HomeStatusTone::Settled,
+        _ => HomeStatusTone::Review,
+    }
+}
+
+/// First letter in upper case: status labels are written in lower case for
+/// running text, and a pill is a label of its own.
+fn capitalize_first(label: &str) -> String {
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// Status of a request as a pill, coloured by what it asks of the reader.
+fn home_status_pill(status: &str) -> Div {
+    let pill = div()
+        .flex_shrink_0()
+        .px(px(12.0))
+        .py(px(4.0))
+        .rounded_full()
+        .whitespace_nowrap()
+        .text_size(px(12.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(capitalize_first(&crate::support_view::issue_status_label(
+            status,
+        )));
+    match home_status_tone(status) {
+        HomeStatusTone::Waiting => pill
+            .bg(ShellDeckColors::warning().opacity(0.42))
+            .text_color(ShellDeckColors::text_primary()),
+        HomeStatusTone::Active => pill
+            .bg(ShellDeckColors::primary())
+            .text_color(use_theme().tokens.primary_foreground),
+        HomeStatusTone::Review => pill
+            .bg(ShellDeckColors::primary().opacity(0.14))
+            .text_color(ShellDeckColors::primary()),
+        HomeStatusTone::Blocked => pill
+            .bg(ShellDeckColors::error().opacity(0.16))
+            .text_color(ShellDeckColors::error()),
+        HomeStatusTone::Settled => pill
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .text_color(ShellDeckColors::text_muted()),
+    }
+}
+
 /// Keyboard-semantic wrapper for rich rows that cannot be represented by the
 /// label-and-icon-only shared Button without losing their information layout.
 type KeyboardActionHandler = dyn Fn(&mut Window, &mut App);
@@ -635,12 +756,13 @@ impl Workspace {
             .child(card.child(identity).child(actions))
     }
 
-    /// Tab bar for the User-mode home. Same visual shape as
-    /// `SupportView::render_section_tabs`
-    /// (compact_filter_button + icon, `Default` variant when active).
+    /// Navigation row of the User-mode home: the brand, the tabs, then the
+    /// account. Tabs are quiet text buttons; the current one is tinted with
+    /// the brand colour.
     pub(super) fn render_user_home_tab_bar(
         &self,
         account: AnyElement,
+        roomy: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let tab = |label: String,
@@ -650,18 +772,13 @@ impl Workspace {
                    cx: &mut Context<Self>| {
             let active = this_tab == target;
             let entity = cx.entity();
-            adabraka_ui::components::button::Button::new(
+            let button = adabraka_ui::components::button::Button::new(
                 ElementId::from(SharedString::from(format!("uh-tab-{target:?}"))),
                 label,
             )
             .size(adabraka_ui::components::button::ButtonSize::Sm)
-            .h(px(26.0))
-            .px(px(10.0))
-            .variant(if active {
-                ButtonVariant::Default
-            } else {
-                ButtonVariant::Outline
-            })
+            .h(px(34.0))
+            .px(px(11.0))
             .icon(IconSource::from(icon))
             .on_click(move |_, window, cx| {
                 entity.update(cx, |this, cx| {
@@ -673,7 +790,16 @@ impl Workspace {
                     this.user_home_tab = target;
                     cx.notify();
                 });
-            })
+            });
+            if active {
+                // The tinted variant gives the label and the icon the brand
+                // colour on a light tint of it; a tab carries no outline.
+                button
+                    .variant(ButtonVariant::Ai)
+                    .border_color(gpui::transparent_black())
+            } else {
+                button.variant(ButtonVariant::Ghost)
+            }
         };
         let current = self.user_home_tab;
         let tabs = div()
@@ -682,7 +808,7 @@ impl Workspace {
             .min_w(px(0.0))
             .items_center()
             .flex_wrap()
-            .gap(px(6.0))
+            .gap(px(2.0))
             .child(tab(
                 t!("user.tabs.home").to_string(),
                 "house",
@@ -718,18 +844,38 @@ impl Workspace {
                 current,
                 cx,
             ));
-        div()
+        let mut bar = div()
             .flex()
             .flex_shrink_0()
             .items_center()
             .justify_between()
-            .gap(px(12.0))
-            .px(px(16.0))
-            .py(px(8.0))
+            .gap(px(14.0))
+            .px(px(18.0))
+            .py(px(9.0))
             .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .child(tabs)
-            .child(account)
+            .border_color(ShellDeckColors::border().opacity(0.7))
+            .bg(ShellDeckColors::bg_sidebar());
+        if roomy {
+            // The brand opens the row where there is room for it; a narrower
+            // window keeps the width for the tabs.
+            bar = bar.child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(8.0))
+                    .pr(px(6.0))
+                    .child(crate::brand::brand_badge(24.0))
+                    .child(
+                        div()
+                            .text_size(px(17.0))
+                            .font_weight(FontWeight::EXTRA_BOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child("Inklura"),
+                    ),
+            );
+        }
+        bar.child(tabs).child(account)
     }
 
     pub(super) fn render_user_overview(
@@ -756,29 +902,24 @@ impl Workspace {
             .filter(|issue| !issue.is_closed())
             .count();
 
-        // One-line counters that open the matching tab: the number is the
-        // shortcut, so it no longer needs a 90 px card of its own.
+        // Counters that open the matching tab: the number is the shortcut.
         let stat = |icon: &'static str,
                     value: usize,
                     label: String,
                     target: UserHomeTab,
                     cx: &mut Context<Self>| {
             let entity = cx.entity();
-            div()
+            home_panel()
                 .id(ElementId::from(SharedString::from(format!(
                     "home-stat-{target:?}"
                 ))))
                 .flex()
                 .flex_1()
-                .min_w(px(180.0))
+                .min_w(px(200.0))
                 .items_center()
-                .gap(px(10.0))
-                .px(px(14.0))
-                .py(px(10.0))
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .bg(ShellDeckColors::bg_sidebar())
+                .gap(px(14.0))
+                .px(px(18.0))
+                .py(px(11.0))
                 .cursor_pointer()
                 .hover(|style| style.bg(ShellDeckColors::hover_bg()))
                 .on_click(move |_, _, cx| {
@@ -787,20 +928,10 @@ impl Workspace {
                         cx.notify();
                     });
                 })
+                .child(home_icon_tile(icon, ShellDeckColors::primary(), true))
                 .child(
                     div()
-                        .size(px(28.0))
-                        .flex_shrink_0()
-                        .rounded(px(8.0))
-                        .bg(ShellDeckColors::primary().opacity(0.12))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(lucide_icon(icon, 14.0, ShellDeckColors::primary())),
-                )
-                .child(
-                    div()
-                        .text_size(px(20.0))
+                        .text_size(px(24.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(ShellDeckColors::text_primary())
                         .child(value.to_string()),
@@ -810,23 +941,17 @@ impl Workspace {
                         .flex_1()
                         .min_w(px(0.0))
                         .truncate()
-                        .text_size(px(12.0))
+                        .text_size(px(14.0))
                         .text_color(ShellDeckColors::text_muted())
                         .child(label),
                 )
                 .child(lucide_icon(
                     "chevron-right",
-                    14.0,
+                    16.0,
                     ShellDeckColors::text_muted(),
                 ))
         };
 
-        let entity = cx.entity();
-        let new_request = Button::new("home-new-request", t!("user.home.new_request").to_string())
-            .icon(IconSource::from("plus"))
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |this, cx| this.open_new_request(cx));
-            });
         let entity = cx.entity();
         let capture_share = Button::new(
             "home-capture-share",
@@ -873,40 +998,35 @@ impl Workspace {
                     let updated = rel_time(issue.updated_at);
                     let action_id =
                         ElementId::from(SharedString::from(format!("home-recent-request-{index}")));
-                    let row = div()
+                    let mut row = div()
                         .id(action_id.clone())
                         .flex()
                         .items_center()
-                        .gap(px(10.0))
+                        .gap(px(14.0))
                         .mx(px(-8.0))
                         .px(px(8.0))
-                        .py(px(9.0))
+                        .py(px(11.0))
                         .rounded(px(8.0))
-                        .border_b_1()
-                        .border_color(ShellDeckColors::border().opacity(0.65))
                         .cursor_pointer()
-                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                        .child(
-                            div()
-                                .size(px(30.0))
-                                .rounded(px(8.0))
-                                .bg(ShellDeckColors::primary().opacity(0.10))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .flex_shrink_0()
-                                .child(lucide_icon("inbox", 14.0, ShellDeckColors::primary())),
-                        )
+                        .hover(|style| style.bg(ShellDeckColors::hover_bg()));
+                    if index > 0 {
+                        // A rule between two requests, none under the last.
+                        row = row
+                            .border_t_1()
+                            .border_color(ShellDeckColors::border().opacity(0.55));
+                    }
+                    let row = row
+                        .child(home_icon_tile("mail", ShellDeckColors::primary(), false))
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(3.0))
+                                .gap(px(2.0))
                                 .min_w(px(0.0))
                                 .flex_1()
                                 .child(
                                     div()
-                                        .text_size(px(13.0))
+                                        .text_size(px(14.0))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(ShellDeckColors::text_primary())
                                         .overflow_hidden()
@@ -916,12 +1036,12 @@ impl Workspace {
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(11.0))
+                                        .text_size(px(12.0))
                                         .text_color(ShellDeckColors::text_muted())
                                         .child(updated),
                                 ),
                         )
-                        .child(issue_status_badge(&issue.status));
+                        .child(home_status_pill(&issue.status));
                     KeyboardAction::new(action_id, row, move |_, cx| {
                         entity.update(cx, |this, cx| {
                             this.user_home_tab = UserHomeTab::Requests;
@@ -947,23 +1067,15 @@ impl Workspace {
             .clone()
             .filter(|label| !label.trim().is_empty())
             .unwrap_or_else(|| t!("user.home.no_active_site").to_string());
-        let status_row = |icon: &'static str, label: String, value: String, color: Hsla| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.0))
-                .py(px(7.0))
-                .child(
-                    div()
-                        .size(px(28.0))
-                        .rounded(px(7.0))
-                        .bg(color.opacity(0.10))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(lucide_icon(icon, 13.0, color)),
-                )
-                .child(
+        let status_row =
+            |icon: &'static str, label: String, value: String, color: Hsla, first: bool| {
+                let mut row = div().flex().items_center().gap(px(14.0)).py(px(10.0));
+                if !first {
+                    row = row
+                        .border_t_1()
+                        .border_color(ShellDeckColors::border().opacity(0.55));
+                }
+                row.child(home_icon_tile(icon, color, false)).child(
                     div()
                         .flex()
                         .flex_col()
@@ -971,20 +1083,20 @@ impl Workspace {
                         .flex_1()
                         .child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(px(12.0))
                                 .text_color(ShellDeckColors::text_muted())
                                 .child(label),
                         )
                         .child(
                             div()
-                                .text_size(px(13.0))
-                                .font_weight(FontWeight::MEDIUM)
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(ShellDeckColors::text_primary())
                                 .overflow_hidden()
                                 .child(value),
                         ),
                 )
-        };
+            };
         // Accord du compteur de sites : le projet sépare `.one` et `.many`
         // plutôt que d'écrire « 1 sites » (cf. `tray.counter.*`).
         let directory_count = if sites == 1 {
@@ -992,124 +1104,103 @@ impl Workspace {
         } else {
             t!("user.home.directory_count.many", count = sites).to_string()
         };
-        let mut hero = div()
-            .relative()
-            .w_full()
-            .flex_shrink_0()
-            .overflow_hidden()
-            .rounded(use_theme().tokens.radius_lg)
-            .border_1()
-            .border_color(ShellDeckColors::primary().opacity(0.40))
-            // Match the surrounding page so GPUI's rectangular background
-            // paint cannot show behind the curved border. The artwork itself
-            // stays safely inset below.
-            .bg(ShellDeckColors::bg_primary());
-        hero = if compact {
-            // The compact banner needs enough vertical room for localized
-            // copy, but remains a banner rather than turning into a card.
-            hero.h(px(136.0))
-        } else if wide_banner {
-            hero.h(px(104.0))
-        } else {
-            // Mid widths wrap the subtitle onto a second line.
-            hero.h(px(132.0))
-        };
 
-        let mut hero_copy = div()
-            .relative()
-            .ml_auto()
-            .h_full()
+        // The banner is the street of inklura.fr (`ludique.rs`): the copy and
+        // the main action on the sky to the left, the town on its stretch of
+        // road to the right. Everything over the sky takes the scene's own
+        // colours, never the palette's: the scene keeps its day or night
+        // whatever the theme.
+        let night = crate::ludique::street_is_night(cx);
+        // Below the wide breakpoint the copy needs the larger share of the
+        // banner and a smaller title to stay on one line.
+        let roomy = wide_banner && !compact;
+        let street = if roomy {
+            crate::ludique::StreetLayout::Banner
+        } else {
+            crate::ludique::StreetLayout::BannerCompact
+        };
+        let entity = cx.entity();
+        let new_request = KeyboardAction::new(
+            "home-new-request",
+            crate::ludique::chunky_button("home-new-request", crate::ludique::ChunkyKind::Primary)
+                .rounded(px(10.0))
+                .h(px(if roomy { 42.0 } else { 38.0 }))
+                .px(px(if roomy { 20.0 } else { 16.0 }))
+                .text_size(px(if roomy { 15.0 } else { 13.0 }))
+                .child(
+                    svg()
+                        .path(lucide_path("plus"))
+                        .size(px(16.0))
+                        .text_color(crate::theme::StreetColors::paper()),
+                )
+                .child(t!("user.home.new_request").to_string()),
+            move |_, cx| {
+                entity.update(cx, |this, cx| this.open_new_request(cx));
+            },
+        );
+        let hero_copy = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .bottom_0()
+            // The copy may run a little into the fade of the town.
+            .w(relative(street.copy_share() + 0.05))
             .flex()
             .flex_col()
             .justify_center()
-            .items_start();
-        hero_copy = if compact {
-            // At 600 logical pixels the old 52% column lost 68 px to padding,
-            // clipping the counter and subtitle. Keep the copy over the
-            // artwork's dark half while giving the text a definite safe zone.
-            hero_copy
-                .w(relative(0.52))
-                .gap(px(5.0))
-                .pl(px(28.0))
-                .pr(px(14.0))
-        } else {
-            hero_copy
-                .w(relative(0.52))
-                .gap(px(7.0))
-                // The blue field edge lives in the illustration and moves
-                // with `Cover`, so the wide composition stays clear of it.
-                .pl(px(44.0))
-                .pr(px(24.0))
-        };
-        hero_copy = hero_copy
+            .items_start()
+            .gap(px(if roomy { 8.0 } else { 6.0 }))
+            .pl(px(if compact {
+                18.0
+            } else if roomy {
+                30.0
+            } else {
+                24.0
+            }))
+            .pr(px(8.0))
             .child(
-                div()
-                    .px(px(8.0))
-                    .py(px(3.0))
-                    .rounded_full()
-                    // A solid backdrop keeps the counter readable wherever
-                    // the cover crop places the light modelling-clay area.
-                    .bg(ShellDeckColors::backdrop())
-                    .border_1()
-                    .border_color(ShellDeckColors::primary().opacity(0.55))
-                    .text_size(px(10.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(hsla(0.47, 0.78, 0.72, 1.0))
-                    .child(directory_count.clone()),
+                crate::ludique::highlighted(
+                    t!("user.home.title").to_string(),
+                    if roomy {
+                        30.0
+                    } else if compact {
+                        21.0
+                    } else {
+                        24.0
+                    },
+                    night,
+                )
+                .whitespace_nowrap(),
             )
             .child(
                 div()
-                    .text_size(px(21.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(white())
-                    .child(t!("user.home.title").to_string()),
-            )
-            .child(
-                div()
-                    .max_w(px(430.0))
-                    .text_size(px(12.0))
-                    .text_color(white().opacity(0.72))
+                    .max_w(px(350.0))
+                    .text_size(px(if roomy { 15.0 } else { 13.0 }))
+                    .text_color(crate::theme::StreetColors::ink_muted(night))
                     .child(t!("user.home.subtitle").to_string()),
-            );
+            )
+            // Room under the button for the edge it stands on.
+            .child(div().pt(px(6.0)).pb(px(4.0)).child(new_request));
+        let hero = Self::street_banner(
+            "user-home",
+            street,
+            if roomy { 212.0 } else { 204.0 },
+            hero_copy,
+            cx,
+        );
 
-        let hero = hero
-            .child(
-                img("images/home/user-dashboard-colorful-v2.webp")
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    // Preserve the illustration at every window width.
-                    // Branding is a sibling below, never baked into or
-                    // stretched with the raster artwork.
-                    .rounded(use_theme().tokens.radius_lg)
-                    .object_fit(ObjectFit::Cover),
-            )
-            .child(
-                // This is intentionally a real UI element rather than pixels
-                // in the image: cropping must never distort the wordmark.
-                div()
-                    .absolute()
-                    .left(px(18.0))
-                    .bottom(px(10.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(7.0))
-                    .child(
-                        svg()
-                            .path("images/shelldeck-mark.svg")
-                            .size(px(22.0))
-                            .flex_shrink_0()
-                            .text_color(white().opacity(0.90)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(white().opacity(0.90))
-                            .child(shelldeck_core::APP_NAME),
-                    ),
-            )
-            .child(hero_copy);
+        let entity = cx.entity();
+        let see_all = Button::new("home-recent-see-all", t!("user.home.see_all").to_string())
+            .variant(ButtonVariant::Link)
+            .size(ButtonSize::Sm)
+            .h(px(26.0))
+            .px(px(4.0))
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| {
+                    this.user_home_tab = UserHomeTab::Requests;
+                    cx.notify();
+                });
+            });
 
         div()
             .id("user-overview-scroll")
@@ -1117,13 +1208,14 @@ impl Workspace {
             .flex_col()
             .flex_1()
             .overflow_y_scroll()
-            .gap(px(12.0))
-            .p(px(16.0))
+            .gap(px(14.0))
+            .p(px(18.0))
             .child(hero)
             .child(
                 div()
                     .flex()
-                    .gap(px(12.0))
+                    .flex_wrap()
+                    .gap(px(14.0))
                     .child(stat(
                         "globe",
                         sites,
@@ -1140,50 +1232,55 @@ impl Workspace {
                     )),
             )
             .child(
-                adabraka_ui::display::card::Card::new().content(
-                    // Below the wide breakpoint the buttons move under the
-                    // title as one row, instead of stacking three buttons in
-                    // a tall right-hand column.
-                    div()
-                        .flex()
-                        .map(|row| {
-                            if wide_banner {
-                                row.items_center().justify_between()
-                            } else {
-                                row.flex_col().items_start()
-                            }
-                        })
-                        .gap(px(12.0))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(4.0))
-                                .child(
-                                    div()
-                                        .text_size(px(14.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(ShellDeckColors::text_primary())
-                                        .child(t!("user.home.quick_actions").to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(ShellDeckColors::text_muted())
-                                        .child(t!("user.home.quick_actions_hint").to_string()),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .when(wide_banner, |buttons| buttons.justify_end())
-                                .gap(px(8.0))
-                                .child(capture_share)
-                                .child(share_files)
-                                .child(new_request),
-                        ),
-                ),
+                // Below the wide breakpoint the buttons move under the title
+                // as one row. The main action, a new request, is in the banner.
+                home_panel()
+                    .flex()
+                    .map(|row| {
+                        if wide_banner {
+                            row.items_center().justify_between()
+                        } else {
+                            row.flex_col().items_start()
+                        }
+                    })
+                    .gap(px(14.0))
+                    .px(px(22.0))
+                    .py(px(15.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .child(
+                                div()
+                                    .text_size(px(16.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(t!("user.home.quick_actions").to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(t!("user.home.quick_actions_hint").to_string()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .when(wide_banner, |buttons| {
+                                buttons
+                                    .justify_end()
+                                    .pl(px(22.0))
+                                    .border_l_1()
+                                    .border_color(ShellDeckColors::border().opacity(0.7))
+                            })
+                            .gap(px(10.0))
+                            .child(capture_share)
+                            .child(share_files),
+                    ),
             )
             .children(self.render_home_share_card(cx))
             .child(
@@ -1191,246 +1288,222 @@ impl Workspace {
                     .flex()
                     .flex_wrap()
                     .items_start()
-                    .gap(px(12.0))
+                    .gap(px(14.0))
                     .child(
-                        adabraka_ui::display::card::Card::new()
-                            .content(
+                        home_panel()
+                            .min_w(px(300.0))
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .px(px(22.0))
+                            .pt(px(16.0))
+                            .pb(px(12.0))
+                            .child(
                                 div()
                                     .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .gap(px(8.0))
-                                            .pb(px(6.0))
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(8.0))
-                                                    .child(lucide_icon(
-                                                        "tag",
-                                                        15.0,
-                                                        ShellDeckColors::primary(),
-                                                    ))
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(14.0))
-                                                            .font_weight(FontWeight::SEMIBOLD)
-                                                            .text_color(
-                                                                ShellDeckColors::text_primary(),
-                                                            )
-                                                            .child(
-                                                                t!("user.home.recent_requests")
-                                                                    .to_string(),
-                                                            ),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.0))
-                                                    .text_color(ShellDeckColors::text_muted())
-                                                    .child(
-                                                        t!("user.home.latest_three").to_string(),
-                                                    ),
-                                            ),
-                                    )
-                                    .child(recent_requests),
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(8.0))
+                                    .child(home_section_title(
+                                        "tag",
+                                        t!("user.home.recent_requests").to_string(),
+                                    ))
+                                    .child(see_all),
                             )
-                            .min_w(px(300.0))
-                            .flex_1(),
+                            .child(recent_requests),
                     )
                     .child(
-                        adabraka_ui::display::card::Card::new()
-                            .content(
+                        home_panel()
+                            .min_w(px(260.0))
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .px(px(22.0))
+                            .pt(px(16.0))
+                            .pb(px(10.0))
+                            .child(home_section_title(
+                                "activity",
+                                t!("user.home.workspace_status").to_string(),
+                            ))
+                            .child(
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(5.0))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(8.0))
-                                            .pb(px(6.0))
-                                            .child(lucide_icon(
-                                                "activity",
-                                                15.0,
-                                                ShellDeckColors::primary(),
-                                            ))
-                                            .child(
-                                                div()
-                                                    .text_size(px(14.0))
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .text_color(ShellDeckColors::text_primary())
-                                                    .child(
-                                                        t!("user.home.workspace_status")
-                                                            .to_string(),
-                                                    ),
-                                            ),
-                                    )
                                     .child(status_row(
                                         "shield",
                                         t!("user.home.account").to_string(),
                                         account_status,
                                         self.account_status.dot_color(),
+                                        true,
                                     ))
                                     .child(status_row(
                                         "globe",
                                         t!("user.home.active_site").to_string(),
                                         active_site,
                                         ShellDeckColors::primary(),
+                                        false,
                                     ))
                                     .child(status_row(
                                         "database",
                                         t!("user.home.directory").to_string(),
-                                        directory_count.clone(),
+                                        directory_count,
                                         ShellDeckColors::success(),
+                                        false,
                                     )),
-                            )
-                            .min_w(px(260.0))
-                            .flex_1(),
+                            ),
                     ),
             )
     }
 
-    /// User-mode "Mes informations" tab — surfaces the meaningful fields the
-    /// `/whoami` payload returned plus the account bits and directory stats.
-    /// Missing optional values are omitted rather than rendered as dashes.
+    /// A rounded banner of the User pages: the street scene, and `copy` over
+    /// its sky (an absolute layer the caller sizes).
+    fn street_banner(
+        id: &'static str,
+        layout: crate::ludique::StreetLayout,
+        height: f32,
+        copy: Div,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        // Clipping is rectangular: the road would show a square corner at the
+        // bottom right of the rounded banner. A ring in the page colour paints
+        // it away: its inner edge is the banner's own curve, and it is wide
+        // enough to reach the corner. Only its bottom right quarter is drawn,
+        // and the box is twice the outer radius, the largest a corner may be.
+        let corner_ring = BANNER_RADIUS * 0.5;
+        let corner_outer = BANNER_RADIUS - 1.0 + corner_ring;
+        // No width of its own: the column stretches it. With a percentage
+        // width the banner collapsed to its border in a 760 px window.
+        div()
+            .relative()
+            .flex_shrink_0()
+            .h(px(height))
+            .overflow_hidden()
+            .rounded(px(BANNER_RADIUS))
+            .border_1()
+            .border_color(ShellDeckColors::primary().opacity(0.18))
+            .bg(user_home_page_bg())
+            .child(crate::ludique::street_scene(id, layout, cx).rounded(px(BANNER_RADIUS - 1.0)))
+            .child(
+                div()
+                    .absolute()
+                    .right(px(-corner_ring))
+                    .bottom(px(-corner_ring))
+                    .size(px(corner_outer * 2.0))
+                    .rounded_br(px(corner_outer))
+                    .border_r(px(corner_ring))
+                    .border_b(px(corner_ring))
+                    .border_color(user_home_page_bg()),
+            )
+            .child(copy)
+    }
+
+    /// User-mode "Mes informations" tab: the page opens on a short banner of
+    /// the street, then one panel per subject, each opened by a drawing of
+    /// the street (`ludique::section_badge`). It surfaces the meaningful
+    /// fields the `/whoami` payload returned plus the account bits and
+    /// directory stats. Missing optional values are omitted rather than
+    /// rendered as dashes, and a subject with nothing to show has no panel.
     /// Deliberately read-only so it can't accidentally mutate credentials.
-    pub(super) fn render_user_infos_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_user_infos_tab(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        use crate::ludique::{section_badge, SectionBadge, StreetLayout};
+
         let account = self.app_config.account.clone().unwrap_or_default();
         let server = self.account_base_url();
         let payload = self.site_directory.clone().unwrap_or_default();
         let role_tokens = user_role_tokens(&account);
         let whoami = self.last_whoami.clone().unwrap_or_default();
 
-        // Small helper: one "field row" (label muted small, value primary
-        // wrapping). Copies the shape of the ticket detail meta rows so
-        // the visual language stays the same across surfaces.
-        let field = |label: String, value: String, icon: &'static str| {
-            div()
-                .flex()
-                .items_start()
-                .gap(px(10.0))
-                .py(px(8.0))
-                .child(
-                    div()
-                        .size(px(28.0))
-                        .rounded(px(6.0))
-                        .bg(ShellDeckColors::primary().opacity(0.10))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .flex_shrink_0()
-                        .child(lucide_icon(icon, 13.0, ShellDeckColors::primary())),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w(px(0.0))
-                        .flex_1()
+        // The rows of a panel: an icon tile, the label in small capitals, the
+        // value in bold, and a rule between two rows.
+        let fields = |rows: Vec<(String, String, &'static str)>| {
+            let mut column = div().flex().flex_col();
+            for (index, (label, value, icon)) in rows.into_iter().enumerate() {
+                let mut row = div().flex().items_center().gap(px(14.0)).py(px(10.0));
+                if index > 0 {
+                    row = row
+                        .border_t_1()
+                        .border_color(ShellDeckColors::border().opacity(0.55));
+                }
+                column = column.child(
+                    row.child(home_icon_tile(icon, ShellDeckColors::primary(), false))
                         .child(
                             div()
-                                .text_size(px(11.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(ShellDeckColors::text_muted())
-                                .child(label.to_uppercase()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .text_color(ShellDeckColors::text_primary())
-                                .child(value),
+                                .flex()
+                                .flex_col()
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(label.to_uppercase()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(ShellDeckColors::text_primary())
+                                        .child(value),
+                                ),
                         ),
-                )
+                );
+            }
+            column
         };
 
-        // Section chrome — same p/rounded/border/bg as other User-mode cards.
-        // Cards flow two per row on a wide window (one when narrow) instead
-        // of a single tall column of mostly empty full-width cards.
-        let section = |title: String, icon: &'static str, body: gpui::Div| {
-            div()
+        // A panel: the drawing and the title, then the body. Panels flow two
+        // per row on a wide window (one when narrow) and share the height of
+        // their row.
+        let section = |title: String, badge: SectionBadge, body: gpui::Div| {
+            home_panel()
+                .border_color(ShellDeckColors::text_primary().opacity(0.26))
                 .flex()
                 .flex_col()
                 .flex_1()
                 .flex_basis(px(480.0))
                 .min_w(px(300.0))
-                .rounded(px(12.0))
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .bg(ShellDeckColors::bg_sidebar())
+                .gap(px(4.0))
+                .px(px(22.0))
+                .pt(px(16.0))
+                .pb(px(12.0))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.0))
-                        .px(px(16.0))
-                        .py(px(12.0))
-                        .border_b_1()
-                        .border_color(ShellDeckColors::border())
-                        .child(lucide_icon(icon, 15.0, ShellDeckColors::primary()))
+                        .gap(px(12.0))
+                        .pb(px(4.0))
+                        .child(section_badge(badge, 50.0))
                         .child(
                             div()
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(px(19.0))
+                                .font_weight(FontWeight::EXTRA_BOLD)
                                 .text_color(ShellDeckColors::text_primary())
                                 .child(title),
                         ),
                 )
-                .child(div().flex().flex_col().px(px(16.0)).py(px(4.0)).child(body))
+                .child(body)
         };
 
-        // Session — only values actually returned by whoami. Empty optional
-        // timestamps must not turn into rows whose value is just an em dash.
-        let mut session_body = div().flex().flex_col();
-        if let Some(device) = whoami.label.as_deref().and_then(nonempty_text) {
-            session_body = session_body.child(field(
-                t!("user.infos.field.device").to_string(),
-                device,
-                "keyboard",
-            ));
-        }
-        if let Some(created_at) = whoami.created_at.as_deref().and_then(nonempty_text) {
-            session_body = session_body.child(field(
-                t!("user.infos.field.since").to_string(),
-                crate::i18n::local_timestamp(&created_at),
-                "calendar",
-            ));
-        }
-        if let Some(last_seen_at) = whoami.last_seen_at.as_deref().and_then(nonempty_text) {
-            session_body = session_body.child(field(
-                t!("user.infos.field.last_seen").to_string(),
-                crate::i18n::local_timestamp(&last_seen_at),
-                "clock",
-            ));
-        }
-
-        // Account — identity + Manage server.
-        let mut account_body = div().flex().flex_col();
+        // Account: identity + Manage server.
+        let mut account_rows = Vec::new();
         if let Some(name) = nonempty_text(&account.display_name()) {
-            account_body =
-                account_body.child(field(t!("user.infos.field.name").to_string(), name, "user"));
+            account_rows.push((t!("user.infos.field.name").to_string(), name, "user"));
         }
         if let Some(email) = nonempty_text(&account.email) {
-            account_body = account_body.child(field(
-                t!("user.infos.field.email").to_string(),
-                email,
-                "mail",
-            ));
+            account_rows.push((t!("user.infos.field.email").to_string(), email, "mail"));
         }
         if let Some(server) = nonempty_text(&server) {
-            account_body = account_body.child(field(
-                t!("user.infos.field.server").to_string(),
-                server,
-                "globe",
-            ));
+            account_rows.push((t!("user.infos.field.server").to_string(), server, "globe"));
         }
 
-        // Scope — tenant + sites the server exposed to us.
+        // Scope: tenant + sites the server exposed to us.
         let tenant_name = payload
             .sites
             .first()
@@ -1438,9 +1511,9 @@ impl Workspace {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_default();
         let sites_count = payload.sites.len();
-        let mut scope_body = div().flex().flex_col();
+        let mut scope_rows = Vec::new();
         if let Some(tenant_name) = nonempty_text(&tenant_name) {
-            scope_body = scope_body.child(field(
+            scope_rows.push((
                 t!("user.infos.field.tenant").to_string(),
                 tenant_name,
                 "users",
@@ -1451,82 +1524,133 @@ impl Workspace {
         } else {
             t!("user.infos.field.sites_count.many", count = sites_count).to_string()
         };
-        scope_body = scope_body.child(field(
+        scope_rows.push((
             t!("user.infos.field.sites_available", count = sites_count).to_string(),
             sites_count_label,
             "globe",
         ));
 
-        // Access — one human label per entry in the CM role bag, including
+        // Session: only values actually returned by whoami. Empty optional
+        // timestamps must not turn into rows whose value is just a dash.
+        let mut session_rows = Vec::new();
+        if let Some(device) = whoami.label.as_deref().and_then(nonempty_text) {
+            session_rows.push((t!("user.infos.field.device").to_string(), device, "laptop"));
+        }
+        if let Some(created_at) = whoami.created_at.as_deref().and_then(nonempty_text) {
+            session_rows.push((
+                t!("user.infos.field.since").to_string(),
+                crate::i18n::local_timestamp(&created_at),
+                "calendar",
+            ));
+        }
+        if let Some(last_seen_at) = whoami.last_seen_at.as_deref().and_then(nonempty_text) {
+            session_rows.push((
+                t!("user.infos.field.last_seen").to_string(),
+                crate::i18n::local_timestamp(&last_seen_at),
+                "clock",
+            ));
+        }
+
+        // Access: one human label per entry in the CM role bag, including
         // custom roles. Explicit capability flags supply one coherent fallback
         // only for legacy tokens whose bag is absent; they are never merged
         // into a non-empty bag. See `.agents/roles.md`.
-        let roles_body = {
-            let mut row = div().flex().flex_wrap().gap(px(6.0)).py(px(8.0));
-            for role in &role_tokens {
-                row = row.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .px(px(8.0))
-                        .py(px(3.0))
-                        .rounded(px(6.0))
-                        .bg(ShellDeckColors::primary().opacity(0.12))
-                        .border_1()
-                        .border_color(ShellDeckColors::primary().opacity(0.35))
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(ShellDeckColors::primary())
-                        .child(lucide_icon("shield", 10.0, ShellDeckColors::primary()))
-                        .child(user_role_label(role)),
-                );
-            }
-            div().flex().flex_col().py(px(4.0)).child(row)
-        };
+        let mut roles_body = div().flex().flex_wrap().gap(px(8.0)).py(px(10.0));
+        for role in &role_tokens {
+            roles_body = roles_body.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(12.0))
+                    .py(px(7.0))
+                    .rounded(px(9.0))
+                    .bg(ShellDeckColors::primary().opacity(0.12))
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::primary())
+                    .child(lucide_icon("shield", 15.0, ShellDeckColors::primary()))
+                    .child(user_role_label(role)),
+            );
+        }
 
-        let _ = cx; // no listeners here — the tab is read-only.
+        let night = crate::ludique::street_is_night(cx);
+        let head_copy = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .bottom_0()
+            // The title may run a little into the fade of the town.
+            .w(relative(StreetLayout::PageHead.copy_share() + 0.05))
+            .flex()
+            .items_center()
+            .pl(px(if compact { 18.0 } else { 30.0 }))
+            .child(
+                crate::ludique::highlighted(
+                    t!("user.tabs.infos").to_string(),
+                    if compact { 20.0 } else { 28.0 },
+                    night,
+                )
+                .whitespace_nowrap(),
+            );
+        let head = Self::street_banner(
+            "user-infos",
+            StreetLayout::PageHead,
+            if compact { 124.0 } else { 140.0 },
+            head_copy,
+            cx,
+        );
+
+        let mut panels = div().flex().flex_wrap().gap(px(14.0)).child(section(
+            t!("user.infos.section.account").to_string(),
+            SectionBadge::Account,
+            fields(account_rows),
+        ));
+        panels = panels.child(section(
+            t!("user.infos.section.scope").to_string(),
+            SectionBadge::Shop,
+            fields(scope_rows),
+        ));
+        if !session_rows.is_empty() {
+            panels = panels.child(section(
+                t!("user.infos.section.session").to_string(),
+                SectionBadge::Laptop,
+                fields(session_rows),
+            ));
+        }
+        if !role_tokens.is_empty() {
+            panels = panels.child(section(
+                t!("user.infos.section.roles").to_string(),
+                SectionBadge::Shield,
+                roles_body,
+            ));
+        }
+
         div()
             .id("user-infos-tab")
             .flex()
-            .flex_wrap()
-            .items_start()
-            .gap(px(12.0))
-            .p(px(16.0))
-            .child(section(
-                t!("user.infos.section.session").to_string(),
-                "shield",
-                session_body,
-            ))
-            .child(section(
-                t!("user.infos.section.roles").to_string(),
-                "shield",
-                roles_body,
-            ))
-            .child(section(
-                t!("user.infos.section.account").to_string(),
-                "user",
-                account_body,
-            ))
-            .child(section(
-                t!("user.infos.section.scope").to_string(),
-                "users",
-                scope_body,
-            ))
+            .flex_col()
+            .gap(px(14.0))
+            .p(px(18.0))
+            .child(head)
+            .child(panels)
     }
 
     /// User mode: a manage-centric home — account header + "Mes sites" list with
     /// per-site selection plus public-site and Manage deep links.
     /// Pre-login welcome landing — intercepts the render whenever the user
-    /// is not signed in (there is no guest path). Two-part layout:
+    /// is not signed in (there is no guest path).
     ///
-    /// **Hero** — ShellDeck brand icon + one product promise + two CTAs
-    /// (sign in / create account). The installed app is an authentication
-    /// surface, not a second marketing landing page: broader Inklura claims
-    /// belong on the public website.
+    /// The screen is the street of inklura.fr (`ludique.rs`): the sky fills the
+    /// window, the town stands on the road at the bottom, and the copy sits on
+    /// the sky above it. One product promise and two actions (sign in, create
+    /// an account): the installed app is an authentication surface, not a
+    /// second marketing page, so broader Inklura claims stay on the website.
     ///
-    /// Kept inside a `scrollable_vertical` because on small windows the
-    /// hero and publisher attribution must remain reachable.
+    /// Everything drawn over the sky takes its colours from `StreetColors`:
+    /// the scene has its own day and night, which a click on the sun changes
+    /// without touching the theme.
+    ///
     /// `is_maximized` : comme le mode Utilisateur, l'écran de bienvenue est la
     /// couche opaque la plus basse — la barre d'état n'est pas montée ici.
     pub(super) fn render_welcome_screen(
@@ -1535,63 +1659,74 @@ impl Workspace {
         compact_height: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let entity = cx.entity();
+        use crate::ludique::{
+            chunky_button, highlighted, sticker, street_is_night, street_scene, ChunkyKind,
+            StreetLayout,
+        };
+        use crate::theme::StreetColors;
 
-        // Hero — brand + CTAs.
+        let entity = cx.entity();
+        let night = street_is_night(cx);
+        let layout = if compact_height {
+            StreetLayout::WelcomeCompact
+        } else {
+            StreetLayout::Welcome
+        };
+        let title_size = if compact_height { 24.0 } else { 32.0 };
+
+        // Copy and actions, over the sky.
         let hero = div()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(16.0))
+            .gap(px(14.0))
+            .px(px(24.0))
+            .child(sticker(t!("welcome.sticker").to_string()))
             .child(
-                // ShellDeck brand mark — PNG (not SVG) because GPUI renders
-                // SVGs in currentColor and the mark's multi-fill palette
-                // (teal frame + dark inner + light glyph) would collapse
-                // to a single tint. The PNG raster preserves every colour.
-                img("images/shelldeck-icon.png").w(px(72.0)).h(px(72.0)),
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_center()
+                    .gap_x(px(title_size * 0.28))
+                    .child(
+                        div()
+                            .text_size(px(title_size))
+                            .font_weight(FontWeight::EXTRA_BOLD)
+                            .text_color(StreetColors::ink(night))
+                            .child(t!("welcome.title_lead").to_string()),
+                    )
+                    .child(highlighted(shelldeck_core::APP_NAME, title_size, night)),
             )
             .child(
                 div()
-                    .text_size(px(24.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(t!("welcome.title").to_string()),
-            )
-            .child(
-                div()
-                    .max_w(px(460.0))
+                    .max_w(px(470.0))
                     .text_center()
                     .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_muted())
+                    .text_color(StreetColors::ink_muted(night))
                     .child(t!("welcome.tagline").to_string()),
             )
             .child(
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_wrap()
                     .items_center()
-                    .gap(px(8.0))
-                    .mt(px(8.0))
+                    .justify_center()
+                    .gap(px(12.0))
+                    .mt(px(6.0))
+                    // Room for the hard edge the buttons stand on.
+                    .pb(px(6.0))
                     .child(
-                        // Primary CTA — funnels to the existing LoginForm modal.
-                        div()
-                            .id("welcome-sign-in")
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .px(px(20.0))
-                            .py(px(10.0))
-                            .rounded(px(10.0))
-                            .bg(ShellDeckColors::primary())
+                        // Primary action: funnels to the existing LoginForm modal.
+                        chunky_button("welcome-sign-in", ChunkyKind::Primary)
+                            .h(px(44.0))
+                            .px(px(22.0))
                             .text_size(px(14.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(white())
-                            .cursor_pointer()
                             .child(
                                 svg()
                                     .path(lucide_path("external-link"))
                                     .size(px(14.0))
-                                    .text_color(white()),
+                                    .text_color(StreetColors::paper()),
                             )
                             .child(t!("welcome.sign_in").to_string())
                             .on_click({
@@ -1602,28 +1737,11 @@ impl Workspace {
                             }),
                     )
                     .child(
-                        // Secondary CTA — opens Manage signup in the browser.
-                        div()
-                            .id("welcome-signup")
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .px(px(14.0))
-                            .py(px(6.0))
-                            .rounded(px(8.0))
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::text_muted())
-                            .cursor_pointer()
-                            .hover(|s| {
-                                s.bg(ShellDeckColors::hover_bg())
-                                    .text_color(ShellDeckColors::text_primary())
-                            })
-                            .child(lucide_icon(
-                                "external-link",
-                                11.0,
-                                ShellDeckColors::text_muted(),
-                            ))
+                        // Secondary action: opens Manage signup in the browser.
+                        chunky_button("welcome-signup", ChunkyKind::Paper)
+                            .h(px(44.0))
+                            .px(px(20.0))
+                            .text_size(px(13.0))
                             .child(t!("welcome.create_account").to_string())
                             .on_click({
                                 let entity = entity.clone();
@@ -1634,41 +1752,44 @@ impl Workspace {
                     ),
             );
 
-        // "Réalisé par WD29" footer — same shape as the Settings > About
-        // signature so a first-time visitor sees the same attribution
-        // whether they land here or hit About after signing in.
-        const LOGO_H: f32 = 20.0;
-        let made_by = div()
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .gap(px(8.0))
-            .py(px(20.0))
-            .text_color(ShellDeckColors::text_muted())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .h(px(LOGO_H))
-                    .text_size(px(11.0))
-                    .line_height(px(LOGO_H))
-                    .child(t!("settings.about.made_by").to_string()),
-            )
-            .child(
-                div().flex().items_center().h(px(LOGO_H)).child(
-                    svg()
-                        .path("images/wd29-logo.svg")
-                        .w(px(56.0))
-                        .h(px(LOGO_H))
-                        .flex_shrink_0()
-                        .text_color(ShellDeckColors::text_muted()),
-                ),
-            );
+        // "Réalisé par WD29": same shape as the Settings > About signature,
+        // written on the pavement in front of the road.
+        const LOGO_H: f32 = 18.0;
+        const FOOTER_H: f32 = 40.0;
+        let made_by = round_window_bottom(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(FOOTER_H))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(8.0))
+                .bg(StreetColors::pavement(night))
+                .text_color(StreetColors::line().opacity(0.72)),
+            is_maximized,
+        )
+        .child(
+            div()
+                .text_size(px(11.0))
+                .line_height(px(LOGO_H))
+                .child(t!("settings.about.made_by").to_string()),
+        )
+        .child(
+            svg()
+                .path("images/wd29-logo.svg")
+                .w(px(50.0))
+                .h(px(LOGO_H))
+                .flex_shrink_0()
+                .text_color(StreetColors::line().opacity(0.72)),
+        );
 
-        // Normal windows center the actual task and pin attribution to the
-        // bottom. At the 400 px application minimum the same blocks switch to
-        // one scrolling column, so neither CTA nor the publisher disappears.
+        // The copy is centred in the sky left above the buildings. At the
+        // 400 px application minimum the same block scrolls instead, so
+        // neither action disappears behind the town.
+        let street_h = FOOTER_H + layout.road_height() + layout.town_height() * 0.66;
         let content = if compact_height {
             scrollable_vertical(
                 div()
@@ -1677,9 +1798,9 @@ impl Workspace {
                     .flex_col()
                     .items_center()
                     .w_full()
-                    .py(px(32.0))
-                    .child(hero)
-                    .child(made_by),
+                    .pt(px(22.0))
+                    .pb(px(street_h))
+                    .child(hero),
             )
             .into_any_element()
         } else {
@@ -1687,30 +1808,32 @@ impl Workspace {
                 .id("welcome-body")
                 .size_full()
                 .flex()
-                .flex_col()
                 .items_center()
-                .child(
-                    div()
-                        .flex()
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .w_full()
-                        .items_center()
-                        .justify_center()
-                        .child(hero),
-                )
-                .child(made_by)
+                .justify_center()
+                .pb(px(street_h))
+                .child(hero)
                 .into_any_element()
         };
 
         round_window_bottom(
             div()
+                .relative()
                 .size_full()
-                .bg(ShellDeckColors::bg_primary())
+                .bg(StreetColors::sky_top(night))
                 .overflow_hidden(),
             is_maximized,
         )
-        .child(content)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom(px(FOOTER_H))
+                .child(street_scene("welcome", layout, cx)),
+        )
+        .child(made_by)
+        .child(div().relative().size_full().child(content))
     }
 
     /// `is_maximized` sert uniquement aux deux coins bas : cette surface est la
@@ -1765,14 +1888,14 @@ impl Workspace {
         // its height for content. The e-mail stays in Mes informations.
         let header = {
             let avatar = div()
-                .size(px(24.0))
+                .size(px(30.0))
                 .flex_shrink_0()
                 .rounded_full()
-                .bg(ShellDeckColors::primary().opacity(0.20))
+                .bg(ShellDeckColors::primary().opacity(0.16))
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(12.0))
+                .text_size(px(13.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(ShellDeckColors::primary())
                 .child(account.initial());
@@ -1780,7 +1903,7 @@ impl Workspace {
                 .id("uh-account-identity")
                 .flex()
                 .items_center()
-                .gap(px(6.0))
+                .gap(px(8.0))
                 .min_w(px(0.0))
                 .child(avatar);
             if !compact_user_home {
@@ -1788,7 +1911,7 @@ impl Workspace {
                     div()
                         .max_w(px(220.0))
                         .truncate()
-                        .text_size(px(13.0))
+                        .text_size(px(14.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(ShellDeckColors::text_primary())
                         .child(account.display_name()),
@@ -1796,19 +1919,18 @@ impl Workspace {
                 // The strip consumes the same role presentation as Mes
                 // informations. A contradictory legacy payload can therefore
                 // never show two different access levels.
-                if let Some(role_label) = primary_role.clone() {
+                // It is the first thing to go when the row gets tight.
+                if let Some(role_label) = primary_role.clone().filter(|_| wide_banner) {
                     identity = identity.child(
                         div()
                             .flex()
                             .flex_shrink_0()
                             .items_center()
                             .gap(px(4.0))
-                            .px(px(6.0))
-                            .py(px(1.0))
-                            .rounded(px(6.0))
-                            .bg(ShellDeckColors::primary().opacity(0.14))
-                            .border_1()
-                            .border_color(ShellDeckColors::primary().opacity(0.35))
+                            .px(px(7.0))
+                            .py(px(2.0))
+                            .rounded_full()
+                            .bg(ShellDeckColors::primary().opacity(0.10))
                             .text_size(px(10.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::primary())
@@ -1821,12 +1943,16 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .flex_shrink_0()
-                .gap(px(8.0))
+                .gap(px(10.0))
+                // A rule sets the account apart from the tabs.
+                .pl(px(14.0))
+                .border_l_1()
+                .border_color(ShellDeckColors::border().opacity(0.7))
                 .child(identity)
                 .child(
                     Button::new("uh-open-manage", t!("user.open_manage").to_string())
-                        .size(ButtonSize::Sm)
-                        .h(px(26.0))
+                        .size(ButtonSize::Md)
+                        .h(px(34.0))
                         .icon(IconSource::from("external-link"))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.open_manage_area("/manage".to_string(), cx);
@@ -1834,9 +1960,9 @@ impl Workspace {
                 )
                 .child(
                     IconButton::new("refresh-cw")
-                        .variant(ButtonVariant::Outline)
-                        .size(gpui::px(26.0))
-                        .icon_size(gpui::px(13.0))
+                        .variant(ButtonVariant::Ghost)
+                        .size(gpui::px(30.0))
+                        .icon_size(gpui::px(14.0))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.cloud_sync_now(cx);
                         })),
@@ -1886,22 +2012,17 @@ impl Workspace {
             } else {
                 t!("user.sites.empty.hint").to_string()
             };
-            let empty_icon = div()
-                .size(px(44.0))
-                .rounded_full()
-                .bg(ShellDeckColors::primary().opacity(0.15))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(20.0))
-                .text_color(ShellDeckColors::primary())
-                .map(|icon| {
-                    if filtered {
-                        icon.child(lucide_icon("search", 20.0, ShellDeckColors::primary()))
-                    } else {
-                        icon.child(">_")
-                    }
-                });
+            // A piece of the street instead of a bare icon: a pin waiting for
+            // its first site, or the balloon when the search finds nothing.
+            let empty_icon = crate::ludique::vignette(
+                "uh-sites-empty",
+                if filtered {
+                    crate::ludique::Vignette::Balloon
+                } else {
+                    crate::ludique::Vignette::Pin
+                },
+                cx,
+            );
             let mut empty_card = div()
                 .flex()
                 .flex_col()
@@ -2025,7 +2146,7 @@ impl Workspace {
         // content owns the remaining height; in Sites, the section heading is
         // fixed too and only the virtualised directory scrolls.
         let tab = self.user_home_tab;
-        let tab_bar = self.render_user_home_tab_bar(header, cx);
+        let tab_bar = self.render_user_home_tab_bar(header, wide_banner, cx);
         let tab_content = match tab {
             UserHomeTab::Share => div()
                 .flex_1()
@@ -2107,7 +2228,9 @@ impl Workspace {
                 .flex_1()
                 .min_h(px(0.0))
                 .child(scrollable_vertical(
-                    div().pb(px(24.0)).child(self.render_user_infos_tab(cx)),
+                    div()
+                        .pb(px(24.0))
+                        .child(self.render_user_infos_tab(compact_user_home, cx)),
                 ))
                 .into_any_element(),
         };
@@ -2117,7 +2240,8 @@ impl Workspace {
                 .size_full()
                 .flex()
                 .flex_col()
-                .bg(ShellDeckColors::bg_primary())
+                // One page colour for every tab of the User home.
+                .bg(user_home_page_bg())
                 .overflow_hidden(),
             is_maximized,
         )
@@ -2136,9 +2260,10 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        humanize_custom_role, managed_site_public_url, nonempty_text, primary_user_role,
-        user_home_uses_compact_flow, user_home_uses_wide_banner, user_role_tokens,
-        user_sites_empty_state, welcome_uses_compact_flow, UserSitesEmptyState,
+        capitalize_first, home_status_tone, humanize_custom_role, managed_site_public_url,
+        nonempty_text, primary_user_role, user_home_uses_compact_flow, user_home_uses_wide_banner,
+        user_role_tokens, user_sites_empty_state, welcome_uses_compact_flow, HomeStatusTone,
+        UserSitesEmptyState,
     };
     use shelldeck_core::config::cloud_account::AccountInfo;
 
@@ -2237,5 +2362,34 @@ mod tests {
         // The breakpoint is logical: a doubled UI scale needs twice the pixels.
         assert!(!user_home_uses_wide_banner(1_400.0, 28.0));
         assert!(user_home_uses_wide_banner(2_200.0, 28.0));
+    }
+
+    // SDTEST-3181 / SDUC-588. On the home page one status must catch the eye:
+    // a request that waits for someone. Its label is written in lower case
+    // for running text and starts with an accented letter in French.
+    #[test]
+    fn sdtest_3181_home_status_pills_single_out_what_waits() {
+        assert_eq!(home_status_tone("open"), HomeStatusTone::Waiting);
+        for status in [
+            "triaging",
+            "in_progress",
+            "blocked",
+            "done",
+            "closed",
+            "later",
+        ] {
+            assert_ne!(
+                home_status_tone(status),
+                HomeStatusTone::Waiting,
+                "{status}"
+            );
+        }
+        assert_eq!(home_status_tone("in_progress"), HomeStatusTone::Active);
+        assert_eq!(home_status_tone("blocked"), HomeStatusTone::Blocked);
+        assert_eq!(home_status_tone("done"), home_status_tone("closed"));
+        assert_eq!(home_status_tone("later"), HomeStatusTone::Review);
+        assert_eq!(capitalize_first("à traiter"), "À traiter");
+        assert_eq!(capitalize_first("en cours"), "En cours");
+        assert_eq!(capitalize_first(""), "");
     }
 }

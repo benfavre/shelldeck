@@ -29,6 +29,45 @@ Apple icon decoding and ZIP inclusion are checked in CI.
 New macOS packages contain `Inklura Desktop.app`; the download installer accepts
 both that bundle and legacy `ShellDeck.app` and preserves an existing location.
 
+## The Inklura street (playful surfaces)
+
+The welcome screen, the User home banner and the empty states of "Mes sites"
+and "Mes demandes" are drawn with the street of the inklura.fr homepage (town,
+road, delivery van, sun to click), so the application and the site read as one
+product. `crates/shelldeck-ui/src/ludique.rs` holds the scene (`street_scene`),
+the vignettes of the empty states (`vignette`) and the site's label, marker and
+button (`sticker`, `highlighted`, `chunky_button`). Rules:
+
+- The scene has its own day and night (`StreetColors` in `theme.rs`). It follows
+  the theme until the sun or the moon is clicked. Anything drawn over the sky
+  takes its colours from `StreetColors`, never from the palette.
+- The scene never repaints for ever: it plays a set time (`StreetLayout::run`),
+  rests when the van has left the picture, and plays again when its screen comes
+  back or the pointer comes over it. `Workspace::render` calls
+  `ludique::begin_frame` so the scene knows when it was off screen. Under reduced
+  motion nothing moves and the van is parked. Keep any new motion on the scene
+  clock (`StageClock`), never on a free-running `repeating_phase`.
+- Working surfaces (terminal, editor, Agents, Support triage) stay sober: do not
+  put the street there.
+- "Mes informations" (`render_user_infos_tab`, SDUC-590) opens with the short
+  `StreetLayout::PageHead` banner and one panel per subject, each with a
+  `ludique::section_badge` drawing (`badge-*-day.svg` / `-night.svg`, chosen by
+  the theme because they stand on a panel, not on the sky). Banners are built
+  by `Workspace::street_banner`; give every scene and vignette its own id, it
+  is the key of its clock.
+- The User home page around the banner (`render_user_overview`, SDUC-588) is
+  built from `home_panel`, `home_icon_tile`, `home_section_title` and
+  `home_status_pill` in `workspace/user_home.rs`, on `user_home_page_bg()`.
+  These use palette colours only. The banner clips to a rectangle, so its round
+  bottom right corner over the road is painted by a ring in the page colour:
+  keep `user_home_page_bg()` opaque.
+- The images live in `crates/shelldeck/assets/images/ludique/` and are generated:
+  edit `scripts/ludique-art/source.json` or `scripts/export-ludique-art.py`, run
+  the script, and register any new file in `ludique::STREET_ASSETS` and in
+  `Assets::load` / `Assets::list` (`shelldeck/src/main.rs`). `--check` fails when
+  the committed images are stale. `img()` draws an SVG at twice the size written
+  in its `width`/`height`, so state the size it is shown at.
+
 ## Retired Dev tools
 
 The server-sync, detected-site scan and manual port-forward screens are retired

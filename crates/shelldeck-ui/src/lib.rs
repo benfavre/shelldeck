@@ -25,6 +25,7 @@ pub mod issue_attachments;
 #[cfg(target_os = "linux")]
 pub mod linux_capture;
 pub mod login_form;
+pub(crate) mod ludique;
 pub(crate) mod markdown;
 pub mod menu_bar;
 pub mod monique_view;
