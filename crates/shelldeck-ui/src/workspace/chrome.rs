@@ -535,7 +535,10 @@ impl Workspace {
             // Signed out (the welcome screen), as in the owner's mock-up
             // (SDUC-597): ≡, « Inklura | Desktop », Aide and the theme toggle.
             let titlebar = titlebar.border_b_1().border_color(titlebar_border);
-            let menu_button = menu_row.map(|_| {
+            // The ≡ keeps its slot even where there is no menu row (the
+            // post-login screen of a focused view), so the brand never moves.
+            let menu_available = menu_row.is_some();
+            let menu_button = Some(
                 div()
                     .id("titlebar-menu-chevron")
                     .debug_selector(|| "titlebar-menu-chevron".into())
@@ -544,11 +547,22 @@ impl Workspace {
                     .justify_center()
                     .size(px(super::presentation::TITLEBAR_CONTROL))
                     .rounded(px(super::presentation::TITLEBAR_RADIUS))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(btn_hover_bg))
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_menu_row(cx)))
-                    .child(lucide_icon("menu", 18.0, title_color))
-            });
+                    .when(menu_available, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(|el| el.bg(btn_hover_bg))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu_row(cx)))
+                    })
+                    .child(lucide_icon(
+                        "menu",
+                        18.0,
+                        if menu_available {
+                            title_color
+                        } else {
+                            title_dim.opacity(0.5)
+                        },
+                    )),
+            );
             let dark = ShellDeckColors::is_dark();
             let theme_tooltip: SharedString = t!(if dark {
                 "welcome.theme_light"

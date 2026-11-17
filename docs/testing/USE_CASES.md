@@ -6152,3 +6152,21 @@ scrolls from the top. Native check 2026-11-17, empty profile, 1200 x 800 and
 maximised at 1600 x 1300, Light and Dark:
 `05-welcome-light.png`, `06-welcome-dark.png` (the two toasts are the headless
 session's missing desktop portal, not part of the screen).
+
+## SDUC-598: Post-login screen under the signed-out title bar
+
+Request of 2026-11-17: redesign the « Bienvenue, … » loading screen shown
+after sign-in and merge its header with the welcome screen's. The screen
+(`render_post_login_splash`, `workspace/overlays.rs`) now stands under the
+title bar instead of covering it; the title bar keeps its signed-out face
+(≡, « Inklura | Desktop », Aide, theme) until the screen leaves, the ≡ keeping
+its slot (inactive) where there is no menu row so the brand never moves. The
+page is the welcome screen's (`welcome_backdrop`: gradient and circuit lines)
+with its « Par Inklura » foot (`welcome_foot`); a card holds « Connexion
+réussie », the animated mark, « Bienvenue, <name> », the preparation line and
+the progress (label, percentage, 340 px bar). Duration, progress and fade are
+unchanged.
+
+Native check 2026-11-17: real password sign-in against the demo Manage stub
+in the headless GNOME session, Light, 1200 x 800:
+`screenshots/2026-11-17-agents-mockup/07-post-login.png`.

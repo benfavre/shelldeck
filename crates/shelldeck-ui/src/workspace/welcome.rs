@@ -206,6 +206,147 @@ fn welcome_card(
         )
 }
 
+/// Height of the « Par Inklura » foot of the welcome and loading screens.
+pub(super) const FOOTER_H: f32 = 46.0;
+
+/// The foot of the welcome and loading screens: the product, « Par Inklura »,
+/// the documentation link.
+pub(super) fn welcome_foot(is_maximized: bool) -> Div {
+    let docs = div()
+        .id("welcome-docs")
+        .debug_selector(|| "welcome-docs".into())
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .cursor_pointer()
+        .hover(|style| style.text_color(ShellDeckColors::primary()))
+        .on_click(|_, _, _| {
+            let _ = cloud_account::open_in_browser(WELCOME_DOCS_URL);
+        })
+        .child(t!("welcome.docs").to_string())
+        .child(lucide_icon(
+            "arrow-up-right",
+            15.0,
+            ShellDeckColors::text_muted(),
+        ));
+    round_window_bottom(
+        div()
+            .debug_selector(|| "welcome-foot".into())
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(px(FOOTER_H))
+            .flex()
+            .items_center()
+            .px(px(24.0))
+            .bg(ShellDeckColors::bg_sidebar())
+            .border_t_1()
+            .border_color(ShellDeckColors::border().opacity(0.6))
+            .text_size(px(13.5))
+            .text_color(ShellDeckColors::text_muted()),
+        is_maximized,
+    )
+    .child(div().flex_1().child(shelldeck_core::APP_NAME))
+    .child(
+        div()
+            .debug_selector(|| "welcome-by".into())
+            .flex_1()
+            .text_center()
+            .child(t!("welcome.by").to_string()),
+    )
+    .child(div().flex_1().flex().justify_end().child(docs))
+}
+
+/// The page of the welcome and loading screens: the palette gradient with the
+/// circuit lines, doodles, rings and crosses above the foot.
+pub(super) fn welcome_backdrop(is_maximized: bool) -> Div {
+    let line_color = ShellDeckColors::primary().opacity(0.45);
+    // The decoration: circuit lines and two doodles on the sides, the
+    // little yellow rings and crosses of the site.
+    let ring = |size: f32| {
+        div()
+            .absolute()
+            .size(px(size))
+            .rounded_full()
+            .border_2()
+            .border_color(sticker_yellow())
+    };
+    let cross = || {
+        div()
+            .absolute()
+            .child(lucide_icon("plus", 20.0, sticker_yellow()))
+    };
+    let decoration = div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .bottom(px(FOOTER_H))
+        .child(
+            svg()
+                .absolute()
+                .left(px(10.0))
+                .top(px(20.0))
+                .w(px(300.0))
+                .h(px(640.0))
+                .path("images/welcome/lines-left.svg")
+                .text_color(line_color),
+        )
+        .child(
+            svg()
+                .absolute()
+                .right(px(10.0))
+                .top(px(20.0))
+                .w(px(300.0))
+                .h(px(640.0))
+                .path("images/welcome/lines-right.svg")
+                .text_color(line_color),
+        )
+        .child(
+            div().absolute().left(px(150.0)).top(px(150.0)).child(
+                svg()
+                    .path(lucide_path("file-check"))
+                    .size(px(58.0))
+                    .text_color(ShellDeckColors::text_primary().opacity(0.7))
+                    .with_transformation(Transformation::rotate(radians(-0.25))),
+            ),
+        )
+        .child(
+            div().absolute().right(px(170.0)).top(px(110.0)).child(
+                svg()
+                    .path(lucide_path("plug"))
+                    .size(px(48.0))
+                    .text_color(ShellDeckColors::primary())
+                    .with_transformation(Transformation::rotate(radians(0.5))),
+            ),
+        )
+        .child(ring(18.0).left(px(60.0)).top(px(440.0)))
+        .child(ring(20.0).right(px(250.0)).top(px(60.0)))
+        .child(cross().left(px(280.0)).top(px(150.0)))
+        .child(cross().right(px(80.0)).top(px(540.0)));
+
+    round_window_bottom(
+        div()
+            .relative()
+            .size_full()
+            .bg(linear_gradient(
+                120.0,
+                linear_color_stop(
+                    ShellDeckColors::bg_primary().blend(ShellDeckColors::primary().opacity(0.07)),
+                    0.0,
+                ),
+                linear_color_stop(
+                    ShellDeckColors::bg_primary().blend(ShellDeckColors::success().opacity(0.09)),
+                    1.0,
+                ),
+            ))
+            .overflow_hidden(),
+        is_maximized,
+    )
+    .child(decoration)
+}
+
 impl Workspace {
     /// `is_maximized` only rounds the two bottom corners: this is the lowest
     /// opaque layer, with no status bar under it.
@@ -220,8 +361,6 @@ impl Workspace {
 
         let entity = cx.entity();
         let title_size = if compact_height { 40.0 } else { 56.0 };
-        let line_color = ShellDeckColors::primary().opacity(0.45);
-
         let title_line = |label: String| {
             div()
                 .text_center()
@@ -388,51 +527,7 @@ impl Workspace {
                 Some(ShellDeckColors::success()),
             ));
 
-        const FOOTER_H: f32 = 46.0;
-        let docs = div()
-            .id("welcome-docs")
-            .debug_selector(|| "welcome-docs".into())
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .cursor_pointer()
-            .hover(|style| style.text_color(ShellDeckColors::primary()))
-            .on_click(|_, _, _| {
-                let _ = cloud_account::open_in_browser(WELCOME_DOCS_URL);
-            })
-            .child(t!("welcome.docs").to_string())
-            .child(lucide_icon(
-                "arrow-up-right",
-                15.0,
-                ShellDeckColors::text_muted(),
-            ));
-        let foot = round_window_bottom(
-            div()
-                .debug_selector(|| "welcome-foot".into())
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .h(px(FOOTER_H))
-                .flex()
-                .items_center()
-                .px(px(24.0))
-                .bg(ShellDeckColors::bg_sidebar())
-                .border_t_1()
-                .border_color(ShellDeckColors::border().opacity(0.6))
-                .text_size(px(13.5))
-                .text_color(ShellDeckColors::text_muted()),
-            is_maximized,
-        )
-        .child(div().flex_1().child(shelldeck_core::APP_NAME))
-        .child(
-            div()
-                .debug_selector(|| "welcome-by".into())
-                .flex_1()
-                .text_center()
-                .child(t!("welcome.by").to_string()),
-        )
-        .child(div().flex_1().flex().justify_end().child(docs));
+        let foot = welcome_foot(is_maximized);
 
         let body = div()
             .id("welcome-body")
@@ -450,95 +545,9 @@ impl Workspace {
             .child(hero)
             .child(cards);
 
-        // The decoration: circuit lines and two doodles on the sides, the
-        // little yellow rings and crosses of the site.
-        let ring = |size: f32| {
-            div()
-                .absolute()
-                .size(px(size))
-                .rounded_full()
-                .border_2()
-                .border_color(sticker_yellow())
-        };
-        let cross = || {
-            div()
-                .absolute()
-                .child(lucide_icon("plus", 20.0, sticker_yellow()))
-        };
-        let decoration = div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom(px(FOOTER_H))
-            .child(
-                svg()
-                    .absolute()
-                    .left(px(10.0))
-                    .top(px(20.0))
-                    .w(px(300.0))
-                    .h(px(640.0))
-                    .path("images/welcome/lines-left.svg")
-                    .text_color(line_color),
-            )
-            .child(
-                svg()
-                    .absolute()
-                    .right(px(10.0))
-                    .top(px(20.0))
-                    .w(px(300.0))
-                    .h(px(640.0))
-                    .path("images/welcome/lines-right.svg")
-                    .text_color(line_color),
-            )
-            .child(
-                div().absolute().left(px(150.0)).top(px(150.0)).child(
-                    svg()
-                        .path(lucide_path("file-check"))
-                        .size(px(58.0))
-                        .text_color(ShellDeckColors::text_primary().opacity(0.7))
-                        .with_transformation(Transformation::rotate(radians(-0.25))),
-                ),
-            )
-            .child(
-                div().absolute().right(px(170.0)).top(px(110.0)).child(
-                    svg()
-                        .path(lucide_path("plug"))
-                        .size(px(48.0))
-                        .text_color(ShellDeckColors::primary())
-                        .with_transformation(Transformation::rotate(radians(0.5))),
-                ),
-            )
-            .child(ring(18.0).left(px(60.0)).top(px(440.0)))
-            .child(ring(20.0).right(px(250.0)).top(px(60.0)))
-            .child(cross().left(px(280.0)).top(px(150.0)))
-            .child(cross().right(px(80.0)).top(px(540.0)));
-
         let content = scrollable_vertical(body).into_any_element();
 
-        round_window_bottom(
-            div()
-                .relative()
-                .size_full()
-                .bg(linear_gradient(
-                    120.0,
-                    linear_color_stop(
-                        ShellDeckColors::bg_primary()
-                            .blend(ShellDeckColors::primary().opacity(0.07)),
-                        0.0,
-                    ),
-                    linear_color_stop(
-                        ShellDeckColors::bg_primary()
-                            .blend(ShellDeckColors::success().opacity(0.09)),
-                        1.0,
-                    ),
-                ))
-                .overflow_hidden(),
-            is_maximized,
-        )
-        .child(decoration)
-        .child(foot)
-        .child(
+        welcome_backdrop(is_maximized).child(foot).child(
             div()
                 .absolute()
                 .top_0()

@@ -629,7 +629,13 @@ impl Render for Workspace {
                 .then(|| self.presentation_attention(_cx)),
             self.account_menu_open,
             self.mode_menu_open,
-            self.app_config.account.clone(),
+            // While the post-login screen plays, the title bar keeps its
+            // signed-out face (SDUC-598): one continuous screen from sign-in.
+            if self.post_login_splash.is_some() {
+                None
+            } else {
+                self.app_config.account.clone()
+            },
             self.account_status,
             self.site_menu_open,
             self.app_config.cloud_sync.active_site_label.clone(),
@@ -887,7 +893,7 @@ impl Render for Workspace {
         // chrome, toasts and first-run onboarding until the initial sync has
         // produced a coherent signed-in workspace.
         if let Some(splash) = &self.post_login_splash {
-            root = root.child(self.render_post_login_splash(splash, _cx));
+            root = root.child(self.render_post_login_splash(splash, is_maximized, _cx));
         }
 
         root

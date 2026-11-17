@@ -21,3 +21,5 @@ run, SSH targets.
 - [Welcome, Light](05-welcome-light.png) and [Dark](06-welcome-dark.png): empty
   profile, 1200 x 800. The two toasts come from the headless session (no desktop
   portal) and cover part of the right card.
+- [Post-login screen](07-post-login.png) (SDUC-598): sign-in with a password
+  against `scripts/demo/manage_stub.py`, captured during the progress.
