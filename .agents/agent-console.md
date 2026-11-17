@@ -123,7 +123,7 @@ conversation/execution timeline.
   hint on the search face: Ctrl/⌘ K is Quick Connect.
 - Focused Agents view title bar (SDUC-596, `workspace/chrome.rs` +
   `TitlebarTabsPane`): « Inklura ▾ » (full app, settings, help), « Agents ▾ »
-  (the four views, replacing the segmented switcher there only), then the open
+  (the four views; since 2026-11-17 the only view chooser, in every title bar, with a dot when another view needs you), then the open
   conversations as tabs with × and +. Tabs are view state (`open_tabs`): the
   selected session always has one, × closes the tab and never archives, the
   neighbour takes the selection, closing the last opens a new session. The

@@ -333,9 +333,6 @@ impl Workspace {
         )
     }
 
-    /// The titlebar segmented control between the full app and the focused
-    /// views. Icon-only so its width never changes with the selection. A dot
-    /// marks a view that needs the user or has something new.
     /// One row of a title-bar dropdown: icon, label, optional dot.
     fn titlebar_menu_row(
         id: &'static str,
@@ -378,14 +375,40 @@ impl Workspace {
             })
     }
 
-    /// « Agents ▾ »: the focused Agents view's view chooser (SDUC-596). The
-    /// same four views as the segmented switcher of the full app.
+    /// The view chooser of every title bar (SDUC-596): the current view as a
+    /// « ▾ » chip, the four views in its dropdown with their attention dots.
     pub(super) fn render_presentation_menu(
         current: WorkspacePresentation,
         attention: [ViewAttention; 4],
         handle: &WeakEntity<Self>,
     ) -> AnyElement {
         let handle = handle.clone();
+        let tooltip: SharedString =
+            match crate::shortcut_reference::label(BindableAction::NextView) {
+                Some(keys) => t!(
+                    "presentation.tooltip_active",
+                    name = current.label(),
+                    keys = keys
+                )
+                .to_string(),
+                None => current.label(),
+            }
+            .into();
+        // At rest the chip keeps the old switcher's signal: a dot when another
+        // view needs the user (warning) or has something new (primary).
+        let others = WorkspacePresentation::ALL
+            .into_iter()
+            .zip(attention)
+            .filter(|(presentation, _)| *presentation != current)
+            .map(|(_, attention)| attention)
+            .collect::<Vec<_>>();
+        let rest_dot = if others.contains(&ViewAttention::NeedsYou) {
+            Some(ShellDeckColors::warning())
+        } else if others.contains(&ViewAttention::Finished) {
+            Some(ShellDeckColors::primary())
+        } else {
+            None
+        };
         Popover::new("titlebar-view-menu")
             .anchor(Corner::TopLeft)
             .trigger(
@@ -404,7 +427,27 @@ impl Workspace {
                     .hover(|style| style.bg(ShellDeckColors::badge_bg()))
                     .text_size(px(13.5))
                     .text_color(ShellDeckColors::text_primary())
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| WorkspaceTooltip {
+                            label: tooltip.clone(),
+                        })
+                        .into()
+                    })
+                    .child(lucide_icon(
+                        current.icon(),
+                        15.0,
+                        ShellDeckColors::primary(),
+                    ))
                     .child(current.label())
+                    .when_some(rest_dot, |chip, color| {
+                        chip.child(
+                            div()
+                                .debug_selector(|| "titlebar-view-attention".into())
+                                .size(px(7.0))
+                                .rounded_full()
+                                .bg(color),
+                        )
+                    })
                     .child(lucide_icon(
                         "chevron-down",
                         14.0,
@@ -560,132 +603,6 @@ impl Workspace {
                 })
             })
             .into_any_element()
-    }
-
-    pub(super) fn render_presentation_switcher(
-        current: WorkspacePresentation,
-        attention: [ViewAttention; 4],
-        handle: &WeakEntity<Self>,
-    ) -> impl IntoElement {
-        let keys = crate::shortcut_reference::label(BindableAction::NextView);
-        let mut group = div()
-            .id("titlebar-presentation")
-            .flex()
-            .items_center()
-            .flex_shrink_0()
-            .h(px(36.0))
-            .p(px(3.0))
-            .gap(px(2.0))
-            .rounded(px(10.0))
-            // A quiet tray with a hairline edge; the current view is the one
-            // raised tile in it.
-            .bg(ShellDeckColors::badge_bg().opacity(0.7))
-            .border_1()
-            .border_color(ShellDeckColors::border().opacity(0.5));
-        // The raised tile is a step lighter than the tray in every theme: the
-        // card colour in a light theme, the tray lifted toward the text colour
-        // in a dark one (where the card colour sits below the tray).
-        let tile_bg = if ShellDeckColors::is_dark() {
-            ShellDeckColors::badge_bg().blend(ShellDeckColors::text_primary().opacity(0.10))
-        } else {
-            ShellDeckColors::popover_bg()
-        };
-        for (presentation, attention) in WorkspacePresentation::ALL.into_iter().zip(attention) {
-            let active = presentation == current;
-            let name = match attention {
-                ViewAttention::NeedsYou => t!(
-                    "presentation.attention.needs_you",
-                    name = presentation.label()
-                )
-                .to_string(),
-                ViewAttention::Finished => t!(
-                    "presentation.attention.finished",
-                    name = presentation.label()
-                )
-                .to_string(),
-                ViewAttention::None => presentation.label(),
-            };
-            let tooltip: SharedString = match &keys {
-                Some(keys) if active => t!(
-                    "presentation.tooltip_active",
-                    name = name,
-                    keys = keys.clone()
-                )
-                .to_string()
-                .into(),
-                _ => name.into(),
-            };
-            let workspace = handle.clone();
-            let mut segment = div()
-                .id(presentation.switcher_id())
-                .debug_selector(move || presentation.switcher_id().into())
-                .relative()
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(40.0))
-                .h(px(28.0))
-                .rounded(px(7.0))
-                .cursor_pointer()
-                .tooltip(move |_, cx| {
-                    cx.new(|_| WorkspaceTooltip {
-                        label: tooltip.clone(),
-                    })
-                    .into()
-                })
-                .on_click(move |_, _, cx| {
-                    if let Some(workspace) = workspace.upgrade() {
-                        workspace.update(cx, |this, cx| this.set_presentation(presentation, cx));
-                    }
-                });
-            segment = if active {
-                // The current view stands out of the tray as a raised tile.
-                segment
-                    .bg(tile_bg)
-                    .border_1()
-                    .border_color(ShellDeckColors::border().opacity(0.6))
-                    .shadow(vec![use_theme().tokens.shadow_sm].into())
-                    .child(lucide_icon(
-                        presentation.icon(),
-                        16.0,
-                        ShellDeckColors::primary(),
-                    ))
-            } else {
-                segment
-                    .hover(move |el| el.bg(tile_bg.opacity(0.6)))
-                    .child(lucide_icon(
-                        presentation.icon(),
-                        16.0,
-                        ShellDeckColors::text_muted(),
-                    ))
-            };
-            let dot = match attention {
-                ViewAttention::NeedsYou => Some(ShellDeckColors::warning()),
-                ViewAttention::Finished => Some(ShellDeckColors::primary()),
-                ViewAttention::None => None,
-            };
-            if let Some(color) = dot {
-                segment = segment.child(
-                    div()
-                        .absolute()
-                        .top(px(3.0))
-                        .right(px(7.0))
-                        .size(px(8.0))
-                        .rounded_full()
-                        .bg(color)
-                        // A ring in the colour behind the tile separates the
-                        // dot from the glyph it sits on.
-                        .border_2()
-                        .border_color(if active {
-                            tile_bg
-                        } else {
-                            ShellDeckColors::badge_bg()
-                        }),
-                );
-            }
-            group = group.child(segment);
-        }
-        group
     }
 }
 

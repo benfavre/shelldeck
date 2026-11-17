@@ -328,6 +328,8 @@ fn sdtest_3174_pro_rendered_navigation_and_compact_titlebar() {
         window.simulate_resize(size(gpui::px(1280.0), gpui::px(800.0)));
         redraw(&mut window);
         click(&mut window, "open-inklura-pro");
+        // SDUC-596: the views are a dropdown in every title bar.
+        click(&mut window, "titlebar-view-chip");
         click(&mut window, "presentation-switch-full");
         assert!(!workspace.read_with(&app, |view, _| view.pro_open));
         workspace.update(&mut app, |view, cx| {

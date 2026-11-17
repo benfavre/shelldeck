@@ -391,7 +391,7 @@ impl Workspace {
                 0.0
             };
         let switcher_need = if presentation_switch.is_some() {
-            186.0
+            150.0
         } else {
             0.0
         };
@@ -498,8 +498,9 @@ impl Workspace {
         // One control both leaves a focused view and returns to it, so the
         // full app is never a one-way door.
         let view_attention = presentation_switch;
+        // The view chooser is the « Agents ▾ » dropdown in every view (SDUC-596).
         let presentation_switcher = presentation_switch
-            .map(|attention| Self::render_presentation_switcher(presentation, attention, handle));
+            .map(|attention| Self::render_presentation_menu(presentation, attention, handle));
 
         let ai_button = ai_configured.then(|| {
             let tooltip: SharedString = t!("ai.assistant.open").to_string().into();
