@@ -604,7 +604,6 @@ impl Render for Workspace {
         // Custom titlebar with drag area + window controls
         let compact_titlebar = logical_width < 760.0;
         let inklura_bell = self.render_inklura_bell(_cx);
-        let pro_button = self.render_pro_button(compact_titlebar, _cx);
         // The focused Agents view carries its open conversations in the title
         // bar, as in the owner's mock-up (SDUC-596).
         let agent_tabs_shown = presentation == WorkspacePresentation::Agents
@@ -623,7 +622,6 @@ impl Render for Workspace {
         let titlebar = Self::render_titlebar(
             is_maximized,
             compact_titlebar,
-            logical_width,
             presentation,
             (!self.show_welcome() && self.can_access_mode(AppMode::Dev))
                 .then(|| self.presentation_attention(_cx)),
@@ -637,9 +635,6 @@ impl Render for Workspace {
                 self.app_config.account.clone()
             },
             self.account_status,
-            self.site_menu_open,
-            self.app_config.cloud_sync.active_site_label.clone(),
-            self.site_directory.is_some() && !self.pro_open,
             if self.can_switch_mode() {
                 Some((self.effective_mode(), self.allowed_modes()))
             } else {
@@ -664,7 +659,7 @@ impl Render for Workspace {
                 })
                 .count(),
             inklura_bell,
-            pro_button,
+            self.signed_in().then_some(self.pro_open),
             agent_tabs,
             &handle,
             _cx,

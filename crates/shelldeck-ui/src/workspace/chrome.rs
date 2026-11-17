@@ -57,23 +57,20 @@ impl Workspace {
     pub(super) fn render_titlebar(
         is_maximized: bool,
         compact: bool,
-        logical_width: f32,
         presentation: WorkspacePresentation,
         presentation_switch: Option<[crate::view_attention::ViewAttention; 4]>,
         account_menu_open: bool,
         mode_menu_open: bool,
         account: Option<AccountInfo>,
         account_status: AccountStatus,
-        site_menu_open: bool,
-        active_site_label: Option<String>,
-        sites_loaded: bool,
         mode_switch: Option<(AppMode, &'static [AppMode])>,
         menu_row: Option<bool>,
         sidebar_visible: Option<bool>,
         ai_configured: bool,
         ai_task_count: usize,
         inklura_bell: Option<AnyElement>,
-        pro_workspace_button: Option<AnyElement>,
+        // `Some(open)` when Inklura Pro is offered: a row of the view dropdown.
+        pro: Option<bool>,
         agent_tabs: Option<AnyElement>,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
@@ -98,7 +95,6 @@ impl Workspace {
                     window.start_window_move();
                 })
         };
-        let focused_presentation = presentation.is_focused();
 
         // Keep interactive controls outside the drag region.
         let mut sidebar_button = sidebar_visible.map(|visible| {
@@ -347,109 +343,12 @@ impl Workspace {
             chip
         });
 
-        // The view dropdown follows the logo. In a narrow window the site
-        // chip keeps only its globe (the site stays in its tooltip). Widths
-        // are estimates in logical pixels of what each control draws.
-        let show_site_chip = account.is_some() && sites_loaded;
-        let leading_need = 12.0
-            + if sidebar_visible.is_some() { 40.0 } else { 0.0 }
-            + if compact { 34.0 } else { 96.0 }
-            + if menu_row.is_some() { 34.0 } else { 0.0 }
-            + if focused_presentation && !compact {
-                64.0
-            } else {
-                0.0
-            };
-        let switcher_need = if presentation_switch.is_some() {
-            150.0
-        } else {
-            0.0
-        };
-        let trailing_base = 150.0 // divider and window controls
-            + 42.0 // account
-            + if compact { 80.0 } else { 120.0 } // Aide, theme
-            + if inklura_bell.is_some() { 38.0 } else { 0.0 }
-            + if pro_workspace_button.is_some() { if compact { 44.0 } else { 108.0 } } else { 0.0 }
-            + if ai_configured { 52.0 } else { 0.0 }
-            + if mode_switch.is_some() { 108.0 } else { 0.0 }
-            + if show_site_chip { 40.0 } else { 0.0 };
-        let site_label_need = if active_site_label.is_some() {
-            136.0
-        } else {
-            0.0
-        };
-        let site_label_fits =
-            logical_width >= leading_need + switcher_need + trailing_base + site_label_need + 24.0;
-        // Site chip — shown only when signed in and the sites directory has
-        // loaded. The global scope is a compact globe; a specific selection
-        // keeps its label visible so the current scope is never ambiguous.
-        let site_chip = if show_site_chip {
-            let scope_tooltip: SharedString = active_site_label
-                .clone()
-                .unwrap_or_else(|| "Tous les sites".to_string())
-                .into();
-            let mut chip = div()
-                .id("titlebar-site")
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(6.0))
-                .h(px(super::presentation::TITLEBAR_CONTROL))
-                .min_w(px(super::presentation::TITLEBAR_CONTROL))
-                .px(px(8.0))
-                .rounded(px(super::presentation::TITLEBAR_RADIUS))
-                .cursor_pointer()
-                .hover(|s| s.bg(btn_hover_bg))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| WorkspaceTooltip {
-                        label: scope_tooltip.clone(),
-                    })
-                    .into()
-                })
-                .child(lucide_icon("globe", 16.0, title_dim))
-                .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                    this.site_menu_open = !this.site_menu_open;
-                    if this.site_menu_open {
-                        this.account_menu_open = false;
-                        this.mode_menu_open = false;
-                        this.inklura_notifications_open = false;
-                    }
-                    cx.notify();
-                }));
-            if let Some(label) = active_site_label.filter(|_| site_label_fits) {
-                let visible_label = ellipsize_site_switcher_label(&label, 18);
-                chip = chip
-                    .child(
-                        div()
-                            .max_w(px(160.0))
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(super::presentation::TITLEBAR_TEXT))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(title_color)
-                            .child(visible_label),
-                    )
-                    .child(
-                        svg()
-                            .path("images/chevron-down.svg")
-                            .size(px(9.0))
-                            .text_color(title_dim),
-                    );
-            }
-            if site_menu_open {
-                chip = chip.bg(ShellDeckColors::hover_bg());
-            }
-            Some(chip)
-        } else {
-            None
-        };
-
         // One control both leaves a focused view and returns to it, so the
         // full app is never a one-way door.
         let view_attention = presentation_switch;
         // The view chooser is the « Agents ▾ » dropdown in every view (SDUC-596).
-        let presentation_switcher = presentation_switch.map(|attention| {
-            Self::render_presentation_menu(presentation, attention, compact, handle)
+        let presentation_switcher = (presentation_switch.is_some() || pro.is_some()).then(|| {
+            Self::render_presentation_menu(presentation, presentation_switch, compact, pro, handle)
         });
 
         let ai_button = ai_configured.then(|| {
@@ -676,8 +575,14 @@ impl Workspace {
                 .pl(px(12.0))
                 .children(sidebar_button)
                 .child(Self::render_brand_menu(compact, handle))
-                .children(view_attention.map(|attention| {
-                    Self::render_presentation_menu(presentation, attention, compact, handle)
+                .children((view_attention.is_some() || pro.is_some()).then(|| {
+                    Self::render_presentation_menu(
+                        presentation,
+                        view_attention,
+                        compact,
+                        pro,
+                        handle,
+                    )
                 }))
                 .child(divider());
             let actions = div()
@@ -688,11 +593,9 @@ impl Workspace {
                 .flex_shrink_0()
                 .h_full()
                 .gap(px(8.0))
-                .children(pro_workspace_button)
                 // Same order as the full app's actions.
                 .children(ai_button)
                 .children(mode_switcher)
-                .children(site_chip)
                 .children(inklura_bell)
                 .child(help_button)
                 .child(theme_button)
@@ -737,10 +640,8 @@ impl Workspace {
                     .min_w_0()
                     .overflow_x_scroll()
                     .gap(px(8.0))
-                    .children(pro_workspace_button)
                     .children(ai_button)
                     .children(mode_switcher)
-                    .children(site_chip)
                     .children(inklura_bell)
                     .child(help_button)
                     .child(theme_button)
@@ -1070,6 +971,16 @@ impl Workspace {
                     status_label.to_string(),
                 ));
 
+            // The site switcher's way in now that the title bar has no globe.
+            if self.site_directory.is_some() {
+                panel = panel.child(
+                    secondary_btn("account-switch-site", t!("palette.switch_site").to_string())
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.account_menu_open = false;
+                            this.open_site_switcher(cx);
+                        })),
+                );
+            }
             panel = panel.child(
                 secondary_btn("account-sync", t!("user.sync").to_string()).on_click(cx.listener(
                     |this, _: &ClickEvent, _, cx| {

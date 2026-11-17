@@ -192,3 +192,4 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `moon` | chrome | logged-out title bar: switch to the dark theme |
 | `plug` | welcome | decoration doodle, right |
 | `sun` | chrome | logged-out title bar: switch to the light theme |
+| `briefcase-business` | chrome | view dropdown: « Inklura Pro » |

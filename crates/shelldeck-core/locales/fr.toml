@@ -3407,6 +3407,8 @@ resume_help = "Reconnectez-vous pour lire l’historique et continuer avec l’a
 [pro]
 return = "Revenir aux outils"
 return_short = "Outils"
+view = "Inklura Pro"
+view_desktop = "Inklura Desktop"
 account_missing = "L’identité de votre compte est indisponible. Reconnectez-vous à Inklura Desktop avant d’ouvrir Pro."
 intro = "Ouvrez votre espace Inklura Pro ici. Renseignez l’adresse de la version web fournie par votre administrateur. La connexion à Pro reste indépendante."
 address = "Adresse d’Inklura Pro"

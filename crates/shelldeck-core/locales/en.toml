@@ -3407,6 +3407,8 @@ resume_help = "Reconnect to read the saved history and continue with the origina
 [pro]
 return = "Back to tools"
 return_short = "Tools"
+view = "Inklura Pro"
+view_desktop = "Inklura Desktop"
 account_missing = "Your desktop account identity is unavailable. Sign in to Inklura Desktop again before opening Pro."
 intro = "Open your Inklura Pro workspace here. Enter the web address provided by your administrator. Pro has its own sign-in session."
 address = "Inklura Pro address"

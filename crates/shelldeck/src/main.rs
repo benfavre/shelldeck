@@ -51,6 +51,7 @@ macro_rules! lucide_assets {
 }
 
 lucide_assets!(
+    "briefcase-business",
     "arrow-up-right",
     "file-check",
     "menu",

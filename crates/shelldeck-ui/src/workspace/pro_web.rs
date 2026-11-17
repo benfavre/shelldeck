@@ -116,43 +116,6 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn render_pro_button(
-        &self,
-        compact: bool,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        self.signed_in().then(|| {
-            Button::new(
-                "open-inklura-pro",
-                if self.pro_open && compact {
-                    t!("pro.return_short").to_string()
-                } else if self.pro_open {
-                    t!("pro.return").to_string()
-                } else if compact {
-                    "Pro".into()
-                } else {
-                    "Inklura Pro".into()
-                },
-            )
-            .debug_selector(|| "open-inklura-pro".into())
-            .size(ButtonSize::Sm)
-            .h(px(super::presentation::TITLEBAR_CONTROL))
-            .px(px(10.0))
-            .tooltip(if self.pro_open {
-                t!("pro.return").to_string()
-            } else {
-                "Inklura Pro".into()
-            })
-            .variant(if self.pro_open {
-                ButtonVariant::Default
-            } else {
-                ButtonVariant::Ghost
-            })
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_pro(cx)))
-            .into_any_element()
-        })
-    }
-
     pub(super) fn render_pro_workspace(
         &mut self,
         logical_width: f32,

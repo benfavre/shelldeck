@@ -433,30 +433,46 @@ impl Workspace {
     /// « ▾ » chip, the four views in its dropdown with their attention dots.
     pub(super) fn render_presentation_menu(
         current: WorkspacePresentation,
-        attention: [ViewAttention; 4],
+        attention: Option<[ViewAttention; 4]>,
         compact: bool,
+        // `Some(open)` when Inklura Pro is offered (signed in), with its state.
+        pro: Option<bool>,
         handle: &WeakEntity<Self>,
     ) -> AnyElement {
         let handle = handle.clone();
+        let pro_open = pro == Some(true);
+        // The chip names what the window shows: Inklura Pro while it is open,
+        // the Dev view otherwise, the desktop app for an account without views.
+        let (chip_icon, chip_label): (&'static str, String) = if pro_open {
+            ("briefcase-business", t!("pro.view").to_string())
+        } else if attention.is_some() {
+            (current.icon(), current.label())
+        } else {
+            ("layout-dashboard", t!("pro.view_desktop").to_string())
+        };
         let tooltip: SharedString =
             match crate::shortcut_reference::label(BindableAction::NextView) {
-                Some(keys) => t!(
+                Some(keys) if attention.is_some() => t!(
                     "presentation.tooltip_active",
-                    name = current.label(),
+                    name = chip_label.clone(),
                     keys = keys
                 )
                 .to_string(),
-                None => current.label(),
+                _ => chip_label.clone(),
             }
             .into();
         // At rest the chip keeps the old switcher's signal: a dot when another
         // view needs the user (warning) or has something new (primary).
-        let others = WorkspacePresentation::ALL
-            .into_iter()
-            .zip(attention)
-            .filter(|(presentation, _)| *presentation != current)
-            .map(|(_, attention)| attention)
-            .collect::<Vec<_>>();
+        let others = attention
+            .map(|attention| {
+                WorkspacePresentation::ALL
+                    .into_iter()
+                    .zip(attention)
+                    .filter(|(presentation, _)| pro_open || *presentation != current)
+                    .map(|(_, attention)| attention)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let rest_dot = if others.contains(&ViewAttention::NeedsYou) {
             Some(ShellDeckColors::warning())
         } else if others.contains(&ViewAttention::Finished) {
@@ -478,13 +494,9 @@ impl Workspace {
                         })
                         .into()
                     })
-                    .child(lucide_icon(
-                        current.icon(),
-                        15.0,
-                        ShellDeckColors::primary(),
-                    ))
+                    .child(lucide_icon(chip_icon, 15.0, ShellDeckColors::primary()))
                     // A narrow title bar keeps the icon; the view is in the tooltip.
-                    .when(!compact, |chip| chip.child(current.label()))
+                    .when(!compact, |chip| chip.child(chip_label.clone()))
                     .when_some(rest_dot, |chip, color| {
                         chip.child(
                             div()
@@ -504,35 +516,99 @@ impl Workspace {
                 let handle = handle.clone();
                 cx.new(move |content_cx| {
                     PopoverContent::new(window, content_cx, move |_, cx| {
-                        let mut menu = div().flex().flex_col().gap(px(2.0)).min_w(px(200.0));
-                        for (presentation, attention) in
-                            WorkspacePresentation::ALL.into_iter().zip(attention)
-                        {
-                            let dot = match attention {
-                                ViewAttention::NeedsYou => Some(ShellDeckColors::warning()),
-                                ViewAttention::Finished => Some(ShellDeckColors::primary()),
-                                ViewAttention::None => None,
-                            };
+                        let mut menu = div().flex().flex_col().gap(px(2.0)).min_w(px(220.0));
+                        match attention {
+                            Some(attention) => {
+                                for (presentation, attention) in
+                                    WorkspacePresentation::ALL.into_iter().zip(attention)
+                                {
+                                    let dot = match attention {
+                                        ViewAttention::NeedsYou => Some(ShellDeckColors::warning()),
+                                        ViewAttention::Finished => Some(ShellDeckColors::primary()),
+                                        ViewAttention::None => None,
+                                    };
+                                    let workspace = handle.clone();
+                                    menu = menu.child(
+                                        Self::titlebar_menu_row(
+                                            presentation.switcher_id(),
+                                            presentation.icon(),
+                                            presentation.label(),
+                                            !pro_open && presentation == current,
+                                            dot,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |_, _, _, cx| {
+                                                if let Some(workspace) = workspace.upgrade() {
+                                                    workspace.update(cx, |this, cx| {
+                                                        // A view closes Pro first.
+                                                        if this.pro_open {
+                                                            this.toggle_pro(cx);
+                                                        }
+                                                        this.set_presentation(presentation, cx)
+                                                    });
+                                                }
+                                                cx.emit(DismissEvent);
+                                            }),
+                                        ),
+                                    );
+                                }
+                            }
+                            None => {
+                                let workspace = handle.clone();
+                                menu = menu.child(
+                                    Self::titlebar_menu_row(
+                                        "titlebar-view-desktop",
+                                        "layout-dashboard",
+                                        t!("pro.view_desktop").to_string(),
+                                        !pro_open,
+                                        None,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |_, _, _, cx| {
+                                            if let Some(workspace) = workspace.upgrade() {
+                                                workspace.update(cx, |this, cx| {
+                                                    if this.pro_open {
+                                                        this.toggle_pro(cx);
+                                                    }
+                                                });
+                                            }
+                                            cx.emit(DismissEvent);
+                                        },
+                                    )),
+                                );
+                            }
+                        }
+                        if pro.is_some() {
                             let workspace = handle.clone();
-                            menu = menu.child(
-                                Self::titlebar_menu_row(
-                                    presentation.switcher_id(),
-                                    presentation.icon(),
-                                    presentation.label(),
-                                    presentation == current,
-                                    dot,
+                            menu = menu
+                                .child(
+                                    div()
+                                        .h(px(1.0))
+                                        .mx(px(6.0))
+                                        .my(px(4.0))
+                                        .bg(ShellDeckColors::border()),
                                 )
-                                .on_click(cx.listener(
-                                    move |_, _, _, cx| {
-                                        if let Some(workspace) = workspace.upgrade() {
-                                            workspace.update(cx, |this, cx| {
-                                                this.set_presentation(presentation, cx)
-                                            });
-                                        }
-                                        cx.emit(DismissEvent);
-                                    },
-                                )),
-                            );
+                                .child(
+                                    Self::titlebar_menu_row(
+                                        "open-inklura-pro",
+                                        "briefcase-business",
+                                        t!("pro.view").to_string(),
+                                        pro_open,
+                                        None,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |_, _, _, cx| {
+                                            if let Some(workspace) = workspace.upgrade() {
+                                                workspace.update(cx, |this, cx| {
+                                                    if !this.pro_open {
+                                                        this.toggle_pro(cx);
+                                                    }
+                                                });
+                                            }
+                                            cx.emit(DismissEvent);
+                                        },
+                                    )),
+                                );
                         }
                         menu.into_any_element()
                     })

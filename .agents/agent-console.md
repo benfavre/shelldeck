@@ -132,8 +132,12 @@ conversation/execution timeline.
   `TITLEBAR_CONTROL` 32, `TITLEBAR_RADIUS` 8, `TITLEBAR_TEXT` 13,
   `TITLEBAR_GAP` 8, `titlebar_brand`, `titlebar_control`): signed out, full
   app, Agents and the other focused views share the brand (28 px mark, 16 px
-  « Inklura »), control heights and the action order (Pro, AI, mode, site,
-  bell, Aide, light/dark switch, account). Aide and the switch are in every
+  « Inklura »), control heights and the action order (AI, mode, bell, Aide,
+  light/dark switch, account). Inklura Pro is the last row of the view dropdown
+  (the chip reads « Inklura Pro » while it is open; choosing a view leaves it;
+  an account without Dev views gets « Inklura Desktop » / « Inklura Pro »). The
+  title bar has no site globe: the site switcher opens from the account menu
+  (« Changer de site actif »), the palette and Accueil's « Site actif ». Aide and the switch are in every
   title bar, signed in or out. In the full app the brand chevron shows the menu row; in a
   focused view it opens the product menu. Add the hover at the call site:
   GPUI panics on a second hover style.
