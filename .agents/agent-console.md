@@ -121,6 +121,17 @@ conversation/execution timeline.
   importées » group that starts closed (`IMPORTED_GROUP_OPEN_KEY`). Foot: the
   running count, Paramètres, Aide (`AgentConsoleEvent::OpenHelp`). No shortcut
   hint on the search face: Ctrl/⌘ K is Quick Connect.
+- Focused Agents view title bar (SDUC-596, `workspace/chrome.rs` +
+  `TitlebarTabsPane`): « Inklura ▾ » (full app, settings, help), « Agents ▾ »
+  (the four views, replacing the segmented switcher there only), then the open
+  conversations as tabs with × and +. Tabs are view state (`open_tabs`): the
+  selected session always has one, × closes the tab and never archives, the
+  neighbour takes the selection, closing the last opens a new session. The
+  cockpit drops its narrow-window tab row while `tabs_in_titlebar`.
+- « Récents » heads the sidebar list: the five conversations with messages
+  touched last (machine filter applies, hidden while searching), foldable
+  (`RECENT_GROUP_KEY`). Rows use `agent-recent-*` selectors so they never
+  duplicate the project rows' `agent-nav-session-*`.
 - Session header: panel toggle, folder, `project / session`, Files, Changes,
   Terminal and Browser icons, « Détails » (`AgentInspectorTab::Details`,
   persisted as `details`) and « … » for the secondary toolbar, which also holds

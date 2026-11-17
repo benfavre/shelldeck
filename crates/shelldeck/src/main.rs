@@ -51,6 +51,12 @@ macro_rules! lucide_assets {
 }
 
 lucide_assets!(
+    "arrow-up-right",
+    "file-check",
+    "menu",
+    "moon",
+    "plug",
+    "sun",
     "chart-no-axes-column",
     "code",
     "file",
@@ -255,6 +261,13 @@ impl AssetSource for Assets {
         let path = path.strip_prefix('/').unwrap_or(path);
         let bytes: &'static [u8] = match path {
             "images/wd29-logo.svg" => include_bytes!("../assets/images/wd29-logo.svg"),
+            // Welcome screen decoration (SDUC-597).
+            "images/welcome/lines-left.svg" => {
+                include_bytes!("../assets/images/welcome/lines-left.svg")
+            }
+            "images/welcome/lines-right.svg" => {
+                include_bytes!("../assets/images/welcome/lines-right.svg")
+            }
             // Monolith app icon (Dark, coins arrondis) — SVG for reference, PNG for UI paint.
             "images/shelldeck-icon.svg" => include_bytes!("../assets/images/shelldeck-icon.svg"),
             "images/shelldeck-icon.png" => include_bytes!("../assets/images/shelldeck-icon.png"),
@@ -494,6 +507,8 @@ impl AssetSource for Assets {
     fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
         let mut paths = vec![
             SharedString::from("images/wd29-logo.svg"),
+            SharedString::from("images/welcome/lines-left.svg"),
+            SharedString::from("images/welcome/lines-right.svg"),
             SharedString::from("images/shelldeck-icon.svg"),
             SharedString::from("images/shelldeck-icon.png"),
             SharedString::from("images/shelldeck-mark.svg"),

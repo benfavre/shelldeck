@@ -231,37 +231,40 @@ impl AgentConsoleView {
             );
         }
         head = head.child(self.render_target_filter(cx));
-        head = head.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .pt(px(6.0))
-                .child(
-                    div()
-                        .flex_1()
-                        .pl(px(2.0))
-                        .text_size(px(12.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(t!("agents.navigator.projects").to_string()),
-                )
-                .child(self.navigator_actions_button(cx))
-                .child(
-                    Button::new("agent-nav-add-project-quick", "")
-                        .debug_selector(|| "agent-nav-add-project-quick".into())
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Icon)
-                        .icon(IconSource::from("plus"))
-                        .w(px(26.0))
-                        .h(px(26.0))
-                        .tooltip(t!("agents.cockpit.add_project").to_string())
-                        .on_click(
-                            cx.listener(|_, _, _, cx| cx.emit(AgentConsoleEvent::OpenProjectSetup)),
-                        ),
-                ),
-        );
         head.into_any_element()
+    }
+
+    /// « Projets » with its actions menu and « + », under « Récents ».
+    pub(super) fn render_projects_heading(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .pt(px(6.0))
+            .child(
+                div()
+                    .flex_1()
+                    .pl(px(2.0))
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(t!("agents.navigator.projects").to_string()),
+            )
+            .child(self.navigator_actions_button(cx))
+            .child(
+                Button::new("agent-nav-add-project-quick", "")
+                    .debug_selector(|| "agent-nav-add-project-quick".into())
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Icon)
+                    .icon(IconSource::from("plus"))
+                    .w(px(26.0))
+                    .h(px(26.0))
+                    .tooltip(t!("agents.cockpit.add_project").to_string())
+                    .on_click(
+                        cx.listener(|_, _, _, cx| cx.emit(AgentConsoleEvent::OpenProjectSetup)),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_target_filter(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1720,5 +1723,334 @@ mod tests {
         assert!(!NavigatorTargetFilter::Local.admits(&ssh));
         assert!(NavigatorTargetFilter::Local.admits(&AgentTarget::Local));
         assert!(!NavigatorTargetFilter::Ssh.admits(&AgentTarget::Local));
+    }
+}
+
+/// How many conversations « Récents » lists.
+pub(super) const RECENT_LIMIT: usize = 5;
+/// Preference key recording that « Récents » was folded.
+pub(super) const RECENT_GROUP_KEY: &str = "recent-conversations";
+
+impl AgentConsoleView {
+    /// The Workspace draws the open-conversation tabs in its title bar; the
+    /// cockpit then drops its own narrow-window tab row.
+    pub fn set_tabs_in_titlebar(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.tabs_in_titlebar != on {
+            self.tabs_in_titlebar = on;
+            cx.notify();
+        }
+    }
+
+    pub fn titlebar_tabs_view(&self) -> AnyView {
+        self.titlebar_tabs.clone().into()
+    }
+
+    /// Open tabs: existing, unarchived sessions, plus the selected one.
+    pub(super) fn sync_open_tabs(&mut self) {
+        let sessions = &self.sessions;
+        self.open_tabs
+            .retain(|id| sessions.get(*id).is_some_and(|session| !session.archived));
+        if let Some(selected) = self.sessions.selected_id() {
+            if !self.open_tabs.contains(&selected) {
+                self.open_tabs.push(selected);
+            }
+        }
+    }
+
+    /// Close a tab without touching the conversation. The neighbour takes
+    /// the selection; closing the last tab opens a new session.
+    pub(super) fn close_open_tab(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        let Some(index) = self.open_tabs.iter().position(|tab| *tab == id) else {
+            return;
+        };
+        self.open_tabs.remove(index);
+        if self.sessions.selected_id() == Some(id) {
+            let next = self
+                .open_tabs
+                .get(index)
+                .or_else(|| self.open_tabs.get(index.wrapping_sub(1)))
+                .copied();
+            match next {
+                Some(next) => {
+                    self.select_session(next, cx);
+                }
+                None => self.new_session(cx),
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn render_titlebar_tabs(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        self.sync_open_tabs();
+        let selected = self.sessions.selected_id();
+        let mut strip = div()
+            .id("agent-titlebar-tabs")
+            .debug_selector(|| "agent-titlebar-tabs".into())
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .h_full()
+            .min_w_0()
+            .overflow_x_scroll();
+        for id in self.open_tabs.clone() {
+            let Some(session) = self.sessions.get(id) else {
+                continue;
+            };
+            let active = selected == Some(id);
+            let mut tab = div()
+                .id(("agent-titlebar-tab", uuid_key(id)))
+                .debug_selector(move || format!("agent-titlebar-tab-{id}"))
+                .group(SharedString::from(format!("agent-titlebar-tab-{id}")))
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(10.0))
+                .h(px(36.0))
+                .max_w(px(240.0))
+                .pl(px(14.0))
+                .pr(px(8.0))
+                .rounded(px(CARD_RADIUS))
+                .cursor_pointer()
+                .text_size(px(13.5))
+                .when(active, |tab| {
+                    tab.bg(ShellDeckColors::bg_sidebar())
+                        .border_1()
+                        .border_color(ShellDeckColors::border().opacity(0.6))
+                        .shadow(vec![adabraka_ui::theme::use_theme().tokens.shadow_xs].into())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(ShellDeckColors::text_primary())
+                })
+                .when(!active, |tab| {
+                    tab.bg(ShellDeckColors::hover_bg())
+                        .text_color(ShellDeckColors::text_primary().opacity(0.85))
+                        .hover(|style| style.bg(ShellDeckColors::hover_bg().opacity(1.6)))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_session(id, cx);
+                }));
+            if session.status.is_active() || session.attention != AgentSessionAttention::None {
+                tab = tab.child(div().size(px(7.0)).rounded_full().bg(
+                    if session.attention != AgentSessionAttention::None {
+                        attention_color(session.attention)
+                    } else {
+                        status_color(session.status)
+                    },
+                ));
+            }
+            tab = tab
+                .child(div().min_w_0().truncate().child(session.name.clone()))
+                .child(
+                    div()
+                        .id(("agent-titlebar-tab-close", uuid_key(id)))
+                        .debug_selector(move || format!("agent-titlebar-tab-close-{id}"))
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .size(px(22.0))
+                        .rounded(px(6.0))
+                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                        .tooltip(|_, cx| {
+                            cx.new(|_| {
+                                super::navigator::NavigatorTooltip(
+                                    t!("agents.cockpit.close_tab").to_string(),
+                                )
+                            })
+                            .into()
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.close_open_tab(id, cx);
+                        }))
+                        .child(lucide_icon("x", 14.0, ShellDeckColors::text_muted())),
+                );
+            strip = strip.child(tab);
+        }
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .h_full()
+            .min_w_0()
+            .child(strip)
+            .child(
+                div()
+                    .id("agent-titlebar-new")
+                    .debug_selector(|| "agent-titlebar-new".into())
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .size(px(32.0))
+                    .rounded(px(8.0))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| {
+                            super::navigator::NavigatorTooltip(
+                                t!("agents.cockpit.new_tab").to_string(),
+                            )
+                        })
+                        .into()
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.new_session(cx)))
+                    .child(lucide_icon("plus", 18.0, ShellDeckColors::text_primary())),
+            )
+            .into_any_element()
+    }
+
+    /// « Récents »: the conversations touched last, across projects.
+    pub(super) fn render_recent_conversations(&self, cx: &mut Context<Self>) -> AnyElement {
+        let filter = self.library.target_filter;
+        let query = self.navigator_search.read(cx).content().trim().to_string();
+        let mut recent = self
+            .sessions
+            .library_sessions(false)
+            .into_iter()
+            .filter(|session| {
+                !session.messages.is_empty() && filter.admits(&session.context.target)
+            })
+            .collect::<Vec<_>>();
+        if recent.is_empty() || !query.is_empty() {
+            return div().into_any_element();
+        }
+        recent.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
+        let collapsed = self
+            .library
+            .preferences
+            .collapsed_project_ids
+            .iter()
+            .any(|id| id == RECENT_GROUP_KEY);
+        let selected = self.navigator_selected_session();
+        let mut group = div()
+            .debug_selector(|| "agent-recent".into())
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .gap(px(2.0))
+            .mb(px(8.0))
+            .child(
+                div()
+                    .id("agent-recent-toggle")
+                    .debug_selector(|| "agent-recent-toggle".into())
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .h(px(28.0))
+                    .px(px(4.0))
+                    .rounded(px(8.0))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let ids = &mut this.library.preferences.collapsed_project_ids;
+                        if let Some(index) = ids.iter().position(|id| id == RECENT_GROUP_KEY) {
+                            ids.remove(index);
+                        } else {
+                            ids.push(RECENT_GROUP_KEY.to_string());
+                        }
+                        this.schedule_library_save(cx);
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("agents.cockpit.recent").to_string()),
+                    )
+                    .child(lucide_icon(
+                        if collapsed {
+                            "chevron-right"
+                        } else {
+                            "chevron-down"
+                        },
+                        13.0,
+                        ShellDeckColors::text_muted(),
+                    )),
+            );
+        if collapsed {
+            return group.into_any_element();
+        }
+        for session in recent.into_iter().take(RECENT_LIMIT) {
+            let id = session.id;
+            let active = selected == Some(id);
+            let project = super::navigator::navigator_worktree(session, &self.project_groups)
+                .and_then(|tree| {
+                    self.project_groups
+                        .iter()
+                        .find(|group| group.worktrees.iter().any(|w| w.id == tree.id))
+                        .map(|group| group.label.clone())
+                })
+                .unwrap_or_else(|| {
+                    super::navigation_groups::directory_name(
+                        &session.context.target,
+                        &session.context.workdir,
+                    )
+                });
+            group = group.child(
+                div()
+                    .id(("agent-recent-row", uuid_key(id)))
+                    .debug_selector(move || format!("agent-recent-{id}"))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .h(px(40.0))
+                    .px(px(8.0))
+                    .rounded(px(8.0))
+                    .cursor_pointer()
+                    .when(active, |row| {
+                        row.bg(ShellDeckColors::primary().opacity(0.10))
+                    })
+                    .when(!active, |row| {
+                        row.hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.select_session(id, cx);
+                    }))
+                    .child(lucide_icon(
+                        "message-square",
+                        15.0,
+                        if active {
+                            ShellDeckColors::primary()
+                        } else {
+                            ShellDeckColors::text_muted()
+                        },
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(13.0))
+                                    .when(active, |title| {
+                                        title
+                                            .text_color(ShellDeckColors::primary())
+                                            .font_weight(FontWeight::MEDIUM)
+                                    })
+                                    .child(session.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(11.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(project),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(10.5))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(crate::i18n::rel_time(session.updated_at_ms as f64)),
+                    ),
+            );
+        }
+        group.into_any_element()
     }
 }

@@ -74,9 +74,10 @@ impl Workspace {
         ai_task_count: usize,
         inklura_bell: Option<AnyElement>,
         pro_workspace_button: Option<AnyElement>,
+        agent_tabs: Option<AnyElement>,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
         let titlebar_bg = ShellDeckColors::bg_sidebar();
         let titlebar_border = ShellDeckColors::border();
         let title_color = ShellDeckColors::text_primary();
@@ -101,7 +102,7 @@ impl Workspace {
         let focused_presentation = presentation.is_focused();
 
         // Keep interactive controls outside the drag region.
-        let sidebar_button = sidebar_visible.map(|visible| {
+        let mut sidebar_button = sidebar_visible.map(|visible| {
             let tooltip: SharedString = with_shortcut(
                 t!("shortcuts.toggle_sidebar").to_string(),
                 BindableAction::ToggleSidebar,
@@ -185,7 +186,11 @@ impl Workspace {
             .h_full()
             .gap(px(8.0))
             .pl(px(12.0))
-            .children(sidebar_button)
+            .children(if agent_tabs.is_none() {
+                sidebar_button.take()
+            } else {
+                None
+            })
             .child(brand.ml(px(4.0)))
             .children(menu_chevron);
 
@@ -492,6 +497,7 @@ impl Workspace {
 
         // One control both leaves a focused view and returns to it, so the
         // full app is never a one-way door.
+        let view_attention = presentation_switch;
         let presentation_switcher = presentation_switch
             .map(|attention| Self::render_presentation_switcher(presentation, attention, handle));
 
@@ -582,6 +588,191 @@ impl Workspace {
         } else {
             (None, presentation_switcher)
         };
+        if account.is_none() {
+            // Signed out (the welcome screen), as in the owner's mock-up
+            // (SDUC-597): ≡, « Inklura | Desktop », Aide and the theme toggle.
+            let titlebar = titlebar.border_b_1().border_color(titlebar_border);
+            let menu_button = menu_row.map(|_| {
+                div()
+                    .id("titlebar-menu-chevron")
+                    .debug_selector(|| "titlebar-menu-chevron".into())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(32.0))
+                    .rounded(px(7.0))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(btn_hover_bg))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_menu_row(cx)))
+                    .child(lucide_icon("menu", 18.0, title_color))
+            });
+            let dark = ShellDeckColors::is_dark();
+            let theme_tooltip: SharedString = t!(if dark {
+                "welcome.theme_light"
+            } else {
+                "welcome.theme_dark"
+            })
+            .to_string()
+            .into();
+            let leading = div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .h_full()
+                .gap(px(12.0))
+                .pl(px(12.0))
+                .children(menu_button)
+                .child(crate::brand::brand_badge(28.0))
+                .when(!compact, |row| {
+                    row.child(
+                        div()
+                            .text_size(px(18.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(title_color)
+                            .child("Inklura"),
+                    )
+                    .child(divider())
+                    .child(
+                        div()
+                            .text_size(px(15.0))
+                            .text_color(title_dim)
+                            .child(t!("welcome.desktop").to_string()),
+                    )
+                });
+            let actions = div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .h_full()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .id("titlebar-help")
+                        .debug_selector(|| "titlebar-help".into())
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .h(px(34.0))
+                        .px(px(10.0))
+                        .rounded(px(8.0))
+                        .cursor_pointer()
+                        .hover(|el| el.bg(btn_hover_bg))
+                        .text_size(px(14.0))
+                        .text_color(title_color)
+                        .on_click(|_, _, _| {
+                            let _ =
+                                cloud_account::open_in_browser(super::welcome::WELCOME_DOCS_URL);
+                        })
+                        .child(lucide_icon("circle-help", 18.0, title_color))
+                        .child(t!("welcome.help").to_string()),
+                )
+                .child(
+                    div()
+                        .id("titlebar-theme")
+                        .debug_selector(|| "titlebar-theme".into())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(34.0))
+                        .rounded(px(8.0))
+                        .cursor_pointer()
+                        .hover(|el| el.bg(btn_hover_bg))
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| WorkspaceTooltip {
+                                label: theme_tooltip.clone(),
+                            })
+                            .into()
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let next = if dark {
+                                ThemePreference::Light
+                            } else {
+                                ThemePreference::Dark
+                            };
+                            this.settings
+                                .update(cx, |settings, cx| settings.select_app_theme(next, cx));
+                        }))
+                        .child(lucide_icon(
+                            if dark { "sun" } else { "moon" },
+                            18.0,
+                            title_color,
+                        )),
+                );
+            return titlebar
+                .child(leading)
+                .child(drag_filler("titlebar-drag-leading"))
+                .child(actions)
+                .child(
+                    div()
+                        .debug_selector(|| "titlebar-window-controls".into())
+                        .flex()
+                        .items_center()
+                        .h_full()
+                        .flex_shrink_0()
+                        .gap(px(8.0))
+                        .pl(px(4.0))
+                        .pr(px(12.0))
+                        .child(divider())
+                        .child(minimize_btn)
+                        .child(maximize_btn)
+                        .child(close_btn),
+                )
+                .into_any_element();
+        }
+        if let Some(tabs) = agent_tabs {
+            // The focused Agents view, as in the owner's mock-up (SDUC-596):
+            // « Inklura ▾ », « Agents ▾ », the open conversations, then the
+            // usual actions. The segmented switcher becomes the dropdown.
+            let titlebar = titlebar.border_b_1().border_color(titlebar_border);
+            let leading = div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .h_full()
+                .gap(px(10.0))
+                .pl(px(12.0))
+                .children(sidebar_button)
+                .child(Self::render_brand_menu(compact, handle))
+                .children(view_attention.map(|attention| {
+                    Self::render_presentation_menu(presentation, attention, handle)
+                }))
+                .child(divider());
+            let actions = div()
+                .id("titlebar-actions")
+                .debug_selector(|| "titlebar-actions".into())
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .h_full()
+                .gap(px(8.0))
+                .children(pro_workspace_button)
+                .children(ai_button)
+                .children(site_chip)
+                .children(mode_switcher)
+                .children(inklura_bell)
+                .child(account_btn);
+            return titlebar
+                .child(leading)
+                .child(div().flex_shrink().min_w_0().h_full().child(tabs))
+                .child(drag_filler("titlebar-drag-leading").min_w(px(24.0)))
+                .child(actions)
+                .child(
+                    div()
+                        .debug_selector(|| "titlebar-window-controls".into())
+                        .flex()
+                        .items_center()
+                        .h_full()
+                        .flex_shrink_0()
+                        .gap(px(8.0))
+                        .pl(px(4.0))
+                        .pr(px(12.0))
+                        .child(divider())
+                        .child(minimize_btn)
+                        .child(maximize_btn)
+                        .child(close_btn),
+                )
+                .into_any_element();
+        }
         let trailing = div()
             .flex()
             .items_center()
@@ -638,6 +829,7 @@ impl Workspace {
                 )
                 .children(switcher)
                 .child(trailing)
+                .into_any_element()
         } else {
             // Not enough room in each half: the switcher follows the logo and
             // the actions keep the rest.
@@ -645,6 +837,7 @@ impl Workspace {
                 .child(leading.flex_shrink_0())
                 .children(switcher.map(|switcher| switcher.ml(px(12.0))))
                 .child(trailing)
+                .into_any_element()
         }
     }
 

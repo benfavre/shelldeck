@@ -31,10 +31,15 @@ both that bundle and legacy `ShellDeck.app` and preserves an existing location.
 
 ## The Inklura street (playful surfaces)
 
-The welcome screen, the badges of "Mes informations" and the empty states of "Mes sites"
-and "Mes demandes" are drawn with the street of the inklura.fr homepage (town,
-road, delivery van, sun to click), so the application and the site read as one
-product. `crates/shelldeck-ui/src/ludique.rs` holds the scene (`street_scene`),
+The badges of "Mes informations" and the empty states of "Mes sites" and "Mes
+demandes" are drawn with the street of the inklura.fr homepage, so the
+application and the site read as one product. The pre-login welcome screen no
+longer uses the street (SDUC-597): `workspace/welcome.rs` draws « Tout Inklura.
+Sur votre bureau. » on a palette gradient with circuit lines
+(`images/welcome/lines-*.svg`), the site's chunky buttons, two cards (espaces,
+outils) and a « Par Inklura » foot; its signed-out title bar is ≡, « Inklura |
+Desktop », Aide and a light/dark toggle. `street_scene` and its layout code are
+now unused and marked for removal. `crates/shelldeck-ui/src/ludique.rs` holds the scene (`street_scene`),
 the vignettes of the empty states (`vignette`) and the site's label, marker and
 button (`sticker`, `highlighted`, `chunky_button`). Rules:
 

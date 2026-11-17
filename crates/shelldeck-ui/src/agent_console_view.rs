@@ -374,6 +374,11 @@ pub struct AgentConsoleView {
     voice: voice::AgentVoiceUi,
     navigator_search: Entity<InputState>,
     navigator_pane: Entity<panes::NavigatorPane>,
+    /// The open conversations shown as tabs in the window title bar of the
+    /// focused Agents view (SDUC-596). Closing a tab never archives.
+    open_tabs: Vec<Uuid>,
+    tabs_in_titlebar: bool,
+    titlebar_tabs: Entity<panes::TitlebarTabsPane>,
     timeline_pane: Entity<panes::TimelinePane>,
     sessions: AgentSessionCollection,
     remote_sessions: remote_sessions::RemoteAgentSessionsUi,
@@ -566,6 +571,7 @@ impl AgentConsoleView {
         let scroll = ScrollHandle::new();
         let parent = cx.entity().downgrade();
         let navigator_pane = cx.new(|cx| panes::NavigatorPane::new(parent.clone(), cx));
+        let titlebar_tabs = cx.new(|cx| panes::TitlebarTabsPane::new(parent.clone(), cx));
         let timeline_pane = cx.new(|cx| panes::TimelinePane::new(parent, cx));
         let mut view = Self {
             provider: AgentProvider::Claude,
@@ -582,6 +588,9 @@ impl AgentConsoleView {
             voice: voice::AgentVoiceUi::new(),
             navigator_search: input_state(cx, String::new()),
             navigator_pane,
+            open_tabs: vec![session_id],
+            tabs_in_titlebar: false,
+            titlebar_tabs,
             timeline_pane,
             sessions,
             remote_sessions: remote_sessions::RemoteAgentSessionsUi::default(),
@@ -2447,7 +2456,7 @@ impl Render for AgentConsoleView {
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0));
-        if !wide {
+        if !wide && !self.tabs_in_titlebar {
             content = content.child(header);
         }
         content = content.child(metadata);

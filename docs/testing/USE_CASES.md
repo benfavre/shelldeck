@@ -6111,3 +6111,40 @@ Screenshots in `screenshots/2026-11-17-agents-mockup/`. Not checked on screen:
 a window under 840 px, macOS and Windows, a live provider run, SSH targets.
 The mock-up's title bar (session tabs, organisation chooser) is not part of
 this change.
+
+## SDUC-596: Open conversations as title-bar tabs, and « Récents »
+
+Request of 2026-11-17, after SDUC-595: the mock-up's title bar and a recent
+section. In the focused Agents view the title bar reads « Inklura ▾ » (full
+app, Paramètres, Aide), « Agents ▾ » (Application complète, Agents, Terminal,
+Éditeur, with their attention dots), then one tab per open conversation (name,
+state dot, ×) and « + » for a new session; the account, site, mode and window
+controls stay on the right. A tab is not the conversation: × closes the tab,
+the neighbour is selected, the conversation stays in the sidebar; closing the
+last tab opens a new session. The full app keeps its segmented switcher.
+
+The sidebar list starts with « Récents »: the five conversations with messages
+touched last, with their project and age, foldable, filtered by Tout / Local /
+SSH, hidden while searching.
+
+Native check 2026-11-17 (headless GNOME Shell, demo profile with the preview
+fixture's sessions): `screenshots/2026-11-17-agents-mockup/04-titlebar-tabs.png`.
+
+## SDUC-597: Welcome screen « Tout Inklura. Sur votre bureau. »
+
+Request of 2026-11-17, with a mock-up, and « Par Inklura » instead of the
+WD29 signature. The signed-out screen (`workspace/welcome.rs`): the yellow
+« Votre lien direct avec Inklura », « Tout Inklura. / Sur votre bureau. », two
+lines of lead, « Se connecter à Inklura Manage ↗ » and « Créer un compte ↗ »
+(the site's chunky buttons, same actions and selectors as before), « Connexion
+via votre navigateur. », the cards « Vos espaces, au même endroit. » (Espaces,
+Applications, Projets) and « Vos outils, à portée de main. » (Terminal → SSH),
+and a foot « Inklura Desktop · Par Inklura · Aide et documentation ↗ ». Circuit
+lines, two doodles, yellow rings and crosses decorate the sides. Palette
+colours throughout, so it follows the theme; it scrolls when the window is
+short. The signed-out title bar: ≡ (menu row), « Inklura | Desktop », Aide,
+and a moon/sun button that switches the light and dark themes.
+
+Native check 2026-11-17, empty profile, 1200 x 800, Light and Dark:
+`05-welcome-light.png`, `06-welcome-dark.png` (the two toasts are the headless
+session's missing desktop portal, not part of the screen).

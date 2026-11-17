@@ -3731,7 +3731,7 @@ fn rendered_sidebar_section_headers_align_and_hover_keeps_labels_stationary() {
                     "hover must not shift {selector}"
                 );
             }
-            ui.click("ssh-sessions-toggle");
+            ui.click_navigation("ssh-sessions-toggle");
             ui.view.read_with(&ui.app, |view, _| {
                 assert!(!view.library.preferences.ssh_sessions_collapsed)
             });
@@ -4308,4 +4308,41 @@ fn sdtest_3197_cockpit_filter_details_and_starting_points() {
         ui.click("agent-details-close");
         assert!(ui.bounds("agent-session-details").is_none());
     }
+}
+
+// SDTEST-3198 / SDUC-596: title-bar tabs — selecting a conversation opens its
+// tab, the × closes the tab without archiving, the neighbour takes the
+// selection and closing the last tab opens a new session.
+#[::core::prelude::v1::test]
+fn sdtest_3198_titlebar_tabs_close_without_archiving() {
+    let mut ui = Cockpit::new(ThemePreference::Light, 1280.0, 820.0, false);
+    let first = ui.session;
+    let second = ui.view.update(&mut ui.app, |view, cx| {
+        // As after a library restore: the tabs follow the restored selection.
+        view.sync_open_tabs();
+        let context = view.sessions.get(first).unwrap().context.clone();
+        let id = view.create_session("Second", context, cx).unwrap();
+        view.select_session(id, cx);
+        view.sync_open_tabs();
+        id
+    });
+    ui.view.update(&mut ui.app, |view, cx| {
+        assert_eq!(view.open_tabs, vec![first, second]);
+        view.close_open_tab(second, cx);
+        view.sync_open_tabs();
+        assert_eq!(view.sessions.selected_id(), Some(first));
+        assert!(
+            !view.sessions.get(second).unwrap().archived,
+            "a tab is not the conversation"
+        );
+        view.close_open_tab(first, cx);
+        view.sync_open_tabs();
+        let fresh = view.sessions.selected_id().unwrap();
+        assert!(
+            fresh != first && fresh != second,
+            "closing the last tab opens a new session"
+        );
+        assert_eq!(view.open_tabs, vec![fresh]);
+        assert!(!view.sessions.get(first).unwrap().archived);
+    });
 }

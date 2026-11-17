@@ -760,6 +760,8 @@ impl AgentConsoleView {
             .gap(px(4.0))
             .px(px(10.0))
             .py(px(4.0))
+            .child(self.render_recent_conversations(cx))
+            .child(self.render_projects_heading(cx))
             .child(self.render_pinned_conversations(cx));
         let query = self.navigator_search.read(cx).content().to_string();
         for project in &self.project_groups {

@@ -3,6 +3,8 @@
 use super::*;
 use crate::shortcut_reference::BindableAction;
 use crate::view_attention::ViewAttention;
+use adabraka_ui::overlays::popover::PopoverContent;
+use adabraka_ui::prelude::Popover;
 
 /// What the window shows around the Dev views: the full app (titlebar menus,
 /// activity rail, every destination) or one focused view with no rail.
@@ -334,6 +336,232 @@ impl Workspace {
     /// The titlebar segmented control between the full app and the focused
     /// views. Icon-only so its width never changes with the selection. A dot
     /// marks a view that needs the user or has something new.
+    /// One row of a title-bar dropdown: icon, label, optional dot.
+    fn titlebar_menu_row(
+        id: &'static str,
+        icon: &'static str,
+        label: String,
+        active: bool,
+        dot: Option<Hsla>,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .h(px(34.0))
+            .px(px(10.0))
+            .rounded(px(7.0))
+            .cursor_pointer()
+            .text_size(px(13.0))
+            .when(active, |row| {
+                row.bg(ShellDeckColors::primary().opacity(0.10))
+                    .text_color(ShellDeckColors::primary())
+            })
+            .when(!active, |row| {
+                row.text_color(ShellDeckColors::text_primary())
+                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            })
+            .child(lucide_icon(
+                icon,
+                15.0,
+                if active {
+                    ShellDeckColors::primary()
+                } else {
+                    ShellDeckColors::text_muted()
+                },
+            ))
+            .child(div().flex_1().child(label))
+            .when_some(dot, |row, color| {
+                row.child(div().size(px(7.0)).rounded_full().bg(color))
+            })
+    }
+
+    /// « Agents ▾ »: the focused Agents view's view chooser (SDUC-596). The
+    /// same four views as the segmented switcher of the full app.
+    pub(super) fn render_presentation_menu(
+        current: WorkspacePresentation,
+        attention: [ViewAttention; 4],
+        handle: &WeakEntity<Self>,
+    ) -> AnyElement {
+        let handle = handle.clone();
+        Popover::new("titlebar-view-menu")
+            .anchor(Corner::TopLeft)
+            .trigger(
+                div()
+                    .id("titlebar-view-chip")
+                    .debug_selector(|| "titlebar-view-chip".into())
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(8.0))
+                    .h(px(34.0))
+                    .px(px(12.0))
+                    .rounded(px(9.0))
+                    .bg(ShellDeckColors::badge_bg().opacity(0.7))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(ShellDeckColors::badge_bg()))
+                    .text_size(px(13.5))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(current.label())
+                    .child(lucide_icon(
+                        "chevron-down",
+                        14.0,
+                        ShellDeckColors::text_muted(),
+                    )),
+            )
+            .content(move |window, cx| {
+                let handle = handle.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_, cx| {
+                        let mut menu = div().flex().flex_col().gap(px(2.0)).min_w(px(200.0));
+                        for (presentation, attention) in
+                            WorkspacePresentation::ALL.into_iter().zip(attention)
+                        {
+                            let dot = match attention {
+                                ViewAttention::NeedsYou => Some(ShellDeckColors::warning()),
+                                ViewAttention::Finished => Some(ShellDeckColors::primary()),
+                                ViewAttention::None => None,
+                            };
+                            let workspace = handle.clone();
+                            menu = menu.child(
+                                Self::titlebar_menu_row(
+                                    presentation.switcher_id(),
+                                    presentation.icon(),
+                                    presentation.label(),
+                                    presentation == current,
+                                    dot,
+                                )
+                                .on_click(cx.listener(
+                                    move |_, _, _, cx| {
+                                        if let Some(workspace) = workspace.upgrade() {
+                                            workspace.update(cx, |this, cx| {
+                                                this.set_presentation(presentation, cx)
+                                            });
+                                        }
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            );
+                        }
+                        menu.into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
+
+    /// « Inklura ▾ »: the product menu of a focused view, which has no menu row.
+    pub(super) fn render_brand_menu(compact: bool, handle: &WeakEntity<Self>) -> AnyElement {
+        let handle = handle.clone();
+        let mut face = div()
+            .id("titlebar-brand")
+            .debug_selector(|| "titlebar-brand".into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(8.0))
+            .h(px(36.0))
+            .pl(px(4.0))
+            .pr(px(6.0))
+            .rounded(px(9.0))
+            .cursor_pointer()
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            .child(crate::brand::brand_badge(28.0));
+        if !compact {
+            face = face.child(
+                div()
+                    .text_size(px(16.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .whitespace_nowrap()
+                    .child("Inklura"),
+            );
+        }
+        face = face.child(lucide_icon(
+            "chevron-down",
+            14.0,
+            ShellDeckColors::text_muted(),
+        ));
+        Popover::new("titlebar-brand-menu")
+            .anchor(Corner::TopLeft)
+            .trigger(face)
+            .content(move |window, cx| {
+                let handle = handle.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_, cx| {
+                        let full = handle.clone();
+                        let settings = handle.clone();
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .min_w(px(220.0))
+                            .child(
+                                Self::titlebar_menu_row(
+                                    "titlebar-brand-full",
+                                    WorkspacePresentation::Main.icon(),
+                                    WorkspacePresentation::Main.label(),
+                                    false,
+                                    None,
+                                )
+                                .on_click(cx.listener(
+                                    move |_, _, _, cx| {
+                                        if let Some(workspace) = full.upgrade() {
+                                            workspace.update(cx, |this, cx| {
+                                                this.set_presentation(
+                                                    WorkspacePresentation::Main,
+                                                    cx,
+                                                )
+                                            });
+                                        }
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            )
+                            .child(
+                                Self::titlebar_menu_row(
+                                    "titlebar-brand-settings",
+                                    "settings",
+                                    t!("agents.cockpit.settings").to_string(),
+                                    false,
+                                    None,
+                                )
+                                .on_click(cx.listener(
+                                    move |_, _, _, cx| {
+                                        if let Some(workspace) = settings.upgrade() {
+                                            workspace.update(cx, |this, cx| this.open_settings(cx));
+                                        }
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            )
+                            .child(
+                                Self::titlebar_menu_row(
+                                    "titlebar-brand-help",
+                                    "circle-help",
+                                    t!("agents.cockpit.help").to_string(),
+                                    false,
+                                    None,
+                                )
+                                .on_click(cx.listener(
+                                    |_, _, _, cx| {
+                                        let _ =
+                                            shelldeck_core::config::cloud_account::open_in_browser(
+                                                "https://shelldeck.1clic.pro",
+                                            );
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            )
+                            .into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
+
     pub(super) fn render_presentation_switcher(
         current: WorkspacePresentation,
         attention: [ViewAttention; 4],

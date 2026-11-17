@@ -186,3 +186,9 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `message-square` | agents | start screen: « Reprendre une session » rows |
 | `panel-left` | agents | session header: show or hide the projects sidebar |
 | `wrench` | agents | details panel « Outils et connexions », reply actions summary, « Corriger un problème » |
+| `arrow-up-right` | welcome | « Se connecter » / « Créer un compte » / « Aide et documentation » open the browser |
+| `file-check` | welcome | decoration doodle, left |
+| `menu` | chrome | logged-out title bar: show the menu row |
+| `moon` | chrome | logged-out title bar: switch to the dark theme |
+| `plug` | welcome | decoration doodle, right |
+| `sun` | chrome | logged-out title bar: switch to the light theme |

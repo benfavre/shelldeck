@@ -596,6 +596,21 @@ impl Render for Workspace {
         let compact_titlebar = logical_width < 760.0;
         let inklura_bell = self.render_inklura_bell(_cx);
         let pro_button = self.render_pro_button(compact_titlebar, _cx);
+        // The focused Agents view carries its open conversations in the title
+        // bar, as in the owner's mock-up (SDUC-596).
+        let agent_tabs_shown = presentation == WorkspacePresentation::Agents
+            && !self.show_welcome()
+            && !self.pro_open
+            && self.can_access_mode(AppMode::Dev);
+        self.agent_console.update(_cx, |view, cx| {
+            view.set_tabs_in_titlebar(agent_tabs_shown, cx)
+        });
+        let agent_tabs = agent_tabs_shown.then(|| {
+            self.agent_console
+                .read(_cx)
+                .titlebar_tabs_view()
+                .into_any_element()
+        });
         let titlebar = Self::render_titlebar(
             is_maximized,
             compact_titlebar,
@@ -635,6 +650,7 @@ impl Render for Workspace {
                 .count(),
             inklura_bell,
             pro_button,
+            agent_tabs,
             &handle,
             _cx,
         );
