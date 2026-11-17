@@ -431,8 +431,8 @@ impl Workspace {
         }
         // The view dropdown always follows the logo, on the left (SDUC-596).
         let switcher = presentation_switcher;
-        // « Aide » and the light / dark switch stand in every title bar,
-        // signed out or in (SDUC-597, SDUC-596).
+        // The light / dark switch stands in every title bar; « Aide » only in
+        // the signed-out one (signed in, help is in the menus and the sidebar).
         let dark = ShellDeckColors::is_dark();
         let theme_tooltip: SharedString = t!(if dark {
             "welcome.theme_light"
@@ -597,7 +597,6 @@ impl Workspace {
                 .children(ai_button)
                 .children(mode_switcher)
                 .children(inklura_bell)
-                .child(help_button)
                 .child(theme_button)
                 .child(account_btn);
             return titlebar
@@ -643,7 +642,6 @@ impl Workspace {
                     .children(ai_button)
                     .children(mode_switcher)
                     .children(inklura_bell)
-                    .child(help_button)
                     .child(theme_button)
                     .child(account_btn),
             )
