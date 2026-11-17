@@ -367,6 +367,7 @@ impl Workspace {
         };
         let trailing_base = 150.0 // divider and window controls
             + 42.0 // account
+            + if compact { 80.0 } else { 120.0 } // Aide, theme
             + if inklura_bell.is_some() { 38.0 } else { 0.0 }
             + if pro_workspace_button.is_some() { if compact { 44.0 } else { 108.0 } } else { 0.0 }
             + if ai_configured { 52.0 } else { 0.0 }
@@ -531,6 +532,57 @@ impl Workspace {
         }
         // The view dropdown always follows the logo, on the left (SDUC-596).
         let switcher = presentation_switcher;
+        // « Aide » and the light / dark switch stand in every title bar,
+        // signed out or in (SDUC-597, SDUC-596).
+        let dark = ShellDeckColors::is_dark();
+        let theme_tooltip: SharedString = t!(if dark {
+            "welcome.theme_light"
+        } else {
+            "welcome.theme_dark"
+        })
+        .to_string()
+        .into();
+        let help_tooltip: SharedString = t!("welcome.docs").to_string().into();
+        let help_button = super::presentation::titlebar_control("titlebar-help")
+            .hover(|el| el.bg(btn_hover_bg))
+            .debug_selector(|| "titlebar-help".into())
+            .px(px(if compact { 0.0 } else { 10.0 }))
+            .tooltip(move |_, cx| {
+                cx.new(|_| WorkspaceTooltip {
+                    label: help_tooltip.clone(),
+                })
+                .into()
+            })
+            .on_click(|_, _, _| {
+                let _ = cloud_account::open_in_browser(super::welcome::WELCOME_DOCS_URL);
+            })
+            .child(lucide_icon("circle-help", 18.0, title_color))
+            .when(!compact, |button| {
+                button.child(t!("welcome.help").to_string())
+            });
+        let theme_button = super::presentation::titlebar_control("titlebar-theme")
+            .hover(|el| el.bg(btn_hover_bg))
+            .debug_selector(|| "titlebar-theme".into())
+            .tooltip(move |_, cx| {
+                cx.new(|_| WorkspaceTooltip {
+                    label: theme_tooltip.clone(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let next = if dark {
+                    ThemePreference::Light
+                } else {
+                    ThemePreference::Dark
+                };
+                this.settings
+                    .update(cx, |settings, cx| settings.select_app_theme(next, cx));
+            }))
+            .child(lucide_icon(
+                if dark { "sun" } else { "moon" },
+                18.0,
+                title_color,
+            ));
         if account.is_none() {
             // Signed out (the welcome screen), as in the owner's mock-up
             // (SDUC-597): ≡, « Inklura | Desktop », Aide and the theme toggle.
@@ -563,14 +615,7 @@ impl Workspace {
                         },
                     )),
             );
-            let dark = ShellDeckColors::is_dark();
-            let theme_tooltip: SharedString = t!(if dark {
-                "welcome.theme_light"
-            } else {
-                "welcome.theme_dark"
-            })
-            .to_string()
-            .into();
+
             let leading = div()
                 .flex()
                 .items_center()
@@ -594,43 +639,8 @@ impl Workspace {
                 .flex_shrink_0()
                 .h_full()
                 .gap(px(super::presentation::TITLEBAR_GAP))
-                .child(
-                    super::presentation::titlebar_control("titlebar-help")
-                        .hover(|el| el.bg(btn_hover_bg))
-                        .debug_selector(|| "titlebar-help".into())
-                        .px(px(10.0))
-                        .on_click(|_, _, _| {
-                            let _ =
-                                cloud_account::open_in_browser(super::welcome::WELCOME_DOCS_URL);
-                        })
-                        .child(lucide_icon("circle-help", 18.0, title_color))
-                        .child(t!("welcome.help").to_string()),
-                )
-                .child(
-                    super::presentation::titlebar_control("titlebar-theme")
-                        .hover(|el| el.bg(btn_hover_bg))
-                        .debug_selector(|| "titlebar-theme".into())
-                        .tooltip(move |_, cx| {
-                            cx.new(|_| WorkspaceTooltip {
-                                label: theme_tooltip.clone(),
-                            })
-                            .into()
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let next = if dark {
-                                ThemePreference::Light
-                            } else {
-                                ThemePreference::Dark
-                            };
-                            this.settings
-                                .update(cx, |settings, cx| settings.select_app_theme(next, cx));
-                        }))
-                        .child(lucide_icon(
-                            if dark { "sun" } else { "moon" },
-                            18.0,
-                            title_color,
-                        )),
-                );
+                .child(help_button)
+                .child(theme_button);
             return titlebar
                 .child(leading)
                 .child(drag_filler("titlebar-drag-leading"))
@@ -684,6 +694,8 @@ impl Workspace {
                 .children(mode_switcher)
                 .children(site_chip)
                 .children(inklura_bell)
+                .child(help_button)
+                .child(theme_button)
                 .child(account_btn);
             return titlebar
                 .child(leading)
@@ -730,6 +742,8 @@ impl Workspace {
                     .children(mode_switcher)
                     .children(site_chip)
                     .children(inklura_bell)
+                    .child(help_button)
+                    .child(theme_button)
                     .child(account_btn),
             )
             // Keep native window controls reachable even when the tool
