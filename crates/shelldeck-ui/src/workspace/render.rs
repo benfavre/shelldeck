@@ -136,8 +136,17 @@ impl Render for Workspace {
                 _window.viewport_size().height.to_f64() as f32,
                 self.ui_font_size,
             );
-            main_area =
-                main_area.child(self.render_welcome_screen(is_maximized, compact_height, _cx));
+            // The logical height left between the title bar and the welcome
+            // foot: the welcome centres its content in it.
+            let logical_height = _window.viewport_size().height.to_f64() as f32
+                / crate::scale::scale_for_font_size(self.ui_font_size)
+                - WORKSPACE_TITLEBAR_HEIGHT;
+            main_area = main_area.child(self.render_welcome_screen(
+                is_maximized,
+                compact_height,
+                logical_height,
+                _cx,
+            ));
             // Fall through to render titlebar + status bar chrome around
             // the welcome — no sidebar, no mode-specific children.
         } else if self.pro_open {

@@ -213,6 +213,7 @@ impl Workspace {
         &self,
         is_maximized: bool,
         compact_height: bool,
+        logical_height: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use crate::ludique::{chunky_button, ChunkyKind};
@@ -438,10 +439,14 @@ impl Workspace {
             .flex()
             .flex_col()
             .items_center()
+            // Centred in the room above the foot; percentages do not resolve
+            // inside the scroll area, so the height is stated. A short window
+            // keeps the content at the top and scrolls.
+            .justify_center()
             .w_full()
+            .min_h(px((logical_height - FOOTER_H).max(0.0)))
             .gap(px(if compact_height { 24.0 } else { 34.0 }))
-            .pt(px(if compact_height { 20.0 } else { 34.0 }))
-            .pb(px(FOOTER_H + 28.0))
+            .py(px(if compact_height { 20.0 } else { 34.0 }))
             .child(hero)
             .child(cards);
 

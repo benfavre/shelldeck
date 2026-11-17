@@ -380,6 +380,7 @@ impl Workspace {
     pub(super) fn render_presentation_menu(
         current: WorkspacePresentation,
         attention: [ViewAttention; 4],
+        compact: bool,
         handle: &WeakEntity<Self>,
     ) -> AnyElement {
         let handle = handle.clone();
@@ -438,7 +439,8 @@ impl Workspace {
                         15.0,
                         ShellDeckColors::primary(),
                     ))
-                    .child(current.label())
+                    // A narrow title bar keeps the icon; the view is in the tooltip.
+                    .when(!compact, |chip| chip.child(current.label()))
                     .when_some(rest_dot, |chip, color| {
                         chip.child(
                             div()

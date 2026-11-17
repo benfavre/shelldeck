@@ -375,11 +375,9 @@ impl Workspace {
             chip
         });
 
-        // Where the view switcher goes. It sits in the middle of the window
-        // while each half has room for its side; otherwise it follows the
-        // logo, and in a narrower window still the site chip keeps only its
-        // globe (the site stays in its tooltip). Widths are estimates in
-        // logical pixels of what each control draws.
+        // The view dropdown follows the logo. In a narrow window the site
+        // chip keeps only its globe (the site stays in its tooltip). Widths
+        // are estimates in logical pixels of what each control draws.
         let show_site_chip = account.is_some() && sites_loaded;
         let leading_need = 12.0
             + if sidebar_visible.is_some() { 40.0 } else { 0.0 }
@@ -409,29 +407,6 @@ impl Workspace {
         };
         let site_label_fits =
             logical_width >= leading_need + switcher_need + trailing_base + site_label_need + 24.0;
-        let trailing_need = trailing_base
-            + if site_label_fits {
-                site_label_need
-            } else {
-                0.0
-            };
-        let switcher_centred =
-            logical_width / 2.0 - switcher_need / 2.0 >= leading_need.max(trailing_need) + 16.0;
-        // Beside the logo while the window controls and the first action
-        // still fit after it (the actions scroll). Narrower still, the
-        // switcher joins the actions after Pro, so nothing is covered.
-        let first_action_need = if pro_workspace_button.is_some() {
-            if compact {
-                44.0
-            } else {
-                108.0
-            }
-        } else {
-            42.0
-        };
-        let switcher_after_logo = !switcher_centred
-            && logical_width >= leading_need + switcher_need + 150.0 + first_action_need + 24.0;
-
         // Site chip — shown only when signed in and the sites directory has
         // loaded. The global scope is a compact globe; a specific selection
         // keeps its label visible so the current scope is never ambiguous.
@@ -499,8 +474,9 @@ impl Workspace {
         // full app is never a one-way door.
         let view_attention = presentation_switch;
         // The view chooser is the « Agents ▾ » dropdown in every view (SDUC-596).
-        let presentation_switcher = presentation_switch
-            .map(|attention| Self::render_presentation_menu(presentation, attention, handle));
+        let presentation_switcher = presentation_switch.map(|attention| {
+            Self::render_presentation_menu(presentation, attention, compact, handle)
+        });
 
         let ai_button = ai_configured.then(|| {
             let tooltip: SharedString = t!("ai.assistant.open").to_string().into();
@@ -580,15 +556,8 @@ impl Workspace {
         if !is_maximized {
             titlebar = titlebar.rounded_t(use_theme().tokens.radius_xl);
         }
-        // Leading and trailing clusters share the free width equally, so the
-        // view switcher stays in the middle of the window.
-        // Too narrow even beside the logo: the switcher joins the actions
-        // (after Pro), which scroll, so the window controls never get covered.
-        let (switcher, switcher_in_actions) = if switcher_centred || switcher_after_logo {
-            (presentation_switcher, None)
-        } else {
-            (None, presentation_switcher)
-        };
+        // The view dropdown always follows the logo, on the left (SDUC-596).
+        let switcher = presentation_switcher;
         if account.is_none() {
             // Signed out (the welcome screen), as in the owner's mock-up
             // (SDUC-597): ≡, « Inklura | Desktop », Aide and the theme toggle.
@@ -735,7 +704,7 @@ impl Workspace {
                 .children(sidebar_button)
                 .child(Self::render_brand_menu(compact, handle))
                 .children(view_attention.map(|attention| {
-                    Self::render_presentation_menu(presentation, attention, handle)
+                    Self::render_presentation_menu(presentation, attention, compact, handle)
                 }))
                 .child(divider());
             let actions = div()
@@ -793,7 +762,6 @@ impl Workspace {
                     .overflow_x_scroll()
                     .gap(px(8.0))
                     .children(pro_workspace_button)
-                    .children(switcher_in_actions)
                     .children(ai_button)
                     .children(mode_switcher)
                     .children(site_chip)
@@ -819,27 +787,11 @@ impl Workspace {
             );
         let switcher = switcher.map(|switcher| div().flex_shrink_0().child(switcher));
         let titlebar = titlebar.border_b_1().border_color(titlebar_border);
-        if !switcher_after_logo {
-            // Equal halves around the switcher keep it in the middle.
-            titlebar
-                .child(
-                    leading
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .child(drag_filler("titlebar-drag-leading")),
-                )
-                .children(switcher)
-                .child(trailing)
-                .into_any_element()
-        } else {
-            // Not enough room in each half: the switcher follows the logo and
-            // the actions keep the rest.
-            titlebar
-                .child(leading.flex_shrink_0())
-                .children(switcher.map(|switcher| switcher.ml(px(12.0))))
-                .child(trailing)
-                .into_any_element()
-        }
+        titlebar
+            .child(leading.flex_shrink_0())
+            .children(switcher.map(|switcher| switcher.ml(px(12.0))))
+            .child(trailing)
+            .into_any_element()
     }
 
     /// The menu row under the titlebar (Fichier, Édition, Affichage, …). Pinned

@@ -6121,7 +6121,8 @@ app, Paramètres, Aide), « Agents ▾ » (Application complète, Agents, Termin
 state dot, ×) and « + » for a new session; the account, site, mode and window
 controls stay on the right. A tab is not the conversation: × closes the tab,
 the neighbour is selected, the conversation stays in the sidebar; closing the
-last tab opens a new session. The full app keeps its segmented switcher.
+last tab opens a new session. Since 2026-11-17 the same « ▾ » dropdown is the view chooser in every view,
+always on the left after the logo (icon only in a narrow title bar).
 
 The sidebar list starts with « Récents »: the five conversations with messages
 touched last, with their project and age, foldable, filtered by Tout / Local /
@@ -6145,6 +6146,9 @@ colours throughout, so it follows the theme; it scrolls when the window is
 short. The signed-out title bar: ≡ (menu row), « Inklura | Desktop », Aide,
 and a moon/sun button that switches the light and dark themes.
 
-Native check 2026-11-17, empty profile, 1200 x 800, Light and Dark:
+Its content is centred vertically above the foot (the height comes from the
+window, since percentages do not resolve in its scroll area); a short window
+scrolls from the top. Native check 2026-11-17, empty profile, 1200 x 800 and
+maximised at 1600 x 1300, Light and Dark:
 `05-welcome-light.png`, `06-welcome-dark.png` (the two toasts are the headless
 session's missing desktop portal, not part of the screen).
