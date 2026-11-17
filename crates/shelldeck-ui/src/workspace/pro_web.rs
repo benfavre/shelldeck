@@ -136,8 +136,8 @@ impl Workspace {
             )
             .debug_selector(|| "open-inklura-pro".into())
             .size(ButtonSize::Sm)
-            .h(px(28.0))
-            .px(px(8.0))
+            .h(px(super::presentation::TITLEBAR_CONTROL))
+            .px(px(10.0))
             .tooltip(if self.pro_open {
                 t!("pro.return").to_string()
             } else {

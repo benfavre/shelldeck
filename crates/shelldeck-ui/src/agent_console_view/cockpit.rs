@@ -5,6 +5,11 @@
 use super::navigator::NavigatorTargetFilter;
 use super::*;
 
+/// Height of every header inside the conversation card: the session header,
+/// Détails, Fichiers / Modifications and the tool panels, so their bottom
+/// borders make one line across the card.
+pub(super) const PANEL_HEADER_HEIGHT: f32 = 54.0;
+
 /// Rounded corners of the cockpit's cards, buttons and fields.
 pub(super) const CARD_RADIUS: f32 = 10.0;
 /// Rounded corners of the large surfaces (the main card, the composer).
@@ -137,7 +142,7 @@ impl AgentConsoleView {
             .flex_shrink_0()
             .gap(px(12.0))
             .px(px(12.0))
-            .pt(px(12.0))
+            .pt(px(8.0))
             .pb(px(6.0))
             .child(
                 Button::new("agent-nav-new", t!("agents.session.new").to_string())
@@ -1006,7 +1011,7 @@ impl AgentConsoleView {
                     .flex()
                     .items_center()
                     .flex_shrink_0()
-                    .h(px(54.0))
+                    .h(px(PANEL_HEADER_HEIGHT))
                     .px(px(18.0))
                     .border_b_1()
                     .border_color(ShellDeckColors::border())
@@ -1804,14 +1809,15 @@ impl AgentConsoleView {
                 .flex()
                 .flex_shrink_0()
                 .items_center()
-                .gap(px(10.0))
-                .h(px(36.0))
+                // The title bar kit: 32 px, 8 px corners, 13 px text.
+                .gap(px(8.0))
+                .h(px(32.0))
                 .max_w(px(240.0))
-                .pl(px(14.0))
-                .pr(px(8.0))
-                .rounded(px(CARD_RADIUS))
+                .pl(px(12.0))
+                .pr(px(6.0))
+                .rounded(px(8.0))
                 .cursor_pointer()
-                .text_size(px(13.5))
+                .text_size(px(13.0))
                 .when(active, |tab| {
                     tab.bg(ShellDeckColors::bg_sidebar())
                         .border_1()
@@ -1847,8 +1853,8 @@ impl AgentConsoleView {
                         .flex_shrink_0()
                         .items_center()
                         .justify_center()
-                        .size(px(22.0))
-                        .rounded(px(6.0))
+                        .size(px(20.0))
+                        .rounded(px(5.0))
                         .hover(|style| style.bg(ShellDeckColors::hover_bg()))
                         .tooltip(|_, cx| {
                             cx.new(|_| {

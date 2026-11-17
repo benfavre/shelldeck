@@ -128,6 +128,18 @@ conversation/execution timeline.
   selected session always has one, × closes the tab and never archives, the
   neighbour takes the selection, closing the last opens a new session. The
   cockpit drops its narrow-window tab row while `tabs_in_titlebar`.
+- One title bar kit for every window state (`workspace/presentation.rs`:
+  `TITLEBAR_CONTROL` 32, `TITLEBAR_RADIUS` 8, `TITLEBAR_TEXT` 13,
+  `TITLEBAR_GAP` 8, `titlebar_brand`, `titlebar_control`): signed out, full
+  app, Agents and the other focused views share the brand (28 px mark, 16 px
+  « Inklura »), control heights and the action order (Pro, AI, mode, site,
+  bell, account). In the full app the brand chevron shows the menu row; in a
+  focused view it opens the product menu. Add the hover at the call site:
+  GPUI panics on a second hover style.
+- Every header inside the conversation card is `PANEL_HEADER_HEIGHT` (54):
+  session header, Détails, Fichiers / Modifications, tool panels, so their
+  bottom borders make one line. The sidebar head starts 8 px down, level with
+  the card's top edge.
 - « Récents » heads the sidebar list: the five conversations with messages
   touched last (machine filter applies, hidden while searching), foldable
   (`RECENT_GROUP_KEY`). Rows use `agent-recent-*` selectors so they never

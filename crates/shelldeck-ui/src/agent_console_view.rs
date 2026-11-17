@@ -2180,7 +2180,7 @@ impl Render for AgentConsoleView {
             && self.tools.active.is_none()
             && self.inspector_tab == AgentInspectorTab::Details;
         let metadata = div()
-            .h(px(54.0))
+            .h(px(cockpit::PANEL_HEADER_HEIGHT))
             .flex()
             .items_center()
             .flex_shrink_0()

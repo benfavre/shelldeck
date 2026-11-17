@@ -6,6 +6,60 @@ use crate::view_attention::ViewAttention;
 use adabraka_ui::overlays::popover::PopoverContent;
 use adabraka_ui::prelude::Popover;
 
+/// One title bar kit for every window state (signed out, full app, focused
+/// views), so the four headers line up: 32 px controls with 8 px corners and
+/// 13 px text, 8 px between them, and one brand (28 px mark, 16 px name).
+pub(super) const TITLEBAR_CONTROL: f32 = 32.0;
+pub(super) const TITLEBAR_RADIUS: f32 = 8.0;
+pub(super) const TITLEBAR_TEXT: f32 = 13.0;
+pub(super) const TITLEBAR_GAP: f32 = 8.0;
+
+/// The brand of every title bar: the mark, « Inklura » unless compact, and an
+/// optional trailing glyph (the chevron of a menu). The caller makes it clickable.
+pub(super) fn titlebar_brand(compact: bool, glyph: Option<&'static str>) -> Div {
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(TITLEBAR_GAP))
+        .h(px(TITLEBAR_CONTROL + 4.0))
+        .pl(px(4.0))
+        .pr(px(6.0))
+        .rounded(px(TITLEBAR_RADIUS))
+        .child(crate::brand::brand_badge(28.0))
+        .when(!compact, |brand| {
+            brand.child(
+                div()
+                    .text_size(px(16.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .whitespace_nowrap()
+                    .child("Inklura"),
+            )
+        })
+        .when_some(glyph, |brand, glyph| {
+            brand.child(lucide_icon(glyph, 14.0, ShellDeckColors::text_muted()))
+        })
+}
+
+/// A title bar control face: 32 px tall, 8 px corners, 13 px text. The caller
+/// adds its hover (GPUI allows one hover style per element).
+pub(super) fn titlebar_control(id: impl Into<ElementId>) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .h(px(TITLEBAR_CONTROL))
+        .min_w(px(TITLEBAR_CONTROL))
+        .rounded(px(TITLEBAR_RADIUS))
+        .cursor_pointer()
+        .text_size(px(TITLEBAR_TEXT))
+        .text_color(ShellDeckColors::text_primary())
+}
+
 /// What the window shows around the Dev views: the full app (titlebar menus,
 /// activity rail, every destination) or one focused view with no rail.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -413,21 +467,11 @@ impl Workspace {
         Popover::new("titlebar-view-menu")
             .anchor(Corner::TopLeft)
             .trigger(
-                div()
-                    .id("titlebar-view-chip")
+                titlebar_control("titlebar-view-chip")
                     .debug_selector(|| "titlebar-view-chip".into())
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap(px(8.0))
-                    .h(px(34.0))
-                    .px(px(12.0))
-                    .rounded(px(9.0))
+                    .px(px(10.0))
                     .bg(ShellDeckColors::badge_bg().opacity(0.7))
-                    .cursor_pointer()
                     .hover(|style| style.bg(ShellDeckColors::badge_bg()))
-                    .text_size(px(13.5))
-                    .text_color(ShellDeckColors::text_primary())
                     .tooltip(move |_, cx| {
                         cx.new(|_| WorkspaceTooltip {
                             label: tooltip.clone(),
@@ -500,35 +544,11 @@ impl Workspace {
     /// « Inklura ▾ »: the product menu of a focused view, which has no menu row.
     pub(super) fn render_brand_menu(compact: bool, handle: &WeakEntity<Self>) -> AnyElement {
         let handle = handle.clone();
-        let mut face = div()
+        let face = titlebar_brand(compact, Some("chevron-down"))
             .id("titlebar-brand")
             .debug_selector(|| "titlebar-brand".into())
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .gap(px(8.0))
-            .h(px(36.0))
-            .pl(px(4.0))
-            .pr(px(6.0))
-            .rounded(px(9.0))
             .cursor_pointer()
-            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-            .child(crate::brand::brand_badge(28.0));
-        if !compact {
-            face = face.child(
-                div()
-                    .text_size(px(16.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .whitespace_nowrap()
-                    .child("Inklura"),
-            );
-        }
-        face = face.child(lucide_icon(
-            "chevron-down",
-            14.0,
-            ShellDeckColors::text_muted(),
-        ));
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()));
         Popover::new("titlebar-brand-menu")
             .anchor(Corner::TopLeft)
             .trigger(face)

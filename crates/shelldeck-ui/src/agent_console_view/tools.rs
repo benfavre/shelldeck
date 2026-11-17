@@ -301,12 +301,23 @@ impl AgentConsoleView {
         };
         let header = div()
             .flex()
+            .flex_shrink_0()
             .items_center()
             .gap(px(6.0))
-            .p(px(8.0))
+            .h(px(super::cockpit::PANEL_HEADER_HEIGHT))
+            .pl(px(18.0))
+            .pr(px(12.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
-            .child(div().flex_1().min_w_0().truncate().child(title))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(15.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
             .child(
                 Button::new("agent-panel-less", "")
                     .variant(ButtonVariant::Ghost)

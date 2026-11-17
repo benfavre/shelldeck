@@ -83,7 +83,6 @@ impl Workspace {
         let title_color = ShellDeckColors::text_primary();
         let title_dim = ShellDeckColors::text_muted();
         let accent = ShellDeckColors::primary();
-        let btn_text = ShellDeckColors::text_muted();
         let btn_hover_bg = ShellDeckColors::hover_bg();
 
         // Drag regions fill whatever the controls leave free on each side of
@@ -125,46 +124,22 @@ impl Workspace {
                 }))
         });
 
-        // The brand, then the chevron that shows the menu row, as Alt does.
-        let mut brand = div()
-            .flex()
-            .items_center()
-            .flex_shrink_0()
-            .gap(px(8.0))
-            .child(crate::brand::brand_badge(26.0));
-        if !compact {
-            brand = brand.child(
-                div()
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(title_color)
-                    .whitespace_nowrap()
-                    .child("Inklura"),
-            );
-        }
-        if focused_presentation && !compact {
-            brand = brand.child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(title_dim)
-                    .child(presentation.label()),
-            );
-        }
-        let menu_chevron = menu_row.map(|shown| {
-            let tooltip: SharedString = if shown {
-                t!("menu.row.hide").to_string()
-            } else {
-                t!("menu.row.show").to_string()
-            }
-            .into();
-            div()
+        // The brand. In the full app it shows the menu row, as Alt does; a
+        // focused view has no menu row, so the brand opens the product menu.
+        let brand: AnyElement = match menu_row {
+            Some(shown) => {
+                let tooltip: SharedString = if shown {
+                    t!("menu.row.hide").to_string()
+                } else {
+                    t!("menu.row.show").to_string()
+                }
+                .into();
+                super::presentation::titlebar_brand(
+                    compact,
+                    Some(if shown { "chevron-up" } else { "chevron-down" }),
+                )
                 .id("titlebar-menu-chevron")
                 .debug_selector(|| "titlebar-menu-chevron".into())
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(26.0))
-                .rounded(px(6.0))
                 .cursor_pointer()
                 .hover(|el| el.bg(btn_hover_bg))
                 .tooltip(move |_, cx| {
@@ -174,12 +149,10 @@ impl Workspace {
                     .into()
                 })
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_menu_row(cx)))
-                .child(lucide_icon(
-                    if shown { "chevron-up" } else { "chevron-down" },
-                    15.0,
-                    btn_text,
-                ))
-        });
+                .into_any_element()
+            }
+            None => Self::render_brand_menu(compact, handle),
+        };
         let leading = div()
             .flex()
             .items_center()
@@ -191,8 +164,7 @@ impl Workspace {
             } else {
                 None
             })
-            .child(brand.ml(px(4.0)))
-            .children(menu_chevron);
+            .child(brand);
 
         let control_btn = crate::window_chrome::control_button;
 
@@ -252,7 +224,7 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(6.0))
-            .h(px(36.0))
+            .h(px(super::presentation::TITLEBAR_CONTROL))
             .px(px(2.0))
             .rounded_full()
             .cursor_pointer();
@@ -264,7 +236,7 @@ impl Workspace {
                     .relative()
                     .child(
                         div()
-                            .size(px(34.0))
+                            .size(px(super::presentation::TITLEBAR_CONTROL))
                             .rounded_full()
                             .bg(accent.opacity(0.10))
                             .border_1()
@@ -339,16 +311,16 @@ impl Workspace {
                 .id("titlebar-mode")
                 .flex()
                 .items_center()
-                .gap(px(5.0))
-                .h(px(28.0))
-                .px(px(8.0))
-                .rounded(px(6.0))
+                .gap(px(6.0))
+                .h(px(super::presentation::TITLEBAR_CONTROL))
+                .px(px(10.0))
+                .rounded(px(super::presentation::TITLEBAR_RADIUS))
                 .bg(ShellDeckColors::badge_bg())
                 .cursor_pointer()
                 .hover(|s| s.bg(btn_hover_bg))
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(px(super::presentation::TITLEBAR_TEXT))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(title_color)
                         .child(super::modes::mode_label(current)),
@@ -420,10 +392,11 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .gap(px(5.0))
-                .h(px(28.0))
+                .gap(px(6.0))
+                .h(px(super::presentation::TITLEBAR_CONTROL))
+                .min_w(px(super::presentation::TITLEBAR_CONTROL))
                 .px(px(8.0))
-                .rounded(px(6.0))
+                .rounded(px(super::presentation::TITLEBAR_RADIUS))
                 .cursor_pointer()
                 .hover(|s| s.bg(btn_hover_bg))
                 .tooltip(move |_, cx| {
@@ -432,7 +405,7 @@ impl Workspace {
                     })
                     .into()
                 })
-                .child(lucide_icon("globe", 14.0, title_dim))
+                .child(lucide_icon("globe", 16.0, title_dim))
                 .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     this.site_menu_open = !this.site_menu_open;
                     if this.site_menu_open {
@@ -447,10 +420,10 @@ impl Workspace {
                 chip = chip
                     .child(
                         div()
-                            .max_w(px(120.0))
+                            .max_w(px(160.0))
                             .min_w(px(0.0))
                             .truncate()
-                            .text_size(px(11.0))
+                            .text_size(px(super::presentation::TITLEBAR_TEXT))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(title_color)
                             .child(visible_label),
@@ -486,14 +459,14 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .h(px(28.0))
+                .h(px(super::presentation::TITLEBAR_CONTROL))
                 .w(if ai_task_count == 0 {
-                    px(28.0)
+                    px(super::presentation::TITLEBAR_CONTROL)
                 } else {
-                    px(44.0)
+                    px(48.0)
                 })
                 .gap(px(4.0))
-                .rounded(px(6.0))
+                .rounded(px(super::presentation::TITLEBAR_RADIUS))
                 .border_1()
                 .border_color(ShellDeckColors::primary().opacity(0.40))
                 .bg(ShellDeckColors::primary().opacity(0.12))
@@ -569,8 +542,8 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .size(px(32.0))
-                    .rounded(px(7.0))
+                    .size(px(super::presentation::TITLEBAR_CONTROL))
+                    .rounded(px(super::presentation::TITLEBAR_RADIUS))
                     .cursor_pointer()
                     .hover(|el| el.bg(btn_hover_bg))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_menu_row(cx)))
@@ -589,20 +562,12 @@ impl Workspace {
                 .items_center()
                 .flex_shrink_0()
                 .h_full()
-                .gap(px(12.0))
+                .gap(px(super::presentation::TITLEBAR_GAP))
                 .pl(px(12.0))
                 .children(menu_button)
-                .child(crate::brand::brand_badge(28.0))
+                .child(super::presentation::titlebar_brand(compact, None))
                 .when(!compact, |row| {
-                    row.child(
-                        div()
-                            .text_size(px(18.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(title_color)
-                            .child("Inklura"),
-                    )
-                    .child(divider())
-                    .child(
+                    row.child(divider()).child(
                         div()
                             .text_size(px(15.0))
                             .text_color(title_dim)
@@ -614,21 +579,12 @@ impl Workspace {
                 .items_center()
                 .flex_shrink_0()
                 .h_full()
-                .gap(px(6.0))
+                .gap(px(super::presentation::TITLEBAR_GAP))
                 .child(
-                    div()
-                        .id("titlebar-help")
-                        .debug_selector(|| "titlebar-help".into())
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .h(px(34.0))
-                        .px(px(10.0))
-                        .rounded(px(8.0))
-                        .cursor_pointer()
+                    super::presentation::titlebar_control("titlebar-help")
                         .hover(|el| el.bg(btn_hover_bg))
-                        .text_size(px(14.0))
-                        .text_color(title_color)
+                        .debug_selector(|| "titlebar-help".into())
+                        .px(px(10.0))
                         .on_click(|_, _, _| {
                             let _ =
                                 cloud_account::open_in_browser(super::welcome::WELCOME_DOCS_URL);
@@ -637,16 +593,9 @@ impl Workspace {
                         .child(t!("welcome.help").to_string()),
                 )
                 .child(
-                    div()
-                        .id("titlebar-theme")
-                        .debug_selector(|| "titlebar-theme".into())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(34.0))
-                        .rounded(px(8.0))
-                        .cursor_pointer()
+                    super::presentation::titlebar_control("titlebar-theme")
                         .hover(|el| el.bg(btn_hover_bg))
+                        .debug_selector(|| "titlebar-theme".into())
                         .tooltip(move |_, cx| {
                             cx.new(|_| WorkspaceTooltip {
                                 label: theme_tooltip.clone(),
@@ -699,7 +648,7 @@ impl Workspace {
                 .items_center()
                 .flex_shrink_0()
                 .h_full()
-                .gap(px(10.0))
+                .gap(px(super::presentation::TITLEBAR_GAP))
                 .pl(px(12.0))
                 .children(sidebar_button)
                 .child(Self::render_brand_menu(compact, handle))
@@ -716,9 +665,10 @@ impl Workspace {
                 .h_full()
                 .gap(px(8.0))
                 .children(pro_workspace_button)
+                // Same order as the full app's actions.
                 .children(ai_button)
-                .children(site_chip)
                 .children(mode_switcher)
+                .children(site_chip)
                 .children(inklura_bell)
                 .child(account_btn);
             return titlebar
