@@ -197,23 +197,28 @@ impl AgentConsoleView {
             .flex_col()
             .gap(px(6.0))
             .child(
+                // One card, as in the owner's mock-up: the disclosure row, then
+                // the latest operation beneath it.
                 div()
                     .flex()
                     .flex_col()
-                    .items_start()
+                    .w_full()
                     .min_w(px(0.0))
-                    .gap(px(6.0))
+                    .rounded(px(super::cockpit::CARD_RADIUS))
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
                     .child(
-                        Button::new(("agent-work-disclosure", uuid_key(group_id)), label)
+                        div()
+                            .id(("agent-work-disclosure", uuid_key(group_id)))
                             .debug_selector(|| format!("agent-work-{group_id}"))
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm)
-                            .icon(IconSource::from(if expanded {
-                                "chevron-down"
-                            } else {
-                                "chevron-right"
-                            }))
-                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(10.0))
+                            .h(px(40.0))
+                            .px(px(12.0))
+                            .rounded(px(super::cockpit::CARD_RADIUS))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 // Disclosure never requests follow-latest or changes execution state.
                                 if let Some(ui) = this.session_ui.get_mut(&session_id) {
@@ -232,7 +237,39 @@ impl AgentConsoleView {
                                     this.activity.pending_open = Some(group_id);
                                 }
                                 cx.notify();
-                            })),
+                            }))
+                            .child(lucide_icon(
+                                if expanded {
+                                    "chevron-down"
+                                } else {
+                                    "chevron-right"
+                                },
+                                14.0,
+                                ShellDeckColors::text_muted(),
+                            ))
+                            .child(lucide_icon("wrench", 15.0, ShellDeckColors::text_primary()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(13.0))
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(px(12.5))
+                                    .text_color(ShellDeckColors::primary())
+                                    .child(
+                                        t!(if expanded {
+                                            "agents.cockpit.hide_detail"
+                                        } else {
+                                            "agents.cockpit.show_detail"
+                                        })
+                                        .to_string(),
+                                    ),
+                            ),
                     )
                     .child(
                         div()
@@ -242,8 +279,9 @@ impl AgentConsoleView {
                             .flex()
                             .items_center()
                             .gap(px(8.0))
-                            .pl(px(10.0))
-                            .pb(px(4.0))
+                            .pl(px(38.0))
+                            .pr(px(12.0))
+                            .pb(px(9.0))
                             .child(lucide_icon(icon, 12.0, ShellDeckColors::text_muted()))
                             .child(
                                 div()
@@ -252,7 +290,7 @@ impl AgentConsoleView {
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
-                                    .text_size(px(11.0))
+                                    .text_size(px(11.5))
                                     .text_color(ShellDeckColors::text_muted())
                                     .child(title),
                             ),

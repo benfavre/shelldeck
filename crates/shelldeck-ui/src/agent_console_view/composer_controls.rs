@@ -73,20 +73,42 @@ impl AgentConsoleView {
                 t!("agents.composer.add_context").to_string(),
             ),
         };
-        let trigger = Button::new(id, label)
-            .variant(ButtonVariant::Ghost)
-            .size(if matches!(menu, ComposerMenu::Attachments) {
-                ButtonSize::Icon
-            } else {
-                ButtonSize::Sm
-            })
-            .h(px(30.0))
-            .icon(IconSource::from(icon))
-            .tooltip(if matches!(menu, ComposerMenu::Access) {
-                provider_access_description(context.provider, context.access)
-            } else {
-                title.clone()
-            });
+        let tooltip = if matches!(menu, ComposerMenu::Access) {
+            provider_access_description(context.provider, context.access)
+        } else {
+            title.clone()
+        };
+        let trigger = if matches!(menu, ComposerMenu::Attachments) {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .size(px(34.0))
+                .rounded(px(super::cockpit::CARD_RADIUS))
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .cursor_pointer()
+                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                .child(lucide_icon("plus", 16.0, ShellDeckColors::text_primary()))
+        } else {
+            let glyph = match menu {
+                ComposerMenu::Agent => crate::icons::agent_provider_icon(
+                    context.provider,
+                    15.0,
+                    ShellDeckColors::text_primary(),
+                ),
+                _ => lucide_icon(icon.as_ref(), 15.0, ShellDeckColors::text_primary())
+                    .into_any_element(),
+            };
+            super::cockpit::chip(id, Some(glyph), label, 34.0).debug_selector(move || id.into())
+        }
+        .tooltip(move |_, cx| {
+            cx.new(|_| super::navigator::NavigatorTooltip(tooltip.clone()))
+                .into()
+        });
         let parent = cx.entity();
         Popover::new(SharedString::from(format!("{id}-popover")))
             .anchor(Corner::BottomLeft)

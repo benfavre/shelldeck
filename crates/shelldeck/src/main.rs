@@ -51,6 +51,14 @@ macro_rules! lucide_assets {
 }
 
 lucide_assets!(
+    "chart-no-axes-column",
+    "code",
+    "file",
+    "layers",
+    "loader-circle",
+    "message-square",
+    "panel-left",
+    "wrench",
     "activity",
     "archive",
     "archive-restore",

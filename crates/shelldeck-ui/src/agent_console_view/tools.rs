@@ -18,6 +18,9 @@ pub(super) struct AgentToolsUi {
     pub navigator_overlay: bool,
     pub navigator_resize: Option<super::navigator_resize::NavigatorResize>,
     pub toolbar_expanded: bool,
+    /// The two folded sections at the foot of « Détails de la session ».
+    pub details_tools_open: bool,
+    pub details_resources_open: bool,
     pub panel_width: f32,
     pub measured_width: f32,
     pub inspector_wide: bool,
@@ -38,6 +41,8 @@ impl AgentToolsUi {
             navigator_overlay: false,
             navigator_resize: None,
             toolbar_expanded: false,
+            details_tools_open: false,
+            details_resources_open: false,
             panel_width: 360.0,
             measured_width: 0.0,
             inspector_wide: false,
@@ -131,7 +136,7 @@ impl AgentConsoleView {
         cx.notify();
     }
 
-    fn activate_workspace_tool(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(super) fn activate_workspace_tool(&mut self, id: &str, cx: &mut Context<Self>) {
         match id {
             "files" => {
                 let close = self.tools.active.is_none()
@@ -140,6 +145,15 @@ impl AgentConsoleView {
                 self.tools.active = None;
                 self.inspector_tab = AgentInspectorTab::Files;
                 self.tools.panel_visible = !close;
+            }
+            "details" => {
+                let close = self.tools.active.is_none()
+                    && self.inspector_tab == AgentInspectorTab::Details
+                    && self.tools.panel_visible;
+                self.tools.active = None;
+                self.inspector_tab = AgentInspectorTab::Details;
+                self.tools.panel_visible = !close;
+                self.schedule_library_save(cx);
             }
             "review" => {
                 self.tools.active = None;
@@ -179,7 +193,7 @@ impl AgentConsoleView {
 
     /// Primary tools share the session header; the full toolbox remains one click away.
     pub(super) fn render_quick_tools(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut row = div().flex().items_center().flex_shrink_0().gap(px(6.0));
+        let mut row = div().flex().items_center().flex_shrink_0().gap(px(4.0));
         for (id, icon, key) in [
             ("files", "file-text", "agents.inspector.files"),
             ("review", "git-branch", "agents.inspector.changes"),
@@ -190,8 +204,8 @@ impl AgentConsoleView {
                 Button::new(SharedString::from(format!("agent-quick-{id}")), "")
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Icon)
-                    .w(px(28.0))
-                    .h(px(28.0))
+                    .w(px(30.0))
+                    .h(px(30.0))
                     .icon(IconSource::from(icon))
                     .tooltip(t!(key).to_string())
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -200,24 +214,7 @@ impl AgentConsoleView {
                     })),
             );
         }
-        row.child(
-            Button::new("agent-more-tools", "")
-                .variant(if self.tools.toolbar_expanded {
-                    ButtonVariant::Secondary
-                } else {
-                    ButtonVariant::Ghost
-                })
-                .size(ButtonSize::Icon)
-                .w(px(28.0))
-                .h(px(28.0))
-                .icon(IconSource::from("ellipsis"))
-                .tooltip(t!("agents.parity.more_tools").to_string())
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.tools.toolbar_expanded = !this.tools.toolbar_expanded;
-                    cx.notify();
-                })),
-        )
-        .into_any_element()
+        row.into_any_element()
     }
 
     pub(super) fn render_workspace_tools(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -261,6 +258,21 @@ impl AgentConsoleView {
                 })),
             );
         }
+        row = row.child(
+            Button::new("agent-context-toggle", "")
+                .variant(if self.context_expanded {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .size(ButtonSize::Icon)
+                .icon(IconSource::from("settings"))
+                .tooltip(t!("agents.context.title").to_string())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.context_expanded = !this.context_expanded;
+                    cx.notify();
+                })),
+        );
         row = row.child(div().flex_1()).child(
             Button::new("agent-tool-project", "")
                 .variant(ButtonVariant::Ghost)

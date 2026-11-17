@@ -110,20 +110,10 @@ impl AgentConsoleView {
             .flex_shrink_0()
             .overflow_hidden();
         if part == 0 {
-            row = row.pt(px(10.0)).child(
-                div()
-                    .mb(px(4.0))
-                    .text_size(px(10.5))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(
-                        message
-                            .provider
-                            .unwrap_or(self.displayed_context(cx).provider)
-                            .display_name()
-                            .to_string(),
-                    ),
-            );
+            row = row.pt(px(10.0));
+            if let Some(header) = self.reply_header(message, cx) {
+                row = row.child(header);
+            }
         }
         row = row.child(
             div()
@@ -131,6 +121,7 @@ impl AgentConsoleView {
                 .flex_col()
                 .w_full()
                 .min_w_0()
+                .pl(px(super::super::cockpit::REPLY_INDENT))
                 .font_family(theme.tokens.font_family.clone())
                 .text_color(theme.tokens.foreground)
                 .whitespace_normal()
@@ -144,7 +135,11 @@ impl AgentConsoleView {
         );
         if end == blocks.len() {
             row = row
-                .child(self.render_message_actions(message, cx))
+                .child(
+                    div()
+                        .pl(px(super::super::cockpit::REPLY_INDENT))
+                        .child(self.render_message_actions(message, cx)),
+                )
                 .pb(px(10.0));
         }
         row.into_any_element()

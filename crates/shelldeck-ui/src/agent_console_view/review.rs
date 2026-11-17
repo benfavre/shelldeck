@@ -65,6 +65,14 @@ struct ReviewLineComment {
 }
 
 impl AgentConsoleView {
+    /// Whether the repository review already lists changed files for a session.
+    pub(super) fn review_lists_changes(&self, session_id: Uuid) -> bool {
+        self.review
+            .sessions
+            .get(&session_id)
+            .is_some_and(|state| state.turns.iter().any(|turn| !turn.changes.is_empty()))
+    }
+
     fn review_context_matches(
         &self,
         session_id: Uuid,

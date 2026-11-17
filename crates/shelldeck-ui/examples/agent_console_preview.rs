@@ -117,13 +117,57 @@ pub fn main() -> anyhow::Result<()> {
         workdir: root.display().to_string(),
         model: None,
     };
-    let first = collection.create("Improve the notifications flow", context.clone(), 1)?;
+    let mockup = std::env::var_os("SHELLDECK_PREVIEW_MOCKUP").is_some();
+    let turn_start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|now| now.as_millis() as i64)
+        .unwrap_or(0)
+        - 15 * 60_000;
+    let first = collection.create(
+        if mockup {
+            "Refonte de l’interface"
+        } else {
+            "Improve the notifications flow"
+        },
+        context.clone(),
+        1,
+    )?;
     collection.begin_run(
         first,
-        "Audit the notifications flow, preserve the active connection, and verify navigation.",
-        2,
+        if mockup {
+            "Simplifie la navigation et rapproche la configuration du champ de saisie pour démarrer plus facilement."
+        } else {
+            "Audit the notifications flow, preserve the active connection, and verify navigation."
+        },
+        turn_start,
     )?;
-    for event in [
+    if mockup {
+        // SDUC-595 owner's mock-up: one reply, six actions, three files, three checks.
+        let trace = |correlation: &str, detail| {
+            AgentStreamEvent::Trace(AgentTraceUpdate {
+                correlation_id: Some(correlation.into()),
+                detail,
+            })
+        };
+        for event in [
+            AgentStreamEvent::Ready,
+            trace("r1", AgentTraceKind::FileRead { path: "src/AppShell.tsx".into(), status: AgentTraceStatus::Succeeded, line_start: Some(1), line_end: Some(120) }),
+            trace("r2", AgentTraceKind::FileRead { path: "src/SessionSidebar.tsx".into(), status: AgentTraceStatus::Succeeded, line_start: Some(1), line_end: Some(96) }),
+            trace("r3", AgentTraceKind::FileRead { path: "src/NewSession.tsx".into(), status: AgentTraceStatus::Succeeded, line_start: Some(1), line_end: Some(140) }),
+            trace("d1", AgentTraceKind::Diff { path: "src/AppShell.tsx".into(), status: AgentTraceStatus::Succeeded, additions: 24, deletions: 18, preview: None }),
+            trace("d2", AgentTraceKind::Diff { path: "src/SessionSidebar.tsx".into(), status: AgentTraceStatus::Succeeded, additions: 38, deletions: 22, preview: None }),
+            trace("d3", AgentTraceKind::Diff { path: "src/NewSession.tsx".into(), status: AgentTraceStatus::Succeeded, additions: 46, deletions: 31, preview: None }),
+            AgentStreamEvent::Text("La navigation est plus claire et le démarrage d’une session tient désormais dans un seul espace.\n\n- Projets et sessions regroupés dans la barre latérale.\n- Projet, connexion et agent à portée du champ de saisie.\n- Détails techniques accessibles à la demande.".into()),
+            trace("t1", AgentTraceKind::Test { name: "Types".into(), status: AgentTraceStatus::Succeeded, summary: None }),
+            trace("t2", AgentTraceKind::Test { name: "Tests unitaires".into(), status: AgentTraceStatus::Succeeded, summary: None }),
+            trace("t3", AgentTraceKind::Test { name: "Affichage responsive".into(), status: AgentTraceStatus::Succeeded, summary: None }),
+            AgentStreamEvent::Usage(AgentUsageUpdate { input_tokens: Some(61240), output_tokens: Some(4810), context_used: Some(76000), context_size: Some(200000), ..Default::default() }),
+        ] {
+            collection.apply_stream_event(first, event, turn_start + 60_000)?;
+        }
+        collection.finish(first, AgentSessionStatus::Completed, turn_start + 126_000)?;
+    } else {
+        for event in [
         AgentStreamEvent::Ready,
         AgentStreamEvent::Text("The notification connection survives navigation. I’m checking the lifecycle and unread state next.".into()),
         AgentStreamEvent::Trace(AgentTraceUpdate {correlation_id:Some("read".into()),detail:AgentTraceKind::FileRead {path:"src/main.rs".into(),status:AgentTraceStatus::Succeeded,line_start:Some(1),line_end:Some(24)}}),
@@ -132,8 +176,11 @@ pub fn main() -> anyhow::Result<()> {
         AgentStreamEvent::Plan(AgentPlanUpdate {steps:vec![AgentPlanStep{text:"Inspect connection ownership".into(),status:AgentPlanStepStatus::Completed},AgentPlanStep{text:"Verify navigation and unread state".into(),status:AgentPlanStepStatus::Completed}]}),
         AgentStreamEvent::Usage(AgentUsageUpdate {input_tokens:Some(12480),output_tokens:Some(1960),context_used:Some(14440),context_size:Some(200000),..Default::default()}),
     ] { collection.apply_stream_event(first,event,3)?; }
-    collection.finish(first, AgentSessionStatus::Completed, 4)?;
-    collection.set_pinned(first, true, 5)?;
+        collection.finish(first, AgentSessionStatus::Completed, 4)?;
+    }
+    if !mockup {
+        collection.set_pinned(first, true, 5)?;
+    }
     collection.create("Review the terminal shortcuts", context.clone(), 6)?;
     collection.create("Investigate SSH reconnects", context, 7)?;
     collection.select(first)?;
@@ -232,15 +279,21 @@ pub fn main() -> anyhow::Result<()> {
     if std::env::var_os("SHELLDECK_PREVIEW_COLLAPSED").is_some() {
         snapshot.preferences.collapsed_project_ids = vec!["preview-project".into()];
     }
-    snapshot.preferences.inspector_visible = std::env::var_os("SHELLDECK_PREVIEW_PANEL").is_some();
-    snapshot.drafts.insert(
-        first,
-        if std::env::var_os("SHELLDECK_PREVIEW_CROPPED_TRACE").is_some() {
-            "open browser check inklura.fr".into()
-        } else {
-            "Add coverage for a reconnect while the page is hidden.".into()
-        },
-    );
+    snapshot.preferences.inspector_visible = std::env::var_os("SHELLDECK_PREVIEW_PANEL").is_some()
+        || std::env::var_os("SHELLDECK_PREVIEW_DETAILS").is_some();
+    if std::env::var_os("SHELLDECK_PREVIEW_DETAILS").is_some() {
+        snapshot.preferences.inspector_tab = "details".into();
+    }
+    if !mockup {
+        snapshot.drafts.insert(
+            first,
+            if std::env::var_os("SHELLDECK_PREVIEW_CROPPED_TRACE").is_some() {
+                "open browser check inklura.fr".into()
+            } else {
+                "Add coverage for a reconnect while the page is hidden.".into()
+            },
+        );
+    }
     snapshot.preferences.remote_sessions_expanded =
         std::env::var_os("SHELLDECK_PREVIEW_CONNECT").is_some();
     AgentSessionStore::default().save(&snapshot)?;
@@ -265,7 +318,9 @@ pub fn main() -> anyhow::Result<()> {
         adabraka_ui::init(cx);
         adabraka_ui::components::input::init(cx);
         adabraka_ui::set_icon_base_path("icons/lucide");
-        if std::env::var_os("SHELLDECK_PREVIEW_LIGHT").is_some() {
+        if std::env::var_os("SHELLDECK_PREVIEW_PLAIN_LIGHT").is_some() {
+            shelldeck_ui::theme::ShellDeckColors::set_theme(&shelldeck_core::config::app_config::ThemePreference::Light);
+        } else if std::env::var_os("SHELLDECK_PREVIEW_LIGHT").is_some() {
             shelldeck_ui::theme::ShellDeckColors::set_theme(&shelldeck_core::config::app_config::ThemePreference::SolarizedLight);
         }
         install_theme(cx, shelldeck_ui::theme::adabraka_theme_from_palette());

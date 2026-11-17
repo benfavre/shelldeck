@@ -266,16 +266,13 @@ impl AgentConsoleView {
         } else {
             format!("{}: {display}", t!("agents.model.label"))
         };
-        let trigger = Button::new("agent-model-trigger", label)
-            .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::Sm)
-            .icon(IconSource::from("chevron-down"))
-            .icon_position(adabraka_ui::components::button::IconPosition::End)
-            .tooltip(tooltip)
-            .h(px(30.0))
+        let trigger = super::cockpit::chip("agent-model-trigger", None, label, 34.0)
+            .debug_selector(|| "agent-model-trigger".into())
             .max_w(px(260.0))
-            .min_w_0()
-            .px(px(8.0));
+            .tooltip(move |_, cx| {
+                cx.new(|_| super::navigator::NavigatorTooltip(tooltip.clone()))
+                    .into()
+            });
         let parent = cx.entity();
         Popover::new("agent-model-popover")
             .anchor(Corner::BottomRight)

@@ -1,6 +1,25 @@
 use super::*;
 use shelldeck_core::agent_session::storage::AgentConsolePreferences;
 
+/// The sidebar's machine filter: every project, local checkouts only, or SSH ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum NavigatorTargetFilter {
+    #[default]
+    All,
+    Local,
+    Ssh,
+}
+
+impl NavigatorTargetFilter {
+    pub(super) fn admits(self, target: &AgentTarget) -> bool {
+        match self {
+            Self::All => true,
+            Self::Local => matches!(target, AgentTarget::Local),
+            Self::Ssh => matches!(target, AgentTarget::Ssh { .. }),
+        }
+    }
+}
+
 /// Navigation reflects what needs the person's attention, not just process state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NavigatorState {
@@ -739,8 +758,8 @@ impl AgentConsoleView {
             .flex()
             .flex_col()
             .gap(px(4.0))
-            .px(px(6.0))
-            .py(px(7.0))
+            .px(px(10.0))
+            .py(px(4.0))
             .child(self.render_pinned_conversations(cx));
         let query = self.navigator_search.read(cx).content().to_string();
         for project in &self.project_groups {
@@ -764,6 +783,11 @@ impl AgentConsoleView {
                             })
                 })
                 .collect::<Vec<_>>();
+            let filter = self.library.target_filter;
+            let visible_worktrees = visible_worktrees
+                .into_iter()
+                .filter(|worktree| filter.admits(&worktree.target))
+                .collect::<Vec<_>>();
             if visible_worktrees.is_empty() {
                 continue;
             }
@@ -780,18 +804,6 @@ impl AgentConsoleView {
                     "",
                 )
                 .debug_selector(|| format!("agent-project-collapse-{}", project.id))
-                .icon_visible_on_hover(header_group.clone())
-                .icon_when_not_hovered(
-                    if project
-                        .worktrees
-                        .iter()
-                        .any(|tree| matches!(tree.target, AgentTarget::Ssh { .. }))
-                    {
-                        "globe"
-                    } else {
-                        "folder"
-                    },
-                )
                 .p_0()
                 .variant(ButtonVariant::Ghost)
                 .hover_background(gpui::transparent_black())
@@ -816,7 +828,8 @@ impl AgentConsoleView {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.toggle_navigator_project(&project_id, cx);
                 })),
-            );
+            )
+            .child(lucide_icon("folder", 15.0, ShellDeckColors::text_primary()));
             let label_id = project.id.clone();
             let tooltip = project
                 .worktrees
@@ -850,15 +863,6 @@ impl AgentConsoleView {
                     })),
                 ),
             );
-            if let [worktree] = project.worktrees.as_slice() {
-                header = header.child(
-                    div()
-                        .flex_shrink_0()
-                        .opacity(0.0)
-                        .group_hover(header_group.clone(), |style| style.opacity(1.0))
-                        .child(self.new_worktree_button(worktree, cx)),
-                );
-            }
             if collapsed {
                 let (count, attention) = project_session_summary(
                     project,
@@ -871,7 +875,52 @@ impl AgentConsoleView {
                     header = header.child(collapsed_session_summary(&project.id, count, attention));
                 }
             }
-            header = header.child(self.project_actions_button(&project.id, header_group, cx));
+            // The machine badge rests in the slot the hover actions take, so
+            // the label never moves when the pointer comes over the row.
+            let mut hover_actions = div()
+                .absolute()
+                .right_0()
+                .top_0()
+                .bottom_0()
+                .flex()
+                .items_center()
+                .gap(px(2.0));
+            if let [worktree] = project.worktrees.as_slice() {
+                hover_actions = hover_actions.child(
+                    div()
+                        .flex_shrink_0()
+                        .opacity(0.0)
+                        .group_hover(header_group.clone(), |style| style.opacity(1.0))
+                        .child(self.new_worktree_button(worktree, cx)),
+                );
+            }
+            hover_actions = hover_actions.child(self.project_actions_button(
+                &project.id,
+                header_group.clone(),
+                cx,
+            ));
+            let ssh = project
+                .worktrees
+                .iter()
+                .find(|tree| matches!(tree.target, AgentTarget::Ssh { .. }))
+                .or(project.worktrees.first())
+                .map(|tree| tree.target.clone())
+                .unwrap_or(AgentTarget::Local);
+            header = header.child(
+                div()
+                    .relative()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .min_w(px(52.0))
+                    .h(px(24.0))
+                    .child(
+                        super::cockpit::target_badge(&ssh)
+                            .group_hover(header_group, |style| style.opacity(0.0)),
+                    )
+                    .child(hover_actions),
+            );
             body = body.child(header);
             if collapsed {
                 let selected = self.navigator_selected_session();
@@ -967,9 +1016,7 @@ impl AgentConsoleView {
             ));
         }
         body = body.child(self.render_uncatalogued_folders(cx));
-        body = body.child(self.render_local_session_rows(cx));
-        body = body.child(self.render_ssh_session_rows(cx));
-        body = body.child(self.render_remote_session_rows(cx));
+        body = body.child(self.render_imported_conversations(cx));
         div()
             .id("agent-navigator")
             .debug_selector(|| "agent-navigator".into())
@@ -979,112 +1026,7 @@ impl AgentConsoleView {
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .bg(ShellDeckColors::bg_sidebar())
-            .border_r_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                div()
-                    .h(px(42.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px(px(10.0))
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(t!("agents.navigator.projects").to_string()),
-                    )
-                    .child(
-                        Button::new("agent-nav-search-trigger", "")
-                            .debug_selector(|| "agent-nav-search-trigger".into())
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Icon)
-                            .icon("search")
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .tooltip(t!("agents.navigator.search").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.library.search_open = !this.library.search_open;
-                                if this.library.search_open {
-                                    window.focus(&this.navigator_search.read(cx).focus_handle(cx));
-                                } else {
-                                    this.navigator_search.update(cx, |state, cx| {
-                                        state.replace_content(String::new(), cx)
-                                    });
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(self.navigator_actions_button(cx))
-                    .child(
-                        Button::new("agent-nav-new", "")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Icon)
-                            .icon(IconSource::from("plus"))
-                            .w(px(26.0))
-                            .h(px(26.0))
-                            .tooltip(t!("agents.session.new").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
-                    ),
-            )
-            .when(self.library.search_open, |sidebar| {
-                sidebar.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .px(px(8.0))
-                        .py(px(6.0))
-                        .border_b_1()
-                        .border_color(ShellDeckColors::border())
-                        .child(lucide_icon("search", 11.0, ShellDeckColors::text_muted()))
-                        .child(
-                            div().flex().flex_col().flex_1().min_w(px(0.0)).child(
-                                Input::new(&self.navigator_search)
-                                    .debug_selector("agent-nav-search")
-                                    .variant(InputVariant::Bare)
-                                    .size(InputSize::Sm)
-                                    .w_full()
-                                    .placeholder(t!("agents.navigator.search").to_string())
-                                    .on_change(move |_value, cx| {
-                                        parent.update(cx, |_this, cx| cx.notify());
-                                    })
-                                    .on_blur(move |_, cx| {
-                                        search_blur_parent.update(cx, |view, cx| {
-                                            view.library.search_open = false;
-                                            view.navigator_search.update(cx, |state, cx| {
-                                                state.replace_content(String::new(), cx)
-                                            });
-                                            view.request_surface_focus(cx);
-                                            cx.notify();
-                                        });
-                                    }),
-                            ),
-                        )
-                        .child(
-                            Button::new("agent-nav-clear-search", "")
-                                .debug_selector(|| "agent-nav-clear-search".into())
-                                .variant(ButtonVariant::Ghost)
-                                .size(ButtonSize::Icon)
-                                .icon("x")
-                                .w(px(24.0))
-                                .h(px(24.0))
-                                .when(query.is_empty(), |button| button.invisible())
-                                .tooltip(t!("agents.navigator.clear_search").to_string())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.navigator_search.update(cx, |state, cx| {
-                                        state.replace_content(String::new(), cx)
-                                    });
-                                    window.focus(&this.navigator_search.read(cx).focus_handle(cx));
-                                    cx.notify();
-                                })),
-                        ),
-                )
-            })
+            .child(self.render_navigator_head(&query, parent, search_blur_parent, cx))
             .when(self.library.show_archived(), |sidebar| {
                 sidebar.child(
                     div()
@@ -1105,7 +1047,7 @@ impl AgentConsoleView {
                     .child(body),
             )
             .child(self.render_archive_undo(cx))
-            .child(self.render_activity_footer(cx))
+            .child(self.render_navigator_foot(cx))
             .child(self.render_navigator_resize_handle(cx))
             .into_any_element()
     }
@@ -1192,7 +1134,11 @@ impl AgentConsoleView {
                         .child(crate::icons::agent_provider_icon(
                             session.context.provider,
                             14.0,
-                            ShellDeckColors::text_muted(),
+                            if selected {
+                                ShellDeckColors::primary()
+                            } else {
+                                ShellDeckColors::text_muted()
+                            },
                         )),
                 )
                 .when(session.archived, |row| {
@@ -1211,7 +1157,14 @@ impl AgentConsoleView {
                         .text_ellipsis()
                         .debug_selector(|| format!("agent-nav-title-{id}"))
                         .text_size(px(13.0))
-                        .font_weight(FontWeight::NORMAL)
+                        .font_weight(if selected {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .when(selected, |title| {
+                            title.text_color(ShellDeckColors::primary())
+                        })
                         .child(session.name.clone()),
                 )
                 .when(self.has_unsent_draft(id, cx), |row| {
@@ -1278,12 +1231,12 @@ impl AgentConsoleView {
                     .flex()
                     .items_center()
                     .gap(px(7.0))
-                    .h(px(32.0))
+                    .h(px(34.0))
                     .px(px(8.0))
                     .min_w_0()
-                    .rounded(px(5.0))
+                    .rounded(px(8.0))
                     .when(selected, |row| {
-                        row.bg(ShellDeckColors::selected_bg().opacity(0.65))
+                        row.bg(ShellDeckColors::primary().opacity(0.10))
                     })
                     .when(!selected, |row| {
                         row.hover(|style| style.bg(ShellDeckColors::hover_bg()))

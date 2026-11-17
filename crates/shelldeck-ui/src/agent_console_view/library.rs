@@ -23,6 +23,8 @@ pub(super) struct AgentLibraryUi {
     pub project_rename_dialog: Option<Entity<adabraka_ui::overlays::dialog::Dialog>>,
     pub remove_project: Option<AgentProjectGroup>,
     pub search_open: bool,
+    /// Sidebar machine filter (Tout / Local / SSH); view state only, never saved.
+    pub target_filter: super::navigator::NavigatorTargetFilter,
     store: AgentSessionStore,
     loading: bool,
     writable: bool,
@@ -50,6 +52,7 @@ impl AgentLibraryUi {
             project_name: input_state(cx, String::new()),
             remove_project: None,
             search_open: false,
+            target_filter: Default::default(),
             store,
             loading: false,
             writable: true,
@@ -158,10 +161,10 @@ impl AgentConsoleView {
                                 f32::from(this.library.preferences.inspector_width);
                             this.context_expanded = this.library.preferences.context_expanded;
                             this.inspector_tab =
-                                if this.library.preferences.inspector_tab == "changes" {
-                                    AgentInspectorTab::Changes
-                                } else {
-                                    AgentInspectorTab::Files
+                                match this.library.preferences.inspector_tab.as_str() {
+                                    "changes" => AgentInspectorTab::Changes,
+                                    "details" => AgentInspectorTab::Details,
+                                    _ => AgentInspectorTab::Files,
                                 };
                         }
                         if !snapshot.warnings.is_empty() {
@@ -209,6 +212,7 @@ impl AgentConsoleView {
         preferences.inspector_tab = match self.inspector_tab {
             AgentInspectorTab::Files => "files",
             AgentInspectorTab::Changes => "changes",
+            AgentInspectorTab::Details => "details",
         }
         .into();
         let draft_bundles = self

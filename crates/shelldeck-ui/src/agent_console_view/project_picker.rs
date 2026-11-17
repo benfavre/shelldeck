@@ -68,19 +68,29 @@ impl AgentConsoleView {
         let picker = Popover::new("agent-project-picker")
             .anchor(Corner::BottomLeft)
             .trigger(
-                Button::new("agent-project-trigger", compact_label(&label, 36))
-                    .debug_selector(|| "agent-project-trigger".into())
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Sm)
-                    .icon(IconSource::from("folder"))
-                    .max_w_full()
-                    .overflow_hidden()
-                    .tooltip(format!(
+                super::cockpit::chip(
+                    "agent-project-trigger",
+                    Some(
+                        lucide_icon("folder", 16.0, ShellDeckColors::text_primary())
+                            .into_any_element(),
+                    ),
+                    compact_label(&label, 36),
+                    38.0,
+                )
+                .debug_selector(|| "agent-project-trigger".into())
+                .max_w_full()
+                .tooltip({
+                    let hint = format!(
                         "{} · {}\n{}",
                         t!("agents.project.label"),
                         target,
                         context.workdir
-                    )),
+                    );
+                    move |_, cx| {
+                        cx.new(|_| super::navigator::NavigatorTooltip(hint.clone()))
+                            .into()
+                    }
+                }),
             )
             .content(move |window, cx| {
                 let parent = parent.clone();
@@ -294,12 +304,29 @@ impl AgentConsoleView {
                     })
                 })
             });
+        let target_ok = missing.is_none();
+        let (status_label, status_color) = match (&context.target, target_ok) {
+            (AgentTarget::Local, _) => (
+                t!("agents.cockpit.this_machine").to_string(),
+                ShellDeckColors::success(),
+            ),
+            (AgentTarget::Ssh { .. }, true) => (
+                t!("agents.cockpit.connected").to_string(),
+                ShellDeckColors::success(),
+            ),
+            (AgentTarget::Ssh { .. }, false) => (
+                t!("agents.cockpit.disconnected").to_string(),
+                ShellDeckColors::error(),
+            ),
+        };
+        let locked = self.context_controls_locked();
         let row = div()
             .w_full()
             .min_w_0()
             .flex()
+            .flex_wrap()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(10.0))
             .child(
                 div()
                     .min_w_0()
@@ -308,13 +335,41 @@ impl AgentConsoleView {
                     .child(picker),
             )
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(10.5))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(target),
+                super::cockpit::chip(
+                    "agent-target-trigger",
+                    Some(
+                        lucide_icon(
+                            match context.target {
+                                AgentTarget::Local => "laptop",
+                                AgentTarget::Ssh { .. } => "server",
+                            },
+                            16.0,
+                            ShellDeckColors::text_primary(),
+                        )
+                        .into_any_element(),
+                    ),
+                    compact_label(&target, 40),
+                    38.0,
+                )
+                .debug_selector(|| "agent-target-trigger".into())
+                .when(locked, |chip| chip.opacity(0.6).cursor_default())
+                .tooltip(|_, cx| {
+                    cx.new(|_| {
+                        super::navigator::NavigatorTooltip(t!("agents.context.title").to_string())
+                    })
+                    .into()
+                })
+                .when(!locked, |chip| {
+                    chip.on_click(cx.listener(|this, _, _, cx| {
+                        this.context_expanded = !this.context_expanded;
+                        cx.notify();
+                    }))
+                }),
+            )
+            .child(div().flex_1())
+            .child(
+                super::cockpit::status_pill(status_label, status_color)
+                    .debug_selector(|| "agent-target-status".into()),
             )
             .into_any_element();
         let mut result = div()

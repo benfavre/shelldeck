@@ -47,9 +47,13 @@ conversation/execution timeline.
   tools expand on demand. Browser is a resizable companion to the conversation
   and composer (stacked on narrow windows), never a replacement chat tab.
   Conversation/Editor tabs appear only when a document is open. Browser runtime
-  errors render once in the browser pane; the header globe hides/reopens it. Keep a searchable project/target chooser above
-  the composer and agent, permissions, and model/reasoning controls in its footer.
-  Context intake shares one + menu. The header settings control exposes the full
+  errors render once in the browser pane; the header globe hides/reopens it. Keep the searchable project chooser and the
+  machine chooser above the composer of an empty session (start screen); in a
+  conversation the project lives in the header breadcrumb and Détails, and the
+  chooser comes back only to repair a missing SSH target. Agent, permissions,
+  and model/reasoning controls stay in the composer footer.
+  Context intake shares one + menu. The settings control (header « … » row, or
+  Détails → Configurer) exposes the full
   execution context, including manual target and directory editing.
 - Treat provider, target, permissions, workdir, and model as one execution
   context. Keep its full editor collapsed by default. A provider change clears
@@ -74,7 +78,11 @@ conversation/execution timeline.
   removed, and concurrency limits remain enforced by the core model/runtime.
 - Keep the timeline as the single scroll owner and the composer as its
   non-shrinking sibling. Do not nest a transcript scroll or put the composer
-  inside it.
+  inside it. The one exception is the start screen of an empty session, which
+  has no transcript: it owns its scroll area and holds the composer. Give that
+  column a definite width (`render_start_screen(width, …)`): percentage widths
+  do not resolve inside the scroll area and the multi-line input then paints
+  nothing.
 - Eager repository snapshots belong only to local write-enabled turns. Do not
   put read-only chat behind Git observation; keep Changes available on demand.
 - Deliver streams in bounded batches and fence completion behind queued output.
@@ -93,6 +101,42 @@ conversation/execution timeline.
   explicit validated reconnect before sending. Normal reload preserves the cutoff
   to avoid duplicating new local turns. Account reset clears history caches, discovery
   and destination custody.
+
+## Cockpit layout from the owner's mock-up (SDUC-595)
+
+`agent_console_view/cockpit.rs` holds the pieces; keep new chrome there.
+
+- The sidebar sits on the page colour (`bg_primary`); the conversation and its
+  side panel are one card on the lightest surface (`bg_sidebar`, as the User
+  home panels), inset 8 px, radius 12. Chips, the composer frame
+  (`Composer::roomy`, SDPATCH-134) and cards inside it are transparent so they
+  take the card's colour.
+- Sidebar head: primary « Nouvelle session », a search face that becomes the
+  real input on click (`agent-nav-search-trigger` → `agent-nav-search`, so the
+  resting sidebar still has no input), the Tout / Local / SSH filter
+  (`NavigatorTargetFilter`, view state only), then « Projets » with the actions
+  menu and « + » (project setup). Project rows show their machine badge where
+  the hover actions appear, so labels never move. Local discovery, SSH
+  conversations and the Platform directory live under one « Conversations
+  importées » group that starts closed (`IMPORTED_GROUP_OPEN_KEY`). Foot: the
+  running count, Paramètres, Aide (`AgentConsoleEvent::OpenHelp`). No shortcut
+  hint on the search face: Ctrl/⌘ K is Quick Connect.
+- Session header: panel toggle, folder, `project / session`, Files, Changes,
+  Terminal and Browser icons, « Détails » (`AgentInspectorTab::Details`,
+  persisted as `details`) and « … » for the secondary toolbar, which also holds
+  the execution-context settings.
+- Replies: the first agent message of a turn carries the robot tile, the agent
+  name and « Terminé • 2 min 06 s »; agent text is indented under it; the
+  person's messages are a quiet bubble without a label. Completed work is one
+  card (« N actions effectuées » / « Afficher le détail »). Under a finished
+  reply, `render_turn_summary` lists the files of the last turn's Diff traces
+  (+/− counts, « Examiner les changements ») unless the repository review
+  already lists changes, and the outcome of its tests (« Voir les résultats »
+  opens Détails).
+- Détails: environment (machine, connection state, folder, branch), agent
+  (state, model, permissions, Configurer = the context editor), context meter
+  from `usage.context_used / context_size`, the last turn's checks, then
+  folded « Outils et connexions » and « Ressources système ».
 
 ## Workflow completion gate
 
