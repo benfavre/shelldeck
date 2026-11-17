@@ -51,6 +51,12 @@ impl Cockpit {
                     std::path::Path::new(&root).join("sessions.json"),
                 ),
             );
+            // « Conversations importées » starts closed (SDUC-595); scenarios that
+            // exercise local discovery and SSH rows work with it open.
+            view.library
+                .preferences
+                .collapsed_project_ids
+                .push(cockpit::IMPORTED_GROUP_OPEN_KEY.into());
             view.sessions = AgentSessionCollection::default();
             view.session_ui.clear();
             view.tools.navigator_visible = false;
@@ -402,7 +408,8 @@ fn rendered_send_stop_controls_share_the_same_compact_footprint() {
     let send = ui
         .bounds(&format!("agent-composer-{}-commit", ui.session))
         .unwrap();
-    assert_eq!(send.size, size(gpui::px(28.0), gpui::px(28.0)));
+    // SDUC-595: the cockpit composer's send control is a 36 px square.
+    assert_eq!(send.size, size(gpui::px(36.0), gpui::px(36.0)));
     let run = ui.view.update(&mut ui.app, |view, cx| {
         let request = view
             .sessions
@@ -417,7 +424,7 @@ fn rendered_send_stop_controls_share_the_same_compact_footprint() {
     let stop = ui.bounds("agent-stop-control").unwrap();
     assert_eq!(
         stop.size, send.size,
-        "Stop must not grow the footer beyond Send's 28px footprint"
+        "Stop must not grow the footer beyond Send's 36px footprint"
     );
     ui.click("agent-stop-control");
     assert_eq!(
@@ -3698,11 +3705,17 @@ fn rendered_sidebar_section_headers_align_and_hover_keeps_labels_stationary() {
             let project = ui.bounds("agent-project-label-aligned-sections").unwrap();
             let ssh = ui.bounds("ssh-sessions-toggle").unwrap();
             let remote = ui.bounds("agent-remote-toggle").unwrap();
-            assert_eq!(project.left(), ssh.left(), "SSH is a top-level group");
+            // SDUC-595: project names follow a chevron and a folder; saved servers
+            // and the Platform directory share one level under « Conversations
+            // importées ».
             assert_eq!(
-                project.left(),
+                ssh.left(),
                 remote.left(),
-                "Automonique is a top-level group"
+                "SSH and Automonique share a level"
+            );
+            assert!(
+                project.left() > ssh.left(),
+                "a project name follows its folder icon"
             );
             for (selector, before) in [
                 ("agent-project-label-aligned-sections", project),
@@ -3718,11 +3731,12 @@ fn rendered_sidebar_section_headers_align_and_hover_keeps_labels_stationary() {
                     "hover must not shift {selector}"
                 );
             }
-            ui.click("ssh-sessions-toggle");
+            ui.click_navigation("ssh-sessions-toggle");
             ui.view.read_with(&ui.app, |view, _| {
                 assert!(!view.library.preferences.ssh_sessions_collapsed)
             });
-            ui.click("agent-remote-toggle");
+            // The opened SSH group can push the next header below the fold.
+            ui.click_navigation("agent-remote-toggle");
             ui.view.read_with(&ui.app, |view, _| {
                 assert!(view.library.preferences.remote_sessions_expanded)
             });
@@ -4214,4 +4228,121 @@ fn rendered_projects_sidebar_resizes_resets_and_restores_without_losing_drafts()
             .iter()
             .any(|event| matches!(event, AgentConsoleEvent::Run(_))));
     }
+}
+
+// SDTEST-3197 / SDUC-595: the owner's mock-up cockpit — the machine filter hides
+// local projects without touching the selection, Détails opens and closes the
+// session panel, and a starting point fills the composer of the empty session.
+#[::core::prelude::v1::test]
+fn sdtest_3197_cockpit_filter_details_and_starting_points() {
+    for theme in [ThemePreference::Light, ThemePreference::Dark] {
+        let mut ui = Cockpit::new(theme, 1280.0, 820.0, false);
+        let existing = ui.session;
+        ui.view.update(&mut ui.app, |view, cx| {
+            let context = view.sessions.get(existing).unwrap().context.clone();
+            view.set_project_groups(
+                vec![AgentProjectGroup {
+                    id: "mockup-local".into(),
+                    label: "Local project".into(),
+                    worktrees: vec![AgentWorktreeOption {
+                        id: "mockup-main".into(),
+                        label: "Local project".into(),
+                        path: context.workdir.clone(),
+                        target: context.target.clone(),
+                        branch: None,
+                        is_primary: true,
+                    }],
+                }],
+                cx,
+            );
+            view.tools.navigator_visible = true;
+            cx.notify();
+        });
+        // The fixture's session already has a transcript; a new one is empty.
+        let first = ui.view.update(&mut ui.app, |view, cx| {
+            view.new_session(cx);
+            view.sessions.selected_id().unwrap()
+        });
+        ui.session = first;
+        ui.redraw();
+        assert!(
+            ui.bounds("agent-start-screen").is_some(),
+            "empty session shows the start screen"
+        );
+        ui.view.update(&mut ui.app, |view, cx| {
+            view.library
+                .preferences
+                .collapsed_project_ids
+                .retain(|id| id != cockpit::IMPORTED_GROUP_OPEN_KEY);
+            cx.notify();
+        });
+        ui.redraw();
+        assert!(
+            ui.bounds("ssh-sessions-toggle").is_none(),
+            "imported conversations start closed"
+        );
+        ui.click("agent-imported-toggle");
+        assert!(ui.bounds("ssh-sessions-toggle").is_some());
+        assert!(ui.bounds("agent-project-label-mockup-local").is_some());
+        ui.click("agent-nav-filter-ssh");
+        assert!(
+            ui.bounds("agent-project-label-mockup-local").is_none(),
+            "SSH filter hides a local project"
+        );
+        ui.click("agent-nav-filter-all");
+        assert!(ui.bounds("agent-project-label-mockup-local").is_some());
+        ui.view.read_with(&ui.app, |view, _| {
+            assert_eq!(view.sessions.selected_id(), Some(first))
+        });
+
+        ui.click("agent-suggest-analyze");
+        assert!(
+            ui.draft()
+                .starts_with(&t!("agents.cockpit.prompt_analyze").to_string()),
+            "a starting point fills the composer"
+        );
+
+        assert!(ui.bounds("agent-session-details").is_none());
+        ui.click("agent-details-toggle");
+        assert!(ui.bounds("agent-session-details").is_some());
+        ui.click("agent-details-close");
+        assert!(ui.bounds("agent-session-details").is_none());
+    }
+}
+
+// SDTEST-3198 / SDUC-596: title-bar tabs — selecting a conversation opens its
+// tab, the × closes the tab without archiving, the neighbour takes the
+// selection and closing the last tab opens a new session.
+#[::core::prelude::v1::test]
+fn sdtest_3198_titlebar_tabs_close_without_archiving() {
+    let mut ui = Cockpit::new(ThemePreference::Light, 1280.0, 820.0, false);
+    let first = ui.session;
+    let second = ui.view.update(&mut ui.app, |view, cx| {
+        // As after a library restore: the tabs follow the restored selection.
+        view.sync_open_tabs();
+        let context = view.sessions.get(first).unwrap().context.clone();
+        let id = view.create_session("Second", context, cx).unwrap();
+        view.select_session(id, cx);
+        view.sync_open_tabs();
+        id
+    });
+    ui.view.update(&mut ui.app, |view, cx| {
+        assert_eq!(view.open_tabs, vec![first, second]);
+        view.close_open_tab(second, cx);
+        view.sync_open_tabs();
+        assert_eq!(view.sessions.selected_id(), Some(first));
+        assert!(
+            !view.sessions.get(second).unwrap().archived,
+            "a tab is not the conversation"
+        );
+        view.close_open_tab(first, cx);
+        view.sync_open_tabs();
+        let fresh = view.sessions.selected_id().unwrap();
+        assert!(
+            fresh != first && fresh != second,
+            "closing the last tab opens a new session"
+        );
+        assert_eq!(view.open_tabs, vec![fresh]);
+        assert!(!view.sessions.get(first).unwrap().archived);
+    });
 }

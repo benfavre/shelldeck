@@ -195,6 +195,11 @@ impl Workspace {
                 });
                 self.open_settings(cx);
             }
+            AgentConsoleEvent::OpenHelp => {
+                let _ = shelldeck_core::config::cloud_account::open_in_browser(
+                    "https://shelldeck.1clic.pro",
+                );
+            }
             AgentConsoleEvent::RenameProject { id, name } => {
                 let result = self.workspace_hub.update(cx, |hub, cx| {
                     hub.rename_project_from_navigator(&id, &name, cx)

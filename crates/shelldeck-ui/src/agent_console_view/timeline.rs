@@ -782,60 +782,62 @@ impl AgentConsoleView {
         let provider = self.displayed_context(cx).provider;
         match item {
             TimelineItemRef::Message(message) => {
-                let color = match message.role {
-                    AgentMessageRole::User => ShellDeckColors::text_muted(),
-                    AgentMessageRole::Agent => ShellDeckColors::text_muted(),
-                    AgentMessageRole::Error => ShellDeckColors::error(),
-                };
-                let label = match message.role {
-                    AgentMessageRole::User => t!("agents.role.you").to_string(),
-                    AgentMessageRole::Agent => message
-                        .provider
-                        .unwrap_or(provider)
-                        .display_name()
-                        .to_string(),
-                    AgentMessageRole::Error => t!("agents.activity.title").to_string(),
-                };
-
-                div()
+                let header = self.reply_header(message, cx);
+                let agent = message.role == AgentMessageRole::Agent;
+                let mut row = div()
                     .id(("agent-message", uuid_key(message.id)))
                     .debug_selector(|| format!("agent-message-{}", message.id))
                     .flex_shrink_0()
                     .w_full()
                     .min_w(px(0.0))
                     .overflow_hidden()
-                    .py(px(10.0))
-                    .when(message.role == AgentMessageRole::User, |message| {
-                        message
-                            .w(relative(0.85))
+                    .py(px(10.0));
+                match message.role {
+                    // The person's words: a quiet bubble on the right, no label.
+                    AgentMessageRole::User => {
+                        row = row
+                            .max_w(relative(0.78))
+                            .w_auto()
                             .ml_auto()
-                            .px(px(16.0))
-                            .rounded(px(12.0))
-                            .bg(ShellDeckColors::bg_surface())
-                    })
-                    .when(message.role == AgentMessageRole::Error, |message| {
-                        message
+                            .px(px(18.0))
+                            .py(px(12.0))
+                            .rounded(px(14.0))
+                            .bg(ShellDeckColors::hover_bg());
+                    }
+                    AgentMessageRole::Error => {
+                        row = row
                             .px(px(9.0))
                             .rounded(px(5.0))
                             .bg(ShellDeckColors::error().opacity(0.10))
-                    })
-                    .child(
-                        div()
-                            .mb(px(4.0))
-                            .text_size(px(10.5))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(color)
-                            .child(label),
-                    )
-                    .child(self.render_transcript_text(
-                        transcript::TranscriptId::Message(message.id),
-                        &message.text,
-                        true,
-                        window,
-                        cx,
-                    ))
-                    .child(self.render_message_actions(message, cx))
-                    .into_any_element()
+                            .child(
+                                div()
+                                    .mb(px(4.0))
+                                    .text_size(px(10.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::error())
+                                    .child(t!("agents.activity.title").to_string()),
+                            );
+                    }
+                    AgentMessageRole::Agent => {
+                        if let Some(header) = header {
+                            row = row.child(header);
+                        }
+                    }
+                }
+                let _ = provider;
+                row.child(
+                    div()
+                        .when(agent, |body| body.pl(px(cockpit::REPLY_INDENT)))
+                        .child(self.render_transcript_text(
+                            transcript::TranscriptId::Message(message.id),
+                            &message.text,
+                            true,
+                            window,
+                            cx,
+                        ))
+                        .child(self.render_message_actions(message, cx)),
+                )
+                .into_any_element()
             }
             TimelineItemRef::Boundary(boundary) => {
                 let key=match boundary.reason {
@@ -898,6 +900,7 @@ impl AgentConsoleView {
         }
         footer = footer
             .children(self.render_auth_recovery(session, cx))
+            .child(self.render_turn_summary(session, cx))
             .child(self.render_run_progress(session, cx))
             .child(self.render_turn_change_cards(session, cx));
         footer.into_any_element()

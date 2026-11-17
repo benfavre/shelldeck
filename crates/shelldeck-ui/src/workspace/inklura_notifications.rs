@@ -284,8 +284,8 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_center()
-            .size(px(28.0))
-            .rounded(px(6.0))
+            .size(px(super::presentation::TITLEBAR_CONTROL))
+            .rounded(px(super::presentation::TITLEBAR_RADIUS))
             .cursor_pointer()
             .hover(|el| el.bg(ShellDeckColors::hover_bg()))
             .tooltip(move |_, cx| {

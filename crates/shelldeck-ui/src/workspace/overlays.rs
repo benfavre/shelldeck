@@ -142,25 +142,30 @@ impl Workspace {
             .child(activity)
     }
 
+    /// The loading screen after sign-in (SDUC-598): it stands under the
+    /// signed-out title bar, on the welcome screen's page and foot, so signing
+    /// in reads as one continuous screen.
     pub(super) fn render_post_login_splash(
         &self,
         splash: &PostLoginSplash,
+        is_maximized: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use std::time::Duration;
+        const BAR_W: f32 = 340.0;
 
         let dismissing = splash.dismissing;
         let mascot = animated_monolith(
             "post-login-mascot",
-            188.0,
+            112.0,
             MonolithMotion::FloatAndBreathe,
             cx,
         );
 
         let progress_bar = div()
             .relative()
-            .w(px(220.0))
-            .h(px(5.0))
+            .w(px(BAR_W))
+            .h(px(8.0))
             .overflow_hidden()
             .rounded_full()
             .bg(ShellDeckColors::primary().opacity(0.14))
@@ -177,15 +182,15 @@ impl Workspace {
                         "post-login-progress-bar",
                         Animation::new(Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS)),
                         move |el, delta| {
-                            el.w(px(220.0 * post_login_display_progress(dismissing, delta)))
+                            el.w(px(BAR_W * post_login_display_progress(dismissing, delta)))
                         },
                     ),
             );
 
         let progress_percentage = div()
-            .min_w(px(34.0))
+            .min_w(px(40.0))
             .text_right()
-            .text_size(px(11.0))
+            .text_size(px(13.0))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(ShellDeckColors::primary())
             .with_animation(
@@ -198,82 +203,106 @@ impl Workspace {
                 },
             );
 
+        let card = div()
+            .debug_selector(|| "post-login-card".into())
+            .flex()
+            .flex_col()
+            .items_center()
+            .w(px(BAR_W + 88.0))
+            .px(px(44.0))
+            .pt(px(32.0))
+            .pb(px(36.0))
+            .rounded(px(20.0))
+            .border_1()
+            .border_color(ShellDeckColors::border().opacity(0.45))
+            .bg(ShellDeckColors::bg_sidebar())
+            .shadow(vec![use_theme().tokens.shadow_sm].into())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .px(px(12.0))
+                    .py(px(4.0))
+                    .rounded_full()
+                    .bg(ShellDeckColors::success().opacity(0.12))
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::success())
+                    .child(lucide_icon("check", 13.0, ShellDeckColors::success()))
+                    .child(t!("account.splash.signed_in").to_string()),
+            )
+            .child(div().mt(px(18.0)).child(mascot))
+            .child(
+                div()
+                    .mt(px(18.0))
+                    .text_size(px(28.0))
+                    .line_height(px(34.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .text_center()
+                    .child(
+                        t!(
+                            "account.splash.welcome",
+                            name = splash.display_name.as_str()
+                        )
+                        .to_string(),
+                    ),
+            )
+            .child(
+                div()
+                    .mt(px(8.0))
+                    .text_size(px(15.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .text_center()
+                    .child(t!("account.splash.preparing").to_string()),
+            )
+            .child(
+                div()
+                    .mt(px(28.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .w(px(BAR_W))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("account.splash.syncing").to_string())
+                            .child(progress_percentage),
+                    )
+                    .child(progress_bar),
+            );
+
         div()
             .id("post-login-splash")
             .occlude()
             .absolute()
-            .top_0()
+            // Under the title bar, which shows its signed-out face meanwhile.
+            .top(px(WORKSPACE_TITLEBAR_HEIGHT))
             .left_0()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .overflow_hidden()
-            .bg(ShellDeckColors::bg_primary())
+            .right_0()
+            .bottom_0()
             .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                 cx.stop_propagation();
             })
             .child(
-                div()
-                    .absolute()
-                    .w(px(420.0))
-                    .h(px(420.0))
-                    .rounded_full()
-                    .bg(ShellDeckColors::primary().opacity(0.07)),
-            )
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .w_full()
-                    .max_w(px(480.0))
-                    .px(px(28.0))
-                    .child(mascot)
+                super::welcome::welcome_backdrop(is_maximized)
+                    .child(super::welcome::welcome_foot(is_maximized))
                     .child(
                         div()
-                            .mt(px(22.0))
-                            .text_size(px(25.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .text_center()
-                            .child(
-                                t!(
-                                    "account.splash.welcome",
-                                    name = splash.display_name.as_str()
-                                )
-                                .to_string(),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .mt(px(8.0))
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::text_muted())
-                            .text_center()
-                            .child(t!("account.splash.preparing").to_string()),
-                    )
-                    .child(
-                        div()
-                            .mt(px(22.0))
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom(px(super::welcome::FOOTER_H))
                             .flex()
-                            .flex_col()
                             .items_center()
-                            .gap(px(8.0))
-                            .child(
-                                div()
-                                    .w(px(220.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .text_size(px(11.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(t!("account.splash.syncing").to_string())
-                                    .child(progress_percentage),
-                            )
-                            .child(progress_bar),
+                            .justify_center()
+                            .child(card),
                     ),
             )
             .with_animation(

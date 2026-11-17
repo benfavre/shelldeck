@@ -247,6 +247,10 @@ fn visible_bounds(window: &mut VisualTestContext, selector: &str) -> Bounds<Pixe
 }
 
 fn click(window: &mut VisualTestContext, selector: &str) {
+    // SDUC-596: Inklura Pro is a row of the title bar's view dropdown.
+    if selector == "open-inklura-pro" && window.debug_bounds(selector).is_none() {
+        click(window, "titlebar-view-chip");
+    }
     if selector == "connect-inklura-pro" {
         for _ in 0..8 {
             let button = window.debug_bounds(selector).unwrap();
@@ -311,7 +315,8 @@ fn sdtest_3174_pro_rendered_navigation_and_compact_titlebar() {
             window.simulate_resize(size(gpui::px(width), gpui::px(400.0)));
             redraw(&mut window);
             let titlebar = visible_bounds(&mut window, "workspace-titlebar");
-            let button = visible_bounds(&mut window, "open-inklura-pro");
+            // The view dropdown that holds Inklura Pro.
+            let button = visible_bounds(&mut window, "titlebar-view-chip");
             assert!(
                 button.bottom() <= titlebar.bottom(),
                 "Pro must fit at every UI scale"
@@ -322,12 +327,16 @@ fn sdtest_3174_pro_rendered_navigation_and_compact_titlebar() {
             click(&mut window, "connect-inklura-pro");
             assert!(workspace.read_with(&app, |view, _| view.pro_error));
             assert!(workspace.read_with(&app, |view, _| view.pro_browser.is_none()));
-            click(&mut window, "open-inklura-pro");
+            // Leaving Pro is choosing a view in the same dropdown.
+            click(&mut window, "titlebar-view-chip");
+            click(&mut window, "presentation-switch-full");
             assert!(!workspace.read_with(&app, |view, _| view.pro_open));
         }
         window.simulate_resize(size(gpui::px(1280.0), gpui::px(800.0)));
         redraw(&mut window);
         click(&mut window, "open-inklura-pro");
+        // SDUC-596: the views are a dropdown in every title bar.
+        click(&mut window, "titlebar-view-chip");
         click(&mut window, "presentation-switch-full");
         assert!(!workspace.read_with(&app, |view, _| view.pro_open));
         workspace.update(&mut app, |view, cx| {

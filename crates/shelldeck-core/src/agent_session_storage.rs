@@ -105,7 +105,7 @@ impl AgentConsolePreferences {
         self.inspector_width = self.inspector_width.clamp(240, 720);
         if !matches!(
             self.inspector_tab.as_str(),
-            "files" | "changes" | "sources" | "tools"
+            "files" | "changes" | "details" | "sources" | "tools"
         ) {
             self.inspector_tab = "files".into();
         }

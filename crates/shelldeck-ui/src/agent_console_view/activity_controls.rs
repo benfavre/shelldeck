@@ -32,27 +32,46 @@ impl AgentConsoleView {
             limit = self.max_concurrent_runs()
         )
         .to_string();
+        let running = self.sessions.active_count();
+        let dot = if running > 0 {
+            ShellDeckColors::primary()
+        } else {
+            ShellDeckColors::success()
+        };
         div()
-            .h(px(36.0))
+            .h(px(34.0))
             .flex_shrink_0()
             .flex()
             .items_center()
             .gap(px(4.0))
-            .px(px(6.0))
-            .border_t_1()
-            .border_color(ShellDeckColors::border())
             .child(
                 div().flex_1().min_w(px(0.0)).child(
                     Popover::new("agent-activity-menu")
                         .anchor(Corner::BottomLeft)
                         .trigger(
-                            Button::new("agent-activity-trigger", label)
+                            div()
+                                .id("agent-activity-trigger")
                                 .debug_selector(|| "agent-activity-trigger".into())
-                                .variant(ButtonVariant::Ghost)
-                                .size(ButtonSize::Sm)
-                                .icon("activity")
-                                .w_full()
-                                .tooltip(t!("agents.activity_controls.title").to_string()),
+                                .flex()
+                                .items_center()
+                                .gap(px(9.0))
+                                .h(px(30.0))
+                                .px(px(10.0))
+                                .rounded(px(8.0))
+                                .cursor_pointer()
+                                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                                .text_size(px(12.5))
+                                .text_color(ShellDeckColors::text_primary())
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        super::navigator::NavigatorTooltip(
+                                            t!("agents.activity_controls.title").to_string(),
+                                        )
+                                    })
+                                    .into()
+                                })
+                                .child(div().size(px(8.0)).rounded_full().bg(dot))
+                                .child(div().flex_1().min_w_0().truncate().child(label)),
                         )
                         .content(move |window, cx| {
                             let parent = parent.clone();
@@ -68,17 +87,6 @@ impl AgentConsoleView {
             .when(unread > 0, |row| {
                 row.child(Badge::new(unread.to_string()).variant(BadgeVariant::Secondary))
             })
-            .child(
-                Button::new("agent-footer-settings", "")
-                    .debug_selector(|| "agent-footer-settings".into())
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Icon)
-                    .icon("settings")
-                    .w(px(28.0))
-                    .h(px(28.0))
-                    .tooltip(t!("settings.title").to_string())
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(AgentConsoleEvent::OpenSettings))),
-            )
             .into_any_element()
     }
 

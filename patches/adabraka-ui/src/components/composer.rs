@@ -72,6 +72,9 @@ pub struct Composer {
     /// Rendered below the frame, outside it: keyboard hints, attachment
     /// counters, the execution mode. Never inside — the frame is the field.
     footnote: Option<AnyElement>,
+    // ShellDeck patch: SDPATCH-134 — the Agents start screen asks for a larger
+    // frame (12 px corners, more room, a square send button that stays blue).
+    roomy: bool,
 }
 
 impl Composer {
@@ -118,7 +121,14 @@ impl Composer {
             commit_enabled: true,
             on_commit: None,
             footnote: None,
+            roomy: false,
         }
+    }
+
+    // ShellDeck patch: SDPATCH-134 — opt into the roomy frame of the Agents cockpit.
+    pub fn roomy(mut self, roomy: bool) -> Self {
+        self.roomy = roomy;
+        self
     }
 
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
@@ -268,6 +278,14 @@ impl RenderOnce for Composer {
             .rounded(theme.tokens.radius_md)
             .overflow_hidden()
             .shadow(smallvec::smallvec![shadow_xs]);
+        // ShellDeck patch: SDPATCH-134 — roomy frame corners; the frame takes the
+        // surface of the card it stands on.
+        if self.roomy {
+            frame = frame.rounded(px(12.0));
+            if !self.disabled {
+                frame = frame.bg(gpui::transparent_black());
+            }
+        }
         // The frame — not the field — carries the focus state, which is the
         // whole point of `InputVariant::Bare`.
         if focused {
@@ -300,17 +318,32 @@ impl RenderOnce for Composer {
         if let Some(lead) = self.lead {
             frame = frame.child(lead);
         }
-        frame = frame.child(div().w_full().min_w(px(0.0)).px(px(2.0)).child(field));
-
-        if has_footer {
-            let mut footer = HStack::new()
-                .items_center()
-                .gap(px(4.0))
+        // ShellDeck patch: SDPATCH-134 — roomy field inset.
+        let field_inset = if self.roomy { px(10.0) } else { px(2.0) };
+        frame = frame.child(
+            div()
                 .w_full()
                 .min_w(px(0.0))
-                .pl(px(8.0))
-                .pr(px(7.0))
-                .pb(px(7.0))
+                .px(field_inset)
+                .when(self.roomy, |field| field.pt(px(6.0)))
+                .child(field),
+        );
+
+        if has_footer {
+            // ShellDeck patch: SDPATCH-134 — roomy footer spacing.
+            let (gap, inset) = if self.roomy {
+                (px(8.0), px(12.0))
+            } else {
+                (px(4.0), px(7.0))
+            };
+            let mut footer = HStack::new()
+                .items_center()
+                .gap(gap)
+                .w_full()
+                .min_w(px(0.0))
+                .pl(if self.roomy { inset } else { px(8.0) })
+                .pr(inset)
+                .pb(inset)
                 .children(self.actions)
                 .child(div().flex_1().min_w(px(0.0)))
                 .children(self.options);
@@ -328,7 +361,32 @@ impl RenderOnce for Composer {
                 } else {
                     theme.tokens.muted_foreground
                 };
+                let roomy = self.roomy;
+                // ShellDeck patch: SDPATCH-134 — a roomy send control is a blue square
+                // that pales while disabled instead of turning grey.
+                let glyph = if roomy { theme.tokens.primary_foreground } else { glyph };
                 let commit_el = match commit {
+                    ComposerCommit::Send if roomy => {
+                        let button = div()
+                            .id(commit_id.clone())
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .justify_center()
+                            .size(px(36.0))
+                            .ml(px(4.0))
+                            .rounded(px(9.0));
+                        let button = if enabled {
+                            button.bg(theme.tokens.primary).cursor_pointer()
+                        } else {
+                            button.bg(theme.tokens.primary.opacity(0.35))
+                        };
+                        button.child(
+                            crate::components::icon::Icon::new("arrow-up")
+                                .size(px(17.0))
+                                .color(glyph),
+                        )
+                    }
                     ComposerCommit::Send => {
                         let mut button = div()
                             .id(commit_id.clone())

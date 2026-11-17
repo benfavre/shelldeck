@@ -1240,3 +1240,17 @@ Both icon-position call sites pass the optional resting icon to `render_icon`.
 - **Why**: A project header has distinct disclosure, label and action targets but one rounded hover surface. Transparent child hover backgrounds avoid fragmented accent tiles while retaining focus rings, tooltips and event handling. Unconfigured buttons keep existing styling.
 - **Validation**: Rendered navigation/disclosure/action-menu and header-alignment regressions (SDTEST-2934–2936).
 - **Upstream status**: not filed yet — backward-compatible style option.
+
+### SDPATCH-134 — Roomy `Composer` frame for the Agents cockpit
+
+- **Files / symbols**: `src/components/composer.rs` — `Composer::roomy`, its field, and the frame, field, footer and send-control rendering.
+- **Markers**:
+  - `src/components/composer.rs` — `// ShellDeck patch: SDPATCH-134 — the Agents start screen asks for a larger`
+  - `src/components/composer.rs` — `// ShellDeck patch: SDPATCH-134 — opt into the roomy frame of the Agents cockpit.`
+  - `src/components/composer.rs` — `// ShellDeck patch: SDPATCH-134 — roomy frame corners; the frame takes the`
+  - `src/components/composer.rs` — `// ShellDeck patch: SDPATCH-134 — roomy field inset.`
+  - `src/components/composer.rs` — `// ShellDeck patch: SDPATCH-134 — roomy footer spacing.`
+  - `src/components/composer.rs` — `// ShellDeck patch: SDPATCH-134 — a roomy send control is a blue square`
+- **Why**: The owner's Agents mock-up (SDUC-595) draws the composer as a larger card on the cockpit's lightest surface (the frame is transparent so it takes the card's colour): 12 px corners, the field and the footer controls further from the frame, and a 36 px rounded-square send button that stays blue (pale while disabled). Every other composer keeps the SDPATCH-028 shape, so the option is opt-in and defaults to off.
+- **Validation**: Agents interaction harness (composer frame and commit selectors unchanged) and the native walkthrough in `docs/testing/screenshots/2026-11-17-agents-mockup/`.
+- **Upstream status**: not filed yet — backward-compatible style option.

@@ -45,6 +45,8 @@ mod activity;
 mod activity_controls;
 #[path = "agent_console_view/auth_recovery.rs"]
 mod auth_recovery;
+#[path = "agent_console_view/cockpit.rs"]
+mod cockpit;
 #[path = "agent_console_view/composer.rs"]
 mod composer;
 #[path = "agent_console_view/composer_controls.rs"]
@@ -126,6 +128,8 @@ enum AgentInspectorTab {
     #[default]
     Files,
     Changes,
+    /// « Détails de la session »: environment, agent, context, checks.
+    Details,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +153,8 @@ struct InspectorDiff {
 pub enum AgentConsoleEvent {
     NavigatorChanged,
     OpenSettings,
+    /// The sidebar's Aide entry: the product documentation.
+    OpenHelp,
     RemoveProject(String),
     RenameProject {
         id: String,
@@ -368,6 +374,11 @@ pub struct AgentConsoleView {
     voice: voice::AgentVoiceUi,
     navigator_search: Entity<InputState>,
     navigator_pane: Entity<panes::NavigatorPane>,
+    /// The open conversations shown as tabs in the window title bar of the
+    /// focused Agents view (SDUC-596). Closing a tab never archives.
+    open_tabs: Vec<Uuid>,
+    tabs_in_titlebar: bool,
+    titlebar_tabs: Entity<panes::TitlebarTabsPane>,
     timeline_pane: Entity<panes::TimelinePane>,
     sessions: AgentSessionCollection,
     remote_sessions: remote_sessions::RemoteAgentSessionsUi,
@@ -560,6 +571,7 @@ impl AgentConsoleView {
         let scroll = ScrollHandle::new();
         let parent = cx.entity().downgrade();
         let navigator_pane = cx.new(|cx| panes::NavigatorPane::new(parent.clone(), cx));
+        let titlebar_tabs = cx.new(|cx| panes::TitlebarTabsPane::new(parent.clone(), cx));
         let timeline_pane = cx.new(|cx| panes::TimelinePane::new(parent, cx));
         let mut view = Self {
             provider: AgentProvider::Claude,
@@ -576,6 +588,9 @@ impl AgentConsoleView {
             voice: voice::AgentVoiceUi::new(),
             navigator_search: input_state(cx, String::new()),
             navigator_pane,
+            open_tabs: vec![session_id],
+            tabs_in_titlebar: false,
+            titlebar_tabs,
             timeline_pane,
             sessions,
             remote_sessions: remote_sessions::RemoteAgentSessionsUi::default(),
@@ -2161,14 +2176,17 @@ impl Render for AgentConsoleView {
             .and_then(|name| name.to_str())
             .unwrap_or(&context.workdir)
             .to_owned();
+        let details_open = self.tools.panel_visible
+            && self.tools.active.is_none()
+            && self.inspector_tab == AgentInspectorTab::Details;
         let metadata = div()
-            .h(px(46.0))
+            .h(px(cockpit::PANEL_HEADER_HEIGHT))
             .flex()
             .items_center()
             .flex_shrink_0()
             .min_w_0()
             .gap(px(8.0))
-            .px(px(12.0))
+            .px(px(if wide { 18.0 } else { 12.0 }))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .when(wide, |row| {
@@ -2178,18 +2196,14 @@ impl Render for AgentConsoleView {
                         .size(ButtonSize::Icon)
                         .w(px(28.0))
                         .h(px(28.0))
-                        .icon(IconSource::from("messages-square"))
+                        .icon(IconSource::from("panel-left"))
                         .tooltip(t!("agents.parity.toggle_sessions").to_string())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.toggle_navigator(cx);
                         })),
                 )
             })
-            .child(crate::icons::agent_provider_icon(
-                context.provider,
-                14.0,
-                ShellDeckColors::text_muted(),
-            ))
+            .child(lucide_icon("folder", 17.0, ShellDeckColors::text_primary()))
             .child(
                 div()
                     .flex_1()
@@ -2197,45 +2211,55 @@ impl Render for AgentConsoleView {
                     .overflow_hidden()
                     .flex()
                     .items_center()
-                    .gap(px(8.0))
+                    .gap(px(10.0))
                     .when(wide, |row| {
                         row.child(
                             div()
-                                .max_w(px(150.0))
+                                .max_w(px(180.0))
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(11.0))
+                                .text_size(px(14.0))
                                 .text_color(ShellDeckColors::text_muted())
                                 .child(workdir_label),
                         )
-                        .child(div().text_color(ShellDeckColors::text_muted()).child("/"))
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child("/"),
+                        )
                     })
                     .child(
                         div()
-                            .flex_1()
+                            .flex_shrink()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
+                            .text_size(px(15.0))
+                            .font_weight(FontWeight::SEMIBOLD)
                             .child(session_name),
-                    ),
+                    )
+                    .when(
+                        status.is_active() || status == AgentSessionStatus::Failed,
+                        |row| {
+                            row.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .size(px(7.0))
+                                    .rounded_full()
+                                    .bg(status_color(status)),
+                            )
+                        },
+                    )
+                    .when_some(elapsed, |row, elapsed| {
+                        row.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(11.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(elapsed),
+                        )
+                    }),
             )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .size(px(6.0))
-                    .rounded_full()
-                    .bg(status_color(status)),
-            )
-            .when_some(elapsed, |row, elapsed| {
-                row.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(10.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(elapsed),
-                )
-            })
             .when(attention != AgentSessionAttention::None, |row| {
                 row.child(
                     Button::new("agent-acknowledge-attention", "")
@@ -2252,19 +2276,57 @@ impl Render for AgentConsoleView {
             })
             .child(self.render_quick_tools(cx))
             .child(
-                Button::new("agent-context-toggle", "")
-                    .variant(if context_expanded {
+                div()
+                    .id("agent-details-toggle")
+                    .debug_selector(|| "agent-details-toggle".into())
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(8.0))
+                    .h(px(34.0))
+                    .px(px(12.0))
+                    .rounded(px(cockpit::CARD_RADIUS))
+                    .cursor_pointer()
+                    .text_size(px(13.5))
+                    .when(details_open, |button| {
+                        button
+                            .bg(ShellDeckColors::primary().opacity(0.10))
+                            .text_color(ShellDeckColors::primary())
+                    })
+                    .when(!details_open, |button| {
+                        button.hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.activate_workspace_tool("details", cx);
+                        cx.notify();
+                    }))
+                    .child(lucide_icon(
+                        "info",
+                        16.0,
+                        if details_open {
+                            ShellDeckColors::primary()
+                        } else {
+                            ShellDeckColors::text_primary()
+                        },
+                    ))
+                    .when(wide, |button| {
+                        button.child(t!("agents.cockpit.details").to_string())
+                    }),
+            )
+            .child(
+                Button::new("agent-more-tools", "")
+                    .variant(if self.tools.toolbar_expanded {
                         ButtonVariant::Secondary
                     } else {
                         ButtonVariant::Ghost
                     })
                     .size(ButtonSize::Icon)
-                    .icon(IconSource::from("settings"))
-                    .w(px(28.0))
-                    .h(px(28.0))
-                    .tooltip(t!("agents.context.title").to_string())
+                    .w(px(30.0))
+                    .h(px(30.0))
+                    .icon(IconSource::from("ellipsis"))
+                    .tooltip(t!("agents.cockpit.more").to_string())
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.context_expanded = !this.context_expanded;
+                        this.tools.toolbar_expanded = !this.tools.toolbar_expanded;
                         cx.notify();
                     })),
             );
@@ -2284,40 +2346,16 @@ impl Render for AgentConsoleView {
         if !self.timeline.virtualized && session.remote_history.is_some() {
             output = output.child(self.render_native_history(&session, window, cx));
         }
-        if !has_content && session.remote_history.is_none() {
+        let hero = !has_content && session.remote_history.is_none();
+        let composer = self.render_composer(&session, hero, window, cx);
+        let mut composer = Some(composer);
+        if hero {
             let subscription_setup = crate::cli_subscription_setup::render_subscription_setup(
                 self.provider.binary(),
                 self.selected_connection.is_some(),
             );
-            let mut empty_state = div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(8.0))
-                .text_color(ShellDeckColors::text_muted())
-                .child(lucide_icon("bot", 27.0, ShellDeckColors::primary()))
-                .child(
-                    div()
-                        .text_size(px(14.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(t!("agents.empty.title").to_string()),
-                )
-                .child(
-                    div()
-                        .max_w(px(520.0))
-                        .text_size(px(11.0))
-                        .text_align(TextAlign::Center)
-                        .child(t!("agents.empty.description").to_string()),
-                );
-            if subscription_setup.is_some() && self.agent_setup_expanded {
-                empty_state = empty_state.flex_shrink_0().py(px(16.0));
-            } else {
-                empty_state = empty_state.flex_1();
-            }
-            if subscription_setup.is_some() {
-                empty_state = empty_state.child(
+            let setup = subscription_setup.map(|setup| {
+                let mut block = div().flex().flex_col().items_center().gap(px(8.0)).child(
                     Button::new("agent-setup-toggle", t!("agents.setup.toggle").to_string())
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
@@ -2331,13 +2369,38 @@ impl Render for AgentConsoleView {
                             cx.notify();
                         })),
                 );
-            }
-            output = output.child(empty_state);
-            if self.agent_setup_expanded {
-                if let Some(setup) = subscription_setup {
-                    output = output.child(div().w_full().max_w(px(520.0)).mx_auto().child(setup));
+                if self.agent_setup_expanded {
+                    block = block.child(div().w_full().max_w(px(520.0)).mx_auto().child(setup));
                 }
-            }
+                block.into_any_element()
+            });
+            // An empty session has no transcript: the start screen owns the one
+            // scroll area and holds the composer, as in the mock-up.
+            // Percentages do not resolve inside the scroll area: the column gets
+            // a definite width from the measured cockpit instead.
+            let units = width / window.rem_size().to_f64() as f32 * 16.0;
+            let navigator = if wide && self.tools.navigator_visible {
+                self.navigator_width(window)
+            } else {
+                0.0
+            };
+            let panel = if self.tools.panel_visible && inspector_wide {
+                self.tools.panel_width
+            } else {
+                0.0
+            };
+            let pad = if wide { 32.0 } else { 14.0 };
+            let column = (units - navigator - panel - 18.0 - pad * 2.0).clamp(240.0, 780.0);
+            let start = self.render_start_screen(
+                column,
+                &session,
+                composer.take().expect("composer rendered once"),
+                setup,
+                cx,
+            );
+            output = output
+                .px(if wide { px(32.0) } else { px(14.0) })
+                .child(start);
         } else if !self.timeline.virtualized {
             let mut timeline_view = div()
                 .flex_shrink_0()
@@ -2387,14 +2450,13 @@ impl Render for AgentConsoleView {
         } else {
             output.into_any_element()
         };
-        let composer = self.render_composer(&session, window, cx);
         let mut content = div()
             .flex()
             .flex_col()
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0));
-        if !wide {
+        if !wide && !self.tabs_in_titlebar {
             content = content.child(header);
         }
         content = content.child(metadata);
@@ -2454,16 +2516,18 @@ impl Render for AgentConsoleView {
                     ),
                 );
             }
-            content = content.child(
-                div()
-                    .debug_selector(|| "agent-composer-shell".into())
-                    .flex_shrink_0()
-                    .w_full()
-                    .px(if wide { px(18.0) } else { px(10.0) })
-                    .pt(px(7.0))
-                    .pb(px(11.0))
-                    .child(div().w_full().max_w(px(800.0)).mx_auto().child(composer)),
-            );
+            if let Some(composer) = composer {
+                content = content.child(
+                    div()
+                        .debug_selector(|| "agent-composer-shell".into())
+                        .flex_shrink_0()
+                        .w_full()
+                        .px(if wide { px(18.0) } else { px(10.0) })
+                        .pt(px(8.0))
+                        .pb(px(12.0))
+                        .child(div().w_full().max_w(px(800.0)).mx_auto().child(composer)),
+                );
+            }
         }
         let mut root = div()
             .id("agent-cockpit")
@@ -2493,7 +2557,9 @@ impl Render for AgentConsoleView {
             .flex()
             .size_full()
             .min_h(px(0.0))
-            .bg(ShellDeckColors::bg_primary())
+            // The page colour of the User home: the sidebar reads as the page,
+            // the conversation as the card on it.
+            .bg(ShellDeckColors::bg_primary().blend(ShellDeckColors::primary().opacity(0.035)))
             .text_color(ShellDeckColors::text_primary());
         if wide && self.tools.navigator_visible {
             root = root.child(
@@ -2505,6 +2571,27 @@ impl Render for AgentConsoleView {
                 ),
             );
         }
+        // The conversation and its details panel sit on one card inset on the
+        // sidebar colour, as in the owner's mock-up (SDUC-595).
+        let mut card = div()
+            .id("agent-main-card")
+            .debug_selector(|| "agent-main-card".into())
+            .relative()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .bg(ShellDeckColors::bg_sidebar())
+            .border_1()
+            .border_color(ShellDeckColors::border().opacity(0.7))
+            .rounded(px(cockpit::SURFACE_RADIUS));
+        if wide {
+            card = card.my(px(8.0)).mr(px(8.0));
+            if !self.tools.navigator_visible {
+                card = card.ml(px(8.0));
+            }
+        }
         if self.live_browser_visible(cx) {
             let available_width = width / window.rem_size().to_f64() as f32 * 16.0
                 - if wide && self.tools.navigator_visible {
@@ -2512,7 +2599,7 @@ impl Render for AgentConsoleView {
                 } else {
                     0.0
                 };
-            root = root.child(
+            card = card.child(
                 div()
                     .flex_1()
                     .h_full()
@@ -2521,13 +2608,15 @@ impl Render for AgentConsoleView {
                     .child(self.render_browser_split(content, available_width, cx)),
             );
         } else {
-            root = root.child(content);
+            card = card.child(content);
         }
         if self.tools.panel_visible {
             let panel = if self.tools.active.is_some() {
                 self.render_tools_panel(&session, cx)
             } else if self.inspector_tab == AgentInspectorTab::Changes {
                 self.render_review_panel(&session, cx)
+            } else if self.inspector_tab == AgentInspectorTab::Details {
+                self.render_session_details(&session, cx)
             } else {
                 self.render_inspector(&session, cx)
             };
@@ -2545,19 +2634,21 @@ impl Render for AgentConsoleView {
                 .bg(ShellDeckColors::bg_sidebar())
                 .child(panel);
             if inspector_wide {
-                root = root.child(panel);
+                card = card.child(panel);
             } else {
-                root = root.child(
+                card = card.child(
                     div()
                         .absolute()
                         .right_0()
                         .top_0()
                         .bottom_0()
                         .occlude()
+                        .shadow_lg()
                         .child(panel),
                 );
             }
         }
+        root = root.child(card);
         if !wide && self.tools.navigator_overlay {
             root = root.child(self.render_navigator_overlay(window, cx));
         }

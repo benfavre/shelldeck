@@ -167,6 +167,7 @@ mod ssh;
 mod support;
 mod tray;
 mod user_home;
+mod welcome;
 mod workspaces;
 
 /// Health of the signed-in cloud account, surfaced as the titlebar status dot.

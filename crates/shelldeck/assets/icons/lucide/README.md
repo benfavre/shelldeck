@@ -178,3 +178,18 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `users` | support | agents list, assign picker |
 | `x` | chrome | close, dismiss |
 | `zap` | dashboard | quick-connect section header |
+| `chart-no-axes-column` | agents | start screen: « Analyser le projet » suggestion |
+| `code` | agents | changed-files card of a reply |
+| `file` | agents | one file in the changed-files card |
+| `layers` | agents | details panel: « Ressources système » |
+| `loader-circle` | agents | details panel: a check still running |
+| `message-square` | agents | start screen: « Reprendre une session » rows |
+| `panel-left` | agents | session header: show or hide the projects sidebar |
+| `wrench` | agents | details panel « Outils et connexions », reply actions summary, « Corriger un problème » |
+| `arrow-up-right` | welcome | « Se connecter » / « Créer un compte » / « Aide et documentation » open the browser |
+| `file-check` | welcome | decoration doodle, left |
+| `menu` | chrome | logged-out title bar: show the menu row |
+| `moon` | chrome | logged-out title bar: switch to the dark theme |
+| `plug` | welcome | decoration doodle, right |
+| `sun` | chrome | logged-out title bar: switch to the light theme |
+| `briefcase-business` | chrome | view dropdown: « Inklura Pro » |

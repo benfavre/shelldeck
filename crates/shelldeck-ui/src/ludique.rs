@@ -52,16 +52,28 @@ const STREET_ASSETS: &[&str] = &[
     "images/ludique/badge-shield-night.svg",
 ];
 
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 /// Width and height of the town strip in its own units; the road strip is as
 /// wide and `ROAD_UNITS` high. Both repeat without a seam.
 const TOWN_UNITS: (f32, f32) = (2400.0, 300.0);
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 const ROAD_UNITS: f32 = 76.0;
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 /// Share of the road strip taken by the pavement, at its top.
 const PAVEMENT_SHARE: f32 = 20.0 / 76.0;
 
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 const HONK: Duration = Duration::from_millis(1_500);
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 const BALLOON_AWAY: Duration = Duration::from_millis(9_000);
 
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 /// Where the scene is drawn. The layout fixes the size of the town and what
 /// surrounds it; the scene fills whatever box it is given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +89,8 @@ pub(crate) enum StreetLayout {
 }
 
 impl StreetLayout {
+    // Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+    #[allow(dead_code)]
     /// Logical pixels per artwork unit.
     fn scale(self) -> f32 {
         match self {
@@ -190,6 +204,8 @@ fn rest_point(played: Duration, run: Duration) -> Duration {
 struct StreetState {
     /// Day or night chosen by a click on the sun or the moon.
     night: Option<bool>,
+    // Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+    #[allow(dead_code)]
     honked_at: Option<Instant>,
     balloon_left_at: Option<Instant>,
     /// One clock per scene and per vignette, by its id: each plays again when
@@ -223,6 +239,8 @@ pub(crate) fn street_is_night(cx: &App) -> bool {
         .unwrap_or_else(ShellDeckColors::is_dark)
 }
 
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 /// Vertical offset of the balloon after a click, in artwork units, or `None`
 /// while it is out of sight: it climbs away for three seconds, stays away,
 /// then comes back down during the last two.
@@ -246,6 +264,8 @@ fn balloon_flight(elapsed: Duration, away: Duration) -> Option<f32> {
     None
 }
 
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 /// Position of something that crosses the scene once per period, as a share
 /// of the width: it enters from outside the left edge and leaves on the right.
 fn crossing(phase: f32, margin: f32) -> f32 {
@@ -265,6 +285,8 @@ fn sprite(path: &'static str, width: f32, height: f32) -> Img {
         .object_fit(ObjectFit::Contain)
 }
 
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 /// Three copies of a repeating strip, centred: enough for a window three
 /// strips wide, and a narrower box shows the middle of the street.
 fn strip_row(path: &'static str, tile_width: f32, height: f32) -> Div {
@@ -288,6 +310,8 @@ fn strip_row(path: &'static str, tile_width: f32, height: f32) -> Div {
     row
 }
 
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 /// The whole scene, as an absolute layer that fills its (relative) parent.
 /// Put the copy after it, in a sibling, so it is drawn above the sky.
 pub(crate) fn street_scene<V: 'static>(
@@ -644,6 +668,8 @@ pub(crate) fn street_scene<V: 'static>(
     }
 }
 
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 /// The site's label: a white pill with a hard shadow, set above a title.
 pub(crate) fn sticker(label: impl Into<SharedString>) -> Div {
     div()
@@ -668,6 +694,8 @@ pub(crate) fn sticker(label: impl Into<SharedString>) -> Div {
         .child(label.into())
 }
 
+// Retired from the welcome screen (SDUC-597); kept for a follow-up removal.
+#[allow(dead_code)]
 /// A word under the marker pen: the title of a scene, with the site's
 /// highlighter across its lower half.
 pub(crate) fn highlighted(label: impl Into<SharedString>, text_size: f32, night: bool) -> Div {

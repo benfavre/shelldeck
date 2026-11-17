@@ -1271,6 +1271,7 @@ impl AgentConsoleView {
     pub(super) fn render_composer(
         &mut self,
         session: &AgentSession,
+        hero: bool,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1309,15 +1310,20 @@ impl AgentConsoleView {
                 && !Self::native_context_needs_reconnect(session, &self.displayed_context(cx)))
                 || answering);
         let mut composer = Composer::new(format!("agent-composer-{id}"), &prompt)
+            .roomy(true)
             .placeholder(
                 t!(if session.status.is_active() {
                     "agents.composer.queue_placeholder"
-                } else {
+                } else if hero {
+                    "agents.cockpit.hero_placeholder"
+                } else if session.turns.is_empty() {
                     "agents.prompt.placeholder"
+                } else {
+                    "agents.cockpit.followup_placeholder"
                 })
                 .to_string(),
             )
-            .min_rows(2)
+            .min_rows(if hero { 3 } else { 2 })
             .max_rows(8)
             .commit_enabled(ready)
             .on_commit(move |cx| parent.update(cx, |view, cx| view.submit(cx)))
@@ -1433,9 +1439,10 @@ impl AgentConsoleView {
                     .debug_selector(|| "agent-stop-control".into())
                     .variant(ButtonVariant::Destructive)
                     .size(ButtonSize::Icon)
-                    .w(px(28.0))
-                    .h(px(28.0))
-                    .rounded_full()
+                    // The roomy send control's footprint (SDPATCH-134).
+                    .w(px(36.0))
+                    .h(px(36.0))
+                    .rounded(px(9.0))
                     .disabled(session.status == AgentSessionStatus::Stopping)
                     .icon(IconSource::from("square"))
                     .tooltip(t!("agents.stop").to_string())
@@ -1662,12 +1669,26 @@ impl AgentConsoleView {
                     .text_color(ShellDeckColors::text_muted())
                     .child(t!("agents.composer.queue_hint").to_string()),
             );
+        } else {
+            composer = composer.footnote(
+                div()
+                    .debug_selector(|| "agent-composer-hint".into())
+                    .w_full()
+                    .text_align(TextAlign::Center)
+                    .text_size(px(11.5))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("agents.cockpit.enter_hint").to_string()),
+            );
         }
         result
             .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
                 this.import_agent_paths(id, paths.paths().to_vec(), None, cx)
             }))
-            .child(self.render_project_picker(cx))
+            // In a conversation the project is in the header and the details
+            // panel; the chooser comes back only to repair a missing SSH target.
+            .when(hero || missing_target, |result| {
+                result.child(div().pb(px(4.0)).child(self.render_project_picker(cx)))
+            })
             .child(composer)
             .into_any_element()
     }

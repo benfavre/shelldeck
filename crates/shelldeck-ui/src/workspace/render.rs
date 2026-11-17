@@ -136,8 +136,17 @@ impl Render for Workspace {
                 _window.viewport_size().height.to_f64() as f32,
                 self.ui_font_size,
             );
-            main_area =
-                main_area.child(self.render_welcome_screen(is_maximized, compact_height, _cx));
+            // The logical height left between the title bar and the welcome
+            // foot: the welcome centres its content in it.
+            let logical_height = _window.viewport_size().height.to_f64() as f32
+                / crate::scale::scale_for_font_size(self.ui_font_size)
+                - WORKSPACE_TITLEBAR_HEIGHT;
+            main_area = main_area.child(self.render_welcome_screen(
+                is_maximized,
+                compact_height,
+                logical_height,
+                _cx,
+            ));
             // Fall through to render titlebar + status bar chrome around
             // the welcome — no sidebar, no mode-specific children.
         } else if self.pro_open {
@@ -595,21 +604,37 @@ impl Render for Workspace {
         // Custom titlebar with drag area + window controls
         let compact_titlebar = logical_width < 760.0;
         let inklura_bell = self.render_inklura_bell(_cx);
-        let pro_button = self.render_pro_button(compact_titlebar, _cx);
+        // The focused Agents view carries its open conversations in the title
+        // bar, as in the owner's mock-up (SDUC-596).
+        let agent_tabs_shown = presentation == WorkspacePresentation::Agents
+            && !self.show_welcome()
+            && !self.pro_open
+            && self.can_access_mode(AppMode::Dev);
+        self.agent_console.update(_cx, |view, cx| {
+            view.set_tabs_in_titlebar(agent_tabs_shown, cx)
+        });
+        let agent_tabs = agent_tabs_shown.then(|| {
+            self.agent_console
+                .read(_cx)
+                .titlebar_tabs_view()
+                .into_any_element()
+        });
         let titlebar = Self::render_titlebar(
             is_maximized,
             compact_titlebar,
-            logical_width,
             presentation,
             (!self.show_welcome() && self.can_access_mode(AppMode::Dev))
                 .then(|| self.presentation_attention(_cx)),
             self.account_menu_open,
             self.mode_menu_open,
-            self.app_config.account.clone(),
+            // While the post-login screen plays, the title bar keeps its
+            // signed-out face (SDUC-598): one continuous screen from sign-in.
+            if self.post_login_splash.is_some() {
+                None
+            } else {
+                self.app_config.account.clone()
+            },
             self.account_status,
-            self.site_menu_open,
-            self.app_config.cloud_sync.active_site_label.clone(),
-            self.site_directory.is_some() && !self.pro_open,
             if self.can_switch_mode() {
                 Some((self.effective_mode(), self.allowed_modes()))
             } else {
@@ -634,7 +659,8 @@ impl Render for Workspace {
                 })
                 .count(),
             inklura_bell,
-            pro_button,
+            self.signed_in().then_some(self.pro_open),
+            agent_tabs,
             &handle,
             _cx,
         );
@@ -862,7 +888,7 @@ impl Render for Workspace {
         // chrome, toasts and first-run onboarding until the initial sync has
         // produced a coherent signed-in workspace.
         if let Some(splash) = &self.post_login_splash {
-            root = root.child(self.render_post_login_splash(splash, _cx));
+            root = root.child(self.render_post_login_splash(splash, is_maximized, _cx));
         }
 
         root

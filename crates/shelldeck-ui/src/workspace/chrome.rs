@@ -57,32 +57,29 @@ impl Workspace {
     pub(super) fn render_titlebar(
         is_maximized: bool,
         compact: bool,
-        logical_width: f32,
         presentation: WorkspacePresentation,
         presentation_switch: Option<[crate::view_attention::ViewAttention; 4]>,
         account_menu_open: bool,
         mode_menu_open: bool,
         account: Option<AccountInfo>,
         account_status: AccountStatus,
-        site_menu_open: bool,
-        active_site_label: Option<String>,
-        sites_loaded: bool,
         mode_switch: Option<(AppMode, &'static [AppMode])>,
         menu_row: Option<bool>,
         sidebar_visible: Option<bool>,
         ai_configured: bool,
         ai_task_count: usize,
         inklura_bell: Option<AnyElement>,
-        pro_workspace_button: Option<AnyElement>,
+        // `Some(open)` when Inklura Pro is offered: a row of the view dropdown.
+        pro: Option<bool>,
+        agent_tabs: Option<AnyElement>,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
         let titlebar_bg = ShellDeckColors::bg_sidebar();
         let titlebar_border = ShellDeckColors::border();
         let title_color = ShellDeckColors::text_primary();
         let title_dim = ShellDeckColors::text_muted();
         let accent = ShellDeckColors::primary();
-        let btn_text = ShellDeckColors::text_muted();
         let btn_hover_bg = ShellDeckColors::hover_bg();
 
         // Drag regions fill whatever the controls leave free on each side of
@@ -98,10 +95,9 @@ impl Workspace {
                     window.start_window_move();
                 })
         };
-        let focused_presentation = presentation.is_focused();
 
         // Keep interactive controls outside the drag region.
-        let sidebar_button = sidebar_visible.map(|visible| {
+        let mut sidebar_button = sidebar_visible.map(|visible| {
             let tooltip: SharedString = with_shortcut(
                 t!("shortcuts.toggle_sidebar").to_string(),
                 BindableAction::ToggleSidebar,
@@ -124,46 +120,22 @@ impl Workspace {
                 }))
         });
 
-        // The brand, then the chevron that shows the menu row, as Alt does.
-        let mut brand = div()
-            .flex()
-            .items_center()
-            .flex_shrink_0()
-            .gap(px(8.0))
-            .child(crate::brand::brand_badge(26.0));
-        if !compact {
-            brand = brand.child(
-                div()
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(title_color)
-                    .whitespace_nowrap()
-                    .child("Inklura"),
-            );
-        }
-        if focused_presentation && !compact {
-            brand = brand.child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(title_dim)
-                    .child(presentation.label()),
-            );
-        }
-        let menu_chevron = menu_row.map(|shown| {
-            let tooltip: SharedString = if shown {
-                t!("menu.row.hide").to_string()
-            } else {
-                t!("menu.row.show").to_string()
-            }
-            .into();
-            div()
+        // The brand. In the full app it shows the menu row, as Alt does; a
+        // focused view has no menu row, so the brand opens the product menu.
+        let brand: AnyElement = match menu_row {
+            Some(shown) => {
+                let tooltip: SharedString = if shown {
+                    t!("menu.row.hide").to_string()
+                } else {
+                    t!("menu.row.show").to_string()
+                }
+                .into();
+                super::presentation::titlebar_brand(
+                    compact,
+                    Some(if shown { "chevron-up" } else { "chevron-down" }),
+                )
                 .id("titlebar-menu-chevron")
                 .debug_selector(|| "titlebar-menu-chevron".into())
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(26.0))
-                .rounded(px(6.0))
                 .cursor_pointer()
                 .hover(|el| el.bg(btn_hover_bg))
                 .tooltip(move |_, cx| {
@@ -173,21 +145,22 @@ impl Workspace {
                     .into()
                 })
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_menu_row(cx)))
-                .child(lucide_icon(
-                    if shown { "chevron-up" } else { "chevron-down" },
-                    15.0,
-                    btn_text,
-                ))
-        });
+                .into_any_element()
+            }
+            None => Self::render_brand_menu(compact, handle),
+        };
         let leading = div()
             .flex()
             .items_center()
             .h_full()
             .gap(px(8.0))
             .pl(px(12.0))
-            .children(sidebar_button)
-            .child(brand.ml(px(4.0)))
-            .children(menu_chevron);
+            .children(if agent_tabs.is_none() {
+                sidebar_button.take()
+            } else {
+                None
+            })
+            .child(brand);
 
         let control_btn = crate::window_chrome::control_button;
 
@@ -247,7 +220,7 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(6.0))
-            .h(px(36.0))
+            .h(px(super::presentation::TITLEBAR_CONTROL))
             .px(px(2.0))
             .rounded_full()
             .cursor_pointer();
@@ -259,7 +232,7 @@ impl Workspace {
                     .relative()
                     .child(
                         div()
-                            .size(px(34.0))
+                            .size(px(super::presentation::TITLEBAR_CONTROL))
                             .rounded_full()
                             .bg(accent.opacity(0.10))
                             .border_1()
@@ -334,16 +307,16 @@ impl Workspace {
                 .id("titlebar-mode")
                 .flex()
                 .items_center()
-                .gap(px(5.0))
-                .h(px(28.0))
-                .px(px(8.0))
-                .rounded(px(6.0))
+                .gap(px(6.0))
+                .h(px(super::presentation::TITLEBAR_CONTROL))
+                .px(px(10.0))
+                .rounded(px(super::presentation::TITLEBAR_RADIUS))
                 .bg(ShellDeckColors::badge_bg())
                 .cursor_pointer()
                 .hover(|s| s.bg(btn_hover_bg))
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(px(super::presentation::TITLEBAR_TEXT))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(title_color)
                         .child(super::modes::mode_label(current)),
@@ -370,130 +343,13 @@ impl Workspace {
             chip
         });
 
-        // Where the view switcher goes. It sits in the middle of the window
-        // while each half has room for its side; otherwise it follows the
-        // logo, and in a narrower window still the site chip keeps only its
-        // globe (the site stays in its tooltip). Widths are estimates in
-        // logical pixels of what each control draws.
-        let show_site_chip = account.is_some() && sites_loaded;
-        let leading_need = 12.0
-            + if sidebar_visible.is_some() { 40.0 } else { 0.0 }
-            + if compact { 34.0 } else { 96.0 }
-            + if menu_row.is_some() { 34.0 } else { 0.0 }
-            + if focused_presentation && !compact {
-                64.0
-            } else {
-                0.0
-            };
-        let switcher_need = if presentation_switch.is_some() {
-            186.0
-        } else {
-            0.0
-        };
-        let trailing_base = 150.0 // divider and window controls
-            + 42.0 // account
-            + if inklura_bell.is_some() { 38.0 } else { 0.0 }
-            + if pro_workspace_button.is_some() { if compact { 44.0 } else { 108.0 } } else { 0.0 }
-            + if ai_configured { 52.0 } else { 0.0 }
-            + if mode_switch.is_some() { 108.0 } else { 0.0 }
-            + if show_site_chip { 40.0 } else { 0.0 };
-        let site_label_need = if active_site_label.is_some() {
-            136.0
-        } else {
-            0.0
-        };
-        let site_label_fits =
-            logical_width >= leading_need + switcher_need + trailing_base + site_label_need + 24.0;
-        let trailing_need = trailing_base
-            + if site_label_fits {
-                site_label_need
-            } else {
-                0.0
-            };
-        let switcher_centred =
-            logical_width / 2.0 - switcher_need / 2.0 >= leading_need.max(trailing_need) + 16.0;
-        // Beside the logo while the window controls and the first action
-        // still fit after it (the actions scroll). Narrower still, the
-        // switcher joins the actions after Pro, so nothing is covered.
-        let first_action_need = if pro_workspace_button.is_some() {
-            if compact {
-                44.0
-            } else {
-                108.0
-            }
-        } else {
-            42.0
-        };
-        let switcher_after_logo = !switcher_centred
-            && logical_width >= leading_need + switcher_need + 150.0 + first_action_need + 24.0;
-
-        // Site chip — shown only when signed in and the sites directory has
-        // loaded. The global scope is a compact globe; a specific selection
-        // keeps its label visible so the current scope is never ambiguous.
-        let site_chip = if show_site_chip {
-            let scope_tooltip: SharedString = active_site_label
-                .clone()
-                .unwrap_or_else(|| "Tous les sites".to_string())
-                .into();
-            let mut chip = div()
-                .id("titlebar-site")
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(5.0))
-                .h(px(28.0))
-                .px(px(8.0))
-                .rounded(px(6.0))
-                .cursor_pointer()
-                .hover(|s| s.bg(btn_hover_bg))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| WorkspaceTooltip {
-                        label: scope_tooltip.clone(),
-                    })
-                    .into()
-                })
-                .child(lucide_icon("globe", 14.0, title_dim))
-                .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                    this.site_menu_open = !this.site_menu_open;
-                    if this.site_menu_open {
-                        this.account_menu_open = false;
-                        this.mode_menu_open = false;
-                        this.inklura_notifications_open = false;
-                    }
-                    cx.notify();
-                }));
-            if let Some(label) = active_site_label.filter(|_| site_label_fits) {
-                let visible_label = ellipsize_site_switcher_label(&label, 18);
-                chip = chip
-                    .child(
-                        div()
-                            .max_w(px(120.0))
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(title_color)
-                            .child(visible_label),
-                    )
-                    .child(
-                        svg()
-                            .path("images/chevron-down.svg")
-                            .size(px(9.0))
-                            .text_color(title_dim),
-                    );
-            }
-            if site_menu_open {
-                chip = chip.bg(ShellDeckColors::hover_bg());
-            }
-            Some(chip)
-        } else {
-            None
-        };
-
         // One control both leaves a focused view and returns to it, so the
         // full app is never a one-way door.
-        let presentation_switcher = presentation_switch
-            .map(|attention| Self::render_presentation_switcher(presentation, attention, handle));
+        let view_attention = presentation_switch;
+        // The view chooser is the « Agents ▾ » dropdown in every view (SDUC-596).
+        let presentation_switcher = (presentation_switch.is_some() || pro.is_some()).then(|| {
+            Self::render_presentation_menu(presentation, presentation_switch, compact, pro, handle)
+        });
 
         let ai_button = ai_configured.then(|| {
             let tooltip: SharedString = t!("ai.assistant.open").to_string().into();
@@ -503,14 +359,14 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .h(px(28.0))
+                .h(px(super::presentation::TITLEBAR_CONTROL))
                 .w(if ai_task_count == 0 {
-                    px(28.0)
+                    px(super::presentation::TITLEBAR_CONTROL)
                 } else {
-                    px(44.0)
+                    px(48.0)
                 })
                 .gap(px(4.0))
-                .rounded(px(6.0))
+                .rounded(px(super::presentation::TITLEBAR_RADIUS))
                 .border_1()
                 .border_color(ShellDeckColors::primary().opacity(0.40))
                 .bg(ShellDeckColors::primary().opacity(0.12))
@@ -573,15 +429,198 @@ impl Workspace {
         if !is_maximized {
             titlebar = titlebar.rounded_t(use_theme().tokens.radius_xl);
         }
-        // Leading and trailing clusters share the free width equally, so the
-        // view switcher stays in the middle of the window.
-        // Too narrow even beside the logo: the switcher joins the actions
-        // (after Pro), which scroll, so the window controls never get covered.
-        let (switcher, switcher_in_actions) = if switcher_centred || switcher_after_logo {
-            (presentation_switcher, None)
+        // The view dropdown always follows the logo, on the left (SDUC-596).
+        let switcher = presentation_switcher;
+        // The light / dark switch stands in every title bar; « Aide » only in
+        // the signed-out one (signed in, help is in the menus and the sidebar).
+        let dark = ShellDeckColors::is_dark();
+        let theme_tooltip: SharedString = t!(if dark {
+            "welcome.theme_light"
         } else {
-            (None, presentation_switcher)
-        };
+            "welcome.theme_dark"
+        })
+        .to_string()
+        .into();
+        let help_tooltip: SharedString = t!("welcome.docs").to_string().into();
+        let help_button = super::presentation::titlebar_control("titlebar-help")
+            .hover(|el| el.bg(btn_hover_bg))
+            .debug_selector(|| "titlebar-help".into())
+            .px(px(if compact { 0.0 } else { 10.0 }))
+            .tooltip(move |_, cx| {
+                cx.new(|_| WorkspaceTooltip {
+                    label: help_tooltip.clone(),
+                })
+                .into()
+            })
+            .on_click(|_, _, _| {
+                let _ = cloud_account::open_in_browser(super::welcome::WELCOME_DOCS_URL);
+            })
+            .child(lucide_icon("circle-help", 18.0, title_color))
+            .when(!compact, |button| {
+                button.child(t!("welcome.help").to_string())
+            });
+        let theme_button = super::presentation::titlebar_control("titlebar-theme")
+            .hover(|el| el.bg(btn_hover_bg))
+            .debug_selector(|| "titlebar-theme".into())
+            .tooltip(move |_, cx| {
+                cx.new(|_| WorkspaceTooltip {
+                    label: theme_tooltip.clone(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let next = if dark {
+                    ThemePreference::Light
+                } else {
+                    ThemePreference::Dark
+                };
+                this.settings
+                    .update(cx, |settings, cx| settings.select_app_theme(next, cx));
+            }))
+            .child(lucide_icon(
+                if dark { "sun" } else { "moon" },
+                18.0,
+                title_color,
+            ));
+        if account.is_none() {
+            // Signed out (the welcome screen), as in the owner's mock-up
+            // (SDUC-597): ≡, « Inklura | Desktop », Aide and the theme toggle.
+            let titlebar = titlebar.border_b_1().border_color(titlebar_border);
+            // The ≡ keeps its slot even where there is no menu row (the
+            // post-login screen of a focused view), so the brand never moves.
+            let menu_available = menu_row.is_some();
+            let menu_button = Some(
+                div()
+                    .id("titlebar-menu-chevron")
+                    .debug_selector(|| "titlebar-menu-chevron".into())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(super::presentation::TITLEBAR_CONTROL))
+                    .rounded(px(super::presentation::TITLEBAR_RADIUS))
+                    .when(menu_available, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(|el| el.bg(btn_hover_bg))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu_row(cx)))
+                    })
+                    .child(lucide_icon(
+                        "menu",
+                        18.0,
+                        if menu_available {
+                            title_color
+                        } else {
+                            title_dim.opacity(0.5)
+                        },
+                    )),
+            );
+
+            let leading = div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .h_full()
+                .gap(px(super::presentation::TITLEBAR_GAP))
+                .pl(px(12.0))
+                .children(menu_button)
+                .child(super::presentation::titlebar_brand(compact, None))
+                .when(!compact, |row| {
+                    row.child(divider()).child(
+                        div()
+                            .text_size(px(15.0))
+                            .text_color(title_dim)
+                            .child(t!("welcome.desktop").to_string()),
+                    )
+                });
+            let actions = div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .h_full()
+                .gap(px(super::presentation::TITLEBAR_GAP))
+                .child(help_button)
+                .child(theme_button);
+            return titlebar
+                .child(leading)
+                .child(drag_filler("titlebar-drag-leading"))
+                .child(actions)
+                .child(
+                    div()
+                        .debug_selector(|| "titlebar-window-controls".into())
+                        .flex()
+                        .items_center()
+                        .h_full()
+                        .flex_shrink_0()
+                        .gap(px(8.0))
+                        .pl(px(4.0))
+                        .pr(px(12.0))
+                        .child(divider())
+                        .child(minimize_btn)
+                        .child(maximize_btn)
+                        .child(close_btn),
+                )
+                .into_any_element();
+        }
+        if let Some(tabs) = agent_tabs {
+            // The focused Agents view, as in the owner's mock-up (SDUC-596):
+            // « Inklura ▾ », « Agents ▾ », the open conversations, then the
+            // usual actions. The segmented switcher becomes the dropdown.
+            let titlebar = titlebar.border_b_1().border_color(titlebar_border);
+            let leading = div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .h_full()
+                .gap(px(super::presentation::TITLEBAR_GAP))
+                .pl(px(12.0))
+                .children(sidebar_button)
+                .child(Self::render_brand_menu(compact, handle))
+                .children((view_attention.is_some() || pro.is_some()).then(|| {
+                    Self::render_presentation_menu(
+                        presentation,
+                        view_attention,
+                        compact,
+                        pro,
+                        handle,
+                    )
+                }))
+                .child(divider());
+            let actions = div()
+                .id("titlebar-actions")
+                .debug_selector(|| "titlebar-actions".into())
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .h_full()
+                .gap(px(8.0))
+                // Same order as the full app's actions.
+                .children(ai_button)
+                .children(mode_switcher)
+                .children(inklura_bell)
+                .child(theme_button)
+                .child(account_btn);
+            return titlebar
+                .child(leading)
+                .child(div().flex_shrink().min_w_0().h_full().child(tabs))
+                .child(drag_filler("titlebar-drag-leading").min_w(px(24.0)))
+                .child(actions)
+                .child(
+                    div()
+                        .debug_selector(|| "titlebar-window-controls".into())
+                        .flex()
+                        .items_center()
+                        .h_full()
+                        .flex_shrink_0()
+                        .gap(px(8.0))
+                        .pl(px(4.0))
+                        .pr(px(12.0))
+                        .child(divider())
+                        .child(minimize_btn)
+                        .child(maximize_btn)
+                        .child(close_btn),
+                )
+                .into_any_element();
+        }
         let trailing = div()
             .flex()
             .items_center()
@@ -600,12 +639,10 @@ impl Workspace {
                     .min_w_0()
                     .overflow_x_scroll()
                     .gap(px(8.0))
-                    .children(pro_workspace_button)
-                    .children(switcher_in_actions)
                     .children(ai_button)
                     .children(mode_switcher)
-                    .children(site_chip)
                     .children(inklura_bell)
+                    .child(theme_button)
                     .child(account_btn),
             )
             // Keep native window controls reachable even when the tool
@@ -627,25 +664,11 @@ impl Workspace {
             );
         let switcher = switcher.map(|switcher| div().flex_shrink_0().child(switcher));
         let titlebar = titlebar.border_b_1().border_color(titlebar_border);
-        if !switcher_after_logo {
-            // Equal halves around the switcher keep it in the middle.
-            titlebar
-                .child(
-                    leading
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .child(drag_filler("titlebar-drag-leading")),
-                )
-                .children(switcher)
-                .child(trailing)
-        } else {
-            // Not enough room in each half: the switcher follows the logo and
-            // the actions keep the rest.
-            titlebar
-                .child(leading.flex_shrink_0())
-                .children(switcher.map(|switcher| switcher.ml(px(12.0))))
-                .child(trailing)
-        }
+        titlebar
+            .child(leading.flex_shrink_0())
+            .children(switcher.map(|switcher| switcher.ml(px(12.0))))
+            .child(trailing)
+            .into_any_element()
     }
 
     /// The menu row under the titlebar (Fichier, Édition, Affichage, …). Pinned
@@ -946,6 +969,16 @@ impl Workspace {
                     status_label.to_string(),
                 ));
 
+            // The site switcher's way in now that the title bar has no globe.
+            if self.site_directory.is_some() {
+                panel = panel.child(
+                    secondary_btn("account-switch-site", t!("palette.switch_site").to_string())
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.account_menu_open = false;
+                            this.open_site_switcher(cx);
+                        })),
+                );
+            }
             panel = panel.child(
                 secondary_btn("account-sync", t!("user.sync").to_string()).on_click(cx.listener(
                     |this, _: &ClickEvent, _, cx| {

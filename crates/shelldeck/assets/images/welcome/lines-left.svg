@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="640" viewBox="0 0 300 640" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Inklura Desktop welcome screen: circuit lines, left side (SDUC-597). -->
+  <path d="M20 300 H70 Q95 300 95 275 V185 Q95 160 120 160 H160 Q185 160 185 135 V100 Q185 72 213 72 H270" />
+  <circle cx="276" cy="72" r="6" />
+  <circle cx="95" cy="232" r="3" fill="currentColor" />
+  <path d="M120 40 V105 Q120 122 103 122 H30" stroke-dasharray="1.5 7" />
+  <path d="M15 450 H45 Q62 450 62 467 V580 Q62 605 87 605 H110" />
+  <circle cx="62" cy="525" r="3" fill="currentColor" />
+</svg>

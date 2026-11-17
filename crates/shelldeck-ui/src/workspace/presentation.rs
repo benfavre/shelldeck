@@ -3,6 +3,62 @@
 use super::*;
 use crate::shortcut_reference::BindableAction;
 use crate::view_attention::ViewAttention;
+use adabraka_ui::overlays::popover::PopoverContent;
+use adabraka_ui::prelude::Popover;
+
+/// One title bar kit for every window state (signed out, full app, focused
+/// views), so the four headers line up: 32 px controls with 8 px corners and
+/// 13 px text, 8 px between them, and one brand (28 px mark, 16 px name).
+pub(super) const TITLEBAR_CONTROL: f32 = 32.0;
+pub(super) const TITLEBAR_RADIUS: f32 = 8.0;
+pub(super) const TITLEBAR_TEXT: f32 = 13.0;
+pub(super) const TITLEBAR_GAP: f32 = 8.0;
+
+/// The brand of every title bar: the mark, « Inklura » unless compact, and an
+/// optional trailing glyph (the chevron of a menu). The caller makes it clickable.
+pub(super) fn titlebar_brand(compact: bool, glyph: Option<&'static str>) -> Div {
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(TITLEBAR_GAP))
+        .h(px(TITLEBAR_CONTROL + 4.0))
+        .pl(px(4.0))
+        .pr(px(6.0))
+        .rounded(px(TITLEBAR_RADIUS))
+        .child(crate::brand::brand_badge(28.0))
+        .when(!compact, |brand| {
+            brand.child(
+                div()
+                    .text_size(px(16.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .whitespace_nowrap()
+                    .child("Inklura"),
+            )
+        })
+        .when_some(glyph, |brand, glyph| {
+            brand.child(lucide_icon(glyph, 14.0, ShellDeckColors::text_muted()))
+        })
+}
+
+/// A title bar control face: 32 px tall, 8 px corners, 13 px text. The caller
+/// adds its hover (GPUI allows one hover style per element).
+pub(super) fn titlebar_control(id: impl Into<ElementId>) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .h(px(TITLEBAR_CONTROL))
+        .min_w(px(TITLEBAR_CONTROL))
+        .rounded(px(TITLEBAR_RADIUS))
+        .cursor_pointer()
+        .text_size(px(TITLEBAR_TEXT))
+        .text_color(ShellDeckColors::text_primary())
+}
 
 /// What the window shows around the Dev views: the full app (titlebar menus,
 /// activity rail, every destination) or one focused view with no rail.
@@ -331,133 +387,320 @@ impl Workspace {
         )
     }
 
-    /// The titlebar segmented control between the full app and the focused
-    /// views. Icon-only so its width never changes with the selection. A dot
-    /// marks a view that needs the user or has something new.
-    pub(super) fn render_presentation_switcher(
-        current: WorkspacePresentation,
-        attention: [ViewAttention; 4],
-        handle: &WeakEntity<Self>,
-    ) -> impl IntoElement {
-        let keys = crate::shortcut_reference::label(BindableAction::NextView);
-        let mut group = div()
-            .id("titlebar-presentation")
+    /// One row of a title-bar dropdown: icon, label, optional dot.
+    fn titlebar_menu_row(
+        id: &'static str,
+        icon: &'static str,
+        label: String,
+        active: bool,
+        dot: Option<Hsla>,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
             .flex()
             .items_center()
-            .flex_shrink_0()
-            .h(px(36.0))
-            .p(px(3.0))
-            .gap(px(2.0))
-            .rounded(px(10.0))
-            // A quiet tray with a hairline edge; the current view is the one
-            // raised tile in it.
-            .bg(ShellDeckColors::badge_bg().opacity(0.7))
-            .border_1()
-            .border_color(ShellDeckColors::border().opacity(0.5));
-        // The raised tile is a step lighter than the tray in every theme: the
-        // card colour in a light theme, the tray lifted toward the text colour
-        // in a dark one (where the card colour sits below the tray).
-        let tile_bg = if ShellDeckColors::is_dark() {
-            ShellDeckColors::badge_bg().blend(ShellDeckColors::text_primary().opacity(0.10))
+            .gap(px(10.0))
+            .h(px(34.0))
+            .px(px(10.0))
+            .rounded(px(7.0))
+            .cursor_pointer()
+            .text_size(px(13.0))
+            .when(active, |row| {
+                row.bg(ShellDeckColors::primary().opacity(0.10))
+                    .text_color(ShellDeckColors::primary())
+            })
+            .when(!active, |row| {
+                row.text_color(ShellDeckColors::text_primary())
+                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            })
+            .child(lucide_icon(
+                icon,
+                15.0,
+                if active {
+                    ShellDeckColors::primary()
+                } else {
+                    ShellDeckColors::text_muted()
+                },
+            ))
+            .child(div().flex_1().child(label))
+            .when_some(dot, |row, color| {
+                row.child(div().size(px(7.0)).rounded_full().bg(color))
+            })
+    }
+
+    /// The view chooser of every title bar (SDUC-596): the current view as a
+    /// « ▾ » chip, the four views in its dropdown with their attention dots.
+    pub(super) fn render_presentation_menu(
+        current: WorkspacePresentation,
+        attention: Option<[ViewAttention; 4]>,
+        compact: bool,
+        // `Some(open)` when Inklura Pro is offered (signed in), with its state.
+        pro: Option<bool>,
+        handle: &WeakEntity<Self>,
+    ) -> AnyElement {
+        let handle = handle.clone();
+        let pro_open = pro == Some(true);
+        // The chip names what the window shows: Inklura Pro while it is open,
+        // the Dev view otherwise, the desktop app for an account without views.
+        let (chip_icon, chip_label): (&'static str, String) = if pro_open {
+            ("briefcase-business", t!("pro.view").to_string())
+        } else if attention.is_some() {
+            (current.icon(), current.label())
         } else {
-            ShellDeckColors::popover_bg()
+            ("layout-dashboard", t!("pro.view_desktop").to_string())
         };
-        for (presentation, attention) in WorkspacePresentation::ALL.into_iter().zip(attention) {
-            let active = presentation == current;
-            let name = match attention {
-                ViewAttention::NeedsYou => t!(
-                    "presentation.attention.needs_you",
-                    name = presentation.label()
-                )
-                .to_string(),
-                ViewAttention::Finished => t!(
-                    "presentation.attention.finished",
-                    name = presentation.label()
-                )
-                .to_string(),
-                ViewAttention::None => presentation.label(),
-            };
-            let tooltip: SharedString = match &keys {
-                Some(keys) if active => t!(
+        let tooltip: SharedString =
+            match crate::shortcut_reference::label(BindableAction::NextView) {
+                Some(keys) if attention.is_some() => t!(
                     "presentation.tooltip_active",
-                    name = name,
-                    keys = keys.clone()
+                    name = chip_label.clone(),
+                    keys = keys
                 )
-                .to_string()
-                .into(),
-                _ => name.into(),
-            };
-            let workspace = handle.clone();
-            let mut segment = div()
-                .id(presentation.switcher_id())
-                .debug_selector(move || presentation.switcher_id().into())
-                .relative()
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(40.0))
-                .h(px(28.0))
-                .rounded(px(7.0))
-                .cursor_pointer()
-                .tooltip(move |_, cx| {
-                    cx.new(|_| WorkspaceTooltip {
-                        label: tooltip.clone(),
-                    })
-                    .into()
-                })
-                .on_click(move |_, _, cx| {
-                    if let Some(workspace) = workspace.upgrade() {
-                        workspace.update(cx, |this, cx| this.set_presentation(presentation, cx));
-                    }
-                });
-            segment = if active {
-                // The current view stands out of the tray as a raised tile.
-                segment
-                    .bg(tile_bg)
-                    .border_1()
-                    .border_color(ShellDeckColors::border().opacity(0.6))
-                    .shadow(vec![use_theme().tokens.shadow_sm].into())
-                    .child(lucide_icon(
-                        presentation.icon(),
-                        16.0,
-                        ShellDeckColors::primary(),
-                    ))
-            } else {
-                segment
-                    .hover(move |el| el.bg(tile_bg.opacity(0.6)))
-                    .child(lucide_icon(
-                        presentation.icon(),
-                        16.0,
-                        ShellDeckColors::text_muted(),
-                    ))
-            };
-            let dot = match attention {
-                ViewAttention::NeedsYou => Some(ShellDeckColors::warning()),
-                ViewAttention::Finished => Some(ShellDeckColors::primary()),
-                ViewAttention::None => None,
-            };
-            if let Some(color) = dot {
-                segment = segment.child(
-                    div()
-                        .absolute()
-                        .top(px(3.0))
-                        .right(px(7.0))
-                        .size(px(8.0))
-                        .rounded_full()
-                        .bg(color)
-                        // A ring in the colour behind the tile separates the
-                        // dot from the glyph it sits on.
-                        .border_2()
-                        .border_color(if active {
-                            tile_bg
-                        } else {
-                            ShellDeckColors::badge_bg()
-                        }),
-                );
+                .to_string(),
+                _ => chip_label.clone(),
             }
-            group = group.child(segment);
-        }
-        group
+            .into();
+        // At rest the chip keeps the old switcher's signal: a dot when another
+        // view needs the user (warning) or has something new (primary).
+        let others = attention
+            .map(|attention| {
+                WorkspacePresentation::ALL
+                    .into_iter()
+                    .zip(attention)
+                    .filter(|(presentation, _)| pro_open || *presentation != current)
+                    .map(|(_, attention)| attention)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let rest_dot = if others.contains(&ViewAttention::NeedsYou) {
+            Some(ShellDeckColors::warning())
+        } else if others.contains(&ViewAttention::Finished) {
+            Some(ShellDeckColors::primary())
+        } else {
+            None
+        };
+        Popover::new("titlebar-view-menu")
+            .anchor(Corner::TopLeft)
+            .trigger(
+                titlebar_control("titlebar-view-chip")
+                    .debug_selector(|| "titlebar-view-chip".into())
+                    .px(px(10.0))
+                    .bg(ShellDeckColors::badge_bg().opacity(0.7))
+                    .hover(|style| style.bg(ShellDeckColors::badge_bg()))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| WorkspaceTooltip {
+                            label: tooltip.clone(),
+                        })
+                        .into()
+                    })
+                    .child(lucide_icon(chip_icon, 15.0, ShellDeckColors::primary()))
+                    // A narrow title bar keeps the icon; the view is in the tooltip.
+                    .when(!compact, |chip| chip.child(chip_label.clone()))
+                    .when_some(rest_dot, |chip, color| {
+                        chip.child(
+                            div()
+                                .debug_selector(|| "titlebar-view-attention".into())
+                                .size(px(7.0))
+                                .rounded_full()
+                                .bg(color),
+                        )
+                    })
+                    .child(lucide_icon(
+                        "chevron-down",
+                        14.0,
+                        ShellDeckColors::text_muted(),
+                    )),
+            )
+            .content(move |window, cx| {
+                let handle = handle.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_, cx| {
+                        let mut menu = div().flex().flex_col().gap(px(2.0)).min_w(px(220.0));
+                        match attention {
+                            Some(attention) => {
+                                for (presentation, attention) in
+                                    WorkspacePresentation::ALL.into_iter().zip(attention)
+                                {
+                                    let dot = match attention {
+                                        ViewAttention::NeedsYou => Some(ShellDeckColors::warning()),
+                                        ViewAttention::Finished => Some(ShellDeckColors::primary()),
+                                        ViewAttention::None => None,
+                                    };
+                                    let workspace = handle.clone();
+                                    menu = menu.child(
+                                        Self::titlebar_menu_row(
+                                            presentation.switcher_id(),
+                                            presentation.icon(),
+                                            presentation.label(),
+                                            !pro_open && presentation == current,
+                                            dot,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |_, _, _, cx| {
+                                                if let Some(workspace) = workspace.upgrade() {
+                                                    workspace.update(cx, |this, cx| {
+                                                        // A view closes Pro first.
+                                                        if this.pro_open {
+                                                            this.toggle_pro(cx);
+                                                        }
+                                                        this.set_presentation(presentation, cx)
+                                                    });
+                                                }
+                                                cx.emit(DismissEvent);
+                                            }),
+                                        ),
+                                    );
+                                }
+                            }
+                            None => {
+                                let workspace = handle.clone();
+                                menu = menu.child(
+                                    Self::titlebar_menu_row(
+                                        "titlebar-view-desktop",
+                                        "layout-dashboard",
+                                        t!("pro.view_desktop").to_string(),
+                                        !pro_open,
+                                        None,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |_, _, _, cx| {
+                                            if let Some(workspace) = workspace.upgrade() {
+                                                workspace.update(cx, |this, cx| {
+                                                    if this.pro_open {
+                                                        this.toggle_pro(cx);
+                                                    }
+                                                });
+                                            }
+                                            cx.emit(DismissEvent);
+                                        },
+                                    )),
+                                );
+                            }
+                        }
+                        if pro.is_some() {
+                            let workspace = handle.clone();
+                            menu = menu
+                                .child(
+                                    div()
+                                        .h(px(1.0))
+                                        .mx(px(6.0))
+                                        .my(px(4.0))
+                                        .bg(ShellDeckColors::border()),
+                                )
+                                .child(
+                                    Self::titlebar_menu_row(
+                                        "open-inklura-pro",
+                                        "briefcase-business",
+                                        t!("pro.view").to_string(),
+                                        pro_open,
+                                        None,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |_, _, _, cx| {
+                                            if let Some(workspace) = workspace.upgrade() {
+                                                workspace.update(cx, |this, cx| {
+                                                    if !this.pro_open {
+                                                        this.toggle_pro(cx);
+                                                    }
+                                                });
+                                            }
+                                            cx.emit(DismissEvent);
+                                        },
+                                    )),
+                                );
+                        }
+                        menu.into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
+
+    /// « Inklura ▾ »: the product menu of a focused view, which has no menu row.
+    pub(super) fn render_brand_menu(compact: bool, handle: &WeakEntity<Self>) -> AnyElement {
+        let handle = handle.clone();
+        let face = titlebar_brand(compact, Some("chevron-down"))
+            .id("titlebar-brand")
+            .debug_selector(|| "titlebar-brand".into())
+            .cursor_pointer()
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()));
+        Popover::new("titlebar-brand-menu")
+            .anchor(Corner::TopLeft)
+            .trigger(face)
+            .content(move |window, cx| {
+                let handle = handle.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_, cx| {
+                        let full = handle.clone();
+                        let settings = handle.clone();
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .min_w(px(220.0))
+                            .child(
+                                Self::titlebar_menu_row(
+                                    "titlebar-brand-full",
+                                    WorkspacePresentation::Main.icon(),
+                                    WorkspacePresentation::Main.label(),
+                                    false,
+                                    None,
+                                )
+                                .on_click(cx.listener(
+                                    move |_, _, _, cx| {
+                                        if let Some(workspace) = full.upgrade() {
+                                            workspace.update(cx, |this, cx| {
+                                                this.set_presentation(
+                                                    WorkspacePresentation::Main,
+                                                    cx,
+                                                )
+                                            });
+                                        }
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            )
+                            .child(
+                                Self::titlebar_menu_row(
+                                    "titlebar-brand-settings",
+                                    "settings",
+                                    t!("agents.cockpit.settings").to_string(),
+                                    false,
+                                    None,
+                                )
+                                .on_click(cx.listener(
+                                    move |_, _, _, cx| {
+                                        if let Some(workspace) = settings.upgrade() {
+                                            workspace.update(cx, |this, cx| this.open_settings(cx));
+                                        }
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            )
+                            .child(
+                                Self::titlebar_menu_row(
+                                    "titlebar-brand-help",
+                                    "circle-help",
+                                    t!("agents.cockpit.help").to_string(),
+                                    false,
+                                    None,
+                                )
+                                .on_click(cx.listener(
+                                    |_, _, _, cx| {
+                                        let _ =
+                                            shelldeck_core::config::cloud_account::open_in_browser(
+                                                "https://shelldeck.1clic.pro",
+                                            );
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            )
+                            .into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
     }
 }
 

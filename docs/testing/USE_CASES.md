@@ -6089,3 +6089,112 @@ The warning remains only when there is no site to choose from.
 
 Checked in the private Xvfb + mutter walkthrough (client account, two sites,
 no active site): Light and Tokyo Night, search, Enter, Escape.
+
+## SDUC-595: Agents cockpit from the owner's mock-up
+
+Request of 2026-11-17: « update shelldeck UI/UX to be like » two mock-ups of
+the Agents view (start screen, and a finished reply with the details panel).
+Since then the Agents surface reads as follows (`agent_console_view/cockpit.rs`):
+
+- **Layout**: the sidebar on the page colour; the conversation and its side
+  panel on one inset card (radius 12) of the lightest surface.
+- **Sidebar**: « Nouvelle session » (primary), a search field (the input
+  appears on click), Tout / Local / SSH, « Projets » with its menu and « + »,
+  project rows with a chevron, a folder and a Local or SSH badge, the selected
+  conversation in blue, « Conversations importées » (local discovery, saved
+  servers, Platform directory) closed by default, then « N/4 agents en
+  cours », Paramètres and Aide.
+- **Header**: `project / session`, the Files, Changes, Terminal and Browser
+  icons, « Détails » and « … » (secondary tools and the execution context).
+- **Start screen** (empty session): the robot tile, « Sur quoi travaille-t-on ? »,
+  the project and machine choosers with the connection state, the composer
+  (larger frame, square send button), « Entrée pour envoyer • Maj + Entrée pour
+  un saut de ligne », three starting points that fill the composer (Analyser
+  le projet, Corriger un problème, Créer une fonctionnalité) and « Reprendre une
+  session » (three most recent conversations with messages).
+- **Conversation**: the person's message as a bubble; a reply under a header
+  with the agent, « Terminé • duration »; completed work as « N actions
+  effectuées » with « Afficher le détail »; « N fichiers modifiés » with +/−
+  counts, « Prêt à relire » and « Examiner les changements »; « Les N
+  vérifications sont réussies » with « Voir les résultats ». The composer
+  placeholder becomes « Demander un ajustement… ».
+- **Détails de la session**: environment (machine, connection, folder,
+  branch), agent (state, model, permissions, Configurer), context used, the
+  last turn's checks, folded tools and system resources.
+
+Kept from before: Files/Changes/Terminal in the header, the provider icon and
+attention markers on rows, the context editor, SSH repair (the project chooser
+returns above the composer only then), every existing selector used by the
+interaction harness.
+
+#### Native walkthrough (2026-11-17)
+
+Private headless GNOME Shell (Wayland, own bus without service directories,
+throwaway HOME, `GSETTINGS_BACKEND=memory`): the demo profile of
+`scripts/demo` (French, Light) for the start screen, and
+`agent-console-preview` with `SHELLDECK_PREVIEW_MOCKUP=1
+SHELLDECK_PREVIEW_DETAILS=1 SHELLDECK_PREVIEW_FR=1
+SHELLDECK_PREVIEW_PLAIN_LIGHT=1` for a finished reply with Détails, plus Dark.
+Screenshots in `screenshots/2026-11-17-agents-mockup/`. Not checked on screen:
+a window under 840 px, macOS and Windows, a live provider run, SSH targets.
+The mock-up's title bar (session tabs, organisation chooser) is not part of
+this change.
+
+## SDUC-596: Open conversations as title-bar tabs, and « Récents »
+
+Request of 2026-11-17, after SDUC-595: the mock-up's title bar and a recent
+section. In the focused Agents view the title bar reads « Inklura ▾ » (full
+app, Paramètres, Aide), « Agents ▾ » (Application complète, Agents, Terminal,
+Éditeur, with their attention dots), then one tab per open conversation (name,
+state dot, ×) and « + » for a new session; the account, site, mode and window
+controls stay on the right. A tab is not the conversation: × closes the tab,
+the neighbour is selected, the conversation stays in the sidebar; closing the
+last tab opens a new session. Since 2026-11-17 the same « ▾ » dropdown is the view chooser in every view,
+always on the left after the logo (icon only in a narrow title bar).
+
+The sidebar list starts with « Récents »: the five conversations with messages
+touched last, with their project and age, foldable, filtered by Tout / Local /
+SSH, hidden while searching.
+
+Native check 2026-11-17 (headless GNOME Shell, demo profile with the preview
+fixture's sessions): `screenshots/2026-11-17-agents-mockup/04-titlebar-tabs.png`.
+
+## SDUC-597: Welcome screen « Tout Inklura. Sur votre bureau. »
+
+Request of 2026-11-17, with a mock-up, and « Par Inklura » instead of the
+WD29 signature. The signed-out screen (`workspace/welcome.rs`): the yellow
+« Votre lien direct avec Inklura », « Tout Inklura. / Sur votre bureau. », two
+lines of lead, « Se connecter à Inklura Manage ↗ » and « Créer un compte ↗ »
+(the site's chunky buttons, same actions and selectors as before), « Connexion
+via votre navigateur. », the cards « Vos espaces, au même endroit. » (Espaces,
+Applications, Projets) and « Vos outils, à portée de main. » (Terminal → SSH),
+and a foot « Inklura Desktop · Par Inklura · Aide et documentation ↗ ». Circuit
+lines, two doodles, yellow rings and crosses decorate the sides. Palette
+colours throughout, so it follows the theme; it scrolls when the window is
+short. The signed-out title bar: ≡ (menu row), « Inklura | Desktop », Aide,
+and a moon/sun button that switches the light and dark themes.
+
+Its content is centred vertically above the foot (the height comes from the
+window, since percentages do not resolve in its scroll area); a short window
+scrolls from the top. Native check 2026-11-17, empty profile, 1200 x 800 and
+maximised at 1600 x 1300, Light and Dark:
+`05-welcome-light.png`, `06-welcome-dark.png` (the two toasts are the headless
+session's missing desktop portal, not part of the screen).
+
+## SDUC-598: Post-login screen under the signed-out title bar
+
+Request of 2026-11-17: redesign the « Bienvenue, … » loading screen shown
+after sign-in and merge its header with the welcome screen's. The screen
+(`render_post_login_splash`, `workspace/overlays.rs`) now stands under the
+title bar instead of covering it; the title bar keeps its signed-out face
+(≡, « Inklura | Desktop », Aide, theme) until the screen leaves, the ≡ keeping
+its slot (inactive) where there is no menu row so the brand never moves. The
+page is the welcome screen's (`welcome_backdrop`: gradient and circuit lines)
+with its « Par Inklura » foot (`welcome_foot`); a card holds « Connexion
+réussie », the animated mark, « Bienvenue, <name> », the preparation line and
+the progress (label, percentage, 340 px bar). Duration, progress and fade are
+unchanged.
+
+Native check 2026-11-17: real password sign-in against the demo Manage stub
+in the headless GNOME session, Light, 1200 x 800:
+`screenshots/2026-11-17-agents-mockup/07-post-login.png`.

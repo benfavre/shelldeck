@@ -17,13 +17,13 @@ impl AgentConsoleView {
         let files_selected = self.inspector_tab == AgentInspectorTab::Files;
         let changes_selected = self.inspector_tab == AgentInspectorTab::Changes;
         div()
-            .min_h(px(42.0))
+            .min_h(px(super::cockpit::PANEL_HEADER_HEIGHT))
             .flex_shrink_0()
             .flex_wrap()
             .flex()
             .items_center()
             .gap(px(6.0))
-            .px(px(8.0))
+            .px(px(12.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(
